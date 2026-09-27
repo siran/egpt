@@ -21,7 +21,7 @@ import { addressed } from '../src/spine/router.mjs';
 // a real node always declares its beings. `e` and `d` declare no `handles:`, so each answers to its
 // own key, exactly as wakeTokens says. A test that passes its own `config` merges into this.
 const AGENTS = { agents: { e: {}, d: {} } };
-function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript, scopeOf } = {}) {
+function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, clock, resolveConvRoom, onRoomChange, logTranscript, scopeOf, backlogOf, timeZone } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [], roomChanges = [], logged = [];
   const files = {};   // any command-authored files (e.g. /rooms create's config.yaml)
   let st = state;
@@ -52,6 +52,8 @@ function harness({ config = AGENTS, state = null, brains, io = {}, cdp, launch, 
     evictWarm: (being, at) => evicts.push({ being, surface: at?.surface, chatId: at?.chatId }),
     io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
     ...(resolveConvRoom ? { resolveConvRoom } : {}),
+    ...(backlogOf ? { backlogOf } : {}),
+    ...(timeZone ? { timeZone } : {}),
     // The transcript service's reply writer (boot injects services.transcript.log) — captured
     // by default so a test can assert WHAT was written where, or overridden with a real
     // createTranscript when the BYTES are the claim.
@@ -2753,6 +2755,66 @@ describe('/help', () => {
     const { cmds } = harness({ config: cfg });
     expect(cmds.isCommand({ body: '/help', chatId: '!self', surface: 'whatsapp' })).toBe(true);
     expect(cmds.isCommand({ body: '/help', chatId: '!group', surface: 'whatsapp' })).toBe(false);
+  });
+});
+
+// /recap (operator 2026-09-27) — the answer to the wake notice "N messages in the backlog. type
+// /recap to list them": the messages this chat received while the node slept, backfilled and never
+// dispatched. The LIST is the spine's (src/spine/spine.mjs backlogOf, replaced at every wake); this
+// is the command that reads it out in the chat it was typed in — that chat's messages, nobody else's.
+describe('/recap — the backlog of the last wake, read out where it was written', () => {
+  const palma = { chatId: '!palma', surface: 'whatsapp', isSender: true };
+  const BACKLOG = [
+    { sender: 'An', ts: Date.UTC(2026, 8, 26, 9, 41), body: `mañana\n\tsin falta ${'x'.repeat(120)}` },
+    { sender: 'Dagiely', ts: Date.UTC(2026, 8, 25, 23, 5), body: '@e ¿me escuchas?' },
+  ];
+
+  it('REPRODUCE-FIRST: lists THIS chat\'s backlog — sender, local time, the first ~100 chars, the day said where it changes', async () => {
+    const asked = [];
+    const { cmds, sent } = harness({ backlogOf: (ev) => { asked.push(`${ev.surface}:${ev.chatId}`); return BACKLOG; }, timeZone: 'America/New_York' });
+    await cmds.run({ ...palma, body: '/recap' });
+    expect(asked).toEqual(['whatsapp:!palma']);                 // the chat it was typed in, and only that one
+    expect(sent).toEqual([{ chatId: '!palma', text: [
+      '2 messages in the backlog:',
+      '[ 2026-09-25 ]',
+      'Dagiely (19:05): @e ¿me escuchas?',                    // in stamp order, in the node's zone
+      '[ 2026-09-26 ]',
+      `An (05:41): ${`mañana sin falta ${'x'.repeat(120)}`.slice(0, 100)}…`,
+    ].join('\n') }]);
+  });
+
+  // NOTHING TO LIST ⇒ SILENT (operator "ok", 2026-09-27): on a shared account the node that never
+  // slept hears the same /recap, and must not answer beside the one that did.
+  it('stays SILENT when this node has nothing to list', async () => {
+    const { cmds, sent } = harness({ backlogOf: () => [] });
+    await cmds.run({ ...palma, body: '/recap' });
+    await cmds.run({ ...palma, isSender: false, body: '/recap' });
+    expect(sent).toEqual([]);
+  });
+
+  // "anybody can type /recap" (operator 2026-09-27): it only reads a chat's own backlog back to
+  // that chat, so isCommand admits it from ANY sender — and nothing else. Every other command,
+  // lifecycle included, still needs the operator (the Self chat, the owner, allowed_users).
+  it('REPRODUCE-FIRST: anybody may run it — and it is the ONLY command a non-operator reaches', async () => {
+    const { cmds, sent, exits } = harness({ config: { ...AGENTS, whatsapp: { chat_id: '!self' } }, backlogOf: () => BACKLOG });
+    const stranger = { chatId: '!palma', surface: 'whatsapp' };   // not Self, not the owner, not on allowed_users
+    expect(cmds.isCommand({ ...stranger, body: '/recap' })).toBe(true);
+    await cmds.run({ ...stranger, body: '/recap' });
+    expect(sent.map((s) => s.chatId)).toEqual(['!palma']);
+    for (const body of ['/restart', '/status', '/help', '/agents e', '/config', '/recaps', 'recap']) {
+      expect(cmds.isCommand({ ...stranger, body })).toBe(false);
+    }
+    expect(exits).toEqual([]);
+    // …and the operator's own gate is unchanged
+    expect(cmds.isCommand({ chatId: '!self', surface: 'whatsapp', body: '/status' })).toBe(true);
+    expect(cmds.isCommand({ ...stranger, authorized: true, body: '/status' })).toBe(true);
+  });
+
+  it('/help lists it among the WIRED commands', async () => {
+    const { cmds, sent } = harness({ config: { ...AGENTS, whatsapp: { chat_id: '!self' } } });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/help' });
+    const [wired] = sent[0].text.split('NOT YET WIRED');
+    expect(wired).toMatch(/^\/recap\s/m);
   });
 });
 

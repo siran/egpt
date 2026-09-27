@@ -698,6 +698,37 @@ export function createSpine({
     return act();
   }
 
+  // THE CHAT DECISION'S TWO READS, shared by classify (below) and the wake notice's question —
+  // WHO a message addresses (the router's targets, normalized: a bare-string or single
+  // `{ being, mention }` return from older/other fakes becomes a one-target list) and WHAT THE
+  // TARGET'S GATE SAYS. Both are reads: routing and gating write nothing. The guard between them
+  // in classify is the part that does (it counts turns), and stays there.
+  async function targetsOf(ev) {
+    const routed = await router.resolve(ev);
+    return (Array.isArray(routed?.targets) && routed.targets.length)
+      ? routed.targets
+      : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
+  }
+  async function gateOf(target, ev) {
+    const to = target.being ?? defaultBeing;
+    const mention = target.mention ?? ev.mention;
+    return { meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(gateAs(target, to), ev, mention) };
+  }
+
+  // WOULD THIS MESSAGE HAVE REACHED A BEING, HAD IT BEEN LIVE? — the wake notice's question
+  // (noteWakeBacklog, operator 2026-09-27), answered by classify's OWN decision without dispatching
+  // anything: the branches classify takes before the chat decision wake nobody (a command, a relay
+  // envelope, transit, an advice answer); past them the router picks the targets and the FIRST one's
+  // gate decides, exactly as for a live message; the guard is not consulted. "Reached" is the reply
+  // decision dispatchChat takes — the gate lets a being reply, and it is not the operator's own line
+  // in an auto chat. A context turn (send_to_egpt: always) runs a being but answers nobody, so it
+  // does not count: a chat of chatter under a mention gate hears nothing about its backlog.
+  async function wouldReachABeing(ev) {
+    if (commands?.isCommand?.(ev) || isEnvelope(ev) || isTransit(ev) || advice?.isAnswer?.(ev)) return false;
+    const { d } = await gateOf((await targetsOf(ev))[0], ev);
+    return d.receives && d.mayReply && !(d.mode === 'auto' && ev.isSender);
+  }
+
   // What IS this message, and what should happen to it? Classification only — plus the
   // readings classification itself needs (the gate, the guard's verdict). It writes NOTHING
   // to the transcript. Returns the action to run once the message is on the record, or null
@@ -706,8 +737,9 @@ export function createSpine({
     // BACKLOG BACKFILL (operator 2026-07-08, S3 wake): a message older than bridge start —
     // the node slept and woke to a replay — is transcript-logged (the record stays complete)
     // but NEVER dispatched: no command, no mesh, no gate, no mode:on (the woken node backfills,
-    // it does not re-answer stale traffic).
-    if (ev.backlog) return () => {};
+    // it does not re-answer stale traffic). After a wake it is COUNTED, though: the chat hears
+    // once that it has a backlog (noteWakeBacklog, the wake notice — operator 2026-09-27).
+    if (ev.backlog) return () => noteWakeBacklog(ev);
 
     // Operator safe-word from an AUTHORIZED sender. Before gating so it lands in any mode;
     // recorded like any inbound (the caller appends it the moment this returns), then NEVER
@@ -852,10 +884,7 @@ export function createSpine({
     // pipe below (gate, guard, cycle, turn) exactly as the single result always did, and the REST
     // fan out beside it (fanOutExtras). A bare-string or single `{ being, mention }` return
     // (older/other fakes) normalizes to a one-target list, so those callers are unchanged.
-    const routed = await router.resolve(ev);
-    let targets = (Array.isArray(routed?.targets) && routed.targets.length)
-      ? routed.targets
-      : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
+    let targets = await targetsOf(ev);
 
     // META ENGINEERS ARE BEYOND THE GUARD (operator 2026-09-16; isMetaEngineer above). The routed
     // targets ARE the addressees, known here and nowhere earlier, so this is where it is decided —
@@ -878,16 +907,13 @@ export function createSpine({
       }
       beyondGuard = guard.blocked(channel) ? meta.some(Boolean) : meta.every(Boolean);
     }
-    const meshTarget = targets[0].mesh ?? null;
-    const to = targets[0].being ?? defaultBeing;
-    const mention = targets[0].mention ?? ev.mention;
 
     // ONE conversation-state read resolves this message's policy (mode +
     // send_to_egpt, both from conversations.yaml) and the derived gate flags. The
     // routed mention is passed explicitly (it's the sibling's, not @e's, when a
     // sibling was routed by its own @name), and a RELAY target is gated as its OWN
     // agent (gateAs) rather than borrowing the persona's mode.
-    const d = await gating.decide(gateAs(targets[0], to), ev, mention);
+    const { meshTarget, to, mention, d } = await gateOf(targets[0], ev);
 
     // 'off' → not received: not recorded, not processed (C4). Every OTHER mode IS recorded
     // at the ingestion point — a received message is never silently dropped (C1.2).
@@ -1558,8 +1584,92 @@ export function createSpine({
   // operator wrote by hand survives.
   function tick() {
     if (stopSwitch?.present()) { note('STOP file present — stopping the service'); stopSwitch.pull({ reason: 'EGPT_HOME/STOP appeared' }); return; }
+    resumedAt();
     heartbeats.runDue(clock.now());
   }
+
+  // --- THE RESUME OBSERVATION (2026-09-27, node do) — the same pulse, read as a clock. ---
+  // dolly lost AC power at 2026-09-25 22:40 and slept until 2026-09-27 10:00:24 with this process
+  // SUSPENDED, not restarted. The Beeper backlog gate's cutoff was bridge start (09-20), so on waking
+  // every message from the 35-hour sleep arrived as live traffic and was answered, one after another.
+  // The gate only ever covered a wake BY ACCIDENT: until 2026-09-03 the daemon killed the spine on
+  // every resume, which reset bridge start, and "SLEEP IS NOT A WEDGE" (daemon-runtime.mjs) stopped
+  // that — correctly. The daemon still SEES the resume, but it is another process and tells nobody.
+  //
+  // So this process measures it itself, exactly as the daemon does: timers do not fire in a suspend
+  // while the wall clock runs on, so a gap between two observations far beyond the tick interval is
+  // a resume. The measurement rides THIS tick — the loop's pulse, always armed in production
+  // (effectiveTickMs, 500ms..30s) — rather than a second timer. Threshold: three intervals, floored
+  // at the daemon's own 90s, so it is 90s on every production cadence. Conservative on purpose: load
+  // must never read as sleep. The gate's wake window keeps the last 15 minutes live whatever this
+  // says, so a false resume costs less than it would — but it still backfills anything older that
+  // happens to be delivered late, and it replaces the wake's backlog (below).
+  //
+  // TWO CALLERS, because the tick alone loses a race. On waking, the night's messages are the I/O
+  // that wakes the loop, and the loop services I/O before its timers — on Windows 8+ a wait's timeout
+  // does not even count time asleep, so the overdue tick can trail by up to one interval. So the
+  // Beeper gate asks too, on every arrival (boot wires this as the bridge's `resumedAt`), and whichever
+  // sees the gap first reports it; the other finds it already reported. An arrival is an observation
+  // like a tick: it proves the process is running NOW. Returns the last resume (ms) or null; the gate
+  // moves its one cutoff up to it, less its wake window. `wake` also keeps the last observation
+  // BEFORE the gap — when the node went to sleep — which is what tells the wake's backlog apart from
+  // older traffic. tickMs <= 0 (tests driving tick() by hand) has no interval to measure against,
+  // so nothing is ever reported.
+  const resumeGapMs = Math.max(tickMs * 3, 90_000);
+  let lastAwakeAt = null, wake = null;   // wake: { sleptAt, at } of the last resume
+  function resumedAt() {
+    if (!(tickMs > 0)) return null;
+    const at = clock.now();
+    if (lastAwakeAt != null && at - lastAwakeAt > resumeGapMs) {
+      note(`spine: resumed after ~${Math.round((at - lastAwakeAt) / 1000)}s without a tick (the machine slept) — woke at ${new Date(at).toISOString()}`);
+      clearBacklog();
+      wake = { sleptAt: lastAwakeAt, at };
+    }
+    lastAwakeAt = at;
+    return wake?.at ?? null;
+  }
+
+  // --- THE WAKE'S BACKLOG, PER CHAT (operator 2026-09-27, verbatim: "after a wake we can say 'N
+  //     messages in the backlog. type /recap to list them'"). ---
+  // A backlog message is backfilled and never dispatched (classify's first branch), so after a long
+  // sleep a chat can have been talking to a being all night and hear nothing back. After a wake the
+  // node says so, ONCE, in each chat whose backlog WOULD HAVE REACHED A BEING had it been live
+  // (wouldReachABeing, above) — never in a chat whose backlog was chatter nobody was going to answer.
+  // Only what was written WHILE the node slept counts (stamped after `wake.sleptAt`): a restart's
+  // replay of older traffic is backlog too, but it is not this wake's news. The line waits until the
+  // chat's backlog has SETTLED — BACKLOG_SETTLE_MS after its last arrival; Beeper hands a night over
+  // within seconds, but not in one frame — and goes out through `say`, the placement the loop guard's
+  // pause notice takes: the node speaking on its own account, signed, and our own echo if it comes
+  // back, so it never counts as a turn. N is the chat's WHOLE backlog, i.e. the list /recap reads out
+  // (backlogOf, the command's one seam). Kept in memory, REPLACED at the next wake; the transcript
+  // stays the durable record.
+  const BACKLOG_SETTLE_MS = 5_000;
+  const backlogBy = new Map();   // conversation (guardChannel) -> { chatId, messages: [{ sender, ts, body }], reaches, told, timer }
+  async function noteWakeBacklog(ev) {
+    if (!wake || ev.msgTs == null || ev.msgTs < wake.sleptAt) return;
+    const key = guardChannel(ev);
+    let b = backlogBy.get(key);
+    if (!b) backlogBy.set(key, (b = { chatId: ev.chatId, messages: [], reaches: false, told: false, timer: null }));
+    b.messages.push({ sender: ev.senderName ?? ev.senderId ?? 'someone', ts: ev.msgTs, body: String(ev.body ?? '') });
+    if (!b.reaches) b.reaches = await wouldReachABeing(ev);
+    if (b.told || !say || backlogBy.get(key) !== b) return;   // …or a newer wake / a stop replaced it meanwhile
+    if (b.timer) clearTimeoutFn(b.timer);
+    b.timer = setTimeoutFn(() => { b.timer = null; tellBacklog(b); }, BACKLOG_SETTLE_MS);
+    b.timer?.unref?.();
+  }
+  async function tellBacklog(b) {
+    if (!b.reaches || b.told) return;
+    b.told = true;
+    const n = b.messages.length;
+    try { await say({ chatId: b.chatId, text: `${n} message${n === 1 ? '' : 's'} in the backlog. type /recap to list them`, what: 'backlog' }); }
+    catch (e) { note(`backlog: could not tell ${b.chatId} — ${e?.message ?? e}`); }
+  }
+  function clearBacklog() {
+    for (const b of backlogBy.values()) if (b.timer) clearTimeoutFn(b.timer);
+    backlogBy.clear();
+  }
+  // /recap's read: THIS chat's backlog from the last wake — [] when it has none.
+  function backlogOf(ev) { return [...(backlogBy.get(guardChannel(ev))?.messages ?? [])]; }
 
   let timer = null;
   function start() {
@@ -1569,9 +1679,10 @@ export function createSpine({
   }
   function stop() {
     if (timer) { clearIntervalFn(timer); timer = null; }
+    clearBacklog();   // a stopped spine tells nobody anything
     bridge.stop?.();
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound, stats, standdown };
+  return { start, stop, tick, handleInbound, stats, standdown, resumedAt, backlogOf };
 }

@@ -55,6 +55,7 @@ import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature } from '../node-signature.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
 import { readRoomConfig } from '../rooms-file.mjs';
+import { hhmm, dayBoundary } from '../dispatch-line.mjs';
 
 // Where a manually-launched Chrome should keep its profile. v1's shell hardcoded
 // ~/.egpt/chrome/profiles/brain — a usually-BLANK fresh dir. resolveBrainProfile() instead
@@ -280,6 +281,29 @@ function resolveTarget(state, term, surface) {
 // punctuation stays OUTSIDE the quotes (`/status`: …, not `/status:` …) and a bare '/' still
 // gets wrapped — the invariant "a reply never begins with '/'" holds for every input.
 const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]*)/i, '`/$1`');
+
+// /recap (operator 2026-09-27) — THE ONE COMMAND ANYBODY MAY TYPE ("anybody can type /recap"):
+// isCommand admits it from any sender, because all it does is read a chat's own backlog back to that
+// same chat. One pattern, read by that gate and by run()'s dispatch, so the two cannot disagree.
+const RECAP_CMD = /^\/recap\b/i;
+
+// /recap's listing: one line per message the chat sent while the node slept — sender, local time,
+// the first ~100 characters — in stamp order, whitespace folded so a message is one line. The clock
+// is transcript.md's (hhmm, the node's zone), and the day is said ONCE where it changes, the
+// transcript's own convention (dayBoundary): a night's sleep spans two dates, and HH:MM alone would
+// not say which. Never called with an empty list — see the dispatch.
+const RECAP_BODY_CHARS = 100;
+function recapText(messages, timeZone) {
+  const lines = [`${messages.length} message${messages.length === 1 ? '' : 's'} in the backlog:`];
+  let day = null;
+  for (const m of [...messages].sort((a, b) => a.ts - b.ts)) {
+    const d = dayBoundary(m.ts, timeZone);
+    if (d !== day) { lines.push(d); day = d; }
+    const body = String(m.body ?? '').replace(/\s+/g, ' ').trim();
+    lines.push(`${m.sender} (${hhmm(m.ts, timeZone)}): ${body.length > RECAP_BODY_CHARS ? `${body.slice(0, RECAP_BODY_CHARS)}…` : body}`);
+  }
+  return lines.join('\n');
+}
 
 // ── NODE-ADDRESSED COMMANDS ─────────────────────────────────────────────────────────────────
 // (operator 2026-07-26: "i open a local shell, type '/chrome mo' and a chrome in mo's spine, a
@@ -555,6 +579,13 @@ export function createCommands({
   // (roomJoin). Safe no-op default so a standalone/test createCommands never needs it — boot
   // injects the real one (recompute computeShellHeader → shellPort.setHeader) for surface 'shell' only.
   onRoomChange = () => {},
+  // /recap's two seams (operator 2026-09-27). backlogOf(ev) is THE SPINE's list of the messages this
+  // chat received while the node slept (src/spine/spine.mjs backlogOf: [{ sender, ts, body }], kept
+  // per chat, replaced at every wake) — boot late-binds it, the spine being built after this. The
+  // zone is the transcript clock's (boot's transcriptTimeZone), so a time here reads like the same
+  // message's line in transcript.md. Defaults: no backlog, UTC.
+  backlogOf = () => [],
+  timeZone = null,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -760,11 +791,13 @@ export function createCommands({
   // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
   // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
   // senders (per-surface allowed_users / isSender) can command from anywhere.
+  // …EXCEPT /recap, which anybody may type (RECAP_CMD, above — operator 2026-09-27). It is the ONLY
+  // exception: every other command, lifecycle included, still needs the operator.
   function isCommand(ev) {
     const body = String(ev?.body ?? '').trim();
     if (isOperator(ev) && isRadioQuickReply(ev)) return true;
     if (!body.startsWith('/')) return false;
-    return isOperator(ev);
+    return isOperator(ev) || RECAP_CMD.test(body);
   }
 
   // Run a command and CAPTURE its reply instead of sending it. Routes through the ONE run()
@@ -973,6 +1006,18 @@ export function createCommands({
     // as /config/status/room.
     const helpMatch = /^\/help\b/i.exec(line);
     if (helpMatch) { await send?.(ev.chatId, helpText([], 'shell')); return; }
+
+    // /recap — what THIS chat said while the node slept (operator 2026-09-27), the answer to the
+    // wake notice "N messages in the backlog. type /recap to list them". Read out in the chat it was
+    // typed in, and only that chat's own messages. Pre-catch-all, same slot as /help.
+    // NOTHING TO LIST ⇒ SILENT (operator "ok", 2026-09-27): on a shared account every co-account
+    // node hears the same /recap, and the one that never slept must not answer beside the one that did.
+    const recapMatch = RECAP_CMD.exec(line);
+    if (recapMatch) {
+      const backlog = backlogOf(ev);
+      if (backlog.length) await send?.(ev.chatId, recapText(backlog, timeZone));
+      return;
+    }
 
     // /activate <id> — reopen a brain member whose Chrome tab was closed (its saved
     // targetId is no longer live), refreshing its targetId. A no-op when already live.

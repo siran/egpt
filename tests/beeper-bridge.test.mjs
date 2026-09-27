@@ -25,7 +25,8 @@ import { startBeeperBridge, newerMsgId, transcriptionForNoteId, crossAccountMsgK
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf, createIdentity } from '../src/spine/identity.mjs';
-import { encodeNodeSignature } from '../src/node-signature.mjs';
+import { encodeNodeSignature, stripNodeSignature } from '../src/node-signature.mjs';
+import { hhmm } from '../src/dispatch-line.mjs';
 import { replyAllowed } from '../src/auto-mode.mjs';
 import { _resetPromotions, ECHO_MARKER } from '../src/incoming-media.mjs';
 import { echoRank } from '../src/spine/echo-priority.mjs';
@@ -3997,5 +3998,203 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
       expect(node.mouth.posts.find((p) => p.attachment).replyToMessageID).toBe(I('hz-text-mouth'));
       expect(node.spoken).toEqual(['llego tarde', 'llego tarde']);
     } finally { await node.close(); }
+  });
+});
+
+// ═══ A NODE THAT SLEPT IS NOT A NODE THAT JUST STARTED (node do, 2026-09-27) ════════════════════
+//
+// dolly (a laptop) lost AC power at 2026-09-25 22:40 and slept until 2026-09-27 10:00:24. do's spine
+// was SUSPENDED, not restarted, so the backlog gate's cutoff — fixed at bridge construction — still
+// read 09-20. On waking, Beeper delivered ~35 hours of missed messages within seconds: the 09-20 ones
+// were backfilled as designed, and every one from the sleep window arrived as live traffic. Being D
+// answered them one after another in "Dagiely Palma" ("me acaba de llegar de golpe una tanda de
+// mensajes"), steered them into its live turn, and six posts in two minutes tripped the other node's
+// loop guard. It had only ever worked by accident: until 2026-09-03 the daemon killed the spine on
+// every resume, which reset bridge start ("SLEEP IS NOT A WEDGE" stopped that, correctly).
+//
+// The cutoff now also moves up to the moment the process RESUMED — less the 15-minute wake window,
+// so wake duty still answers what was said during a nap (ROADMAP "L-1 PROVEN on DOLLY",
+// 2026-07-07). The spine measures the resume on its own tick (src/spine/spine.mjs resumedAt) and
+// the gate reads it on every arrival; after the wake the spine tells each chat whose backlog would
+// have reached a being, once, and /recap reads the backlog out. The timelines below run AHEAD of
+// the real clock: the bridge compares a message's OWN stamp with its cutoff and nothing else, and
+// its start is the one instant here that cannot be injected.
+describe('a node that SLEPT is not a node that just started — the backlog cutoff moves to the resume', () => {
+  // THE WAKE WINDOW (operator 2026-09-27, citing ROADMAP L-1 2026-07-07): kg's egpt-wake-duty wakes
+  // reve every ~5 min so that what was said during the nap is ANSWERED on the wake.
+  it('REPRODUCE-FIRST (wake duty): stamped 10 min before the wake → answered; 20 min before → backlog', async () => {
+    let resumed = null;
+    const { incoming } = await startBridge({ resumedAt: () => resumed });
+    resumed = Date.now() + 2 * 3600_000;   // the host woke from a two-hour sleep
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'hace diez minutos', timestamp: resumed - 10 * 60_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'hace veinte minutos', timestamp: resumed - 20 * 60_000 })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.text === 'hace diez minutos').from.backlog).toBe(false);    // inside the window: live
+    expect(incoming.find((i) => i.text === 'hace veinte minutos').from.backlog).toBe(true);   // before it: backfilled
+  });
+
+  it('REPRODUCE-FIRST (the bridge): stamped during the sleep and delivered after the resume → backlog; stamped after it → live', async () => {
+    let resumed = null;
+    const { incoming } = await startBridge({ resumedAt: () => resumed });
+    const started = Date.now();
+    resumed = started + 35 * 3600_000;   // the host saw its own tick stop for 35 hours
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'de anoche', timestamp: started + 10 * 3600_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'de hoy', timestamp: resumed + 1_000 })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.text === 'de anoche').from.backlog).toBe(true);   // backfilled, never dispatched
+    expect(incoming.find((i) => i.text === 'de hoy').from.backlog).toBe(false);     // live
+  });
+
+  // The wake notice asks whether a backlog message WOULD have reached a being had it been live, so a
+  // backlog quote-reply to a being's post must still name that being — the lookup used to be skipped
+  // for backlog ("never dispatched"), which would read such a chat as one that addressed nobody.
+  it('a quote-reply to a being, delivered as backlog, still names that being', async () => {
+    let resumed = null;
+    const { incoming } = await startBridge({ nodeName: 'kg', resumedAt: () => resumed });
+    resumed = Date.now() + 35 * 3600_000;
+    fake.messages.set(CHAT('chat-1'), [{ id: '7143', text: `🐶 E: ya te contesto${encodeNodeSignature('kg', 'egpt')}` }]);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: '¿y entonces?', linkedMessageID: '7143', timestamp: resumed - 3 * 3600_000 })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.backlog).toBe(true);
+    expect(incoming[0].from.replyToBeing).toBe('egpt');
+  });
+
+  it('a host that reports NO resume leaves the cutoff at bridge start, exactly as before', async () => {
+    const { incoming } = await startBridge({ resumedAt: () => null });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'stale', timestamp: Date.now() - 60_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'fresh' })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.text === 'stale').from.backlog).toBe(true);
+    expect(incoming.find((i) => i.text === 'fresh').from.backlog).toBe(false);
+  });
+
+  // THE WHOLE NODE: boot() with the REAL bridge on the fake Desktop and the spine's REAL tick, its
+  // interval captured so the test fires it, and its clock injected so a suspend is one jump of the
+  // wall clock with no tick in between — which is all a suspend is, seen from inside the process.
+  function memIo() {
+    const files = new Map();
+    const dirs = new Set();
+    const missing = (p) => Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    return {
+      files,
+      appendFile: async (p, data) => files.set(p, `${files.get(p) ?? ''}${data}`),
+      writeFile: async (p, data) => files.set(p, String(data)),
+      readFile: async (p) => { if (!files.has(p)) throw missing(p); return files.get(p); },
+      mkdir: async (p) => { dirs.add(p); },
+      existsSync: (p) => files.has(p) || dirs.has(p),
+      readdir: async (p) => [...files.keys()].filter((f) => dirname(f) === p).map((f) => f.slice(p.length + 1)),
+      rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
+    };
+  }
+  const GROUP = CHAT('dagiely-palma');
+  const CHATTER = CHAT('charla');
+  const RUN = Math.random().toString(36).slice(2, 8);   // boot's bridge keeps seen-ids in the profile's state/, which outlives a run
+  const ID = (s) => `${s}-${RUN}`;
+  const said = (id, text, timestamp, chatID = GROUP) => ({ type: 'message.upserted', entries: [{ id, chatID, text, senderName: 'An', senderPushName: 'An', isSender: true, timestamp }] });
+  const TICK = 30_000;
+  const BOOTS_A_NODE = { timeout: 15_000 };
+
+  async function bootDo() {
+    fake.chats.set(GROUP, { title: 'Dagiely Palma', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHATTER, { title: 'Charla', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const turns = [];
+    const makeSession = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { turns.push(String(m)); onUpdate?.('↩'); return { text: '↩', sessionId: this.sessionId }; }, close() {} });
+    const io = memIo();
+    const lines = [];
+    const intervals = [];
+    let convState = emptyState();
+    let t = Date.now();   // the machine's WALL clock: a suspend jumps it, and nothing else does
+    const base = fake.subscribed();
+    const app = await boot({
+      readConfig: () => ({
+        node_name: 'do', user_name: 'An',
+        beeper: { use: 'main', main: { account: 'an@example.com', token: 'TOK-do', base_url: `http://127.0.0.1:${fake.port}` } },
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
+      }),
+      makeSession, probeEndpoint: async () => ({ ok: false, status: 0 }),
+      loadState: async () => convState, writeState: async (s) => { convState = s; },
+      io, ingest: false, log: { line: (s) => lines.push(s) },
+      tickMs: TICK, now: () => t,
+      setInterval: (fn, ms) => { intervals.push({ fn, ms }); return 0; }, clearInterval: () => {},
+    });
+    await waitFor(() => fake.subscribed() > base);
+    expect(intervals.map((i) => i.ms)).toEqual([TICK]);   // the spine's own tick — the one being measured
+    return {
+      app, turns, lines,
+      awake: (n) => { for (let i = 0; i < n; i++) { t += TICK; intervals[0].fn(); } },
+      jump: (ms) => { t += ms; },
+      now: () => t,
+      recorded: (needle) => [...io.files.values()].some((v) => v.includes(needle)),
+      resumes: () => lines.filter((l) => /resumed after/.test(l)),
+    };
+  }
+
+  it('REPRODUCE-FIRST (the whole node): the night\'s traffic, delivered on waking before the overdue tick fires, is backfilled — and what is said after waking is answered', BOOTS_A_NODE, async () => {
+    const node = await bootDo();
+    try {
+      node.awake(4);                                   // do, awake and ticking
+      const wentToSleep = node.now();
+      node.jump(35 * 3600_000 + 24_000);               // 22:40 → 10:00:24: the process SUSPENDED, not restarted
+      const wokeAt = node.now();
+      // Beeper hands the night over within seconds of waking — ahead of the tick, which is the race
+      fake.emit(said(ID('slept'), '@e ¿me escuchas? de anoche', wentToSleep + 10 * 3600_000));
+      await waitFor(() => node.recorded('de anoche'));
+      fake.emit(said(ID('nap'), '@e hace diez minutos', wokeAt - 10 * 60_000));   // inside the wake window
+      await waitFor(() => node.turns.some((m) => m.includes('hace diez minutos')));
+      fake.emit(said(ID('woke'), '@e buenos días', wokeAt + 2_000));
+      await waitFor(() => node.turns.some((m) => m.includes('buenos días')));
+      expect(node.turns.some((m) => m.includes('de anoche'))).toBe(false);   // NOT answered on waking
+      expect(node.recorded('de anoche')).toBe(true);                         // …but on the record: backfilled
+      expect(node.resumes()).toHaveLength(1);
+      expect(node.resumes()[0]).toContain(new Date(wokeAt).toISOString());
+    } finally { node.app.stop(); }
+  });
+
+  // THE NOTICE AND /recap, THROUGH THE WHOLE NODE (operator 2026-09-27: "after a wake we can say 'N
+  // messages in the backlog. type /recap to list them'"). Posted by the node on its own account — the
+  // same placement the loop guard's pause notice takes — in the chat whose backlog addressed a being,
+  // and nowhere its backlog was chatter. Budget: the notice waits out the chat's REAL ~5s settle.
+  it('after the wake: the notice where the backlog would have woken a being, none where it was chatter — and /recap reads it out', { timeout: 25_000 }, async () => {
+    const node = await bootDo();
+    try {
+      node.awake(4);
+      const wentToSleep = node.now();
+      node.jump(35 * 3600_000);
+      const h = (n) => wentToSleep + n * 3600_000;
+      fake.emit(said(ID('n1'), '@e ¿me escuchas?', h(1)));
+      fake.emit(said(ID('n2'), 'bueno, mañana te cuento', h(2)));
+      fake.emit(said(ID('c1'), 'buenas noches a todos', h(3), CHATTER));   // mention mode, nobody addressed
+      const plain = (p) => stripNodeSignature(p.text ?? '');
+      const notices = () => fake.posts.filter((p) => plain(p).endsWith('type /recap to list them'));
+      await waitFor(() => notices().length > 0, 15_000);
+      await new Promise((r) => setTimeout(r, 1_500));        // the chatter chat settled at the same moment
+      expect(notices().map((p) => ({ chatID: p.chatID, text: plain(p) }))).toEqual([{ chatID: GROUP, text: '2 messages in the backlog. type /recap to list them' }]);
+      expect(node.turns).toEqual([]);                        // told, not answered
+
+      fake.emit(said(ID('recap'), '/recap', node.now() + 1_000));
+      await waitFor(() => fake.posts.some((p) => plain(p).startsWith('2 messages in the backlog:')));
+      const listing = plain(fake.posts.find((p) => plain(p).startsWith('2 messages in the backlog:'))).split('\n');
+      expect(listing).toContain(`An (${hhmm(h(1))}): @e ¿me escuchas?`);
+      expect(listing).toContain(`An (${hhmm(h(2))}): bueno, mañana te cuento`);
+      expect(listing.join('\n')).not.toContain('buenas noches');   // this chat's backlog, not the other's
+    } finally { node.app.stop(); }
+  });
+
+  // THE LOCK on the other half of the ruling: a Wi-Fi drop on an AWAKE machine is not a sleep. The
+  // spine keeps ticking through it, so nothing moves, and what people wrote while this node was deaf
+  // is delivered on the redial and answered as today. Budget: the bridge's REAL 3s redial backoff.
+  it('a network drop on an AWAKE machine moves nothing — a message written during the drop is still answered', { timeout: 20_000 }, async () => {
+    const node = await bootDo();
+    try {
+      node.awake(4);
+      const droppedAt = node.now();
+      const subsBefore = fake.subscribed();
+      fake.dropSockets();                               // the network goes; the machine does not
+      node.awake(6);                                    // three minutes of ordinary ticks while deaf
+      await waitFor(() => fake.subscribed() > subsBefore, 15_000);
+      fake.emit(said(ID('drop'), '@e ¿se cortó?', droppedAt + 60_000));   // two minutes old on delivery
+      await waitFor(() => node.turns.some((m) => m.includes('¿se cortó?')));
+      expect(node.resumes()).toEqual([]);
+    } finally { node.app.stop(); }
   });
 });

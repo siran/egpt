@@ -87,6 +87,14 @@ const RECONNECT_MAX_MS = 60_000;
 // (_awaitSends). Comfortably above resolveSentMessageId's own bound (6 polls × 500ms
 // + the GETs); it only ever bites when a REST call is wedged.
 const SEND_GATE_MAX_MS = 15_000;
+// THE WAKE WINDOW (operator 2026-09-27) — how far BEFORE a resume the backlog cutoff lands. Two
+// rulings meet here. ROADMAP "L-1 PROVEN on DOLLY" (2026-07-07): wake duty is dormant → wake → hear
+// → ANSWER, a message sent while the node slept is answered on the wake, and kg's egpt-wake-duty
+// wakes reve every ~5 min for exactly that. Node do, 2026-09-27: a 35-hour sleep must NOT be
+// answered message by message on waking. Fifteen minutes serves both — a wake-duty nap is shorter,
+// so everything said during one is still answered, while a night's traffic is backfilled, never
+// dispatched. A constant, not a knob.
+const WAKE_ANSWER_WINDOW_MS = 15 * 60_000;
 // 🎧 THE LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
 // remove reaction when done"). Transcription runs HERE, in the bridge, before the spine ever sees
 // the message, and whisper-cli spends ~10s+ loading its model per note — so until this, a long
@@ -648,6 +656,12 @@ export async function startBeeperBridge(opts = {}) {
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
+    // WHEN THE HOST PROCESS LAST RESUMED FROM A SUSPEND (2026-09-27, node do): () => ms | null. The
+    // spine measures it on its own tick (src/spine/spine.mjs resumedAt) and boot wires it; the gate
+    // below asks on every arrival and moves the backlog cutoff up to it, less the wake window.
+    // Default null = no resume is ever reported, so the cutoff stays bridge start — byte-identical
+    // for a directly-built bridge.
+    resumedAt = () => null,
     // How long a cached chat ROSTER stays good (chatHasParticipant, below — operator 2026-08-31).
     // An injection seam, not an operator knob: nothing in config sets it; a test drives it to 0 to
     // prove the refresh actually happens. Justification for the 15m default lives at the constant.
@@ -705,7 +719,10 @@ export async function startBeeperBridge(opts = {}) {
   };
   if (!token) { onLog('startBeeperBridge: NO TOKEN (set whatsapp.beeper_token / beeper_token / BEEPER_ACCESS_TOKEN) — bridge inert'); }
   onLog(`startBeeperBridge: ENTRY (${baseUrl})`);
-  const bridgeStartMs = Date.now();
+  // THE BACKLOG CUTOFF: bridge start, and — since a node that slept is not a node that just started
+  // (2026-09-27) — moved forward to the moment the process resumed, less the wake window (the gate,
+  // below). One cutoff.
+  let backlogCutoffMs = Date.now();
 
   // --- REST ---
   async function api(method, path, body) {
@@ -1806,13 +1823,29 @@ export async function startBeeperBridge(opts = {}) {
     // `backlog` flag on `from` makes the spine log-but-NEVER-dispatch it (no agents, no
     // commands, no mesh, no mode:on — today's no-dispatch guarantee, kept). Was: returned
     // before the message ever reached the transcript.
+    //
+    // …AND A WAKE WITHOUT A RESTART IS A WAKE (2026-09-27, node do: 35 hours asleep, the process
+    // SUSPENDED, every message from the sleep answered on waking). "Older than bridge start" only
+    // covered a wake while the daemon still restarted the spine on every resume; since 2026-09-03 it
+    // does not. So the cutoff also moves up to the moment the process RESUMED, less the wake window
+    // (WAKE_ANSWER_WINDOW_MS, above — what was said in the last 15 minutes of a sleep is still
+    // answered, which is what wake duty is for): anything older was written while this node slept
+    // and is backlog exactly like a message older than bridge start. Forward only, never back.
+    // Asked HERE, on arrival, not only on the spine's tick — the night's messages can reach this gate
+    // before the overdue tick runs (see resumedAt in src/spine/spine.mjs). A network drop on an AWAKE
+    // machine reports no resume, so what was said during it stays live, as before.
+    const resumed = resumedAt();
+    if (resumed != null && resumed - WAKE_ANSWER_WINDOW_MS > backlogCutoffMs) {
+      backlogCutoffMs = resumed - WAKE_ANSWER_WINDOW_MS;
+      onLog(`beeper: backlog cutoff advanced to ${new Date(backlogCutoffMs).toISOString()} (woke ${new Date(resumed).toISOString()}, less the ${WAKE_ANSWER_WINDOW_MS / 60_000}-min wake window) — older messages are backfilled, never dispatched`);
+    }
     const tsMs = _msgTimestampMs(msg);
     let isBacklog = false;
     if (tsMs == null) {
       if (!_warnedNoTimestamp) { _warnedNoTimestamp = true; onLog('beeper: message payload has no parseable timestamp — backlog gate INACTIVE (verify schema with tests-manual/beeper-ws-capture.mjs)'); }
-    } else if (tsMs < bridgeStartMs - holdGraceMs) {
+    } else if (tsMs < backlogCutoffMs - holdGraceMs) {
       isBacklog = true;
-      onLog(`beeper: backlog message [${info.title}] (${new Date(tsMs).toISOString()} < bridge start) — backfilled to transcript, not dispatched`);
+      onLog(`beeper: backlog message [${info.title}] (${new Date(tsMs).toISOString()} < cutoff ${new Date(backlogCutoffMs).toISOString()}) — backfilled to transcript, not dispatched`);
     }
 
     let _voiceAtt = null, _voicePath = null, _voiceCaption = null;
@@ -2008,11 +2041,13 @@ export async function startBeeperBridge(opts = {}) {
     //      holds — _seenText, seeded on first sight of every upsert (the 🔊 path below reads it
     //      the same way) — else the chat's recent list. Only THIS node's frame names one of our
     //      beings; a co-account peer's is that spine's to wake. Any miss is null and changes
-    //      nothing; a hit also makes replyToBot true. Not looked up for a backlog replay, which
-    //      is never dispatched.
+    //      nothing; a hit also makes replyToBot true. Looked up for a backlog replay TOO since
+    //      2026-09-27: one is still never dispatched, but the spine now asks whether it WOULD have
+    //      reached a being had it been live (the wake notice, src/spine/spine.mjs), and a
+    //      quote-reply to a being is exactly such a message.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     let replyToBeing = null;
-    if (replyToId && !isBacklog) {
+    if (replyToId) {
       const quoted = _seenText.get(msgKeyOf(chatID, replyToId))
         ?? (await listMessagesRaw(chatID)).find((m) => m?.id != null && String(m.id) === String(replyToId))?.text;
       if (decodeNodeSignature(quoted) === String(nodeName).trim()) replyToBeing = decodeBeingSignature(quoted);

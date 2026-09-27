@@ -593,6 +593,173 @@ describe('spine — symmetric nodes (no suppression, no standby)', () => {
   });
 });
 
+// THE RESUME OBSERVATION (2026-09-27, node do). dolly lost AC power at 2026-09-25 22:40 and slept
+// until 2026-09-27 10:00:24 with the spine process SUSPENDED, not restarted — so its bridge's start
+// still read 09-20, and every message from the 35-hour sleep arrived as live traffic and was
+// answered. The spine now notices that ITS OWN tick stopped (the measurement daemon-runtime.mjs
+// makes: a gap between ticks far beyond the interval) and reports the moment it woke through
+// resumedAt(), which the Beeper backlog gate reads (tests/beeper-bridge.test.mjs covers that end).
+describe('spine — resume observation (a slept process is not a live one)', () => {
+  const TICK = 30_000;
+  // A mention-mode gate: a being is reached only by a message that addresses it — so a chat's
+  // backlog of plain chatter would have woken nobody, and one `@e` line would have.
+  const mentionGating = {
+    async decide(_being, ev) { return { mode: 'mention', receives: true, mayReply: !!ev.mention?.atEAnywhere, sendToEgpt: 'mode' }; },
+    surfaces: (d) => d.mayReply,
+  };
+  function buildTicking({ tickMs = TICK } = {}) {
+    let now = Date.UTC(2026, 8, 25, 22, 0);
+    const lines = [];
+    const armed = [];
+    const said = [];     // what the node said on its own account (boot's sayOnce, faked)
+    const timers = [];   // the spine's setTimeout, on this clock
+    const bridge = fakeBridge();
+    const spine = createSpine({
+      bridge, brain: fakeBrain(), identity: fakeIdentity, router: fakeRouter, gating: mentionGating,
+      sender: fakeSender(bridge), transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => now }, log: { line: (s) => lines.push(s) },
+      say: async (m) => { said.push(m); return true; },
+      tickMs, setInterval: (fn, ms) => { armed.push({ fn, ms }); return 1; }, clearInterval: () => {},
+      setTimeout: (fn, ms) => { const t = { fn, at: now + ms, cleared: false, unref() {} }; timers.push(t); return t; },
+      clearTimeout: (t) => { if (t) t.cleared = true; },
+    });
+    spine.start();
+    return {
+      spine, said, bridge,
+      tick: () => (armed.length ? armed[0].fn() : spine.tick()),   // the interval's own callback, as libuv fires it
+      advance: (ms) => { now += ms; },
+      // …and time passing while the node is AWAKE: its timers fire, in deadline order
+      settle: async (ms) => {
+        now += ms;
+        for (let t; (t = timers.filter((x) => !x.cleared && x.at <= now).sort((a, b) => a.at - b.at)[0]);) { t.cleared = true; await t.fn(); }
+      },
+      now: () => now,
+      resumes: () => lines.filter((l) => /resumed after/.test(l)),
+    };
+  }
+
+  it('REPRODUCE-FIRST: a 35-hour gap between ticks is a resume, reported at the moment of waking — and said once', () => {
+    const s = buildTicking();
+    for (let i = 0; i < 5; i++) { s.advance(TICK); s.tick(); }   // an ordinary, awake spine
+    expect(s.spine.resumedAt()).toBe(null);
+    s.advance(35 * 3600_000 + 24_000);                             // lid closed: no timer fires, the wall clock runs on
+    s.tick();                                                      // the overdue tick, on waking
+    const wokeAt = s.now();
+    expect(s.spine.resumedAt()).toBe(wokeAt);
+    expect(s.resumes()).toHaveLength(1);
+    expect(s.resumes()[0]).toContain('resumed after ~126024s');
+    expect(s.resumes()[0]).toContain(new Date(wokeAt).toISOString());   // the moment it woke, in the line
+    for (let i = 0; i < 3; i++) { s.advance(TICK); s.tick(); }   // awake again
+    expect(s.spine.resumedAt()).toBe(wokeAt);                      // still the last resume — every later message reads it
+    expect(s.resumes()).toHaveLength(1);
+  });
+
+  // THE RACE THE TICK ALONE LOSES. On Windows 8+ a wait's timeout does not count time asleep, so
+  // after a resume the event loop can still sit up to one tick interval in its I/O wait — and the
+  // missed messages Beeper delivers on waking are exactly the I/O that ends it. The gate therefore
+  // asks on arrival, and the question is the same measurement: the one that sees the gap first
+  // reports it, the other finds it already reported.
+  it('the gate can see the resume FIRST — asked on arrival before the overdue tick, and the tick does not report it again', () => {
+    const s = buildTicking();
+    for (let i = 0; i < 3; i++) { s.advance(TICK); s.tick(); }
+    s.advance(35 * 3600_000);
+    const wokeAt = s.now();
+    expect(s.spine.resumedAt()).toBe(wokeAt);                      // a message's gate, before any tick fired
+    s.advance(4_000); s.tick();                                    // …then the overdue tick
+    expect(s.spine.resumedAt()).toBe(wokeAt);
+    expect(s.resumes()).toHaveLength(1);
+  });
+
+  it('ordinary cadence with jitter and load NEVER reads as sleep (threshold 90s: load must never read as sleep)', () => {
+    const s = buildTicking();
+    // tick to tick: late, early, an 85s stall, and one exactly AT the threshold (the test is strictly greater)
+    for (const gap of [30_000, 12_000, 48_000, 30_000, 85_000, 5_000, 30_000, 90_000, 30_000]) { s.advance(gap); s.tick(); }
+    // …and messages arriving between ticks, each one an observation of its own
+    for (let i = 0; i < 20; i++) { s.advance(7_000); expect(s.spine.resumedAt()).toBe(null); if (i % 4 === 3) s.tick(); }
+    expect(s.spine.resumedAt()).toBe(null);
+    expect(s.resumes()).toEqual([]);
+  });
+
+  it('a hand-driven spine (tickMs 0: no interval to measure against) never reports a resume', () => {
+    const s = buildTicking({ tickMs: 0 });
+    s.tick();
+    s.advance(35 * 3600_000);
+    s.tick();
+    expect(s.spine.resumedAt()).toBe(null);
+    expect(s.resumes()).toEqual([]);
+  });
+
+  // THE NOTICE (operator 2026-09-27, verbatim: "after a wake we can say 'N messages in the
+  // backlog. type /recap to list them'"). Once per chat, after that chat's backlog has settled, and
+  // only in a chat whose backlog WOULD HAVE REACHED A BEING had it been live — the spine's own
+  // route + gate, asked without dispatching. N is the chat's whole backlog: the list /recap shows.
+  const A = 'chat-palma@g.us', B = 'chat-charla@g.us';
+  const slept = (s, over) => s.bridge.emit({ ...MSG, backlog: true, ...over });
+  const addressed = { atEAnywhere: true };
+  function wake(s) {
+    for (let i = 0; i < 3; i++) { s.advance(TICK); s.tick(); }
+    const sleptAt = s.now();
+    s.advance(35 * 3600_000);
+    s.spine.resumedAt();                                   // the gate's first arrival sees the gap
+    return (min) => sleptAt + min * 60_000;                // a stamp `min` minutes into the sleep
+  }
+
+  it('REPRODUCE-FIRST: one notice per chat whose backlog would have reached a being, once that chat settles — N is its backlog', async () => {
+    const s = buildTicking();
+    const at = wake(s);
+    await slept(s, { chatId: A, msgId: 'a1', body: '@e ¿me escuchas?', msgTs: at(60), mention: addressed });
+    await slept(s, { chatId: A, msgId: 'a2', body: 'hola?', msgTs: at(70) });
+    await s.settle(3_000);
+    await slept(s, { chatId: A, msgId: 'a3', body: 'bueno, mañana', msgTs: at(80) });   // still arriving: the wait restarts
+    await slept(s, { chatId: B, msgId: 'b1', body: 'buenas noches', msgTs: at(90) });  // chatter — nobody addressed
+    await s.settle(4_000);
+    expect(s.said).toEqual([]);                            // A has not settled yet
+    await s.settle(2_000);
+    expect(s.said).toEqual([{ chatId: A, text: '3 messages in the backlog. type /recap to list them', what: 'backlog' }]);
+    await slept(s, { chatId: A, msgId: 'a4', body: 'otra más', msgTs: at(95) });
+    await s.settle(60_000);
+    expect(s.said).toHaveLength(1);                        // once per chat per wake — B never
+  });
+
+  it('a single message reads "1 message in the backlog"', async () => {
+    const s = buildTicking();
+    const at = wake(s);
+    await slept(s, { chatId: A, body: '@e ¿estás?', msgTs: at(5), mention: addressed });
+    await s.settle(10_000);
+    expect(s.said.map((m) => m.text)).toEqual(['1 message in the backlog. type /recap to list them']);
+  });
+
+  it('only what was written WHILE it slept: a backlog message stamped before the sleep is neither listed nor told', async () => {
+    const s = buildTicking();
+    const at = wake(s);
+    await slept(s, { chatId: A, body: '@e de la semana pasada', msgTs: at(-3 * 24 * 60), mention: addressed });
+    await s.settle(10_000);
+    expect(s.said).toEqual([]);
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([]);
+  });
+
+  it('no wake, no notice: a backlog replay on a node that never slept (older than bridge start) says nothing', async () => {
+    const s = buildTicking();
+    for (let i = 0; i < 3; i++) { s.advance(TICK); s.tick(); }
+    await slept(s, { chatId: A, body: '@e ¿estás?', msgTs: s.now() - 3600_000, mention: addressed });
+    await s.settle(10_000);
+    expect(s.said).toEqual([]);
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([]);
+  });
+
+  it('/recap\'s list: every chat keeps its own backlog, told or not — and the next wake replaces it', async () => {
+    const s = buildTicking();
+    const at = wake(s);
+    await slept(s, { chatId: A, body: '@e ¿me escuchas?', msgTs: at(60), mention: addressed });
+    await slept(s, { chatId: B, body: 'buenas noches', msgTs: at(90) });
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: B })).toEqual([{ sender: 'An', ts: at(90), body: 'buenas noches' }]);
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([{ sender: 'An', ts: at(60), body: '@e ¿me escuchas?' }]);
+    s.advance(TICK); s.tick();
+    s.advance(2 * 3600_000); s.spine.resumedAt();          // it slept again
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([]);
+  });
+});
+
 // mode: auto answer routing (ROADMAP §3): an operator quote-reply in the advice channel
 // is intercepted EARLY (before gating), logged, and routed to the origin — never treated
 // as a normal message where the ask was posted (E must not reply in the advice channel).

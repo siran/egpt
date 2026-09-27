@@ -1956,6 +1956,12 @@ export async function boot({
   // Every option below is NODE-LEVEL and shared across every connection — ONLY beeperToken
   // legitimately varies per instance (userName, media, transcribe*, wakeWords, … are one node's
   // settings, not one account's).
+  // THE SPINE, LATE-BOUND, for the two readers built before it (2026-09-27, node do): every
+  // connection's backlog gate reads its resume observation (resumedAt), and /recap reads its wake
+  // backlog (backlogOf) — see src/spine/spine.mjs. The bridges are dialled and the commands built
+  // BEFORE the spine exists, so until it does they meet "no resume, no backlog" (the cutoff stays
+  // bridge start), never a reference to a spine that is not there yet. Bound right after createSpine.
+  let spineLate = null;
   const sharedBridgeOpts = {
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
@@ -2011,6 +2017,7 @@ export async function boot({
     coverageThreshold,                    // 👂 word-token overlap fraction for the on-demand noteCovered query (operator 2026-07-12) — replaced the observed-set + arrival-lag/reconnect scaffold
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     readTranscript,                       // the ONE transcript reader (hoisted above) — voice-note reuse here, mode:accum in the spine
+    resumedAt: () => spineLate?.resumedAt() ?? null,   // when this process last woke from a suspend — the backlog cutoff moves up to it (above)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     // THE ONE EMIT BELOW THE PORT (the 👂 echo, src/bridges/beeper.mjs): the transcript ack is
     // posted by the LIMB itself, from inside the voice-note path, so wrapping the port here
@@ -2894,6 +2901,8 @@ export async function boot({
     // reason as the reap guard above: a non-successor's options object is byte-for-byte the one it
     // was before. onLog is this file's, so a death notice lands in the node's log like any other.
     ...(session1 ? { launchChrome: (o) => launchChromeDirectFn({ ...o, onLog: (m) => log.line?.(`[chrome] ${m}`) }) } : {}),
+    backlogOf: (ev) => spineLate?.backlogOf(ev) ?? [],   // /recap — the spine's wake backlog for this chat (spineLate, above)
+    timeZone: transcriptTimeZone,                        // …read out on the transcript's own clock
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);
@@ -3138,6 +3147,7 @@ export async function boot({
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
+  spineLate = spine;   // …and the backlog gates' resume observation + /recap's wake backlog (see spineLate above)
 
   // PHASE 2 — bind each command action + register every heartbeat onto the
   // registry the spine ticks + write the readonly.yaml. The alive beat is a
