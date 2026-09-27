@@ -650,6 +650,10 @@ export function createBrainPool({
   // compaction notice handed out on afterTurn below (operator 2026-09-24). null (every test that
   // wires none) means no notice, nothing else.
   noticeTo = null,
+  // THE BEING LINK (src/spine/being-link.mjs), boot's one instance, the same one the console limb
+  // verifies against — so a secret minted here is the secret /being accepts. Read by exactly one
+  // thing: a boxed turn's baseOpts (forBeing). null (every test that wires none) mints nothing.
+  beingLink = null,
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -1231,6 +1235,13 @@ export function createBrainPool({
         // these paths.
         ...(sandboxSharePaths.length ? { sandboxSharePaths } : {}),
         ...(sandboxSharePathsReadOnly.length ? { sandboxSharePathsReadOnly } : {}),
+        // ...and the one way a boxed being can ask its spine for anything (operator 2026-09-26:
+        // "for now only the browser"): a handle that mints a per-session credential for THIS being
+        // in THIS room, which sandbox-cli-session.mjs turns into three -SetEnv entries and revokes
+        // at close (src/spine/being-link.mjs). Sandboxed turns only, for the credential's reason
+        // above: an unboxed turn runs as the operator and has /chrome's own account already. Absent
+        // link (no boot wiring, every test that passes none) contributes nothing.
+        ...(sandboxed === true && beingLink ? { beingLink: beingLink.forBeing({ being, surface: scope.surface, slug }) } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

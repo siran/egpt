@@ -31,6 +31,14 @@
 // cannot lock the mouth out and the mouth cannot lock the operator out. The limb stays a dumb pipe:
 // it recognizes the frame and hands it to the injected onPeerSay, which owns every decision.
 //
+// A THIRD ROLE, SAME RULES (operator 2026-09-26). A BOXED BEING dials BEING_PATH to ask its spine
+// for the one thing it may ask for — "for now only the browser" (src/shell/being.mjs). It is
+// routed on the dial path exactly as the mouth is, so it neither takes nor is refused by the
+// console seat, and it answers the same challenge — keyed by a secret the spine minted for that
+// one session, never by the shell token (src/spine/being-link.mjs owns which secrets are live and
+// what a request may do). The limb still decides nothing: it asks onBeing who answered, and hands
+// that being's frame to onBeing.ask.
+//
 // A STRIPPED-DOWN sibling of beeper.mjs: TEXT in, TEXT out — no media, no reactions,
 // no edit-streaming, no REST. The limb carries ZERO command logic and ZERO fan-out; it
 // is a dumb pipe, exactly like beeper-port (plan §2, §8). Everything after the inbound
@@ -71,6 +79,9 @@ import { newNonce, challengeFrame, parseAuthFrame, authMac, macMatches, SHELL_TO
 // said this" and would RUN A TURN, and the mouth means the exact opposite — "post this verbatim".
 // The wire is imported, never re-implemented; the peer end reads the same module.
 import { MOUTH_PATH, isMouthDial, parseMouthFrame, sayResultFrame, sayOpenedFrame } from '../shell/mouth.mjs';
+// The BEING wire (src/shell/being.mjs): a boxed being's dial path and its one request frame. Read
+// before the console parse for the mouth's reason — nothing a being sends may become a turn.
+import { BEING_PATH, isBeingDial, parseAskFrame, askResultFrame } from '../shell/being.mjs';
 
 // The spine serves this port; the editor dials in. Exported so boot + tests share the
 // one number (plan §3, §9 — a KNOWN port, not discovery).
@@ -153,6 +164,11 @@ const SHELL_USER = 'operator';
  *   the limb behaves exactly as it did before this existed. Each handler's answer — success or
  *   refusal — is pushed straight back over the same socket so the peer can fall back to speaking
  *   on its own account.
+ * @param {{identify: Function, ask: Function}} [opts.onBeing]
+ *   THE BEING LINK (src/spine/being-link.mjs createBeingLink), handed in by boot like onPeerSay.
+ *   Given, a boxed being may dial BEING_PATH, answer the challenge with its own session secret
+ *   (`identify(mac, nonce)` names who, or null), and have ONE request answered (`ask(who, frame)`).
+ *   UNSET: a /being dial is closed on the spot, exactly as a /peer dial is with no mouth.
  * @param {(m: string) => void} [opts.onLog]
  * @param {typeof reapPort} [opts.reapPort]   port-killer seam (see start()) — real reapPort by default; tests inject a fake so no real netstat/taskkill runs
  * @param {typeof portHolders} [opts.portHolders]   port-OWNER lookup seam, used ONLY on a failed bind to name the squatter in the log; real portHolders by default, tests inject a fake so no real netstat runs
@@ -170,6 +186,7 @@ export function createShellPort({
   nodeName = '',
   header = '',
   onPeerSay = null,
+  onBeing = null,
   onLog = () => {},
   reapPort: reapPortFn = reapPort,
   portHolders: portHoldersFn = portHolders,
@@ -211,6 +228,9 @@ export function createShellPort({
   // of `sock` (pushFrame's drop guard, isConnected/isAlive, poke's already-serving check) keeps
   // meaning exactly what it meant, with no extra branch. Tracked only so stop() can close them.
   const _mouths = new Set();
+  // AUTHENTICATED BEING connections (/being). Apart from `sock` for the mouth's reason, and apart
+  // from `_mouths` because a being is not a peer spine. Tracked only so stop() can close them.
+  const _beings = new Set();
   // Chat ids seen inbound — the outbound-routing signal boot uses to send a shell-surface
   // reply back over THIS socket instead of the beeper bridge. A shell console uses the
   // deterministic `main` id (or whatever the frame carries), which never collides with a
@@ -269,6 +289,26 @@ export function createShellPort({
     return true;
   }
 
+  // THE HANDSHAKE FOR A /being CONNECTION — the same challenge, asked a different question: not
+  // "does this answer match the shell token" but "which live session secret produced it"
+  // (onBeing.identify). Returns who, or null. Pre-auth noise is dropped on the floor exactly as
+  // verifyPeer drops it. A WRONG answer — a secret this spine never minted, or one revoked when its
+  // session closed — is fatal for that connection and said in the log; the console seat is never
+  // touched, and the half-open strangers are left alone for the mouth's reason (verifyPeer above).
+  function verifyBeing(raw, nonce, ws) {
+    const f = parseAuthFrame(raw);
+    if (!f || f.auth !== 'response') return null;
+    const who = onBeing.identify(f.mac, nonce) ?? null;
+    if (!who) {
+      onLog(`shell: a client on ${BEING_PATH} answered with a credential this spine did not mint, or has revoked (its session closed) — refusing it. The console seat is untouched.`);
+      dropPending(ws);
+      return null;
+    }
+    _pending.delete(ws);
+    _beings.add(ws);
+    return who;
+  }
+
   // Close a connection that never earned the seat. Never touches `sock`: an impostor dialing in
   // must not be able to disturb an operator who is already authenticated.
   function dropPending(ws) {
@@ -276,12 +316,25 @@ export function createShellPort({
     try { ws?.close?.(); } catch { /* closing */ }
   }
 
-  // One frame to a socket that is NOT the console seat (a peer on the mouth link). pushFrame is
-  // bound to `sock` by design — a peer must never be reachable through the console's send path —
-  // so the mouth answer needs its own one-liner. Never throws, same as every other push here.
-  function pushTo(ws, raw) {
+  // One frame to a socket that is NOT the console seat (a peer on the mouth link, a being on
+  // /being). pushFrame is bound to `sock` by design — neither must ever be reachable through the
+  // console's send path — so their answers need their own one-liner. Never throws, same as every
+  // other push here. `what` only names the link in the failure line.
+  function pushTo(ws, raw, what = 'mouth') {
     try { ws.send(raw); return true; }
-    catch (e) { onLog(`shell: mouth answer failed — ${e?.message ?? e}`); return false; }
+    catch (e) { onLog(`shell: ${what} answer failed — ${e?.message ?? e}`); return false; }
+  }
+
+  // ONE REQUEST off an AUTHENTICATED /being connection, answered on the same socket. Like
+  // handleMouth, THIS PATH NEVER REACHES onMsg — whatever a being sends is a request to the spine,
+  // never a line a human typed — and a handler that throws still answers, so the being's client
+  // always has something to print. The frame goes to onBeing.ask PARSED OR NULL: what may be asked,
+  // and what a frame may carry, is the link's to decide (src/spine/being-link.mjs), not the limb's.
+  function handleBeing(raw, ws, who) {
+    const answer = (r) => pushTo(ws, askResultFrame(r && typeof r === 'object' ? r : { ok: false, reason: 'failed', detail: 'the being link answered nothing' }), 'being');
+    const failed = (e) => answer({ ok: false, reason: 'failed', detail: e?.message ?? String(e) });
+    try { Promise.resolve(onBeing.ask(who, parseAskFrame(raw))).then(answer).catch(failed); }
+    catch (e) { failed(e); }
   }
 
   // WHICH ANSWER EACH VERB GETS — the whole routing table for the mouth link, and deliberately the
@@ -339,12 +392,22 @@ export function createShellPort({
   function onConnection(ws, req) {
     if (_stopped) { try { ws.close(); } catch { /* closing */ } return; }
     const mouth = isMouthDial(req);
+    // A BOXED BEING (src/shell/being.mjs) — known here, before a byte is exchanged, for the same
+    // reason the mouth is: the seat rule below is decided at connection time.
+    const being = isBeingDial(req);
     // NO MOUTH CONFIGURED (the default, and every node with no peer): a peer dial is closed on
     // the spot. Not answered with a refusal frame — a stranger is told NOTHING before it
     // authenticates, and this decision is made before the handshake. It is also never demoted to
     // a console connection: a dial that asked to be a peer must not become an operator seat.
     if (mouth && !onPeerSay) {
       onLog(`shell: a client dialed ${MOUTH_PATH} but this node offers no mouth link (no peer configured) — refusing it`);
+      try { ws.close(); } catch { /* closing */ }
+      return;
+    }
+    // ...and the same for a being dial on a limb that was handed no being link: closed, told
+    // nothing, never demoted to a console connection.
+    if (being && !onBeing) {
+      onLog(`shell: a client dialed ${BEING_PATH} but this node offers no being link — refusing it`);
       try { ws.close(); } catch { /* closing */ }
       return;
     }
@@ -355,7 +418,8 @@ export function createShellPort({
     // …for CONSOLE clients only. A peer on the mouth link is not asking for the seat, so a seated
     // editor must not lock the mouth out (the operator's editor is open most of the time, which
     // would otherwise mean the peer's replies stop whenever the console is in use).
-    if (sock && !mouth) {
+    // ...nor a being: it asks the spine one thing and is not at the console either.
+    if (sock && !mouth && !being) {
       onLog('shell: a second client dialed in while the console seat is held — refusing it (the seated editor keeps the console)');
       try { ws.close(); } catch { /* closing */ }
       return;
@@ -364,13 +428,16 @@ export function createShellPort({
     // useless on the next one.
     const nonce = newNonce();
     let authed = false;
+    let who = null;   // a /being connection's proven identity (verifyBeing), and nothing else's
     _pending.add(ws);
     onLog('shell: a client dialed in — challenging it');
     // Handlers FIRST, challenge second: a peer that answers the instant it is challenged must
     // not answer into a socket we have not started listening to yet.
     ws.on('message', (buf) => {
+      if (!authed && being) { who = verifyBeing(buf, nonce, ws); authed = !!who; return; }
       if (!authed) { authed = verifyPeer(buf, nonce, ws, { mouth }); return; }
       if (mouth) { handleMouth(buf, ws); return; }
+      if (being) { handleBeing(buf, ws, who); return; }
       // A MOUTH FRAME ON THE CONSOLE CONNECTION is discarded, never dispatched. It can only be a
       // misconfigured peer (one that dialled the root instead of MOUTH_PATH), and the console's
       // toInbound below would hand the raw JSON to the spine as something a human typed — a turn
@@ -398,6 +465,7 @@ export function createShellPort({
     ws.on('close', () => {
       _pending.delete(ws);
       _mouths.delete(ws);
+      _beings.delete(ws);
       // A PEER LINK THAT GOES MAY BE HOLDING A HALF-WRITTEN REPLY (src/shell/peer-mouth.mjs, THE
       // MID-STREAM DROP). The limb neither knows nor decides what is open — it reports the fact of
       // the close and the mouth table settles whatever that connection still had. A reply that
@@ -436,7 +504,7 @@ export function createShellPort({
       if (!_stopped && !_listening) noteUnbound(String(e?.message ?? e));
     });
     wss.on('close', () => {
-      sock = null; _pending.clear(); _mouths.clear(); _listening = false;
+      sock = null; _pending.clear(); _mouths.clear(); _beings.clear(); _listening = false;
       if (_stopped) return;   // deliberate stop() — never recover from our own shutdown
       onLog(`shell: WS SERVER CLOSED UNEXPECTEDLY — the console port is UNHELD until it re-listens (retrying in ${Math.round(_relistenMs / 1000)}s)`);
       scheduleRelisten();
@@ -640,6 +708,8 @@ export function createShellPort({
       _pending.clear();
       for (const m of _mouths) { try { m.close(); } catch { /* closing */ } }
       _mouths.clear();
+      for (const b of _beings) { try { b.close(); } catch { /* closing */ } }
+      _beings.clear();
       try { wss?.close?.(); } catch { /* closing */ }
       sock = null; wss = null; _listening = false;
     },

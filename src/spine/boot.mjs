@@ -71,6 +71,7 @@ import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs'
 // test and every other node take the identical path they took before it existed.
 import { isSession1Successor, announceStanddown, SESSION1_ENV } from './successor-announce.mjs';
 import { createCommands, launchChromeDirect } from './commands.mjs';
+import { createBeingLink } from './being-link.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
@@ -2474,6 +2475,19 @@ export async function boot({
   }) : null;
   if (peerSpine) mouthLog(`offering the mouth link on this node's console — a peer spine on :${peerSpine.consolePort} may speak through it, and replies in chats its account is in will be said by it`);
 
+  // THE BEING LINK (operator 2026-09-26: "granting a sandbox being to execute any arbitrary
+  // command through the spine (operator's account) defeats the purpose of the sandbox. so it seems
+  // for now only the browser"). ONE instance, handed to the two places that must agree on it: the
+  // brain, which mints a per-session secret for every BOXED session it opens, and the console limb
+  // below, which accepts exactly those secrets on /being. The one request it serves is /chrome's
+  // own launch path (commands.startBrowser) — read at call time, because `commands` is built
+  // further down and no being can dial before shellPort.start(), at the very end of boot.
+  const beingLink = createBeingLink({
+    port: shellPortFrom(cfg),
+    startBrowser: () => commands.startBrowser(),
+    onLog: (m) => log.line?.(`[being] ${m}`),
+  });
+
   const shellPort = lasso.wrap(createShellPort({
     wakeWords,
     addressWithoutAt,                     // same switch, same route — the shell gate and the beeper gate move together
@@ -2508,6 +2522,9 @@ export async function boot({
     // THE MOUTH HANDLER (above). Null on every node with no peer_spine, which is what makes the
     // limb refuse a /peer dial outright — exactly as it did before this feature existed.
     onPeerSay: mouthReceiver,
+    // THE BEING LINK (above). Always handed: a /being dial is answered only for a secret this
+    // spine minted, and a node with no boxed session has none live, so every dial is refused.
+    onBeing: beingLink,
     onLog: (m) => log.line?.(`[shell] ${m}`),
   }));
 
@@ -2772,7 +2789,7 @@ export async function boot({
     }
     return sayOnce({ being, chatId, text, what: 'compaction' });
   };
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —

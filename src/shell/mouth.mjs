@@ -85,10 +85,15 @@ export const MOUTH_PATH = '/peer';
 // existing caller (and every test that fires 'connection' with a socket alone) keeps the console
 // role it has always had. Query strings and trailing segments are tolerated; a path that merely
 // STARTS with the same letters ('/peerless') is not a mouth dial.
-export function isMouthDial(req) {
+export function isMouthDial(req) { return dialsPath(req, MOUTH_PATH); }
+
+// THE ONE PATH MATCH, shared since a second role joined the port (src/shell/being.mjs, 2026-09-26:
+// a boxed being dials `/being`). Same rules for every role, so `/beings` can no more pass for
+// `/being` than `/peerless` passes for `/peer`.
+export function dialsPath(req, path) {
   const url = String(req?.url ?? '');
-  if (!url.startsWith(MOUTH_PATH)) return false;
-  const rest = url.slice(MOUTH_PATH.length);
+  if (!url.startsWith(path)) return false;
+  const rest = url.slice(path.length);
   return rest === '' || rest.startsWith('?') || rest.startsWith('/');
 }
 

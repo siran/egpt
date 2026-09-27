@@ -1047,42 +1047,82 @@ export function createCommands({
     await send?.(ev.chatId, await chromeReport());
   }
 
-  // The report body. Every probe is wrapped: an unreachable Chrome is the NORMAL resting
-  // state, not an error. When none is listening we fire the launch seam — the Session 0 task hop
-  // or a Session 1 spine's direct spawn, whichever boot injected — and poll CDP until it comes up,
-  // then attach; a task that isn't registered, a direct launch that failed, or a Chrome that never
-  // binds its port all degrade to the launch hint. Never throws.
-  async function chromeReport() {
-    let host = '?';
-    try { host = await cdp.cdpHost(); } catch { host = '?'; }
+  // THE ONE LAUNCH PATH — /chrome's, and since 2026-09-26 a boxed being's `browser start` too
+  // (startBrowser below; operator: "for now only the browser"). Two callers, one function, so the
+  // browser a being asks for is exactly the browser /chrome would have opened: same seam (the
+  // Session 0 task hop or a Session 1 spine's direct spawn, whichever boot injected), same port,
+  // same profile, same wait. Every probe is wrapped: an unreachable Chrome is the NORMAL resting
+  // state, not an error. Never throws. Resolves { host, running, launched, pid, direct, why }.
+  //
+  // ONE LAUNCH AT A TIME. Two beings asking at once — or a being and the operator's /chrome — must
+  // not fire two launches at one profile, so a call that arrives while a launch is in flight JOINS
+  // it and gets the same answer. Nothing is queued: the next call after it settles probes afresh,
+  // and finds the browser up.
+  let _ensuring = null;
+  function ensureChrome() {
+    if (_ensuring) return _ensuring;
+    _ensuring = (async () => {
+      let host = '?';
+      try { host = await cdp.cdpHost(); } catch { host = '?'; }
 
-    // Is Chrome already up? (isRunning is the launch decision — NOT whether listTabs works.)
-    let running = false;
-    try { running = await cdp.isRunning(); } catch { running = false; }
+      // Is Chrome already up? (isRunning is the launch decision — NOT whether listTabs works.)
+      let running = false;
+      try { running = await cdp.isRunning(); } catch { running = false; }
+      if (running) return { host, running: true, launched: false, pid: null, direct: false, why: '' };
 
-    // Not listening → fire the launch seam, then poll for it to bind its CDP port. THE ARGUMENTS
-    // ARE THE POINT of the Session 1 path: the port is the one this node will ATTACH to (never the
-    // task's frozen 9221) and the profile is the one config names, so the browser that comes up is
-    // the browser /chrome then talks to. The task hop ignores both, exactly as it always has.
-    // A seam that reports { ok:false }, or a Chrome that never comes up within the timeout, both
-    // fall back to the hint.
-    let launchedPid = null;
-    if (!running) {
-      let ok = false, direct = false, why = '';
+      // Not listening → fire the launch seam, then poll for it to bind its CDP port. THE ARGUMENTS
+      // ARE THE POINT of the Session 1 path: the port is the one this node will ATTACH to (never the
+      // task's frozen 9221) and the profile is the one config names, so the browser that comes up is
+      // the browser /chrome then talks to. The task hop ignores both, exactly as it always has.
+      // chromeProfileOf is the ONE place the profile is decided (today config's chrome.profile_dir;
+      // the per-group profile of the operator's 2026-09-22 design belongs there, not in a caller).
+      let ok = false, direct = false, why = '', pid = null;
       try {
         const r = await launchChrome({ port: chromePortOf(host), userDataDir: chromeProfileOf(cfg()), bin: chromeBinOf(cfg()) });
         ok = !!r?.ok;
         direct = !!r?.direct;          // which seam answered — the hint's remedy differs (below)
-        launchedPid = r?.pid ?? null;
+        pid = r?.pid ?? null;
         if (!ok) why = r?.detail ?? '';
       } catch { ok = false; }
       if (ok) running = await waitForChromeUp();
-      if (!running) return chromeLaunchHint(host, {
+      return { host, running, launched: running, pid, direct, why };
+    })().finally(() => { _ensuring = null; });
+    return _ensuring;
+  }
+
+  // What a failed launch says, for both callers: the direct spawn's own detail (or that it never
+  // bound the port), and nothing for the task hop — whose remedy, registering the task, is the
+  // hint's setup note, not a sentence of its own.
+  const triedOf = (r) => (r.direct ? (r.why || `it never bound :${chromePortOf(r.host)} within ${Math.round(CHROME_LAUNCH_TIMEOUT_MS / 1000)}s`) : null);
+
+  // A BOXED BEING'S `browser start` (src/spine/being-link.mjs): the launch path above and nothing
+  // else — no arguments reach it from the being, and it lists no tabs (that is the operator's
+  // report). Idempotent: when CDP already answers it launches nothing and says so.
+  async function startBrowser() {
+    const r = await ensureChrome();
+    if (r.running && !r.launched) return { ok: true, alreadyRunning: true, detail: `the browser is already answering on ${r.host} — nothing was launched` };
+    if (r.running) return { ok: true, launched: true, detail: `the browser is up on ${r.host}${r.pid ? ` (pid ${r.pid})` : ''}` };
+    return {
+      ok: false,
+      reason: 'launch-failed',
+      detail: triedOf(r) ?? `the launch task did not bring a browser up on ${r.host} — it may not be registered on this node (setup/register-chrome-task.ps1)`,
+    };
+  }
+
+  // The report body. When none is listening the launch path above fires the seam and waits; a
+  // task that isn't registered, a direct launch that failed, or a Chrome that never binds its port
+  // all degrade to the launch hint. Never throws.
+  async function chromeReport() {
+    const r = await ensureChrome();
+    const host = r.host;
+    const launchedPid = r.launched ? r.pid : null;
+    if (!r.running) {
+      return chromeLaunchHint(host, {
         // The setup note tells the operator to register the scheduled task. That is the remedy on
         // the Session 0 path and NOT on the Session 1 one, where this spine tried to spawn the
         // browser itself — so a direct failure reports what it tried instead of misdirecting.
-        setupNote: !direct,
-        tried: direct ? (why || `it never bound :${chromePortOf(host)} within ${Math.round(CHROME_LAUNCH_TIMEOUT_MS / 1000)}s`) : null,
+        setupNote: !r.direct,
+        tried: triedOf(r),
       });
     }
 
@@ -3421,5 +3461,5 @@ export function createCommands({
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 
-  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf };
+  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf, startBrowser };
 }

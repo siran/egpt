@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename } from 'node:path';
 import { Room } from '../src/room-core.mjs';
+import { ASK_SPINE_ENV } from '../src/shell/being.mjs';
 
 const CARD = readFileSync(fileURLToPath(new URL('../config/skeletons/room/30-pointers.md', import.meta.url)), 'utf8');
 
@@ -87,6 +88,16 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
   it('names ./heartbeats/ — one file per beat, turns only — and the Room tree really creates it', () => {
     expect(CARD).toMatch(/\.\/heartbeats\/ .*one <name>\.yaml per beat, turns only/);
     expect(CONV.treeDirs().map((d) => basename(d))).toContain('heartbeats');
+  });
+
+  // 2026-09-26: the brain Chrome died and a boxed E could not restart it. The spine now starts it
+  // for a being that asks (src/spine/being-link.mjs) — "for now only the browser" — and the card is
+  // where a being learns the exact command, through the variable its boxed session is handed, and
+  // that launching chrome.exe on that profile itself is the thing NOT to do.
+  it('tells a being to ask the spine for the browser, by the variable the spine hands it, and never to launch it', () => {
+    expect(CARD).toContain(`\`node "$${ASK_SPINE_ENV}" browser start\``);
+    expect(CARD).toMatch(/I never launch chrome\.exe on that\s+profile myself/);
+    expect(CARD).toMatch(/logged out/);
   });
 
 });

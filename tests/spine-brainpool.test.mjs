@@ -41,7 +41,7 @@ function fakePool(scriptedResults, { steerTakes = true } = {}) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, onAlert, noticeTo, steerTakes, platform } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, labelOf, seedSession, seedMode, seedAgents, brains, afterTurn, io, seedLayers, resolveConfig, loadPermission, skipAccessLevelDefault, poolOverride, onLog, onAlert, noticeTo, steerTakes, platform, beingLink } = {}) {
   let state = emptyState();
   if (seedSession || seedMode || seedAgents) {   // pre-register the contact (WITH a stored thread, an E mode, and/or per-being pins)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -123,6 +123,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     ...(onAlert ? { onAlert } : {}),               // the OPERATOR channel — the small set of events worth waking someone for (thread loss)
     ...(noticeTo ? { noticeTo } : {}),             // (text, being) -> one line in the admin channel — the compaction notice
     ...(platform ? { platform } : {}),             // 'win32' | 'linux' | ... — drives the PLATFORM-AWARE `sandboxed` default below (omit → this host's real process.platform)
+    ...(beingLink ? { beingLink } : {}),           // the being link (src/spine/being-link.mjs) — omit → no boxed turn is handed a mint handle
   });
   return { brain, pool, getState: () => state, setState: (s) => { state = s; } };
 }
@@ -2641,6 +2642,44 @@ describe('brainpool.turn — sandbox_oauth_token reaches brainOptions ONLY for a
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sandboxOauthToken).toBe(TOKEN);   // it really did travel...
     for (const l of logs) expect(l, `a log line leaked the token: ${l}`).not.toContain(TOKEN);
+  });
+});
+
+// ── THE BEING LINK (operator 2026-09-26: "for now only the browser"). A BOXED turn is handed a
+//    handle that mints a per-session credential for THIS being in THIS room — the same scope the
+//    turn's warm key is built from — and sandbox-cli-session.mjs turns it into -SetEnv entries.
+//    An UNBOXED turn runs as the operator and is handed nothing, so its brainOptions are unchanged. ──
+describe('brainpool.turn — a boxed turn is handed the being link, bound to its being and room', () => {
+  const defaults = (sandboxed) => ({ agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed } } } });
+  const fakeLink = () => {
+    const bound = [];
+    return { bound, forBeing: (who) => { bound.push(who); return { mint: () => ({ env: [], revoke: () => {} }), who }; } };
+  };
+
+  it('sandboxed:true → brainOptions.beingLink mints for { being, surface, slug } of the scope the turn runs in', async () => {
+    const link = fakeLink();
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', beingLink: link });
+    await brain.turn('e', ev);
+    expect(typeof pool.calls[0].brainOptions.beingLink.mint).toBe('function');
+    expect(link.bound).toHaveLength(1);
+    expect(link.bound[0].being).toBe('e');
+    expect(link.bound[0].surface).toBe('whatsapp');
+    // the slug of the SAME key the warm pool runs under — one address, never two
+    expect(pool.calls[0].key).toBe(`e:ccode:whatsapp:${link.bound[0].slug}`);
+  });
+
+  it('sandboxed:false → no beingLink at all, however the node is wired', async () => {
+    const link = fakeLink();
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(false), platform: 'win32', beingLink: link });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('beingLink');
+    expect(link.bound).toEqual([]);
+  });
+
+  it('no link wired (every caller before this existed) → a boxed turn\'s brainOptions carry no beingLink', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('beingLink');
   });
 });
 

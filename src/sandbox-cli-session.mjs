@@ -106,7 +106,8 @@ export function jsonlStoreDirOf(threadId, options = {}) {
   return id ? join(jsonlStoreRootOf(options), id) : null;
 }
 
-// THE THIRD, AND LAST, VARIABLE A SANDBOXED TURN IS HANDED (operator 2026-09-14) — and the fix for
+// THE THIRD VARIABLE A SANDBOXED TURN IS HANDED (operator 2026-09-14; the being link's three joined
+// it 2026-09-26, src/spine/being-link.mjs) — and the fix for
 // a Bash tool that was dead on every sandboxed being on both nodes, which then silently fell back
 // to PowerShell.
 //
@@ -370,14 +371,31 @@ export function createSandboxCliSession(options = {}) {
   // make"). It had no per-spawn channel; this one does.
   const gitBash = isCcode ? resolveSandboxGitBash(options.gitBashCandidates) : null;
 
+  // THE BEING'S WAY TO ASK ITS SPINE FOR THE BROWSER (operator 2026-09-26: "for now only the
+  // browser") — a secret minted for THIS session, plus the port to dial and the client to dial it
+  // with, as three more entries in the one -SetEnv element (src/spine/being-link.mjs owns all of
+  // it). `options.beingLink` is the handle brainpool hands a boxed turn: it mints for that being in
+  // that room and nothing else, so this module never learns who it is minting for.
+  //
+  // MINTED LAST, after every guard above has had its chance to throw, so a refused session leaves
+  // no live secret behind; revoked when the session closes (withLinkRevoked below) — the warm pool
+  // closes a session on every eviction.
+  //
+  // ccode ONLY, like the two variables above, though not for their reason — this credential is
+  // not Claude-specific. A boxed codex/pi turn keeps its argv byte-identical until a being on one
+  // of those engines needs the browser; widening it is this one condition. Absent handle (every
+  // caller before this existed, every test that passes none) contributes nothing at all.
+  const link = isCcode && typeof options.beingLink?.mint === 'function' ? options.beingLink.mint() : null;
+
   // The -SetEnv payload, built ONCE beside the share list rather than inside sandboxSpawn, for
-  // the same reason everything else here is: sandboxSpawn stays a pure argv build. THREE entries
-  // at most, still ONE argv element — a second -SetEnv FLAG would be the bug, a third entry in
-  // the one JSON array is not.
+  // the same reason everything else here is: sandboxSpawn stays a pure argv build. Still ONE argv
+  // element however many entries — a second -SetEnv FLAG would be the bug, another entry in the
+  // one JSON array is not.
   const setEnv = [
     ...(oauthToken ? [`${OAUTH_ENV_NAME}=${oauthToken}`] : []),
     ...(jsonlStoreDir ? [`${CONFIG_DIR_ENV}=${jsonlStoreDir}`] : []),
     ...(gitBash ? [`${GIT_BASH_ENV}=${gitBash}`] : []),
+    ...(link ? link.env : []),
   ];
 
   function sandboxSpawn(bin, args, spawnOpts) {
@@ -435,10 +453,20 @@ export function createSandboxCliSession(options = {}) {
   // `newSessionId` is what claude-args.mjs turns into `--session-id` — and ONLY when there is no
   // `options.sessionId` to `--resume`, so a resumed thread's argv is unchanged. Spread in only
   // when there is one (ccode), so the codex/pi options object is untouched.
-  return withOauthRemedy(
+  return withLinkRevoked(withOauthRemedy(
     createWarmCliSession({ ...options, spawn: sandboxSpawn, ...(threadId ? { newSessionId: threadId } : {}) }),
     oauthToken.length,
-  );
+  ), link);
+}
+
+// THE CREDENTIAL DIES WITH ITS SESSION. Mutates close() for withOauthRemedy's reason (a spread
+// would freeze the `sessionId` getter). Revoked BEFORE the inner close, so a request racing the
+// shutdown is refused rather than served for a process that is on its way out.
+function withLinkRevoked(session, link) {
+  if (!link) return session;
+  const innerClose = session.close.bind(session);
+  session.close = (...a) => { link.revoke(); return innerClose(...a); };
+  return session;
 }
 
 // THE LAUNCHER'S ONE SUCCESS-PATH LINE, FORWARDED TO THE DAEMON LOG (2026-09-23). The launcher

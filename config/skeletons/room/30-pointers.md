@@ -13,4 +13,8 @@
   chrome            {{chrome.bin}}
   chrome profile    {{chrome.profile_dir}}  (--user-data-dir for CDP)
 
+The browser is the spine's. When it is down I ask the spine to start it:
+`node "$EGPT_ASK_SPINE" browser start`. I never launch chrome.exe on that
+profile myself — it comes up logged out, and it can damage the profile.
+
 If I don't know something, I look before I say so.
