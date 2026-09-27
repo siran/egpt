@@ -127,12 +127,15 @@
 // setup/sandbox-logon-launcher.ps1 grants the leased pool account Modify, and a command beat runs
 // HERE, in the spine, as the operator, outside every sandbox. So `command:`, the `post:` that rides
 // one, and ANY `script_path:` are refused by name; only `agent:` + `prompt:` passes, and runs as that
-// being, inside the box it already has. `script_path:` goes even beside `agent:`: the spine READS
+// being — SANDBOXED, or not at all (operator 2026-09-27: "a heartbeat of a sandboxed being must also
+// run sandboxed"). `script_path:` goes even beside `agent:`: the spine READS
 // that script as the operator and feeds it into the turn, so a being naming `../` or an absolute
 // path would get any file the operator can read (the card says turns are `agent: + prompt:`). The turn
-// carries `beingWritten` to brainpool.turn, which refuses it for an access_level 'all' being: a
-// scheduled turn has no sender, so allowed_users — what makes an 'all' being safe to reach — never
-// sees it. The operator's rungs (config.yaml, conversations.yaml, rooms.yaml) are untouched.
+// carries `beingWritten` to brainpool.turn, which refuses it unless the woken being RESOLVES BOXED
+// for that conversation (`agent:` may name any being, and an unboxed one runs as the operator), and
+// refuses it for an access_level 'all' being even boxed: a scheduled turn has no sender, so
+// allowed_users — what makes an 'all' being safe to reach — never sees it. The operator's rungs
+// (config.yaml, conversations.yaml, rooms.yaml) are untouched.
 //
 // THE WALK IS NOT HERE ANY MORE (2026-07-26). Reading the node config + every
 // conversation folder + every room folder is ONE walk serving FOUR concerns
@@ -471,7 +474,8 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
   const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, source, beingWritten, onLog });
   if (action === _INVALID_ACTION) return null;
   // What survives from a being-written file is a turn; it carries the mark to brainpool, which
-  // refuses it for an access_level 'all' being (a scheduled turn has no sender for allowed_users).
+  // refuses it unless the being resolves boxed, and for an access_level 'all' being (a scheduled
+  // turn has no sender for allowed_users) — see the header.
   if (action && beingWritten) action.beingWritten = true;
 
   // ── daily: every day at a wall-clock time in a zone (see the header) ──

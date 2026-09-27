@@ -396,7 +396,10 @@ describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
   const cleanup = (app) => { app.stop(); return fs.rm(lab, { recursive: true, force: true }); };
 
   it('a heartbeats/ file is a beat that runs as the being\'s TURN; a command there, and any beat in the folder\'s config.yaml, never arm', async () => {
-    const { app, logs, spawned, prompts } = await bootWith('regular',
+    // 'sandbox', not 'regular' (2026-09-27): a being-written beat now runs only into a being that
+    // resolves BOXED, and boot hands brainpool the host's platform — 'regular' is boxed on win32
+    // alone, so this test would pass or fail by the machine it ran on. 'sandbox' is boxed on every one.
+    const { app, logs, spawned, prompts } = await bootWith('sandbox',
       { 'remind.yaml': REMIND, 'escape.yaml': 'frequency: 1h\ncommand: echo from-heartbeats\n' },
       { folderConfig: 'heartbeats:\n  cfg:\n    frequency: 1h\n    command: echo from-config\n' });
     try {

@@ -990,8 +990,22 @@ export function createBrainPool({
       // can write — and a scheduled turn has no sender, so the allowed_users gate that makes an
       // 'all' being safe to reach never sees it. Checked here because this is where the level is
       // resolved, at both tiers. The operator's own beats (config/rooms.yaml) carry no mark.
-      if (ev?.beingWritten && accessLevel === 'all') {
-        throw new Error(`brainpool: ${being} has access_level 'all' — a heartbeat a being wrote (<entity>/heartbeats/) may not wake it; declare the beat in config/rooms.yaml`);
+      //
+      // AND IT RUNS SANDBOXED OR NOT AT ALL (operator 2026-09-27: "a heartbeat of a sandboxed being
+      // must also run sandboxed"). The file's `agent:` may name ANY being, and 'all' was the only
+      // refusal: a being that resolves UNBOXED without 'all' — `access_level: regular` beside a
+      // `sandboxed: false` on some rung, or a posix node whose platform rung does not box — would
+      // have run as the OPERATOR, from a file a pool account wrote. On kg the rule held only
+      // because the one unboxed being there is also 'all'; coincidence, not code. So a marked turn
+      // must RESOLVE BOXED — `sandboxed`, from resolveConv above, is the same value, read the same
+      // way (`=== true`), that picks the OS session below, so what this admits is exactly what runs
+      // in the box. An explicit `sandboxed: true` on a posix node passes here and is refused by
+      // sandbox-cli-session.mjs instead: still never unboxed. The 'all' refusal STAYS, first: a
+      // boxed 'all' being still has no sender for allowed_users to check.
+      if (ev?.beingWritten) {
+        const refused = 'a heartbeat a being wrote (<entity>/heartbeats/) may not wake it';
+        if (accessLevel === 'all') throw new Error(`brainpool: ${being} has access_level 'all' — ${refused}; declare the beat in config/rooms.yaml`);
+        if (sandboxed !== true) throw new Error(`brainpool: ${being} would run UNBOXED here (sandboxed: ${JSON.stringify(sandboxed)}, from the ${sandboxedRung} rung) — ${refused}: a heartbeat of a sandboxed being must also run sandboxed; declare the beat in config/rooms.yaml`);
       }
 
       const convDir = slugDir(scope.surface, slug);

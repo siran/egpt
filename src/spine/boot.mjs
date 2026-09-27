@@ -2984,7 +2984,7 @@ export async function boot({
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     const ev = { surface: target.surface, chatId: target.chatId };
-    // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being
+    // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being or one that would run unboxed
     const res = await brain.turn(being, { ...ev, line: prompt, body: prompt, beingWritten });
     const text = String(res?.text ?? '').trim();
     if (isBrainFailureResult(text)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
