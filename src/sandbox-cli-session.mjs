@@ -148,7 +148,27 @@ export function jsonlStoreDirOf(threadId, options = {}) {
 // \Sessions\BNOLINKS\<n> at every launch (step e; THE SESSION NAMESPACE GRANT in
 // setup/sandbox-account.ps1), so a box creates the directory itself and no longer depends on an
 // operator process holding it open. The candidate order above is unchanged.
+//
+// A BASH THAT STARTS IS NOT A BASH THAT FINDS ANYTHING (measured 2026-09-27, live on kg). A boxed
+// being (egpt-sbx-02) ran the pointers card's own `node "$EGPT_ASK_SPINE" browser start` in its
+// Bash tool and got
+//     /usr/bin/bash: line 1: node: command not found
+// while the SAME session's PowerShell tool found C:\Program Files\nodejs\node.exe and the request
+// worked. msys64's /etc/profile line 28 reads `case "${MSYS2_PATH_TYPE:-minimal}"`: unset means
+// `minimal`, which DROPS the Windows PATH, so nothing installed under Program Files is on Bash's
+// PATH. The operator's own bash has MSYS2_PATH_TYPE=inherit from the terminal that starts it — it
+// is NOT in HKCU or HKLM Environment — which is why the same command works for the operator. A
+// boxed session starts from a pool account's env block, which has none.
+//
+// SO THE BASH IS HANDED WITH `inherit`: the Bash the box is given must see the same PATH the
+// operator's does. One more entry in the same one -SetEnv element, and ONLY beside
+// CLAUDE_CODE_GIT_BASH_PATH — it is an msys2 variable and means nothing to anything else. `inherit`
+// APPENDS the Windows PATH after /usr/local/bin:/usr/bin:/bin (the profile's MSYS branch), so msys
+// tools still win over a same-named Windows one. Git for Windows' own /etc/profile line 28 already
+// defaults to it (`${MSYS2_PATH_TYPE:-inherit}`, read on reve 2026-09-27), so on a node that falls
+// through to that candidate the entry changes nothing.
 const GIT_BASH_ENV = 'CLAUDE_CODE_GIT_BASH_PATH';
+const MSYS2_PATH_TYPE_ENTRY = 'MSYS2_PATH_TYPE=inherit';
 
 // FIRST ONE THAT EXISTS WINS; when NEITHER does this contributes nothing at all, so a node with no
 // bash keeps today's argv byte for byte. NEVER System32's bash.exe — that is the WSL launcher, it
@@ -394,7 +414,7 @@ export function createSandboxCliSession(options = {}) {
   const setEnv = [
     ...(oauthToken ? [`${OAUTH_ENV_NAME}=${oauthToken}`] : []),
     ...(jsonlStoreDir ? [`${CONFIG_DIR_ENV}=${jsonlStoreDir}`] : []),
-    ...(gitBash ? [`${GIT_BASH_ENV}=${gitBash}`] : []),
+    ...(gitBash ? [`${GIT_BASH_ENV}=${gitBash}`, MSYS2_PATH_TYPE_ENTRY] : []),
     ...(link ? link.env : []),
   ];
 

@@ -354,11 +354,13 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_OAUTH_TOKEN (config sandbo
     // THREE entries since 2026-09-14, still ONE argv element: a ccode turn is handed its
     // credential, the CLAUDE_CONFIG_DIR of its own jsonl store, and the CLAUDE_CODE_GIT_BASH_PATH
     // its Bash tool spawns (see sandbox-cli-session.mjs). A second -SetEnv FLAG would be the bug;
-    // another entry inside the one JSON array is not.
+    // another entry inside the one JSON array is not. FOUR since 2026-09-27: the bash brings
+    // MSYS2_PATH_TYPE=inherit with it, so that bash sees the Windows PATH (node among it).
     expect(jsonArgOf(args, '-SetEnv')).toEqual([
       `CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`,
       `CLAUDE_CONFIG_DIR=${THREAD_STORE}`,
       `CLAUDE_CODE_GIT_BASH_PATH=${BASH}`,
+      'MSYS2_PATH_TYPE=inherit',
     ]);
     expect(args[args.indexOf('-SetEnv') + 2]).toBe('-InnerBin');
     expect(innerArgvOf(args)[0]).toBe('--input-format');
@@ -433,7 +435,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_GIT_BASH_PATH (the sandbox
     return f.calls[0].args;
   }
 
-  function otherEngineArgv(engine) {
+  function otherEngineArgv(engine, extra = {}) {
     const calls = [];
     const spawn = (bin, args, opts) => {
       calls.push({ bin, args, opts });
@@ -444,7 +446,7 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_GIT_BASH_PATH (the sandbox
       proc.kill = () => {};
       return proc;
     };
-    const s = createSandboxCliSession({ spawn, cwd: process.cwd(), platform: 'win32', engine, sessionId: 'sess-pinned', gitBashCandidates: BASH_CANDIDATES });
+    const s = createSandboxCliSession({ spawn, cwd: process.cwd(), platform: 'win32', engine, sessionId: 'sess-pinned', gitBashCandidates: BASH_CANDIDATES, ...extra });
     s.turn('hi').catch(() => {});
     s.close();
     expect(calls.length).toBe(1);
@@ -458,6 +460,31 @@ describe('sandbox-cli-session — -SetEnv CLAUDE_CODE_GIT_BASH_PATH (the sandbox
     // ...and nothing of it is loose where PowerShell's binder could reach it.
     expect(args).not.toContain('CLAUDE_CODE_GIT_BASH_PATH');
     expect(args).not.toContain(BASH);
+  });
+
+  // THE BASH WAS THERE AND node WAS NOT (measured 2026-09-27, live on kg). A boxed being
+  // (egpt-sbx-02) ran the pointers card's own `node "$EGPT_ASK_SPINE" browser start` in its Bash
+  // tool and got `/usr/bin/bash: line 1: node: command not found`; the SAME session's PowerShell
+  // tool found C:\Program Files\nodejs\node.exe and the request worked. msys64's /etc/profile reads
+  // `case "${MSYS2_PATH_TYPE:-minimal}"`: unset drops the Windows PATH. The operator's bash is
+  // started with `inherit` by the terminal that launches it; a pool account's env block has none.
+  it('REPRODUCE-FIRST: the bash is handed WITH MSYS2_PATH_TYPE=inherit, in the same ONE -SetEnv element', async () => {
+    const args = await ccodeArgv();
+    expect(args.filter((a) => a === '-SetEnv')).toHaveLength(1);
+    expect(jsonArgOf(args, '-SetEnv')).toContain('MSYS2_PATH_TYPE=inherit');
+    expect(args).not.toContain('MSYS2_PATH_TYPE=inherit');   // inside the JSON, never loose
+  });
+
+  it('MSYS2_PATH_TYPE rides ONLY with the bash — not when the node has none, never to codex/pi', async () => {
+    const none = await ccodeArgv({ gitBashCandidates: [] });
+    expect(none.join('\u0000'), 'handed with no bash to read it').not.toContain('MSYS2_PATH_TYPE');
+    for (const engine of ['codex', 'pi']) {
+      // WITH a token, so these argvs DO carry a -SetEnv and the absence below is not vacuous; and
+      // with a real bash candidate, so only the engine can be what keeps it out.
+      const args = otherEngineArgv(engine, { sandboxOauthToken: TOKEN });
+      expect(jsonArgOf(args, '-SetEnv')).toEqual([`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`]);
+      expect(args.join('\u0000'), `engine ${engine} was handed MSYS2_PATH_TYPE`).not.toContain('MSYS2_PATH_TYPE');
+    }
   });
 
   it('codex and pi never get it — CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable', () => {
