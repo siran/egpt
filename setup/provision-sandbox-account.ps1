@@ -23,8 +23,15 @@
 # icacls-not-Set-Acl reason.
 #
 # WHAT IS GRANTED TO WHOM  - the model, which is not what changed:
-#   traverse-only (X,RA,RC), NOT inheritable, to the pool GROUP on each ancestor
-#     directory above the conversation folders;
+#   traverse-only (RC,S,X,RA), NOT inheritable, to the pool GROUP on each ancestor
+#     directory above the conversation folders. The S is load-bearing (measured
+#     on do 2026-09-27): the grant was (X,RA,RC) until then, and a boxed
+#     `node ~\src\egpt\src\tools\ask-spine.mjs` died EPERM on `lstat
+#     C:\Users\an\src` - Node realpaths every component, opening a directory to
+#     read its attributes asks for SYNCHRONIZE as well, and ~ lets the pool list
+#     nothing, so no traverse ACE below it works without S. An S-less ACE left
+#     by an earlier run is WRONG to the check, and this run converges it. The
+#     whole measurement is at the grant table in sandbox-account.ps1;
 #   inheritable ReadAndExecute to the pool GROUP on the CLI tool dirs and on
 #     ~\src\egpt  - the eGPT checkout, and since 2026-09-23 NOT all of ~\src;
 #     the step after that one takes the old wide grant back off, and puts ~\src's
@@ -123,7 +130,7 @@ try {
   #
   # Every ACE the launcher writes per turn is on a LEAF - a conversation folder,
   # a share path - and a leaf ACE buys nothing unless the pool can OPEN each
-  # directory above it. See Grant-SandboxPoolAce's table for what (X,RA,RC) buys,
+  # directory above it. See Grant-SandboxPoolAce's table for what (RC,S,X,RA) buys,
   # what it deliberately withholds (list-directory: a being reaches the folder it
   # was granted BY NAME and still cannot enumerate the operator's home or the
   # names of other conversations), and why it is not inherited.
@@ -134,7 +141,8 @@ try {
     'the whatsapp chats'  = Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'
     'the operator source' = Join-Path $env:USERPROFILE 'src'
   }
-  $step = Start-Step "traverse-only grants on the $($ancestors.Count) ancestor directories above the conversation folders"
+  $step = Start-Step "traverse-only grants on the $($ancestors.Count) ancestor directories above the conversation folders" `
+    'A node provisioned before 2026-09-27 has these WITHOUT S, and this run rewrites each such one once. A DACL write on a container re-propagates inheritance over its whole subtree, so ~ (the whole profile) and ~\src can take minutes. Not hung. A converged node writes nothing and says "already granted".'
   Stop-Step $step (Grant-PoolOn -Targets $ancestors -Grant 'Traverse')
 
   # THE STANDING READ GRANTS. All four go to the pool GROUP, ReadAndExecute and
@@ -233,7 +241,7 @@ try {
   # CORRECTION (2026-09-23, second pass). `/remove:g` takes off EVERY explicit ACE
   # for the named principal on that object - it cannot remove one of two - and
   # ~\src carries TWO for this group: the wide (OI)(CI)(RX) being retired here and
-  # the traverse-only (X,RA,RC) the ancestor step above just granted. So the
+  # the traverse-only (RC,S,X,RA) the ancestor step above just granted. So the
   # revoke as first written removed BOTH, every run, and left the pool unable to
   # WALK ~\src at all.
   #

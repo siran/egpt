@@ -37,7 +37,7 @@ import { SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV } from '../shell/being.m
 // not preferred. Both trees carry a standing ReadAndExecute for the pool group
 // (setup/provision-sandbox-account.ps1), but Node realpaths a script before it runs it, and that
 // walk opens EVERY ancestor directory as an object — which a pool account may do only where it
-// holds (X,RA,RC). The provisioner grants that chain for ~ and ~\src; it grants nothing on ~\bin
+// holds (X,RA,RC,S). The provisioner grants that chain for ~ and ~\src; it grants nothing on ~\bin
 // (setup/SANDBOX.md, "The traverse chain": realpathSync through an ungranted ancestor EPERMs,
 // measured as a real pool account 2026-09-13). So `node ~\bin\egpt\...` would die before the
 // client's first line, and ~\src\egpt is the tree every pool profile already mounts as `src`.

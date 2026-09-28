@@ -171,7 +171,7 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 
 | Path | Grant | Why |
 |---|---|---|
-| `~` | Pool group, **traverse only** — `(X,RA,RC)`, not inherited | the ancestor chain above a conversation folder; see below |
+| `~` | Pool group, **traverse only** — `(RC,S,X,RA)`, not inherited | the ancestor chain above a conversation folder; see below |
 | `~\.egpt` | Pool group, traverse only | same chain |
 | `~\.egpt\conversations` | Pool group, traverse only | same chain |
 | `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
@@ -254,8 +254,8 @@ shared path it plainly held an ACE on. Granting `(X,RA,RC)` on the ancestors
 flipped exactly those calls and nothing else — `opendirSync` on the ancestor
 still `EPERM`s, because `RD` is still withheld.
 
-`(X,RA,RC)` is traverse + read-attributes + read-permissions, and the important
-part is what is **missing**: `RD`, list-directory. A pool account can walk
+`(RC,S,X,RA)` is read-permissions + synchronize + traverse + read-attributes, and
+the important part is what is **missing**: `RD`, list-directory. A pool account can walk
 *through* the operator's home to a folder it was granted **by name**, and still
 cannot enumerate the home, or `.egpt`, or the names of other conversations. The
 ACEs are also **not inheritable** — each directory of the chain is granted on
@@ -265,7 +265,50 @@ the profile.
 Recorded as an inference and not a measurement: the load-bearing bit in that mask
 is probably `RA`, not `X` — `X` duplicates what the privilege already gives, and
 `RA` is what the privilege withholds. `RA` was never isolated from `X`, so the
-mask stays `(X,RA,RC)` rather than being pruned on a guess.
+mask stays `(RC,S,X,RA)` rather than being pruned on a guess.
+
+**The `S` is load-bearing, and that one was measured** (2026-09-27, on do, as a
+real pool account). The grant was `(X,RA,RC)` until then. A boxed being ran
+`node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+died before the client's first line: `EPERM … syscall: 'lstat', path:
+'C:\\Users\\an\\src'`. Reproduced as `egpt-sbx-13` with a probe script:
+
+| call | result |
+|---|---|
+| `lstat C:/Users/an` | OK |
+| `lstat C:/Users/an/src` | `EPERM` |
+| `lstat C:/Users/an/src/egpt` | OK |
+| `fs.realpathSync` on the client | `EPERM` |
+| `fs.realpathSync.native`, and a plain read | OK |
+
+The pool's ACE on `~\src` was `(Rc,X,RA)`; `C:\Users\an` on do carried
+`(Rc,S,X,RA)`. Adding `S` to `~\src` by hand made every probe pass. `lstat` opens
+the directory for `FILE_READ_ATTRIBUTES`, and `CreateFileW` adds `SYNCHRONIZE` to
+every synchronous open, so an ACE without `S` refuses it.
+
+**Why an S-less ACE sometimes works anyway**, which is how this stayed hidden:
+*list* on a parent implicitly grants read-attributes on its children. `C:\Users`
+lists to Everyone and Users, so on reve `C:\Users\an` stats fine with a bare
+`(Rc,X,RA)`. `~` lists to the pool **nothing**, so every traverse ACE **below**
+`~` has to carry `S` itself. `~\src` got by for as long as the wide
+`(OI)(CI)(RX)` sat on it too (`RX` includes `S`), and broke when the provisioner
+retired that grant and wrote the traverse ACE back from the table.
+
+**Why some ancestors had `S` and `~\src` did not.** The chain was applied by hand
+before 2026-09-13 — through .NET, going by the `S`; nothing records how — and a
+.NET `FileSystemAccessRule` ORs `Synchronize` into every Allow rule it builds.
+The provisioner's traverse grant has been `icacls` since it was first scripted
+(2026-09-13), and `icacls` writes exactly the letters it is given; the table gave
+it no `S`, so every traverse ACE the provisioner itself wrote landed S-less —
+`~\src`'s, re-written 2026-09-23, among them. `Read` and `Modify` never
+had the gap: `icacls`'s `RX` and `M` macros already include `S` (1179817 and
+1245631 on disk, bit-identical to what the old `Set-Acl` path wrote).
+
+The "already granted" check compares rights *at least*, so an S-less traverse ACE
+now reads as **wrong**, and the next provisioner run converges it: plain
+`icacls /grant` folds `S` into the existing ACE, which stays one ACE. That first
+run rewrites each such ancestor once — on `~` that is a re-propagation over the
+whole profile (see *the provisioner will look hung* below).
 
 **One grant function, one ACL tool.** Every grant in the sandbox goes through
 `Grant-SandboxPoolAce -Path <p> -Grant Traverse|Read|Modify [-Sid <s>]`; the three
@@ -352,10 +395,11 @@ icacls C:\ProgramData\egpt
 icacls C:\Users\$env:USERNAME\.claude
 icacls C:\Users\$env:USERNAME\.egpt
 
-# the traverse chain  (expect on each: egpt-sandbox-pool:(Rc,X,RA), no (OI)(CI).
-# An extra S -- (Rc,S,X,RA) -- is the same grant: SYNCHRONIZE, which .NET adds to
-# every rule it writes, so paths granted by hand before the provisioner carried
-# this carry it and paths icacls granted do not. Neither bit is list.)
+# the traverse chain  (expect on each: egpt-sandbox-pool:(Rc,S,X,RA), no (OI)(CI).
+# A (Rc,X,RA) WITHOUT the S is NOT the same grant (measured on do 2026-09-27):
+# below ~ it makes Node's lstat, and so realpathSync, EPERM. It is what the
+# provisioner wrote before 2026-09-27; re-run provision-sandbox-account.cmd and it
+# converges. Neither S nor X is list.)
 icacls C:\Users\$env:USERNAME
 icacls C:\Users\$env:USERNAME\.egpt
 icacls C:\Users\$env:USERNAME\.egpt\conversations
@@ -371,7 +415,7 @@ icacls C:\Users\$env:USERNAME\bin\egpt
 # grant when it is retired. Re-run provision-sandbox-account.cmd to make it real.
 icacls C:\Users\$env:USERNAME\src\egpt
 
-# ...and ~\src itself carries the (Rc,X,RA) TRAVERSE ace and NOT a read one.
+# ...and ~\src itself carries the (Rc,S,X,RA) TRAVERSE ace and NOT a read one.
 # An egpt-sandbox-pool:(OI)(CI)(RX) row here is the retired wide grant; re-run
 # provision-sandbox-account.cmd to take it off.
 icacls C:\Users\$env:USERNAME\src
@@ -395,9 +439,11 @@ Reading `icacls` output: the first bracket says where the ACE came from —
 rest is the right: `(F)` full control, `(M)` modify, `(RX)` read and execute.
 `(OI)` propagates to files in the folder, `(CI)` to subfolders.
 
-`(Rc,X,RA)` is the traverse grant, and it is easy to misread as a small `(RX)`.
-It is not: `(RX)` includes `RD`, the list bit, and `(Rc,X,RA)` deliberately does
-not. Walk through versus read the contents is the whole difference.
+`(Rc,S,X,RA)` is the traverse grant, and it is easy to misread as a small `(RX)`.
+It is not: `(RX)` includes `RD`, the list bit, and `(Rc,S,X,RA)` deliberately does
+not. Walk through versus read the contents is the whole difference. A traverse
+row that reads `(Rc,X,RA)`, with no `S`, is the pre-2026-09-27 grant and is
+broken below `~` — see *The `S` is load-bearing* above.
 
 ## Leases and residue
 

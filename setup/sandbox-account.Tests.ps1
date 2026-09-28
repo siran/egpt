@@ -610,8 +610,8 @@ Describe 'Clear-SandboxStaleLease (what a RECLAIM does to a hard-killed turns le
 # THE TRAVERSE CHAIN (2026-09-13). Grant-SandboxPoolAce -Grant 'Traverse' is what
 # makes the five ancestor directories above a conversation folder WALKABLE by the
 # pool without making them LISTABLE - the property the whole grant exists for,
-# and the one an eyeball on an icacls line gets wrong easily, since (Rc,X,RA) and
-# (RX) look alike and differ by exactly the read-data bit.
+# and the one an eyeball on an icacls line gets wrong easily, since (Rc,S,X,RA)
+# and (RX) look alike and differ by exactly RD (read-data/list) and REA.
 #
 # These grant FOR REAL, against a throwaway directory under $env:TEMP, with
 # $SandboxPoolGroup pointed at the CURRENT USER's own account - the same
@@ -633,9 +633,11 @@ function Get-TestExplicitAces([string]$Path) {
 }
 
 # ExecuteFile (32, the traverse bit) | ReadAttributes (128) | ReadPermissions
-# (131072). Spelled as a number because that is what the assertions compare, and
-# spelled out here so a future reader does not have to decode it.
-$script:TraverseRights = 131232
+# (131072) | Synchronize (1048576). Spelled as a number because that is what the
+# assertions compare, and spelled out here so a future reader does not have to
+# decode it. It was 131232 - the same mask WITHOUT Synchronize - until 2026-09-27;
+# the SYNCHRONIZE describe below is what that cost.
+$script:TraverseRights = 1179808
 
 Describe "Grant-SandboxPoolAce -Grant 'Traverse' (walk through the directory, do not list it)" {
   BeforeEach {
@@ -647,7 +649,7 @@ Describe "Grant-SandboxPoolAce -Grant 'Traverse' (walk through the directory, do
     $script:SandboxPoolGroup = $script:TraverseSavedGroup
   }
 
-  It 'writes exactly (X,RA,RC) and nothing else' {
+  It 'writes exactly (RC,S,X,RA) and nothing else' {
     $d = New-LedgerTempDir
     (Get-TestExplicitAceCount $d) | Should Be 0
     Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
@@ -713,6 +715,92 @@ Describe "Grant-SandboxPoolAce -Grant 'Traverse' (walk through the directory, do
     $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
     { Grant-SandboxPoolAce -Path $d -Grant 'Traverse' } | Should Throw
     (Get-TestExplicitAceCount $d) | Should Be 0
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE TRAVERSE GRANT CARRIES SYNCHRONIZE (2026-09-27, measured on do as a real
+# pool account). A boxed being ran `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs`
+# and Node's module loader died before the client's first line: EPERM, syscall
+# 'lstat', path 'C:\Users\an\src'. The pool's ACE there was (Rc,X,RA) - exactly
+# what this table's old (X,RA,RC) lands as - and adding S by hand made every probe
+# pass. So an S-less traverse ACE is NOT "the same grant" as the (Rc,S,X,RA) the
+# older ancestors carry, which is what SANDBOX.md used to say.
+#
+# THE HALF THAT FIXES NODES ALREADY PROVISIONED: the "already granted" check
+# compares rights AT LEAST, so once the table asks for S an S-less ACE stops
+# satisfying it, and the next provisioner run writes - instead of printing
+# "already granted" over a node that is broken. The seed below is the old
+# table's own icacls line, so the ACE under test is the one that was on do.
+#
+# Same substitution as the describes above: $SandboxPoolGroup points at the
+# current user and every target is a throwaway directory under $env:TEMP.
+Describe "Grant-SandboxPoolAce -Grant 'Traverse' carries SYNCHRONIZE (the do ~\src EPERM, 2026-09-27)" {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'the Traverse row asks for Synchronize - in the spec icacls writes AND in the mask the check compares' {
+    $SandboxPoolGrants['Traverse'].Spec | Should Be '(RC,S,X,RA)'
+    ($SandboxPoolGrants['Traverse'].Rights -band [int][System.Security.AccessControl.FileSystemRights]::Synchronize) | Should Not Be 0
+    $SandboxPoolGrants['Traverse'].Rights | Should Be $script:TraverseRights
+  }
+
+  It 'REPRODUCE: an (Rc,X,RA) ACE - what ~\src carried on do - is NOT the traverse grant' {
+    $d = New-LedgerTempDir
+    & icacls.exe $d '/grant' "*$($script:MeSid.Value):(X,RA,RC)" | Out-Null
+    # The seed really is S-less: 131232, no 1048576 in it.
+    ([int](@(Get-TestExplicitAces $d)[0].FileSystemRights)) | Should Be 131232
+
+    (Test-SandboxPoolAcePresent -Path $d -Grant 'Traverse' -Sid $script:MeSid) | Should Be $false
+  }
+
+  It 'a re-provision CONVERGES it: one write, and the SAME single ACE now carries S - folded in, not a second ACE beside it' {
+    $d = New-LedgerTempDir
+    & icacls.exe $d '/grant' "*$($script:MeSid.Value):(X,RA,RC)" | Out-Null
+
+    (Grant-SandboxPoolAce -Path $d -Grant 'Traverse') | Should Be 'granted'
+
+    $aces = @(Get-TestExplicitAces $d)
+    $aces.Count | Should Be 1
+    ([int]$aces[0].FileSystemRights) | Should Be $script:TraverseRights
+    ($aces[0].InheritanceFlags.ToString()) | Should Be 'None'
+    (Test-SandboxPoolAcePresent -Path $d -Grant 'Traverse' -Sid $script:MeSid) | Should Be $true
+  }
+
+  It '(Rc,S,X,RA) IS the grant - the shape a .NET Allow rule lands as, and the one the older ancestors carry - and costs zero writes' {
+    # FileSystemAccessRule ORs Synchronize into every Allow it builds, unasked -
+    # the likeliest reason (inferred, not recorded) the ancestors granted by hand
+    # before 2026-09-13 read (Rc,S,X,RA) while every one icacls wrote from the
+    # old table read (Rc,X,RA).
+    $d = New-LedgerTempDir
+    $acl = Get-Acl -LiteralPath $d
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $script:MeSid, 'ExecuteFile, ReadAttributes, ReadPermissions', 'None', 'None', 'Allow')))
+    Set-Acl -LiteralPath $d -AclObject $acl
+    ([int](@(Get-TestExplicitAces $d)[0].FileSystemRights)) | Should Be $script:TraverseRights
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    (Test-SandboxPoolAcePresent -Path $d -Grant 'Traverse' -Sid $script:MeSid) | Should Be $true
+    (Grant-SandboxPoolAce -Path $d -Grant 'Traverse') | Should Be 'already granted'
+
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'Read and Modify never had the gap: icacls lands (OI)(CI)(RX) and (OI)(CI)(M) with Synchronize already in them' {
+    foreach ($g in @('Read', 'Modify')) {
+      $d = New-LedgerTempDir
+      Grant-SandboxPoolAce -Path $d -Grant $g | Out-Null
+      $rights = [int](@(Get-TestExplicitAces $d)[0].FileSystemRights)
+      ($rights -band [int][System.Security.AccessControl.FileSystemRights]::Synchronize) | Should Not Be 0
+      $rights | Should Be $SandboxPoolGrants[$g].Rights
+    }
   }
 }
 
@@ -1685,9 +1773,9 @@ Describe 'Test-SandboxPoolReadCovered (is a per-turn read ACE redundant here?)' 
     (Test-SandboxPoolReadCovered -Path $d -LeasedSid $script:MeSid) | Should Be $true
   }
 
-  It 'says NO to a TRAVERSE-only grant - (X,RA,RC) withholds read-data on purpose' {
-    # THE ONE THAT MATTERS MOST. (X,RA,RC) and (RX) look alike in an icacls dump
-    # and differ by exactly the read-data bit. Skipping on a traverse grant would
+  It 'says NO to a TRAVERSE-only grant - (RC,S,X,RA) withholds read-data on purpose' {
+    # THE ONE THAT MATTERS MOST. (Rc,S,X,RA) and (RX) look alike in an icacls dump
+    # and differ by exactly RD (read-data) and REA. Skipping on a traverse grant would
     # hand a being a directory it can walk through and cannot open.
     $d = New-LedgerTempDir
     Grant-SandboxPoolAce -Path $d -Grant 'Traverse'
@@ -2275,7 +2363,7 @@ Describe 'the provisioner retires the WIDE ~\src grant without taking the traver
     $aces = @(Get-TestExplicitAces $srcDir)
     $aces.Count | Should Be 1
     ([int]$aces[0].FileSystemRights) | Should Be $script:TraverseRights
-    # ...and the wide read really is gone: (Rc,X,RA) withholds read-data, which
+    # ...and the wide read really is gone: (Rc,S,X,RA) withholds read-data, which
     # is the whole difference between walking through ~\src and reading it.
     (([int]$aces[0].FileSystemRights -band $script:ReadRights) -eq $script:ReadRights) | Should Be $false
   }

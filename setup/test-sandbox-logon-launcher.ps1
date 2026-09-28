@@ -33,6 +33,9 @@
 #        ~/.claude/.credentials.json denied; and every ACE gone afterwards.
 #   4    -InnerArgs round-trip: `--verbose`, an EMPTY element, a spaced element
 #        and an embedded quote all reach the child's own $args verbatim.
+#   5    node's fs.realpathSync, run AS THE POOL ACCOUNT, on a file under
+#        ~\src\egpt: the per-component lstat walk Node's module loader does,
+#        through the ~\src traverse ACE (the 2026-09-27 EPERM on do).
 #
 # KNOWN, ACCEPTED FAILURE: "cwd is own folder" may report FAIL - the child lands
 # on C:\ instead of TargetFolder when seclogon cannot apply lpCurrentDirectory to
@@ -259,9 +262,50 @@ Write-Host "  expected: $expected"
 Write-Host "  actual:   $argvLine"
 Write-Host "  verbatim, --verbose included: $(if ($passR) {'PASS'} else {'FAIL'})"
 
+# ==== section 5: node's realpath through the ~\src traverse ACE ============
+# THE REGRESSION THAT BIT A BOXED BEING (2026-09-27, on do). It ran
+# `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+# died before the client's first line: EPERM, syscall 'lstat', path
+# 'C:\Users\an\src'. fs.realpathSync lstats EVERY component, and the pool's
+# traverse ACE on ~\src had no S (SYNCHRONIZE), which that open needs. A plain
+# read of the same file WORKED - only the realpath walk broke - so nothing short
+# of running Node as the pool account catches it. This does exactly that, on the
+# very file, and prints the component that refused if one does.
+#
+# `-e`, NOT a probe script file: a .js in $root sits under ~\AppData, which
+# carries no traverse ACE, and would EPERM on its OWN realpath before it ever
+# tested ~\src. The JS carries no double quote and no space, so the inner
+# powershell's native-argument re-tokenizing (the note at the top) has nothing
+# to mangle.
+#
+# SKIPPED, not failed, on a node with no ~\src\egpt - the provisioner skips ~\src
+# there too.
 Write-Host ""
-if ($passA -and $passB -and $passS -and $passR) {
-  Write-Host "OVERALL: PASS - confinement holds, share paths were granted in their own class (write / read-only) and revoked, and the inner argv survived verbatim"
+Write-Host "=== node fs.realpathSync on a file under ~\src\egpt, as the pool account ==="
+$realpathTarget = Join-Path $env:USERPROFILE 'src\egpt\src\tools\ask-spine.mjs'
+if (-not (Test-Path -LiteralPath (Join-Path $env:USERPROFILE 'src\egpt'))) {
+  $passP = $true
+  $realpathLine = 'no ~\src\egpt on this node'
+  $realpathVerdict = 'SKIPPED'
+} else {
+  $realpathJs = "try{require('fs').realpathSync(process.argv[1]);console.log('REALPATH=OK')}" +
+                "catch(e){console.log('REALPATH='+e.code+':'+e.syscall+':'+e.path)}"
+  $realpathJsQuoted = $realpathJs -replace "'", "''"
+  $realpathInner = "& '$nodeExe' -e '$realpathJsQuoted' -- '$realpathTarget'"
+  $outP = Invoke-Launcher -TargetFolder $dirA -InnerArgv @('-NoProfile', '-NonInteractive', '-Command', $realpathInner)
+  $outP | ForEach-Object { Write-Host "  $_" }
+  $realpathLine = $outP | Where-Object { $_ -match '^REALPATH=' } | Select-Object -First 1
+  $passP = ($realpathLine -eq 'REALPATH=OK')
+  $realpathVerdict = if ($passP) { 'PASS' } else { 'FAIL' }
+}
+Write-Host ""
+Write-Host "--- node realpath through ~\src ---"
+Write-Host "  target: $realpathTarget"
+Write-Host "  realpathSync as the pool account: $realpathVerdict  ($realpathLine)"
+
+Write-Host ""
+if ($passA -and $passB -and $passS -and $passR -and $passP) {
+  Write-Host "OVERALL: PASS - confinement holds, share paths were granted in their own class (write / read-only) and revoked, the inner argv survived verbatim, and node's realpath walked ~\src as the pool account"
 } else {
   Write-Host "OVERALL: FAIL - see per-section results above"
 }

@@ -269,15 +269,16 @@ function Ensure-SandboxPoolGroup {
 # EVERY ACE THE SANDBOX EVER GRANTS, AS ONE TABLE. Three of them, and this is
 # the only place any is spelled:
 #
-#   Traverse  (X,RA,RC), NOT inheritable, on each directory of the ancestor chain
-#             above a conversation folder. Walk THROUGH it; do not LIST it. RD is
-#             withheld on purpose, so a sandboxed being reaches the one folder it
-#             was granted BY NAME and still cannot enumerate the operator's home
-#             or the names of other conversations. The mask is not what it looks
-#             like: measured end to end as a real pool account (2026-09-13), the
-#             token DOES hold SeChangeNotify so the kernel walk is already
-#             covered - what fails without an ACE is Node's per-component lstat,
-#             i.e. OPENING an ancestor as an object in its own right.
+#   Traverse  (RC,S,X,RA), NOT inheritable, on each directory of the ancestor
+#             chain above a conversation folder. Walk THROUGH it; do not LIST it.
+#             RD is withheld on purpose, so a sandboxed being reaches the one
+#             folder it was granted BY NAME and still cannot enumerate the
+#             operator's home or the names of other conversations. The mask is
+#             not what it looks like: measured end to end as a real pool account
+#             (2026-09-13), the token DOES hold SeChangeNotify so the kernel walk
+#             is already covered - what fails without an ACE is Node's
+#             per-component lstat, i.e. OPENING an ancestor as an object in its
+#             own right. S (SYNCHRONIZE) is part of that open - see below.
 #   Read      (OI)(CI)(RX), inheritable, on a CLI binary's directory or on ~\src.
 #             The whole subtree is the point - CreateProcessWithLogonW otherwise
 #             fails ERROR_ACCESS_DENIED on a path only the operator can read.
@@ -297,10 +298,46 @@ function Ensure-SandboxPoolGroup {
 #   (OI)(CI)(RX) -> 1179817 ContainerInherit,ObjectInherit   identical
 #   (M)          -> 1245631 None                             identical
 #   (RX)         -> 1179817 None                             identical
-#   (X,RA,RC)    ->  131232 None                             identical
-# So moving these writes to icacls changed nothing about WHAT is granted.
+#   (RC,S,X,RA)  -> 1179808 None                             identical
+# So moving these writes to icacls changed nothing about WHAT is granted. The
+# traverse row read `(X,RA,RC) -> 131232 ... identical` until 2026-09-27, and it
+# was not identical: a .NET Allow rule for those three rights lands as 1179808,
+# Synchronize included. That one bit is the EPERM below. The new row is measured
+# both ways, icacls and Set-Acl, by the SYNCHRONIZE describe in
+# sandbox-account.Tests.ps1 (2026-09-27).
+#
+# THE S IN THE TRAVERSE ROW IS LOAD-BEARING (2026-09-27, measured on do as a real
+# pool account, egpt-sbx-13). The row was (X,RA,RC) until then. A boxed being ran
+# `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+# died before the client's first line: EPERM, syscall 'lstat', path
+# 'C:\Users\an\src'. fs.realpathSync lstats every component, lstat opens each one
+# for FILE_READ_ATTRIBUTES, and CreateFileW adds SYNCHRONIZE to any synchronous
+# open. The pool's ACE on ~\src was (Rc,X,RA) - no S - so that open was refused:
+# `lstat C:/Users/an` ok, `lstat C:/Users/an/src` EPERM, `lstat .../src/egpt` ok,
+# realpathSync on the client EPERM, realpathSync.native and a plain read ok.
+# Granting S on ~\src by hand made every one of them pass.
+#
+# WHY AN S-LESS ACE SOMETIMES WORKS ANYWAY, which is how this stayed hidden: LIST
+# on a PARENT implicitly grants read-attributes on its children. C:\Users lists to
+# Everyone and Users, so on reve ~ itself stats fine with a bare (Rc,X,RA). ~
+# lists to the pool NOTHING, so every traverse ACE BELOW ~ must carry S on its
+# own. ~\src got by for as long as the wide (OI)(CI)(RX) sat on it too (RX
+# includes S) and broke when the provisioner retired that grant and wrote the
+# traverse ACE back from this row.
+#
+# WHY SOME ANCESTORS HAD S AND ~\src DID NOT: the chain was applied BY HAND before
+# 2026-09-13, and - inferred from the S, since nothing records how - through .NET:
+# a FileSystemAccessRule ORs Synchronize into every Allow it builds (checked
+# in-process 2026-09-27: ExecuteFile|ReadAttributes|ReadPermissions comes back
+# 1179808). icacls writes exactly the letters it is given, and this row gave it
+# none (the traverse grant has been icacls since it was first scripted,
+# 2026-09-13, never Set-Acl), so every traverse ACE the script ITSELF wrote
+# landed as 131232 - ~\src's, re-written 2026-09-23, among them. The check below
+# compares rights AT LEAST, so asking for S makes it call every S-less traverse
+# ACE wrong, and the next provisioner run converges it: plain /grant folds S into
+# the existing ACE with the same flags - still one ACE, not two.
 $SandboxPoolGrants = @{
-  Traverse = @{ Spec = '(X,RA,RC)';    Rights = [int][System.Security.AccessControl.FileSystemRights]'ExecuteFile, ReadAttributes, ReadPermissions'; Inherit = [System.Security.AccessControl.InheritanceFlags]'None' }
+  Traverse = @{ Spec = '(RC,S,X,RA)';  Rights = [int][System.Security.AccessControl.FileSystemRights]'ExecuteFile, ReadAttributes, ReadPermissions, Synchronize'; Inherit = [System.Security.AccessControl.InheritanceFlags]'None' }
   Read     = @{ Spec = '(OI)(CI)(RX)'; Rights = [int][System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize';                  Inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
   Modify   = @{ Spec = '(OI)(CI)(M)';  Rights = [int][System.Security.AccessControl.FileSystemRights]'Modify, Synchronize';                          Inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
 }
@@ -464,7 +501,7 @@ function Grant-SandboxPoolAce {
 #    operator named is the inherited one from ~\src, and an explicit one on this
 #    very path is the same fact one directory up. Neither is written per turn.
 #  - THE WHOLE MASK, not a bit of it: ($rights -band RX) -eq RX. A grant of, say,
-#    traverse-only (X,RA,RC) from Grant-SandboxPoolAce must NOT satisfy this
+#    traverse-only (RC,S,X,RA) from Grant-SandboxPoolAce must NOT satisfy this
 #    - it deliberately withholds read-data, and that is the difference between a
 #    being that can open the tree and one that can only walk through it.
 #  - ANY DENY IS A NO. An explicit Allow for the leased ACCOUNT beats an
