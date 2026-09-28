@@ -1203,6 +1203,15 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 4. Backlog (known warts, smallest last)
 
+### Backburner: `mirror_chat:` (operator 2026-09-27, replaces discreet below)
+
+A config.yaml map <1:1 contact or group> -> mirror conversation id: the being reads the source on
+its thread and answers in the mirror. Backburnered. Operator: "it's clear that we need a command to
+update the same E from two different chats? but it is dirty to do it in the 1:1 or group, needs to be
+done IF from eGPT Admin" -- i.e. steering a source chat's being from elsewhere is an eGPT Admin
+command, never typed in the watched chat. Open, unruled: what the mirror shows, whether lines typed
+in the mirror are turns for the source's being, whether anything returns to the source.
+
 ### Backburner: `discreet: true|false` on a reply (operator 2026-09-27)
 
 *"backburn for now, since i do not really know how to implement."* The idea: when a conversation is
