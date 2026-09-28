@@ -8,10 +8,10 @@
 // whole job is to proxy that protocol through untouched.
 import { describe, it, expect, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { createSandboxCliSession, resolveSandboxGitBash, GIT_BASH_CANDIDATES } from '../src/sandbox-cli-session.mjs';
+import { createSandboxCliSession, resolveSandboxGitBash, spawnBoxedCommand, GIT_BASH_CANDIDATES } from '../src/sandbox-cli-session.mjs';
 
 // Hoisted to module scope 2026-09-06: a sandboxed CCODE session now REFUSES to be created
 // without the operator's subscription credential (see the last describe in this file), so every
@@ -954,5 +954,116 @@ describe('sandbox-cli-session — the launcher\'s launch summary line reaches on
       s.close();
       expect(logs.filter((l) => l.startsWith('sandbox-logon-launcher:')), engine).toEqual([LAUNCH]);
     }
+  });
+});
+
+// ── A HEARTBEAT COMMAND A BEING WROTE, RUN IN ITS BOX (operator 2026-09-28: "structural: no ai …
+//    being are allowed any command, since they are sandboxed and the command runs under their
+//    unprivileged account"). spawnBoxedCommand is the launcher invocation a turn uses, with a bash
+//    as the InnerBin instead of a CLI: the SAME argv builder, the conversation's folder as
+//    -TargetFolder (so the lease, the ACE and the `egpt` mount the inner cwd is are the room's), the
+//    node's read mounts, and in -SetEnv only the bash pair a boxed CLI is handed. None of a turn's
+//    credential, store or share paths. And CreateProcessWithLogonW's 1024-character command line
+//    (the launcher's Invoke-AsLeasedAccount BUDGET note, measured 2026-08-26) is respected: a command
+//    that might not fit inline goes through a file in the room. ──
+describe('sandbox-cli-session — spawnBoxedCommand: a being\'s heartbeat command, run as the conversation\'s pool account', () => {
+  const ROOM = join(STORE, 'room-wren');
+  mkdirSync(join(ROOM, 'heartbeats'), { recursive: true });
+  const MOUNTS = [{ name: 'repos', path: 'C:\\Users\\an\\src\\siran' }];
+  // The launcher's Format-Win32Arg, ported for the assertion only: what CreateProcessWithLogonW is
+  // handed is these quoted elements joined by spaces (Invoke-AsLeasedAccount's $cmdParts).
+  const win32Arg = (a) => {
+    if (a.length && !/[\s"]/.test(a)) return a;
+    let out = '"';
+    for (let i = 0; i < a.length;) {
+      let n = 0;
+      while (i < a.length && a[i] === '\\') { n++; i++; }
+      if (i === a.length) { out += '\\'.repeat(n * 2); break; }
+      if (a[i] === '"') { out += `${'\\'.repeat(n * 2 + 1)}"`; i++; } else { out += '\\'.repeat(n) + a[i]; i++; }
+    }
+    return `${out}"`;
+  };
+  const cmdLineOf = (args) => [args[args.indexOf('-InnerBin') + 1], ...innerArgvOf(args)].map(win32Arg).join(' ');
+  function run(command, extra = {}) {
+    const f = fakeLauncherSpawn();
+    const proc = spawnBoxedCommand({ targetFolder: ROOM, command, commandFile: join('heartbeats', 'primo.command.sh'), readMounts: MOUNTS, spawn: f.spawn, platform: 'win32', gitBashCandidates: BASH_CANDIDATES, ...extra });
+    return { f, proc, args: f.calls[0]?.args };
+  }
+
+  it('REPRODUCE-FIRST: a short command runs INLINE as <bash> -c <command>, through the launcher, from the room, with the node\'s read mounts', () => {
+    const { f, proc, args } = run('date +%F > hoy.txt');
+    expect(f.spawnCount()).toBe(1);
+    expect(proc).toBeTruthy();
+    expect(f.calls[0].bin).toBe('powershell.exe');
+    expect(args.slice(0, 4)).toEqual(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+    expect(args[4]).toMatch(/[\\/]setup[\\/]sandbox-logon-launcher\.ps1$/);
+    expect(args[args.indexOf('-TargetFolder') + 1]).toBe(ROOM);
+    expect(args[args.indexOf('-InnerBin') + 1]).toBe(BASH);
+    expect(innerArgvOf(args)).toEqual(['-c', 'date +%F > hoy.txt']);
+    expect(jsonArgOf(args, '-SetEnv')).toEqual([`CLAUDE_CODE_GIT_BASH_PATH=${BASH}`, 'MSYS2_PATH_TYPE=inherit']);
+    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:\\Users\\an\\src\\siran']);
+    expect(f.calls[0].opts).toMatchObject({ cwd: ROOM, windowsHide: true });
+  });
+
+  it('nothing of a TURN rides along: no credential, no CLI store, no share path', () => {
+    const { args } = run('date');
+    expect(args).not.toContain('-SharePath');
+    expect(args).not.toContain('-SharePathReadOnly');
+    expect(jsonArgOf(args, '-SetEnv').some((e) => /^(CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR)=/.test(e))).toBe(false);
+  });
+
+  // A script_path: beat's textecute opens its own Claude session, so the caller hands the credential
+  // (operator 2026-09-28) — the SAME variable, in the SAME one -SetEnv element a boxed turn uses.
+  // Names only in the assertions: the value is never printed.
+  it('handed sandboxOauthToken (a script beat): CLAUDE_CODE_OAUTH_TOKEN joins the one -SetEnv element, first, as in a turn; blank is none', () => {
+    const names = (args) => jsonArgOf(args, '-SetEnv').map((e) => e.slice(0, e.indexOf('=')));
+    const script = run('node t.mjs dj.x.md', { sandboxOauthToken: ` ${TOKEN} ` }).args;
+    expect(names(script)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+    expect(jsonArgOf(script, '-SetEnv').includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`), 'trimmed, as createSandboxCliSession trims it').toBe(true);
+    expect(names(run('date', { sandboxOauthToken: '   ' }).args)).toEqual(['CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+  });
+
+  it('ONE argv builder: up to -InnerBin it is the argv a boxed turn in the same room gets, minus the turn\'s own lists', async () => {
+    const f = fakeLauncherSpawn();
+    const s = createSandboxCliSession({ spawn: f.spawn, cwd: ROOM, platform: 'win32', sandboxOauthToken: TOKEN, jsonlStoreRoot: STORE, sessionId: THREAD, gitBashCandidates: BASH_CANDIDATES, sandboxReadMounts: MOUNTS });
+    await s.turn('hi');
+    s.close();
+    const turn = f.calls[0].args;
+    const { args } = run('date');
+    expect(args.slice(0, 7)).toEqual(turn.slice(0, 7));   // -NoProfile … -File <launcher> -TargetFolder <room>
+    expect(jsonArgOf(args, '-ReadMounts')).toEqual(jsonArgOf(turn, '-ReadMounts'));
+    expect(jsonArgOf(turn, '-SetEnv')).toEqual(expect.arrayContaining(jsonArgOf(args, '-SetEnv')));   // the same bash pair
+  });
+
+  it('a command that might not fit CreateProcessWithLogonW\'s 1024 characters goes through a FILE in the room — the argv names it relative, and stays under the limit', () => {
+    const long = `echo ${'x'.repeat(700)}`;
+    const { args } = run(long);
+    expect(innerArgvOf(args)).toEqual(['heartbeats/primo.command.sh']);
+    expect(readFileSync(join(ROOM, 'heartbeats', 'primo.command.sh'), 'utf8')).toBe(`${long}\n`);
+    expect(cmdLineOf(args).length).toBeLessThan(1024);
+  });
+
+  it('the inline budget is the WORST case: the longest all-quotes command still inline fits in 1024, one more character goes to the file', () => {
+    const n = Math.floor((1024 - 8 - BASH.length) / 2);
+    const worst = run('"'.repeat(n)).args;
+    expect(innerArgvOf(worst)[0]).toBe('-c');
+    expect(cmdLineOf(worst).length).toBeLessThanOrEqual(1024);
+    expect(innerArgvOf(run('"'.repeat(n + 1)).args)).toEqual(['heartbeats/primo.command.sh']);
+  });
+
+  it('REFUSED, before any spawn, off win32 and with no POSIX bash to run it', () => {
+    const f = fakeLauncherSpawn();
+    expect(() => spawnBoxedCommand({ targetFolder: ROOM, command: 'date', commandFile: 'x.sh', spawn: f.spawn, platform: 'linux', gitBashCandidates: BASH_CANDIDATES })).toThrow(/runs in its box, and the box is Windows-only.*platform=linux/);
+    expect(() => spawnBoxedCommand({ targetFolder: ROOM, command: 'date', commandFile: 'x.sh', spawn: f.spawn, platform: 'win32', gitBashCandidates: [join(STORE, 'no-such-bash.exe')] })).toThrow(/no POSIX bash for the box/);
+    expect(f.spawnCount()).toBe(0);
+  });
+
+  it('the launcher\'s launch line (which pool account ran it) reaches onLog', async () => {
+    const LAUNCH = String.raw`sandbox-logon-launcher: launch account=egpt-sbx-03 cwd=C:\Users\egpt-sbx-03\egpt junction=ok`;
+    const logs = [];
+    const f = fakeLauncherSpawn({ stderr: [`${LAUNCH}\r\n`] });
+    spawnBoxedCommand({ targetFolder: ROOM, command: 'date', commandFile: 'x.sh', spawn: f.spawn, platform: 'win32', gitBashCandidates: BASH_CANDIDATES, onLog: (l) => logs.push(l) });
+    await new Promise((r) => setImmediate(r));
+    expect(logs).toEqual([LAUNCH]);
   });
 });

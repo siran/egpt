@@ -23,6 +23,14 @@
 // TRIGGERS (operator 2026-07-02): an entry declares EITHER `frequency:` (recurring)
 // OR `when:` (a ONE-SHOT wall-clock time — fires once at/after it, then never
 // again) OR `daily:` (below); more than one set → invalid, skipped + logged.
+// ONCE, ACROSS RELOADS AND RESTARTS (2026-09-28 — beings write reminders with when:, and the operator
+// ruled they are never deleted): the instant a when: fired for is kept in daily:'s ledger (below),
+// under the full beat name, written before the fire, so neither the reload every inbound message
+// triggers nor a restart fires it twice; an EDITED when: is a new instant and fires. DUE WHILE THE
+// NODE WAS DOWN — daily:'s rule exactly: up within _WHEN_GRACE_MS of it, it fires late, once; later
+// than that it is stale, skipped + logged, never fired. The same grace holds at the tick (a node
+// asleep or wedged past it skips the one-shot). The "stale when" line is said ONCE per beat per
+// process, not on every reload: a past reminder stays in its file for good.
 // ACTIONS: EITHER `command:` (a shell line) OR `script_path:` (sugar the loader
 // expands to `node <textecute.mjs> <script.x.md>`; both set → invalid, skipped +
 // logged). Timezone-less `when:` times resolve in config `default_time_zone` (else
@@ -41,7 +49,8 @@
 // restart or reload: the local date each beat last fired for is kept in a small ledger,
 // state/heartbeats-daily.json (`{ "<entity ns>:<name>": "YYYY-MM-DD" }`, keyed by the full
 // beat name, so two chats both declaring `prime-of-the-day` never share a row), read through
-// the io seam before any daily beat registers and written BEFORE the beat fires.
+// the io seam before any daily beat registers and written BEFORE the beat fires. A when: beat's
+// row in the same ledger holds the ISO instant it fired for (2026-09-28, see TRIGGERS above).
 // `time_zone:` on an entry with no `daily:` is invalid (when: has no per-entry zone — it
 // would be silently ignored).
 //
@@ -122,20 +131,48 @@
 // possibility for beings to write their own heartbeat … maybe a heartbeats/ with the different yaml
 // files"). One file = one beat, named after the file, its body one entry in the shape above. The
 // resolver reads them in its walk and hands them over in the entity's union, marked `beingWritten`;
-// a file never takes a name the operator's rungs already declare. THE ONE RULE: A FILE A BEING CAN
-// WRITE MAY SCHEDULE A TURN, NEVER A COMMAND. The folder is the conversation's, where
-// setup/sandbox-logon-launcher.ps1 grants the leased pool account Modify, and a command beat runs
-// HERE, in the spine, as the operator, outside every sandbox. So `command:`, the `post:` that rides
-// one, and ANY `script_path:` are refused by name; only `agent:` + `prompt:` passes, and runs as that
-// being — SANDBOXED, or not at all (operator 2026-09-27: "a heartbeat of a sandboxed being must also
-// run sandboxed"). `script_path:` goes even beside `agent:`: the spine READS
-// that script as the operator and feeds it into the turn, so a being naming `../` or an absolute
-// path would get any file the operator can read (the card says turns are `agent: + prompt:`). The turn
-// carries `beingWritten` to brainpool.turn, which refuses it unless the woken being RESOLVES BOXED
-// for that conversation (`agent:` may name any being, and an unboxed one runs as the operator), and
-// refuses it for an access_level 'all' being even boxed: a scheduled turn has no sender, so
-// allowed_users — what makes an 'all' being safe to reach — never sees it. The operator's rungs
-// (config.yaml, conversations.yaml, rooms.yaml) are untouched.
+// a file never takes a name the operator's rungs already declare. THE ONE RULE: A BEAT A BEING WROTE
+// RUNS BOXED OR NOT AT ALL (operator 2026-09-27: "a heartbeat of a sandboxed being must also run
+// sandboxed"). The folder is the conversation's, where setup/sandbox-logon-launcher.ps1 grants the
+// leased pool account Modify — so anything the file asks for must run as a pool account, never HERE,
+// in the spine, as the operator. THREE KINDS (operator 2026-09-28: "there are different types of yaml
+// heartbeats: structural … browser … pure AI"):
+//   STRUCTURAL — a trigger + `command:` (or a bare `script_path:`, the textecute sugar), optionally
+//     `post: "{stdout}"`: "no ai … being are allowed any command, since they are sandboxed and the
+//     command runs under their unprivileged account". It is armed like any command beat, but every run
+//     goes to boot's injected `spawnBoxed` (_spawnAction), never the spawn below: boot refuses it unless
+//     every being resident in the conversation resolves boxed (boot.mjs boxedConversationFor), and
+//     otherwise sandbox-cli-session.mjs spawnBoxedCommand runs `<bash> -c <command>` through the
+//     launcher — the conversation's pool account, cwd its room, the node's read mounts, none of the
+//     operator's env. The child is watched exactly as one spawned here: same outcome line, same post:
+//     into the SAME conversation (its ns, nothing in the file can name another), same overlap guard.
+//     A refusal is a FAILED run carrying the reason. A bare script_path's script is thereby read by
+//     textecute INSIDE the box, as the pool account — which closes the file-read hole that got every
+//     script_path: refused here until 2026-09-28; its textecute session is handed sandbox_oauth_token
+//     exactly as a boxed turn is (the request carries `scriptPath`; a plain command gets no credential).
+//   BROWSER — `browser: true` + `agent:` + `prompt:`: a pure-AI turn that first asks boot's
+//     startBrowser (/chrome's own launch path) for the CDP browser; see _browserPreface.
+//   PURE AI — `agent:` + `prompt:`: runs as that being, through brainpool.turn.
+// Still REFUSED by name: `agent:` + `script_path:` — the spine READS that script, as the operator, and
+// feeds it into the turn, so a being naming `../` or an absolute path would get any file the operator
+// can read; the text goes in prompt:, or the script runs boxed as a bare script_path:. A turn carries
+// `beingWritten` to brainpool.turn, which refuses it unless the woken being RESOLVES BOXED for that
+// conversation (`agent:` may name any being, and an unboxed one runs as the operator), and refuses it
+// for an access_level 'all' being even boxed: a scheduled turn has no sender, so allowed_users — what
+// makes an 'all' being safe to reach — never sees it. A command has no being of its own, and runs as
+// the pool account whoever is resident, so 'all' is not refused for it. A being's `frequency:` has a
+// 60 s FLOOR (_BEING_FREQUENCY_FLOOR_MS, operator 2026-09-28): finer is clamped, said once per beat,
+// so a file a being writes can neither tighten the node's tick nor launch a box every second. The
+// operator's rungs (config.yaml, conversations.yaml, rooms.yaml) are untouched: their commands run
+// here, as ever, at any cadence.
+//
+// `browser: true` (operator 2026-09-28: "browser: heartbeat requests a CDP browser. agent can manage
+// it."), on an `agent:` beat only, operator or being-written alike: before the turn the loader calls
+// boot's startBrowser, commands.startBrowser — the ONE launch path /chrome and the being link's
+// `browser start` share, idempotent (nothing launched when CDP already answers). A browser that will
+// not come up does not cancel the turn: the prompt opens with one line saying why, so the being can
+// report it, and the run logs `<name>: browser not started — <why>`. `browser: false` is no browser;
+// any other value, or `browser: true` without `agent:`, is invalid.
 //
 // THE WALK IS NOT HERE ANY MORE (2026-07-26). Reading the node config + every
 // conversation folder + every room folder is ONE walk serving FOUR concerns
@@ -219,6 +256,12 @@ const TEXTECUTE_PATH = fileURLToPath(new URL('../tools/textecute.mjs', import.me
 // slow boot / brief downtime); older than this at load time is stale — skipped so
 // a long-dead node doesn't re-fire every past one-shot when it finally comes up.
 const _WHEN_GRACE_MS = 2 * 60_000;
+
+// THE FLOOR UNDER A BEING'S `frequency:` (operator 2026-09-28: 60 s). A file a being writes must not
+// set the node's pace: the boot tick tightens to the finest cadence (floored only at 500ms), and a
+// being's command beat is a PowerShell launch + a pool logon per run. Finer is CLAMPED to this, with
+// one log line naming the beat; the operator's beats are unaffected.
+const _BEING_FREQUENCY_FLOOR_MS = 60_000;
 
 // ── run-log formatting (pure) ───────────────────────────────────────────────
 // Elapsed reads at a glance: sub-second in ms, everything else in tenths of a
@@ -397,11 +440,15 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
   const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
   const hasScriptPath = typeof raw?.script_path === 'string' && raw.script_path.trim();
   const hasAgent = typeof raw?.agent === 'string' && raw.agent.trim();
-  // A FILE A BEING CAN WRITE SCHEDULES A TURN, NEVER A COMMAND (2026-09-25) — see the header. The
-  // three ways to run a process here are refused by name, whatever else the entry says.
-  if (beingWritten) {
-    const refused = [raw.command != null && 'command:', raw.post != null && 'post:', raw.script_path != null && 'script_path:'].filter(Boolean);
-    if (refused.length) { onLog(`${name}: ${refused.join(' + ')} refused — ${source} is a file a being can write, so it may schedule a TURN (agent: + prompt:), never a command or a file read; command beats are the operator's, in config/`); return _INVALID_ACTION; }
+  // A BEAT A BEING WROTE RUNS BOXED OR NOT AT ALL (2026-09-25, widened 2026-09-28) — see the header.
+  // Its command: runs in the box now, so the one thing still refused by name is the one read that
+  // happens HERE: an agent: beat's script_path, which _dispatchTurn reads as the operator.
+  if (beingWritten && raw.agent != null && raw.script_path != null) { onLog(`${name}: agent: + script_path: refused — ${source} is a file a being can write, and an agent: beat's script is read by the spine, as the operator; put the text in prompt:, or run the script in the box with a bare script_path:`); return _INVALID_ACTION; }
+  // `browser: true` asks the spine for the CDP browser before a being's TURN (operator 2026-09-28) —
+  // so it needs a turn to be asked for. false is simply "no browser"; anything else is a typo.
+  if (raw?.browser != null) {
+    if (typeof raw.browser !== 'boolean') { onLog(`${name}: browser ${JSON.stringify(raw.browser)} is not true or false — skipped`); return _INVALID_ACTION; }
+    if (raw.browser && !hasAgent) { onLog(`${name}: browser: true without agent — skipped (the spine starts the browser for a being's turn; agent: + prompt: names the being and the task)`); return _INVALID_ACTION; }
   }
   // The OLD key (2026-08-22 rename) is INVALID, not ignored: falling through would leave a
   // beat that used to run a script with no action at all — a silent no-op on a cadence the
@@ -445,10 +492,11 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
     // the node's `dispatch.address_without_at` switch — about typed chat text — never governs it.)
     const being = addressed(handle, agents, { addressWithoutAt: true })[0]?.name;
     if (!being) { onLog(`${name}: unknown agent ${JSON.stringify(raw.agent)} — skipped (agent: is a HANDLE, the way you'd @address it; known: ${addressableTokens(agents).join(' ') || '(none)'})`); return _INVALID_ACTION; }
-    if (hasPrompt) return { kind: 'turn', being, prompt: raw.prompt.trim(), cwd, ns };
+    const browser = raw.browser === true ? { browser: true } : {};
+    if (hasPrompt) return { kind: 'turn', being, prompt: raw.prompt.trim(), cwd, ns, ...browser };
     const script = raw.script_path.trim();
     if (!isTextecutable(script)) { onLog(`${name}: script_path ${JSON.stringify(script)} is not a textecutable — skipped (must end in .x.md)`); return _INVALID_ACTION; }
-    return { kind: 'turn', being, script, cwd, ns, scriptPath: script };
+    return { kind: 'turn', being, script, cwd, ns, scriptPath: script, ...browser };
   }
   if (hasScriptPath) {
     const script = raw.script_path.trim();
@@ -464,7 +512,9 @@ function _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, a
 // Normalize one raw declaration into a registered entry, or null (skipped + logged)
 // when a trigger/action is missing, unparseable, or the two triggers/actions
 // collide. `isAlive` gives the deadman its defaults (aliveFallbackMs + aliveCommand).
-function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, beingWritten = false, timeZone, nowMs, onLog }) {
+// `logOnce(key, line)` says a line once per process (collect() passes the loader's): what every reload
+// would otherwise repeat — a stale when:, a clamped cadence — is said the first time only.
+function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents, beingWritten = false, timeZone, nowMs, onLog, logOnce = (_key, m) => onLog(m) }) {
   const triggers = ['frequency', 'when', 'daily'].filter((k) => raw?.[k] != null);
   if (triggers.length > 1) { onLog(`${name}: ${triggers.length === 2 ? 'both' : 'all of'} ${triggers.slice(0, -1).join(', ')} and ${triggers.at(-1)} set — skipped (use one trigger)`); return null; }
   const hasWhen = raw?.when != null;
@@ -473,10 +523,11 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
 
   const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, source, beingWritten, onLog });
   if (action === _INVALID_ACTION) return null;
-  // What survives from a being-written file is a turn; it carries the mark to brainpool, which
-  // refuses it unless the being resolves boxed, and for an access_level 'all' being (a scheduled
-  // turn has no sender for allowed_users) — see the header.
-  if (action && beingWritten) action.beingWritten = true;
+  // What survives from a being-written file carries the mark (and its conversation): a command to
+  // the boxed runner (_spawnAction), a turn to brainpool, which refuses it unless the being resolves
+  // boxed, and for an access_level 'all' being (a scheduled turn has no sender for allowed_users) —
+  // see the header.
+  if (action && beingWritten) Object.assign(action, { beingWritten: true, ns });
 
   // ── daily: every day at a wall-clock time in a zone (see the header) ──
   if (hasDaily) {
@@ -499,15 +550,21 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
     if (!action) { onLog(`${name}: no command or script_path — skipped`); return null; }
     const whenMs = parseWhen(String(raw.when), { timeZone });
     if (whenMs == null) { onLog(`${name}: invalid when ${JSON.stringify(raw.when)} — skipped`); return null; }
-    if (nowMs - whenMs > _WHEN_GRACE_MS) { onLog(`${name}: stale when (${raw.when}) — not refiring`); return null; }
+    // Once per beat per process (operator 2026-09-28): reminders are never deleted, and every
+    // inbound message reloads — a line per stale reminder per message would bury the log.
+    if (nowMs - whenMs > _WHEN_GRACE_MS) { logOnce(`stale:${name}`, `${name}: stale when (${raw.when}) — not refiring`); return null; }
     return { name, source, whenMs, rawWhen: raw.when, fired: false, action };
   }
 
   // ── frequency: recurring (alive's cadence never disarmed by a bad frequency) ──
   const everyMs = parseFrequency(raw?.frequency);
-  const ms = everyMs ?? (isAlive ? aliveFallbackMs : null);
+  let ms = everyMs ?? (isAlive ? aliveFallbackMs : null);
   if (ms == null) { onLog(`${name}: invalid frequency ${JSON.stringify(raw?.frequency)} — skipped`); return null; }
   if (!action) { onLog(`${name}: no command — skipped`); return null; }
+  if (beingWritten && ms < _BEING_FREQUENCY_FLOOR_MS) {
+    logOnce(`floor:${name}`, `${name}: frequency ${JSON.stringify(raw.frequency)} is under the ${_BEING_FREQUENCY_FLOOR_MS / 1000}s floor for a beat a being wrote — clamped to ${_BEING_FREQUENCY_FLOOR_MS / 1000}s`);
+    ms = _BEING_FREQUENCY_FLOOR_MS;
+  }
   return { name, source, everyMs: ms, rawFrequency: raw.frequency, action };
 }
 
@@ -521,6 +578,8 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
  * @param {(p:{ns:string, name:string, text:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message into its entity's chat, injected by boot. Throws → the run logs FAILED.
  * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
+ * @param {(p:{ns:string, name:string, cwd:string, command:string, scriptPath?:string}) => Promise<any>} [deps.spawnBoxed]   a BEING-WRITTEN command beat's runner, injected by boot (createHeartbeatBoxRunner): refuses (rejects) unless the conversation runs boxed, else resolves the child of setup/sandbox-logon-launcher.ps1 running the command as the conversation's pool account. `scriptPath` marks a script_path: beat, whose textecute session is handed the sandbox credential. The loader never spawns a being's command itself.
+ * @param {() => Promise<{ok:boolean, detail?:string}>} [deps.startBrowser]   a `browser: true` beat's browser start, injected by boot: commands.startBrowser, /chrome's own launch path (idempotent)
  * @param {string} [deps.platform]                      process.platform seam — win32 runs command beats under POSIX bash
  * @param {() => string|null} [deps.resolvePosixBash]   the POSIX bash resolver seam (sandbox-cli-session.mjs resolveSandboxGitBash)
  * @param {object} [deps.env]                           base env commands inherit (boot: process.env)
@@ -538,6 +597,8 @@ export function createHeartbeatLoader({
   dispatchTurn = null,
   dispatchPost = null,
   placeChat = null,
+  spawnBoxed = null,
+  startBrowser = null,
   platform = process.platform,
   resolvePosixBash = resolveSandboxGitBash,
   env = {},
@@ -563,9 +624,11 @@ export function createHeartbeatLoader({
   let _bootTickMs = 0;    // bound in activate() — the fixed boot tick, for the finer-cadence warning
   let _reloading = false; // reentrancy guard: a reload in flight blocks another
   let _activated = false; // flipped by activate() — before it, reload() is a no-op (nothing loaded yet)
-  let _ledger = null;     // daily: beat name → local date last fired ("YYYY-MM-DD"); read from disk once, then authoritative in-process
+  let _ledger = null;     // beat name → what it last fired for: a daily: local date ("YYYY-MM-DD"), a when: instant (ISO); read from disk once, then authoritative in-process
   let _ledgerWrite = Promise.resolve();   // serializes ledger writes (two beats can fire on one tick)
   const _placed = new Set();   // entity ns whose chat placeChat has already been asked about — once per process
+  const _loggedOnce = new Set();   // keys _logOnce has already said — once per process, across every reload
+  const _logOnce = (key, m) => { if (_loggedOnce.has(key)) return; _loggedOnce.add(key); onLog(m); };
   let _bash;              // win32: the POSIX bash command beats run under (null = none found → shell: true); resolved per collect()
 
   // finestMs is the min RECURRING cadence — `when:` one-shots ride the tick and
@@ -613,7 +676,7 @@ export function createHeartbeatLoader({
         if (raw === false) { onLog('alive disabled (heartbeats.alive: false) — the supervisor will respawn-loop with backoff until restored'); continue; }
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
-      const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns: null, agents: agentsMap, timeZone, nowMs, onLog });
+      const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns: null, agents: agentsMap, timeZone, nowMs, onLog, logOnce: _logOnce });
       if (e) entries.push(e);
     }
 
@@ -637,7 +700,7 @@ export function createHeartbeatLoader({
     for (const { dir, ns, heartbeats, heartbeatSource, beingWritten } of set.entities.values()) {
       for (const [name, raw] of Object.entries(heartbeats)) {
         if (!raw || typeof raw !== 'object') { onLog(`${ns}:${name}: not a heartbeat block — skipped`); continue; }
-        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, beingWritten: beingWritten.has(name), timeZone, nowMs, onLog });
+        const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, beingWritten: beingWritten.has(name), timeZone, nowMs, onLog, logOnce: _logOnce });
         if (e) entries.push(e);
       }
     }
@@ -657,10 +720,16 @@ export function createHeartbeatLoader({
   // template (`{stdout}` → that text) to the injected dispatchPost BEFORE the outcome line, which
   // then says what was posted or why nothing was. It settles on 'close', not 'exit': stdout can
   // still be draining when 'exit' fires.
+  //
+  // A BEING-WRITTEN command never reaches the spawn below (2026-09-28): it goes to boot's injected
+  // spawnBoxed, which refuses it unless the conversation runs boxed and otherwise hands back the
+  // launcher's child — the command running as the conversation's pool account, in its room. That
+  // child is watched EXACTLY like one spawned here (same outcome line, same post:, same overlap
+  // release); a refusal is a FAILED run carrying boot's reason. None of the operator's env reaches it.
   function _spawnAction(entry, stats, startedMs, onSettle) {
     const { queueDepth = 0, oldestMs = 0 } = stats?.() ?? {};
     const childEnv = { ...env, EGPT_HOME: egptHome, EGPT_QUEUE_DEPTH: String(queueDepth), EGPT_QUEUE_OLDEST_MS: String(oldestMs) };
-    const { command, cwd, post, ns } = entry.action;
+    const { command, cwd, post, ns, beingWritten, scriptPath } = entry.action;
     let settled = false;
     let stdout = '';
     const settle = async (failure) => {
@@ -681,6 +750,17 @@ export function createHeartbeatLoader({
       onLog(failure ? `${entry.name}: FAILED in ${el} — ${failure}` : `${entry.name}: ok in ${el}${posted}`);
       onSettle?.();
     };
+    const watch = (child) => {
+      if (post) { child?.stdout?.setEncoding?.('utf8'); child?.stdout?.on?.('data', (d) => { stdout += d; }); }
+      child?.on?.('error', (e) => settle(e?.message ?? e));
+      child?.on?.(post ? 'close' : 'exit', (code, signal) => settle(code === 0 ? null : (signal ? `killed by ${signal}` : `exited ${code}`)));
+    };
+    if (beingWritten) {
+      if (typeof spawnBoxed !== 'function') { settle('no boxed runner wired — boot injects spawnBoxed'); return; }
+      // scriptPath rides along so boot can hand textecute's session the credential (a command gets none)
+      Promise.resolve().then(() => spawnBoxed({ ns, name: entry.name, cwd, command, ...(scriptPath ? { scriptPath } : {}) })).then(watch, (e) => settle(e?.message ?? e));
+      return;
+    }
     let child;
     // win32 + a resolved POSIX bash → `bash -c <command>` for a DECLARED beat; the injected
     // liveness beat and every other case → the platform shell (/bin/sh, or cmd.exe — for a
@@ -688,9 +768,7 @@ export function createHeartbeatLoader({
     const bash = entry.action.nativeShell ? null : _bash;
     try { child = bash ? spawn(bash, ['-c', command], { cwd, env: childEnv }) : spawn(command, { shell: true, cwd, env: childEnv }); }
     catch (e) { settle(`spawn failed: ${e?.message ?? e}`); return; }
-    if (post) { child?.stdout?.setEncoding?.('utf8'); child?.stdout?.on?.('data', (d) => { stdout += d; }); }
-    child?.on?.('error', (e) => settle(e?.message ?? e));
-    child?.on?.(post ? 'close' : 'exit', (code, signal) => settle(code === 0 ? null : (signal ? `killed by ${signal}` : `exited ${code}`)));
+    watch(child);
   }
 
   // An `agent:` action: read the script FRESH (an edited *.x.md takes effect on the next
@@ -701,7 +779,7 @@ export function createHeartbeatLoader({
   // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
   // which is the only trace a turn otherwise leaves (its output is the script's business).
   async function _dispatchTurn(entry, startedMs, onSettle) {
-    const { being, script, prompt: line, cwd, ns, beingWritten } = entry.action;
+    const { being, script, prompt: line, cwd, ns, beingWritten, browser } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
       // A `prompt:` beat hands its one-liner over AS the trigger text — textecute's frame is for scripts.
@@ -710,6 +788,7 @@ export function createHeartbeatLoader({
         const path = resolvePath(cwd, script);
         prompt = framePrompt(basename(path), await readFile(path, 'utf8'));
       }
+      if (browser) prompt = `${await _browserPreface(entry.name)}${prompt}`;
       const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten });
       const reply = _replyPrefix(res?.text);
       onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
@@ -720,12 +799,26 @@ export function createHeartbeatLoader({
     }
   }
 
+  // A `browser: true` turn asks boot's startBrowser — /chrome's own launch path, which does nothing
+  // when CDP already answers — before the turn runs. A browser that will not come up does NOT cancel
+  // the turn (operator 2026-09-28: "agent can manage it"): the prompt opens with ONE line saying why,
+  // so the being can report it, and the log says the same. Never throws.
+  async function _browserPreface(name) {
+    let r;
+    try { r = typeof startBrowser === 'function' ? await startBrowser() : { ok: false, detail: 'no browser start wired — boot injects startBrowser' }; }
+    catch (e) { r = { ok: false, detail: e?.message ?? String(e) }; }
+    if (r?.ok) return '';
+    const why = String(r?.detail ?? r?.reason ?? 'no reason given').replace(/\s+/g, ' ').trim();
+    onLog(`${name}: browser not started — ${why}`);
+    return `[heartbeat] the browser this beat asked for could not be started — ${why}\n\n`;
+  }
+
   // Run an entry's action, whichever kind it is. ONE fire path, so the overlap guard, the
   // one-shot latch below and the FIRE LINE cover a turn exactly as they cover a spawn — the
   // fire line belongs here for that reason; the outcome differs per kind, so it does not.
   function _fire(entry, stats, onSettle) {
     const a = entry.action;
-    onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script ?? `prompt: ${_replyPrefix(a.prompt)}`}` : `${entry.name}: fire command — ${a.command}`);
+    onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script ?? `prompt: ${_replyPrefix(a.prompt)}`}` : `${entry.name}: fire ${a.beingWritten ? 'boxed ' : ''}command — ${a.command}`);
     const startedMs = now();
     if (a.kind === 'turn') { _dispatchTurn(entry, startedMs, onSettle); return; }
     _spawnAction(entry, stats, startedMs, onSettle);
@@ -747,16 +840,30 @@ export function createHeartbeatLoader({
 
   // A one-shot action: fires exactly once, at/after entry.whenMs. `fired` is set
   // BEFORE the fire so a re-entrant tick can never double-fire it.
+  //
+  // ONCE ACROSS A RELOAD AND A RESTART TOO (operator 2026-09-28: beings write reminders with when:,
+  // and "do not delete, comment or archive" them). `fired` lives on the entry, and every inbound
+  // message reloads — which built a FRESH entry, so inside the grace a reminder that had just gone out
+  // went out again, and a restart inside it did the same. So the fire is recorded in daily:'s ledger,
+  // under the same full name, as the INSTANT it fired for (ISO): set and written BEFORE the fire, as
+  // daily: does. An edited when: is a different instant, so it is a new one-shot and fires.
+  // And the same grace as daily:, at the tick as at load: a tick that first finds it due more than
+  // _WHEN_GRACE_MS late (a sleep, a wedge) skips it — logged once, never fired later.
   function _makeWhenBeat(entry, stats) {
-    return (nowTick) => {
+    return async (nowTick) => {
       if (entry.fired) return;
       if (nowTick < entry.whenMs) return;
       entry.fired = true;
+      const at = new Date(entry.whenMs).toISOString();
+      if (_ledger[entry.name] === at) return;
+      if (nowTick - entry.whenMs > _WHEN_GRACE_MS) { _logOnce(`stale:${entry.name}`, `${entry.name}: stale when (${entry.rawWhen}) — not refiring`); return; }
+      _ledger[entry.name] = at;
+      await _writeLedger();
       _fire(entry, stats);
     };
   }
 
-  // The daily ledger: read ONCE (a missing file is an empty ledger), then the in-memory copy is
+  // The fire ledger (daily: and when:): read ONCE (a missing file is an empty ledger), then the in-memory copy is
   // the truth for this process — a reload keeps it, a restart re-reads what the last fire wrote.
   async function _ensureLedger() {
     if (_ledger) return;
@@ -837,7 +944,7 @@ export function createHeartbeatLoader({
     _reloading = true;
     try {
       const { entries, finestMs } = await collect();   // collect() re-runs the resolver's walk
-      if (entries.some((e) => e.daily)) await _ensureLedger();
+      if (entries.some((e) => e.daily || e.whenMs != null)) await _ensureLedger();
       _registry.clear();   // drop the whole old set — the fresh collect() rebuilds it
       for (const entry of entries) _registerBeat(entry);
       if (finestMs != null && _bootTickMs > 0 && finestMs < _bootTickMs) {
@@ -867,7 +974,7 @@ export function createHeartbeatLoader({
     const entries = _entries ?? (await collect()).entries;
     _stats = stats;
     _bootTickMs = tickMs;
-    if (entries.some((e) => e.daily)) await _ensureLedger();   // before any daily beat can fire
+    if (entries.some((e) => e.daily || e.whenMs != null)) await _ensureLedger();   // before any daily or when: beat can fire
     for (const entry of entries) _registerBeat(entry);
     await _writeReadonly(entries);
     await resolver.writeReadonly();   // the other two aggregates land with this one
@@ -889,7 +996,9 @@ export function createHeartbeatLoader({
     else if (e.action.scriptPath) { row.action = `script_path: ${e.action.scriptPath}`; row.command = e.action.command; }
     else row.action = `command: ${e.action.command}`;
     if (e.action.post) row.post = e.action.post;
+    if (e.action.browser) row.browser = true;
     if (e.action.nativeShell && _bash) row.shell = 'native (liveness never runs under the POSIX bash)';
+    if (e.action.kind === 'command' && e.action.beingWritten) row.shell = 'boxed — the conversation\'s pool account, through setup/sandbox-logon-launcher.ps1';
     row.cwd = e.action.cwd;
     return row;
   }

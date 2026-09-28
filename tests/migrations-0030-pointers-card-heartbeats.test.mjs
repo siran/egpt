@@ -159,10 +159,12 @@ describe('0030 through the runner', () => {
     expect(baks(h)).toEqual([]);
   });
 
+  // The repo card's description of the line is 0035's since 2026-09-28 (the three kinds of beat);
+  // what 0030 checks for — the ./heartbeats/ pointer itself — is what it must still find.
   it('the REPO\'s card already names it, so a fresh seed needs nothing - and the migration never touches it', async () => {
     const repoCard = join(import.meta.dirname, '..', 'config', 'skeletons', 'room', '30-pointers.md');
     const before = readFileSync(repoCard);
-    expect(before.toString('utf8')).toContain(HEARTBEATS_LINE);
+    expect(before.toString('utf8')).toMatch(/^ {2}\.\/heartbeats\/ {5}my schedule — one <name>\.yaml per beat/m);
     await runMigrations({ through: '0030', egptHome: withLedger(home()), elevated: false, platform: 'win32', log: () => {} });
     expect(readFileSync(repoCard).equals(before)).toBe(true);
   });

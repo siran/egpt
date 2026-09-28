@@ -278,7 +278,8 @@ export function createConfigResolver({
       // the conversation's, where setup/sandbox-logon-launcher.ps1 grants the leased pool account
       // Modify. So a file never takes a name the operator's rungs above already declare (it could
       // otherwise replace or disable their beat), and every name it does add is in `beingWritten`,
-      // which the loader holds to a TURN, never a command. Same `<ns>:<name>` as any other entry,
+      // which the loader runs BOXED or not at all (a command in the conversation's box, a turn only
+      // into a boxed being — heartbeat-loader.mjs, 2026-09-28). Same `<ns>:<name>` as any other entry,
       // so the daily ledger row is shared: a beat moved into a file cannot fire twice in a day.
       const beingWritten = new Set();
       let files = {};

@@ -2176,6 +2176,20 @@ describe('brainpool — accessLevel, the resolved level the per-chat guard compa
   });
 });
 
+// A HEARTBEAT COMMAND A BEING WROTE has no being of its own (operator 2026-09-28): it runs in the
+// box or not at all, so boot asks, for each being resident in the conversation, whether it resolves
+// boxed there — the SAME four rungs, read the same way, that pick a turn's OS session.
+describe('brainpool — sandboxed, the resolved box and the rung that decided it (operator 2026-09-28)', () => {
+  it('the level forces the box; an explicit false unboxes a regular being; silence is the platform', async () => {
+    const level = harness([], { seedAgents: { e: { access_level: 'sandbox', sandboxed: false } }, platform: 'linux' });
+    expect(await level.brain.sandboxed('e', ev)).toEqual({ value: true, rung: 'level' });
+    const optedOut = harness([], { seedAgents: { e: { access_level: 'regular', sandboxed: false } }, platform: 'win32' });
+    expect(await optedOut.brain.sandboxed('e', ev)).toEqual({ value: false, rung: 'conversation' });
+    expect(await harness([], { platform: 'linux' }).brain.sandboxed('e', ev)).toEqual({ value: false, rung: 'platform' });
+    expect(await harness([], { platform: 'win32' }).brain.sandboxed('e', ev)).toEqual({ value: true, rung: 'platform' });
+  });
+});
+
 // ── accessLevel GLOBAL-DEFAULT TIER (operator 2026-08-15): access_level used to ONLY have a
 //    per-conversation override (getBeing(...).accessLevel) — no node-level default at all. Now
 //    config.yaml's agents.<being>.conversation_defaults.access_level is a fallback, read via

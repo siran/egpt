@@ -84,9 +84,16 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
   });
 
   // 2026-09-25: a being asked for a reminder had nowhere a heartbeat could live. The card tells
-  // it where, and what may go there — one file per beat, and only a turn.
-  it('names ./heartbeats/ — one file per beat, turns only — and the Room tree really creates it', () => {
-    expect(CARD).toMatch(/\.\/heartbeats\/ .*one <name>\.yaml per beat, turns only/);
+  // it where, and what may go there — one file per beat. Since 2026-09-28 (operator: "there are
+  // different types of yaml heartbeats") that is three kinds: a structural command run in the
+  // being's own box, a browser turn, a pure-AI turn — never "turns only" again.
+  it('names ./heartbeats/ — one file per beat, the three kinds — and the Room tree really creates it', () => {
+    expect(CARD).toMatch(/\.\/heartbeats\/ .*one <name>\.yaml per beat, three kinds:/);
+    expect(CARD).toMatch(/structural {2}when:\/daily: \+ command:, run as me in my box;/);
+    expect(CARD).toMatch(/post: "\{stdout\}" says its output in this chat/);
+    expect(CARD).toMatch(/browser {5}browser: true \+ agent: \+ prompt:/);
+    expect(CARD).toMatch(/pure AI {5}agent: \+ prompt:/);
+    expect(CARD).not.toContain('turns only');
     expect(CONV.treeDirs().map((d) => basename(d))).toContain('heartbeats');
   });
 

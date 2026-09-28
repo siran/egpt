@@ -26,7 +26,7 @@ import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, 
 import { crossAccountChatKey } from '../bridges/beeper.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
-import { createSandboxCliSession } from '../sandbox-cli-session.mjs';
+import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 // THE liveness question for a Beeper install, already written and already tested
@@ -34,10 +34,10 @@ import { reapPort } from '../tools/reap-port.mjs';
 // re-implemented — a second probe here would be a second thing to get wrong about what a 401 means.
 import { probe as probeBeeperEndpoint } from '../tools/beeper-whoami.mjs';
 import * as cdp from '../tools/cdp.mjs';
-import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT } from '../room-core.mjs';
+import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, LOBBY_SLUG, fixedSlugFor,
+  CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, LOBBY_SLUG, fixedSlugFor,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile } from '../stop-guard.mjs';
 import { createLasso } from '../lasso.mjs';
@@ -56,7 +56,7 @@ import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
 import { createSender, makeOutbound } from './sender.mjs';
-import { createBrainPool, isSandboxContradiction } from './brainpool.mjs';
+import { createBrainPool, isSandboxContradiction, globalReadPathsOf, sandboxOauthTokenOf } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
 import { createPeerLiveness, tcpProbe } from './peer-liveness.mjs';
@@ -602,6 +602,56 @@ export function chatIdForEntity(state, ns) {
   }
   if (fixedSlugFor(surface, slug) === slug) return { surface, chatId: slug };
   return null;
+}
+
+// A HEARTBEAT COMMAND A BEING WROTE RUNS BOXED OR NOT AT ALL (operator 2026-09-27: "a heartbeat of a
+// sandboxed being must also run sandboxed"; 2026-09-28: "being are allowed any command, since they are
+// sandboxed and the command runs under their unprivileged account"). A turn from <entity>/heartbeats/
+// names its being and brainpool.turn refuses it unless THAT being resolves boxed. A command names no
+// being — so the answer is asked of every being RESIDENT in the conversation (residentsOf: every
+// `agents.<being>` block, i.e. every being that has run there and so could have written the file),
+// and ALL of them must resolve boxed. One unboxed resident, or none at all, and the conversation is
+// not a boxed one: the command is refused, loudly, naming who and which rung. `sandboxedOf` is
+// brainpool's `sandboxed` — the same resolution that picks a turn's OS session. Returns the
+// conversation's address; the runner itself is sandbox-cli-session.mjs's spawnBoxedCommand.
+export async function boxedConversationFor(state, ns, sandboxedOf) {
+  const target = chatIdForEntity(state, ns);
+  if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+  const refused = 'a command a being wrote runs in its box or not at all; declare the beat in the operator\'s config (config/conversations.yaml, config/rooms.yaml)';
+  const residents = residentsOf(getContact(state, target.surface, target.chatId)?.entry);
+  if (!residents.length) throw new Error(`refused — no being has run in ${ns}, so none resolves boxed there; ${refused}`);
+  for (const being of residents) {
+    const { value, rung } = await sandboxedOf(being, target);
+    if (value !== true) throw new Error(`refused — ${being} would run UNBOXED in ${ns} (sandboxed: ${JSON.stringify(value)}, from the ${rung} rung); ${refused}`);
+  }
+  return target;
+}
+
+// A BEING'S OWN COMMAND BEAT (<entity>/heartbeats/, operator 2026-09-28) RUNS IN ITS BOX — the loader's
+// injected `spawnBoxed`. Refused unless every being resident in the conversation resolves boxed
+// (boxedConversationFor above); otherwise the launcher runs it as the pool account it leases for the
+// conversation's folder, in that folder, with the node's read mounts (sandbox-cli-session.mjs
+// spawnBoxedCommand — the launch a boxed turn makes, a bash where the CLI would be). A command too long
+// for the launcher's 1024-character command line is written beside the beat, as
+// heartbeats/<name>.command.sh, and run from there. The loader treats the child like any other.
+// A `script_path:` beat (the loader passes its scriptPath) runs textecute, which opens its own Claude
+// session, so it is handed sandbox_oauth_token exactly as a boxed turn is (brainpool.mjs
+// sandboxOauthTokenOf — the one reading of it) and REFUSED, like a turn, when there is none: without it
+// the session dies at the API with a message naming neither the key nor the fix. A plain `command:`
+// beat is handed no credential. Never logs the value. `platform` / `gitBashCandidates` are test seams.
+export function createHeartbeatBoxRunner({ loadState, sandboxedOf, getConfig, spawn, onLog = () => {}, platform, gitBashCandidates }) {
+  return async ({ ns, name, cwd, command, scriptPath }) => {
+    await boxedConversationFor(await loadState(), ns, sandboxedOf);
+    const say = (m) => onLog(`${name}: ${m}`);
+    const sandboxOauthToken = scriptPath ? sandboxOauthTokenOf(getConfig()) : '';
+    if (scriptPath && !sandboxOauthToken) throw new Error('refused — a script_path: beat runs textecute\'s own Claude session in the box, and config.yaml\'s `sandbox_oauth_token` is unset or blank: it is the only credential a boxed session ever gets (see sandbox-cli-session.mjs, OAUTH_REMEDY)');
+    return spawnBoxedCommand({
+      targetFolder: cwd, command,
+      commandFile: join(HEARTBEATS_DIR, `${name.slice(ns.length + 1)}.command.sh`),
+      readMounts: globalReadPathsOf(getConfig()?.global_read_paths, say),
+      sandboxOauthToken, spawn, platform, gitBashCandidates, onLog: say,
+    });
+  };
 }
 
 // Enumerate the entity folders: conversations/<surface>/<slug>/, rooms/<slug>/ and
@@ -1267,7 +1317,7 @@ export async function boot({
   // here, before the loader, because the loader's collect() drives its scan.
   const configResolver = createConfigResolver({
     getConfig, loadRegistry: _loadState, listEntityDirs, readEntityConfig,
-    readEntityBeats: readHeartbeatFiles,   // <entity>/heartbeats/*.yaml — a being's own beats, turns only
+    readEntityBeats: readHeartbeatFiles,   // <entity>/heartbeats/*.yaml — a being's own beats, run boxed or not at all
     egptHome: EGPT_HOME, io: { writeFile, mkdir },
     onLog: (m) => log.line?.(`[config] ${m}`),
   });
@@ -3079,8 +3129,19 @@ export async function boot({
     log.line?.(`[heartbeat] ${name}: NO CONNECTION HOLDS ${target.chatId} (${ns}) — asked ${[...connectionOfBridge.values()].map((c) => `'${c}'`).join(', ')}; its sends will fail until the chat is reachable`);
   };
 
+  // A BEING'S OWN COMMAND BEAT RUNS IN ITS BOX — see createHeartbeatBoxRunner. brainpool answers
+  // "boxed?" with the same resolution a turn's OS session is picked by.
+  const spawnHeartbeatBoxed = createHeartbeatBoxRunner({
+    loadState: _loadState, sandboxedOf: (being, ev) => brain.sandboxed(being, ev), getConfig,
+    spawn: spawnFn, onLog: (m) => log.line?.(`[heartbeat] ${m}`),
+  });
+
   const heartbeatLoader = createHeartbeatLoader({
     resolver: configResolver, aliveMs, aliveCommand, now, dispatchTurn: dispatchHeartbeatTurn, dispatchPost: dispatchHeartbeatPost, placeChat: placeHeartbeatChat,
+    spawnBoxed: spawnHeartbeatBoxed,
+    // `browser: true` beats start the browser through /chrome's own launch path first — the one the
+    // being link's `browser start` takes (commands.startBrowser).
+    startBrowser: () => commands.startBrowser(),
     // Command beats inherit process.env + EGPT_HOME + the queue-stats vars (the
     // loader adds those). The spine pid is no longer an env var — identity lives in
     // state/spine.pid now, and liveness is the alive.txt mtime, so a custom beat

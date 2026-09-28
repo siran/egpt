@@ -237,8 +237,14 @@ const KNOWN_PLATFORM_DEBT = [
   },
   {
     file: 'src/sandbox-cli-session.mjs',
-    code: "_spawn('powershell.exe', psArgs, spawnOpts)",
+    // (the argv moved into the shared launcherArgv 2026-09-28 — same spawn, same guard)
+    code: "_spawn('powershell.exe', launcherArgv(",
     why: 'FOUND BY THIS SCAN 2026-09-04, GUARDED THE SAME DAY. createSandboxCliSession throws BEFORE this spawn whenever the platform is not win32 ("sandboxed: true does not support platform=<p> - OS-level sandboxing is Windows-only on this build..."), the same loud shape as the engine check above it. So the bare ENOENT is gone and a sandboxed:true is REFUSED rather than silently downgraded. THE DEBT GREW ON 2026-09-23 and this entry now carries it: the access-level default became `sandbox` (operator: "all agents sandboxed, but the meta engineers"), and that level FORCES the box on platform-blind (resolveSandboxed rung 1), so off Windows a being that declares NO access_level no longer falls to the platform-aware default - it reaches this refusal on every turn. The refusal is loud and names the remedy (an explicit `access_level: regular`, since `sandboxed: false` is dead config under the forced level), which is the honest shape while the machinery is Windows-only - but a posix node now needs that line in its config where it needed nothing before. REAL FIX, unchanged: setup/sandbox-logon-launcher.ps1 grows a POSIX equivalent.',
+  },
+  {
+    file: 'src/sandbox-cli-session.mjs',
+    code: "spawn('powershell.exe', argv, { stdio:",
+    why: 'THE SAME LAUNCHER, FOR A BEING\'S HEARTBEAT COMMAND (added 2026-09-28, operator: "structural: no ai … the command runs under their unprivileged account"). spawnBoxedCommand runs a command a being wrote in <room>/heartbeats/ through setup/sandbox-logon-launcher.ps1, built by the same launcherArgv as the entry above, and it throws BEFORE this spawn whenever the platform is not win32 ("the box is Windows-only on this build") — the heartbeat run then FAILS, loudly, and the command runs nowhere else (never falling back to the spine\'s own shell, which would be the operator). Same debt as the entry above, same REAL FIX: a POSIX equivalent of the launcher.',
   },
   {
     file: 'src/spine/commands.mjs',

@@ -6,7 +6,11 @@
   ./media/          files from this chat
   ./files/          the operator's shelf — what he put here for me
   ./desktop/        mine — what I'm working on right now
-  ./heartbeats/     my schedule — one <name>.yaml per beat, turns only (agent: + prompt:)
+  ./heartbeats/     my schedule — one <name>.yaml per beat, three kinds:
+                    structural  when:/daily: + command:, run as me in my box;
+                                post: "{stdout}" says its output in this chat
+                    browser     browser: true + agent: + prompt:
+                    pure AI     agent: + prompt:
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 

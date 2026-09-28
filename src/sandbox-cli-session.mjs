@@ -30,7 +30,7 @@
 // stdio to be, and it runs from the same cwd).
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -387,9 +387,7 @@ export function createSandboxCliSession(options = {}) {
   // NAME=PATH STRINGS, the -SetEnv shape, because ConvertFrom-JsonArgv parses a JSON array of
   // strings and nothing else (see the TWO FLAGS note above). An entry missing either half is
   // dropped, and none at all contributes ZERO argv elements.
-  const readMounts = (Array.isArray(options.sandboxReadMounts) ? options.sandboxReadMounts : [])
-    .filter((m) => typeof m?.name === 'string' && m.name && typeof m?.path === 'string' && m.path)
-    .map((m) => `${m.name}=${m.path}`);
+  const readMounts = readMountEntriesOf(options.sandboxReadMounts);
 
   // THE BASH THE CLI'S OWN Bash TOOL WILL SPAWN — see GIT_BASH_ENV above for the measured defect
   // and for why msys64 is the first candidate. ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
@@ -435,46 +433,7 @@ export function createSandboxCliSession(options = {}) {
     // options.cwd only for the (untested-in-practice) case spawnProc ran
     // with no cwd at all.
     const targetFolder = spawnOpts?.cwd ?? options.cwd;
-    // ONE ARGV ELEMENT PER LAUNCHER PARAMETER, AND EVERY LIST IS A JSON ARRAY. This is THE one
-    // place psArgs is built and the contract is the launcher's own PARAMS header. Every
-    // JSON.stringify() below is LOAD-BEARING, not tidiness — passed as bare tokens instead,
-    // PowerShell's parameter binder:
-    //   * ATE the inner argv's `--verbose`, prefix-matching [CmdletBinding()]'s common
-    //     -Verbose switch, which made `--print --output-format stream-json` illegal and killed
-    //     every sandboxed ccode turn before the model ("requires --verbose");
-    //   * bound only the FIRST value of a multi-value flag and spilled the rest into the inner
-    //     argv, silently (`-SharePath A B` -> SharePath=[A], InnerArgs=[B, ...]);
-    //   * rejected the empty `--setting-sources ''` element outright.
-    // Inside a JSON string none of the three defects has a token the binder can see.
-    //
-    // ORDER: the optional flags stay BEFORE -InnerBin and -InnerArgs comes last. Nothing binds
-    // by position any more, so this is purely for readers — the argv reads in the same order
-    // the launcher's param block declares.
-    const psArgs = [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass',
-      '-File', LAUNCHER_PATH,
-      '-TargetFolder', targetFolder,
-      // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
-      // defaults ('' = "no entries") apply. That is the common case and it must stay unchanged.
-      ...(sharePaths.length ? ['-SharePath', JSON.stringify(sharePaths)] : []),
-      // The read-only class, same shape, its own flag. Absent entirely when there are none, so
-      // the argv of every being that declares no read-only path is byte-identical to before.
-      ...(sharePathsReadOnly.length ? ['-SharePathReadOnly', JSON.stringify(sharePathsReadOnly)] : []),
-      // ONE -SetEnv element carrying every NAME=VALUE this turn needs, exactly as before — the
-      // store's CLAUDE_CONFIG_DIR is a second ENTRY in that one JSON array, not a second flag.
-      // (The launcher's Set-EnvBlockEntry re-sorts the block itself, so the order here is only
-      // for readers.) A codex/pi turn has no store, so with a token alone this is byte-identical
-      // to what it was, and with neither it still contributes ZERO argv elements.
-      ...(setEnv.length ? ['-SetEnv', JSON.stringify(setEnv)] : []),
-      // The node's read mounts, same shape, its own flag; absent when the node has none.
-      ...(readMounts.length ? ['-ReadMounts', JSON.stringify(readMounts)] : []),
-      '-InnerBin', bin,
-      // The WHOLE inner argv as ONE element. Empty elements, `--flags` and repeated flags all
-      // ride INSIDE the JSON, verbatim, and the launcher's ConvertFrom-JsonArgv hands them to
-      // CreateProcessWithLogonW one array slot each.
-      '-InnerArgs', JSON.stringify(Array.isArray(args) ? args : []),
-    ];
-    const proc = _spawn('powershell.exe', psArgs, spawnOpts);
+    const proc = _spawn('powershell.exe', launcherArgv({ targetFolder, sharePaths, sharePathsReadOnly, setEnv, readMounts, bin, args }), spawnOpts);
     if (onLog) tapLaunchLine(proc?.stderr, onLog);
     return proc;
   }
@@ -490,6 +449,113 @@ export function createSandboxCliSession(options = {}) {
     createWarmCliSession({ ...options, spawn: sandboxSpawn, ...(threadId ? { newSessionId: threadId } : {}) }),
     oauthToken.length,
   ), link);
+}
+
+// ONE ARGV ELEMENT PER LAUNCHER PARAMETER, AND EVERY LIST IS A JSON ARRAY. This is THE one place
+// the launcher's argv is built — a boxed turn's (sandboxSpawn) and a being's boxed heartbeat
+// command's (spawnBoxedCommand) — and the contract is the launcher's own PARAMS header. Every
+// JSON.stringify() below is LOAD-BEARING, not tidiness — passed as bare tokens instead,
+// PowerShell's parameter binder:
+//   * ATE the inner argv's `--verbose`, prefix-matching [CmdletBinding()]'s common
+//     -Verbose switch, which made `--print --output-format stream-json` illegal and killed
+//     every sandboxed ccode turn before the model ("requires --verbose");
+//   * bound only the FIRST value of a multi-value flag and spilled the rest into the inner
+//     argv, silently (`-SharePath A B` -> SharePath=[A], InnerArgs=[B, ...]);
+//   * rejected the empty `--setting-sources ''` element outright.
+// Inside a JSON string none of the three defects has a token the binder can see.
+//
+// ORDER: the optional flags stay BEFORE -InnerBin and -InnerArgs comes last. Nothing binds
+// by position any more, so this is purely for readers — the argv reads in the same order
+// the launcher's param block declares.
+function launcherArgv({ targetFolder, sharePaths = [], sharePathsReadOnly = [], setEnv = [], readMounts = [], bin, args }) {
+  return [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', LAUNCHER_PATH,
+    '-TargetFolder', targetFolder,
+    // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
+    // defaults ('' = "no entries") apply. That is the common case and it must stay unchanged.
+    ...(sharePaths.length ? ['-SharePath', JSON.stringify(sharePaths)] : []),
+    // The read-only class, same shape, its own flag. Absent entirely when there are none, so
+    // the argv of every being that declares no read-only path is byte-identical to before.
+    ...(sharePathsReadOnly.length ? ['-SharePathReadOnly', JSON.stringify(sharePathsReadOnly)] : []),
+    // ONE -SetEnv element carrying every NAME=VALUE this turn needs, exactly as before — the
+    // store's CLAUDE_CONFIG_DIR is a second ENTRY in that one JSON array, not a second flag.
+    // (The launcher's Set-EnvBlockEntry re-sorts the block itself, so the order here is only
+    // for readers.) A codex/pi turn has no store, so with a token alone this is byte-identical
+    // to what it was, and with neither it still contributes ZERO argv elements.
+    ...(setEnv.length ? ['-SetEnv', JSON.stringify(setEnv)] : []),
+    // The node's read mounts, same shape, its own flag; absent when the node has none.
+    ...(readMounts.length ? ['-ReadMounts', JSON.stringify(readMounts)] : []),
+    '-InnerBin', bin,
+    // The WHOLE inner argv as ONE element. Empty elements, `--flags` and repeated flags all
+    // ride INSIDE the JSON, verbatim, and the launcher's ConvertFrom-JsonArgv hands them to
+    // CreateProcessWithLogonW one array slot each.
+    '-InnerArgs', JSON.stringify(Array.isArray(args) ? args : []),
+  ];
+}
+
+// brainpool.mjs's globalReadPathsOf list ({name, path}) as the launcher's -ReadMounts entries — see
+// THE NODE'S READ MOUNTS in createSandboxCliSession, the first of the two callers.
+function readMountEntriesOf(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((m) => typeof m?.name === 'string' && m.name && typeof m?.path === 'string' && m.path)
+    .map((m) => `${m.name}=${m.path}`);
+}
+
+// A HEARTBEAT COMMAND A BEING WROTE, RUN IN ITS BOX (operator 2026-09-28: "structural: no ai.
+// usually datetime and command. being are allowed any command, since they are sandboxed and the
+// command runs under their unprivileged account"; 2026-09-27: "a heartbeat of a sandboxed being must
+// also run sandboxed"). The spine's own command beats run `<bash> -c <command>` as the OPERATOR
+// (heartbeat-loader.mjs _spawnAction); a command from <room>/heartbeats/ must never run there, so
+// boot hands it here instead, after refusing it for a conversation that does not run boxed.
+//
+// IT IS THE LAUNCH A TURN MAKES, WITH A BASH WHERE THE CLI WOULD BE: the same launcherArgv, the
+// conversation's folder as -TargetFolder — so the launcher leases a pool account for THAT folder,
+// grants it the Modify ACE on it, and runs the inner process with its cwd on the `egpt` mount of it,
+// i.e. in the room — and the same read mounts a boxed turn gets. -SetEnv carries the bash pair a
+// boxed CLI is handed (CLAUDE_CODE_GIT_BASH_PATH + MSYS2_PATH_TYPE=inherit, see GIT_BASH_ENV above)
+// and nothing else of a turn's: no CLI store, no share path, none of the operator's own environment.
+// THE ONE EXCEPTION IS THE CREDENTIAL (operator 2026-09-28), and only when the caller hands one: a
+// `script_path:` beat runs textecute, which opens its own Claude session in the box, so it is handed
+// sandbox_oauth_token exactly as a boxed turn is — CLAUDE_CODE_OAUTH_TOKEN (OAUTH_ENV_NAME above), in
+// the same one -SetEnv element, normalised the same way, never logged. A plain `command:` beat gets
+// none. The bash is THE resolver's (resolveSandboxGitBash, msys64 first, never WSL), the one the
+// loader runs the operator's beats under, handed `-c <command>` exactly as they are (measured live
+// 2026-09-28 as egpt-sbx-00 through the launcher: the non-login `bash -c` finds /usr/bin's date and
+// cat, node and git, and PWD is the room's mount).
+//
+// THE 1024-CHARACTER CEILING. The launcher's Invoke-AsLeasedAccount BUDGET note: CreateProcessWithLogonW
+// refuses (E_INVALIDARG, measured 2026-08-26) a command line over 1024 characters. What it is handed
+// is InnerBin and InnerArgs, each through Format-Win32Arg, which at WORST doubles a character (a `"`
+// becomes `\"`, backslashes before one double) plus two quotes. So `-c <command>` goes inline only
+// when that worst case fits; otherwise the command is WRITTEN TO A FILE IN THE ROOM (`commandFile`,
+// relative to it — the caller names it) and bash runs the file by its relative path, which resolves
+// from the inner cwd, the room's own mount. The file sits under the room's ACL, so the leased account
+// the launcher grants reads it; the argv then carries only a short path. Not stdin: a command that
+// reads stdin itself would eat its own script.
+//
+// THROWS, before any spawn, off win32 (there is no box) and with no POSIX bash — the caller's run
+// then FAILS, loudly, and nothing runs anywhere else.
+const LOGON_CMDLINE_MAX = 1024;
+export function spawnBoxedCommand({ targetFolder, command, commandFile, readMounts, sandboxOauthToken, spawn = nodeSpawn, platform = process.platform, gitBashCandidates, writeFile = writeFileSync, onLog = null } = {}) {
+  if (platform !== 'win32') throw new Error(`refused — a command a being wrote runs in its box, and the box is Windows-only on this build (platform=${platform})`);
+  const bash = resolveSandboxGitBash(gitBashCandidates);
+  if (!bash) throw new Error(`refused — no POSIX bash for the box: none of ${GIT_BASH_CANDIDATES.join(', ')} exists`);
+  let args = ['-c', command];
+  if (bash.length + 2 * command.length + 8 > LOGON_CMDLINE_MAX) {
+    writeFile(join(targetFolder, commandFile), `${command}\n`, 'utf8');
+    args = [commandFile.replaceAll('\\', '/')];
+  }
+  const oauthToken = typeof sandboxOauthToken === 'string' ? sandboxOauthToken.trim() : '';   // createSandboxCliSession's normalisation
+  const setEnv = [
+    ...(oauthToken ? [`${OAUTH_ENV_NAME}=${oauthToken}`] : []),
+    `${GIT_BASH_ENV}=${bash}`, MSYS2_PATH_TYPE_ENTRY,
+  ];
+  const argv = launcherArgv({ targetFolder, setEnv, readMounts: readMountEntriesOf(readMounts), bin: bash, args });
+  const proc = spawn('powershell.exe', argv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, cwd: targetFolder });
+  proc?.stdin?.end?.();   // a beat has no input: a command that reads stdin gets EOF, not a wait
+  if (onLog) tapLaunchLine(proc?.stderr, onLog);
+  return proc;
 }
 
 // THE CREDENTIAL DIES WITH ITS SESSION. Mutates close() for withOauthRemedy's reason (a spread

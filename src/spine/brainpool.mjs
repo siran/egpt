@@ -465,6 +465,14 @@ function withNodeAllowedPaths(def, config) {
 // is a junction's name in the pool profile and `src`/`egpt` are the two it already has; the path
 // must carry a drive (a junction targets a local volume) and no quote (the launcher plants it
 // inside a single-quoted scrub command).
+// THE ONE READING OF config.yaml's `sandbox_oauth_token` (see the credential note in turn() below):
+// a boxed turn's, and — operator 2026-09-28 — a boxed heartbeat `script_path:` beat's, whose
+// textecute opens its own Claude session in the box (boot.mjs createHeartbeatBoxRunner). Unset or
+// blank → ''. NEVER LOGGED, by either caller.
+export function sandboxOauthTokenOf(config) {
+  return String(config?.sandbox_oauth_token ?? '').trim();
+}
+
 const GLOBAL_READ_RESERVED = ['src', 'egpt'];
 export function globalReadPathsOf(value, onLog = () => {}) {
   if (value == null) return [];
@@ -1211,7 +1219,7 @@ export function createBrainPool({
       // what it was before this key existed. NEVER LOGGED: the value lands in baseOpts and
       // nowhere else — warm-cli-session.mjs's `warm-cli: spawn ...` line prints the INNER claude
       // argv, which is built AND logged before sandboxSpawn ever wraps it.
-      const sandboxOauthToken = sandboxed === true ? String(getConfig()?.sandbox_oauth_token ?? '').trim() : '';
+      const sandboxOauthToken = sandboxed === true ? sandboxOauthTokenOf(getConfig()) : '';
       // THE OS-LAYER SHARE PATHS (operator 2026-09-05) — `allowed_paths` finally reaching the
       // kernel and not only the CLI flags. Read from the SAME `def` confinementFor reads below
       // (post access-level override, so a tier change moves both layers together) and gated on
@@ -1533,6 +1541,15 @@ export function createBrainPool({
     // resolution stays in resolveConv, read per call, never cached.
     async accessLevel(being, ev) {
       return (await resolveConv(ev, being)).accessLevel;
+    },
+
+    // This conversation's resolved `sandboxed`, with the rung that decided it (operator 2026-09-28).
+    // A heartbeat COMMAND a being wrote runs in the box or not at all, and has no being of its own,
+    // so boot asks for each being resident in the conversation (boot.mjs boxedConversationFor). Same
+    // shape and reason as accessLevel above: the value turn() picks the OS session by, read per call.
+    async sandboxed(being, ev) {
+      const { sandboxed: value, sandboxedRung: rung } = await resolveConv(ev, being);
+      return { value, rung };
     },
 
     // Weave this message into the turn ALREADY streaming for this being+conversation

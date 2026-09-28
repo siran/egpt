@@ -6,6 +6,7 @@
 // loader never touches the real profile.
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHeartbeatLoader, parseFrequency, parseWhen, resolveTimeZone, zonedWallClockToEpoch } from '../src/spine/heartbeat-loader.mjs';
@@ -329,12 +330,13 @@ describe('createHeartbeatLoader — when: one-shots', () => {
     const beat = beatsOf(registry).find((r) => r.name === 'report');
     expect(beat.everyMs).toBe(0);           // one-shots ride the tick, never tighten it
 
-    beat.fn(whenMs - 1000);                 // not due yet
+    const flush = () => new Promise((r) => setTimeout(r, 0));   // the ledger row is written before the fire
+    beat.fn(whenMs - 1000); await flush();  // not due yet
     expect(calls).toHaveLength(0);
-    beat.fn(whenMs);                        // due → fires once
+    beat.fn(whenMs); await flush();         // due → fires once
     expect(calls).toHaveLength(1);
     expect(calls[0].cmd).toBe('node report.js');
-    beat.fn(whenMs + 60_000);               // already fired → never again
+    beat.fn(whenMs + 60_000); await flush();   // already fired → never again
     expect(calls).toHaveLength(1);
   });
 
@@ -376,6 +378,118 @@ describe('createHeartbeatLoader — when: one-shots', () => {
       aliveMs: 0, io: noopIo(), now: () => Date.UTC(2026, 6, 2, 8, 19),
     });
     expect((await loader.collect()).finestMs).toBe(30_000);   // the frequency entry, not the when one
+  });
+
+  // ONCE MEANS ONCE, ACROSS A RELOAD AND A RESTART (operator 2026-09-28: beings write reminders with
+  // when:, and ruled "do not delete, comment or archive" them). Every inbound message reloads, and a
+  // reload built a FRESH entry with `fired: false` — so inside the 2-minute grace a reminder that had
+  // just gone out went out again, and a restart inside it did the same. The ledger daily: already keeps
+  // (state/heartbeats-daily.json, keyed by the full beat name) now holds the instant a when: fired for.
+  describe('fires exactly once, and survives a reload and a restart', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const LEDGER = join('/home', 'state', 'heartbeats-daily.json');
+    const AT = Date.UTC(2026, 8, 28, 9, 0);   // when: 2026-09-28T09:00, default_time_zone UTC
+    const REMIND = { when: '2026-09-28T09:00', command: 'node remind.js' };
+    function makeDisk() {
+      const f = new Map();
+      return { f, ledger: () => JSON.parse(f.get(LEDGER)), io: {
+        writeFile: async (p, c) => { f.set(p, c); }, mkdir: async () => {},
+        readFile: async (p) => { if (!f.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' }); return f.get(p); },
+      } };
+    }
+    // A "restart" is a NEW loader over the SAME disk, exactly as state/ survives a real one.
+    function oneShot({ disk = makeDisk(), clock = AT - 60_000, raw = REMIND } = {}) {
+      const logs = [];
+      const { spawn, calls } = makeSpawn();
+      const registry = makeRegistry();
+      let clockMs = clock;
+      const loader = makeLoader({
+        getConfig: () => ({ default_time_zone: 'UTC', heartbeats: { remind: raw } }),
+        aliveMs: 0, spawn, io: disk.io, onLog: (m) => logs.push(m), now: () => clockMs,
+      });
+      return {
+        loader, logs, calls, disk, setNow: (ms) => { clockMs = ms; },
+        async start() { loader.wrapRegistry(registry); await loader.collect(); await loader.activate({ stats: () => ({}) }); },
+        beat: () => registry.registered.find((r) => r.name === 'remind')?.fn,
+      };
+    }
+
+    it('REPRODUCE-FIRST: a when: that fired does NOT fire again after a RELOAD inside the grace window', async () => {
+      const h = oneShot();
+      await h.start();
+      h.beat()(AT); await flush();
+      expect(h.calls).toHaveLength(1);
+      h.setNow(AT + 30_000);
+      await h.loader.reload();                  // any inbound message
+      h.beat()(AT + 30_000); await flush();
+      h.beat()(AT + 90_000); await flush();
+      expect(h.calls).toHaveLength(1);
+    });
+
+    it('REPRODUCE-FIRST: …nor after a RESTART inside it — the ledger holds the instant it fired for, under the full name', async () => {
+      const disk = makeDisk();
+      const first = oneShot({ disk });
+      await first.start();
+      first.beat()(AT); await flush();
+      expect(first.calls).toHaveLength(1);
+      expect(disk.ledger()).toEqual({ remind: '2026-09-28T09:00:00.000Z' });
+
+      const second = oneShot({ disk, clock: AT + 60_000 });
+      await second.start();
+      second.beat()(AT + 60_000); await flush();
+      expect(second.calls).toHaveLength(0);
+    });
+
+    it('a when: EDITED to a new time is a new one-shot — it fires at the new time', async () => {
+      const disk = makeDisk();
+      const first = oneShot({ disk });
+      await first.start();
+      first.beat()(AT); await flush();
+      const moved = oneShot({ disk, clock: AT + 60_000, raw: { ...REMIND, when: '2026-09-28T10:00' } });
+      await moved.start();
+      moved.beat()(AT + 3_600_000); await flush();
+      expect(moved.calls).toHaveLength(1);
+      expect(disk.ledger()).toEqual({ remind: '2026-09-28T10:00:00.000Z' });
+    });
+
+    it('DOWN WHILE DUE, mirroring daily: — up within the 2-min grace fires late ONCE; later than that is skipped + logged, never fired', async () => {
+      const late = oneShot({ clock: AT + 90_000 });
+      await late.start();
+      late.beat()(AT + 90_000); await flush();
+      expect(late.calls).toHaveLength(1);
+
+      const stale = oneShot({ clock: AT + 150_000 });
+      await stale.start();
+      expect(stale.beat()).toBeUndefined();
+      expect(stale.logs).toContain('remind: stale when (2026-09-28T09:00) — not refiring');
+    });
+
+    // Reminders are never deleted, and every inbound message reloads: a line per stale reminder per
+    // message would bury the log (operator 2026-09-28: once per <ns>:<name> per process).
+    it('the "stale when" line is said ONCE per beat per process — not again on every reload, nor after the tick already said it', async () => {
+      const LINE = 'remind: stale when (2026-09-28T09:00) — not refiring';
+      const late = oneShot({ clock: AT + 10 * 60_000 });   // up long after it was due
+      await late.start();
+      await late.loader.reload();
+      await late.loader.reload();
+      expect(late.logs.filter((l) => l.includes('stale when'))).toEqual([LINE]);
+
+      const asleep = oneShot();                             // armed, then the first tick is 10 min late
+      await asleep.start();
+      asleep.beat()(AT + 10 * 60_000); await flush();
+      asleep.setNow(AT + 10 * 60_000);
+      await asleep.loader.reload();                         // now stale at load, too
+      expect(asleep.logs.filter((l) => l.includes('stale when'))).toEqual([LINE]);
+    });
+
+    it('REPRODUCE-FIRST: RUNNING but not ticking past the grace (a sleep, a wedge) — skipped at the first late tick, logged once, as daily: skips its slot', async () => {
+      const h = oneShot();
+      await h.start();
+      h.beat()(AT + 10 * 60_000); await flush();
+      h.beat()(AT + 11 * 60_000); await flush();
+      expect(h.calls).toHaveLength(0);
+      expect(h.logs.filter((l) => l.includes('stale when'))).toEqual(['remind: stale when (2026-09-28T09:00) — not refiring']);
+    });
   });
 });
 
@@ -1363,21 +1477,26 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
 
 // ── heartbeats/ FILES — a being's own beats (operator 2026-09-25: "please add the possibility for
 //    beings to write their own heartbeat … maybe a heartbeats/ with the different yaml files"), and
-//    THE ONE RULE under them: A FILE A BEING CAN WRITE MAY SCHEDULE A TURN, NEVER A COMMAND.
-//    heartbeats/ is inside the conversation folder, where setup/sandbox-logon-launcher.ps1 grants the
-//    leased pool account an inheritable Modify; a command beat runs in the spine, as the operator,
-//    outside every sandbox. Real temp folders on the resolver side (boot's reader), in-memory io on
-//    the loader side. ──
-describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats schedule a TURN, never a COMMAND', () => {
+//    THE RULE under them: A BEAT A BEING WROTE RUNS BOXED OR NOT AT ALL. heartbeats/ is inside the
+//    conversation folder, where setup/sandbox-logon-launcher.ps1 grants the leased pool account an
+//    inheritable Modify. Until 2026-09-28 that meant turns only, because a command beat ran in the
+//    spine, as the operator; now (operator 2026-09-28: "structural: no ai … being are allowed any
+//    command, since they are sandboxed and the command runs under their unprivileged account") a
+//    being's command goes to the BOXED runner boot injects, never to the spine's own spawn. Real temp
+//    folders on the resolver side (boot's reader), in-memory io on the loader side. ──
+describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run BOXED or not at all', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
   const CONFIG = { default_time_zone: 'UTC', agents: { egpt: { default: true, handles: ['e'] }, djh: { handles: ['djh'] } } };
   // dolly's live beat, byte for byte (conversations/whatsapp/Radio WnL-2608291938/config.yaml, measured 2026-09-25)
   const RADIO_WNL = 'heartbeats:\n  djh:\n    frequency: 15m\n    agent: djh\n    script_path: dj.x.md\n';
+  const TEXTECUTE = fileURLToPath(new URL('../src/tools/textecute.mjs', import.meta.url));
 
   // `rung` is the operator's rung as the resolver hands it (config/rooms.yaml's row); `realRung`
   // swaps in boot's own reader instead (readRoomConfig, pointed at this temp profile); `folderConfig`
   // is written to <entity>/config.yaml — the file a being could write, which no rung reads.
-  function build({ files = {}, rung = {}, realRung = false, folderConfig = null, ledger = {}, clock = Date.UTC(2026, 8, 25, 8, 0), slug = 'e-2609250900' } = {}) {
+  // `spawnBoxed` is boot's boxed runner, faked: it records the request and hands back a fake child
+  // (or, passed in, refuses); `noBox` wires none at all.
+  function build({ files = {}, rung = {}, realRung = false, folderConfig = null, ledger = {}, clock = Date.UTC(2026, 8, 25, 8, 0), slug = 'e-2609250900', spawnBoxed, noBox = false, startBrowser } = {}) {
     const home = mkdtempSync(join(tmpdir(), 'egpt-hb-loader-'));
     const dir = join(home, 'conversations', 'whatsapp', slug);
     const ns = `whatsapp/${slug}`;
@@ -1385,7 +1504,7 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
     for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, 'heartbeats', f), text);
     if (folderConfig != null) writeFileSync(join(dir, 'config.yaml'), folderConfig);
     const roomsYaml = join(home, 'config', 'rooms.yaml');
-    const logs = [], turns = [], posts = [];
+    const logs = [], turns = [], posts = [], boxed = [];
     const { spawn, calls } = makeSpawn();
     const registry = makeRegistry();
     const mem = new Map([[join(home, 'state', 'heartbeats-daily.json'), JSON.stringify(ledger)]]);
@@ -1401,17 +1520,20 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
       resolver, aliveMs: 0, egptHome: home, platform: 'linux', spawn,
       dispatchTurn: async (t) => { turns.push(t); return { text: 'ok' }; },
       dispatchPost: async (p) => { posts.push(p); },
+      ...(noBox ? {} : { spawnBoxed: spawnBoxed ?? (async (p) => { const child = makeFakeChild(); boxed.push({ ...p, child }); return child; }) }),
+      ...(startBrowser ? { startBrowser } : {}),
       io: { writeFile: async (p, c) => { mem.set(p, c); }, mkdir: async () => {}, readFile: async (p) => (String(p).endsWith('.x.md') ? 'Pon tres temas.\n' : mem.get(p)) },
       onLog, now: () => clock,
     });
     return {
-      home, dir, ns, loader, registry, logs, turns, posts, calls, roomsYaml,
+      home, dir, ns, loader, registry, logs, turns, posts, calls, boxed, roomsYaml,
       file: (f) => `conversations/whatsapp/${slug}/heartbeats/${f}`,
       async start() { loader.wrapRegistry(registry); const { entries } = await loader.collect(); await loader.activate({ stats: () => ({}) }); return entries; },
       beat: (name) => registry.registered.find((r) => r.name === `${ns}:${name}`)?.fn,
     };
   }
-  const WHY = 'is a file a being can write, so it may schedule a TURN (agent: + prompt:), never a command or a file read; command beats are the operator\'s, in config/';
+  // What a boxed request carries, without the fake child it was answered with.
+  const requests = (h) => h.boxed.map(({ child, ...p }) => p);
 
   it('REPRODUCE-FIRST: heartbeats/call-julio.yaml IS the beat `call-julio` — an agent: + prompt: TURN, sourced to its file', async () => {
     const h = build({ files: { 'call-julio.yaml': 'daily: "09:00"\ntime_zone: Atlantic/Canary\nagent: e\nprompt: Remind An to call Julio.\n' } });
@@ -1431,33 +1553,123 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
     expect(h.turns).toEqual([{ being: 'egpt', ns: h.ns, name: `${h.ns}:ping`, prompt: 'Say hi.', beingWritten: true }]);
   });
 
-  it('REPRODUCE-FIRST: REFUSED by name, logged, never armed, nothing spawned — command:, command: + post:, a bare script_path:', async () => {
-    const h = build({ files: {
-      'escape.yaml': 'frequency: 1m\ncommand: whoami > owned.txt\n',
-      'posted.yaml': 'daily: "11:00"\ncommand: node prime.js\npost: "{stdout}"\n',
-      'textecute.yaml': 'frequency: 1m\nscript_path: dj.x.md\n',
-    } });
-    expect(await h.start()).toEqual([]);
-    expect(h.registry.registered).toEqual([]);
+  // STRUCTURAL (operator 2026-09-28): the file names a time and a command, no AI. It used to be
+  // refused at load; it is armed now, and every run goes to the BOXED runner — the conversation's
+  // pool account, through setup/sandbox-logon-launcher.ps1 — never to the spine's own spawn.
+  it('REPRODUCE-FIRST: a being\'s command: beat is ARMED, and runs through the BOXED runner — never the spine\'s own spawn', async () => {
+    const h = build({ files: { 'escape.yaml': 'frequency: 1m\ncommand: whoami > owned.txt\n' } });
+    const [e] = await h.start();
+    expect(e).toMatchObject({
+      name: `${h.ns}:escape`, source: h.file('escape.yaml'),
+      action: { kind: 'command', command: 'whoami > owned.txt', cwd: h.dir, ns: h.ns, beingWritten: true },
+    });
+    h.beat('escape')(); await flush();
     expect(h.calls).toHaveLength(0);
-    expect(h.logs).toEqual([
-      `${h.ns}:escape: command: refused — ${h.file('escape.yaml')} ${WHY}`,
-      `${h.ns}:posted: command: + post: refused — ${h.file('posted.yaml')} ${WHY}`,
-      `${h.ns}:textecute: script_path: refused — ${h.file('textecute.yaml')} ${WHY}`,
+    expect(requests(h)).toEqual([{ ns: h.ns, name: `${h.ns}:escape`, cwd: h.dir, command: 'whoami > owned.txt' }]);
+    h.boxed[0].child.emit('exit', 0); await flush();
+    expect(h.logs).toEqual([`${h.ns}:escape: fire boxed command — whoami > owned.txt`, `${h.ns}:escape: ok in 0ms`]);
+  });
+
+  it('command: + post: "{stdout}" — the box\'s stdout is posted into THIS conversation and nowhere else, exactly as an operator post: beat', async () => {
+    const h = build({ files: { 'primo.yaml': 'daily: "11:00"\ntime_zone: UTC\ncommand: node prime.js\npost: "el primo es {stdout}"\n' }, clock: Date.UTC(2026, 8, 25, 10, 59) });
+    await h.start();
+    h.beat('primo')(Date.UTC(2026, 8, 25, 11, 0)); await flush();
+    expect(h.calls).toHaveLength(0);
+    expect(requests(h)).toEqual([{ ns: h.ns, name: `${h.ns}:primo`, cwd: h.dir, command: 'node prime.js' }]);
+    h.boxed[0].child.emit('exit', 0);            // exit fires while stdout is still draining — post waits for close
+    h.boxed[0].child.stdout.emit('data', '1637\n');
+    h.boxed[0].child.emit('close', 0); await flush();
+    expect(h.posts).toEqual([{ ns: h.ns, name: `${h.ns}:primo`, text: 'el primo es 1637' }]);
+    expect(h.logs.at(-1)).toBe(`${h.ns}:primo: ok in 0ms — posted: el primo es 1637`);
+  });
+
+  // The file-read hole a bare script_path: opened (the spine reading `../../config/config.yaml` as the
+  // operator) closes by construction: textecute runs INSIDE the box, so the read is the pool account's.
+  it('a bare script_path: is textecute\'s command, run IN THE BOX — the script is read as the pool account', async () => {
+    const h = build({ files: { 'dj.yaml': 'frequency: 15m\nscript_path: dj.x.md\n' } });
+    await h.start();
+    h.beat('dj')(); await flush();
+    expect(h.calls).toHaveLength(0);
+    // scriptPath rides the request so boot hands textecute's session the credential; a plain
+    // command's request (the tests above) carries none
+    expect(requests(h)).toEqual([{ ns: h.ns, name: `${h.ns}:dj`, cwd: h.dir, command: `node "${TEXTECUTE}" "dj.x.md"`, scriptPath: 'dj.x.md' }]);
+  });
+
+  // THE FLOOR (operator 2026-09-28: 60 s). The node's tick tightens to the finest cadence it loads,
+  // and a being's command beat is a launcher run + a pool logon per fire — so a file a being writes
+  // is clamped, with one line naming the beat, and the operator's beats keep any cadence.
+  it('FLOOR: a being\'s frequency: under 60 s is clamped to 60 s, said ONCE per beat across reloads — and the tick is sized to 60 s, not to what it asked', async () => {
+    const h = build({ files: {
+      'fast.yaml': 'frequency: 1s\ncommand: date\n',
+      'nudge.yaml': 'frequency: 500ms\nagent: e\nprompt: hi\n',
+      'slow.yaml': 'frequency: 5m\ncommand: date\n',
+    } });
+    await h.start();
+    expect(Object.fromEntries(h.registry.registered.map((r) => [r.name, r.everyMs]))).toEqual({
+      [`${h.ns}:fast`]: 60_000, [`${h.ns}:nudge`]: 60_000, [`${h.ns}:slow`]: 300_000,
+    });
+    expect((await h.loader.collect()).finestMs).toBe(60_000);   // boot sizes the tick from this
+    await h.loader.reload();
+    await h.loader.reload();
+    expect(h.logs.filter((l) => l.includes('floor'))).toEqual([
+      `${h.ns}:fast: frequency "1s" is under the 60s floor for a beat a being wrote — clamped to 60s`,
+      `${h.ns}:nudge: frequency "500ms" is under the 60s floor for a beat a being wrote — clamped to 60s`,
     ]);
   });
 
+  it('FLOOR, regression lock: the operator\'s rung keeps its 1 s beat — no clamp, no line, and the tick may tighten to it', async () => {
+    const h = build({ rung: { heartbeats: { quick: { frequency: '1s', command: 'date' } } } });
+    const { entries, finestMs } = await h.loader.collect();
+    expect(entries.map((e) => e.everyMs)).toEqual([1000]);
+    expect(finestMs).toBe(1000);
+    expect(h.logs.some((l) => l.includes('floor'))).toBe(false);
+  });
+
+  // BOXED OR REFUSED: boot's runner refuses a conversation whose being(s) would not run boxed (and a
+  // node with no box at all). That is a FAILED run, loud, with the reason — never a fallback to here.
+  it('the box REFUSES (an unboxed conversation) → FAILED with the reason, nothing spawned here, nothing posted; the next tick asks again', async () => {
+    const why = 'refused — wren would run UNBOXED in whatsapp/e-2609250900 (sandboxed: false, from the conversation rung)';
+    const h = build({ files: { 'p.yaml': 'frequency: 1m\ncommand: node prime.js\npost: "{stdout}"\n' }, spawnBoxed: async () => { throw new Error(why); } });
+    await h.start();
+    h.beat('p')(); await flush();
+    expect(h.calls).toHaveLength(0);
+    expect(h.posts).toEqual([]);
+    expect(h.logs).toEqual([`${h.ns}:p: fire boxed command — node prime.js`, `${h.ns}:p: FAILED in 0ms — ${why}`]);
+    h.beat('p')(); await flush();
+    expect(h.logs.filter((l) => l.includes('FAILED'))).toHaveLength(2);   // the overlap guard was released
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('no boxed runner wired → FAILED, and still never the spine\'s own spawn', async () => {
+    const h = build({ files: { 'p.yaml': 'frequency: 1m\ncommand: node prime.js\n' }, noBox: true });
+    await h.start();
+    h.beat('p')(); await flush();
+    expect(h.calls).toHaveLength(0);
+    expect(h.logs.at(-1)).toBe(`${h.ns}:p: FAILED in 0ms — no boxed runner wired — boot injects spawnBoxed`);
+  });
+
   // The spine READS an agent: beat's script as the operator and feeds it into the turn, so a
-  // script_path a being writes is a file read in the operator's name — `../`, an absolute path, a
-  // link it made. Refused even beside agent:; the being can put the text in prompt: instead.
-  it('agent: + script_path: is REFUSED too — the script is read as the operator, so it is a file read', async () => {
+  // script_path a being writes beside agent: is a file read in the operator's name — `../`, an
+  // absolute path, a link it made. Still refused; the text goes in prompt:, or the script runs in the
+  // box as a bare script_path:.
+  it('agent: + script_path: stays REFUSED — that script is read HERE, as the operator', async () => {
     const h = build({ files: {
       'peek.yaml': 'frequency: 1m\nagent: e\nscript_path: ../../../config/config.yaml\n',
     } });
     expect(await h.start()).toEqual([]);
     expect(h.registry.registered).toEqual([]);
     expect(h.calls).toHaveLength(0);
-    expect(h.logs).toEqual([`${h.ns}:peek: script_path: refused — ${h.file('peek.yaml')} ${WHY}`]);
+    expect(h.logs).toEqual([`${h.ns}:peek: agent: + script_path: refused — ${h.file('peek.yaml')} is a file a being can write, and an agent: beat's script is read by the spine, as the operator; put the text in prompt:, or run the script in the box with a bare script_path:`]);
+  });
+
+  it('BROWSER in a file: browser: true + agent: + prompt: loads marked beingWritten, and the spine\'s browser start runs before the turn', async () => {
+    const order = [];
+    const h = build({ files: { 'scout.yaml': 'frequency: 1h\nbrowser: true\nagent: e\nprompt: Check the page.\n' }, startBrowser: async () => { order.push('browser'); return { ok: true, alreadyRunning: true }; } });
+    const [e] = await h.start();
+    expect(e.action).toMatchObject({ kind: 'turn', being: 'egpt', browser: true, beingWritten: true });
+    h.beat('scout')(); await flush();
+    expect(order).toEqual(['browser']);
+    expect(h.turns).toEqual([{ being: 'egpt', ns: h.ns, name: `${h.ns}:scout`, prompt: 'Check the page.', beingWritten: true }]);
   });
 
   it('a malformed file degrades — logged by name, never a crash — and its siblings still load', async () => {
@@ -1472,7 +1684,7 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
     expect(h.logs).toContain(`${h.ns}:empty: not a heartbeat block — skipped`);
   });
 
-  it('REGRESSION LOCK: the operator\'s rung (config/rooms.yaml) keeps command: + post: exactly as today — the rule never reaches it', async () => {
+  it('REGRESSION LOCK: the operator\'s rung (config/rooms.yaml) keeps command: + post: exactly as today — the spine\'s own spawn, never the box', async () => {
     const PRIMO = { daily: '14:00', time_zone: 'Atlantic/Canary', command: 'bash scripts/nth_prime.sh', post: 'el primo del día es {stdout}' };
     const h = build({ rung: { heartbeats: { 'primo-del-dia': PRIMO } }, clock: Date.UTC(2026, 8, 16, 12, 0) });
     const [e] = await h.start();
@@ -1480,6 +1692,7 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
     expect(e.action.beingWritten).toBeUndefined();
     h.beat('primo-del-dia')(Date.UTC(2026, 8, 16, 13, 0));   // 14:00 WEST
     await flush();
+    expect(h.boxed).toEqual([]);
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0].opts).toMatchObject({ shell: true, cwd: h.dir });
     h.calls[0].child.stdout.emit('data', '251\n');
@@ -1529,6 +1742,84 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats sche
     expect(moved.turns).toHaveLength(0);
     moved.beat('prime')(Date.UTC(2026, 8, 26, 11, 0)); await flush();
     expect(moved.turns).toHaveLength(1);
+  });
+});
+
+// ── browser: true — a TURN that asks for the CDP browser first (operator 2026-09-28: "browser:
+//    heartbeat requests a CDP browser. agent can manage it."). The loader calls boot's injected
+//    startBrowser — /chrome's own launch path, commands.startBrowser, idempotent — then runs the turn
+//    as always. A browser that will not come up does not cancel the turn: the prompt says so in one
+//    line, so the being can report it, and the log says it. ──
+describe('createHeartbeatLoader — browser: true (the spine starts the browser, then the turn runs)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const ENT = { dir: '/home/rooms/scout', ns: 'room/scout' };
+  const SCOUT = { frequency: '1h', browser: true, agent: 'e', prompt: 'Check the page.' };
+
+  function build(raw = SCOUT, { startBrowser } = {}) {
+    const logs = [], turns = [], order = [], writes = [];
+    const registry = makeRegistry();
+    const loader = makeLoader({
+      getConfig: () => ({ agents: { egpt: { handles: ['e'] } } }),
+      aliveMs: 0, egptHome: '/home', spawn: makeSpawn().spawn,
+      listEntityDirs: async () => [ENT],
+      readEntityConfig: async () => ({ heartbeats: { scout: raw } }),
+      dispatchTurn: async (t) => { order.push('turn'); turns.push(t); return { text: 'ok' }; },
+      startBrowser: startBrowser ?? (async () => { order.push('browser'); return { ok: true, alreadyRunning: true, detail: 'the browser is already answering — nothing was launched' }; }),
+      io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
+      onLog: (m) => logs.push(m), now: () => 0,
+    });
+    return {
+      loader, registry, logs, turns, order, writes,
+      async start() { loader.wrapRegistry(registry); const { entries } = await loader.collect(); await loader.activate({ stats: () => ({}) }); logs.length = 0; return entries; },
+      beat: () => registry.registered.find((r) => r.name === `${ENT.ns}:scout`)?.fn,
+    };
+  }
+
+  it('REPRODUCE-FIRST: the browser start runs BEFORE the turn, and with the browser up the prompt is untouched', async () => {
+    const h = build();
+    await h.start();
+    h.beat()(); await flush();
+    expect(h.order).toEqual(['browser', 'turn']);
+    expect(h.turns).toEqual([{ being: 'egpt', ns: ENT.ns, name: `${ENT.ns}:scout`, prompt: 'Check the page.', beingWritten: undefined }]);
+    expect(h.writes.at(-1).c).toMatch(/name: room\/scout:scout[\s\S]*browser: true/);   // the readonly view says so
+  });
+
+  it('the browser cannot be started → the turn STILL runs, its prompt prefaced with ONE line saying why, and the log says it', async () => {
+    const detail = 'the launch task did not bring a browser up on 127.0.0.1 — it may not be registered on this node';
+    const h = build(SCOUT, { startBrowser: async () => ({ ok: false, reason: 'launch-failed', detail }) });
+    await h.start();
+    h.beat()(); await flush();
+    expect(h.turns).toHaveLength(1);
+    expect(h.turns[0].prompt).toBe(`[heartbeat] the browser this beat asked for could not be started — ${detail}\n\nCheck the page.`);
+    expect(h.logs).toContain(`${ENT.ns}:scout: browser not started — ${detail}`);
+    expect(h.logs.at(-1)).toBe(`${ENT.ns}:scout: ok in 0ms — ok`);
+  });
+
+  it('a start that THROWS is a browser that did not start — never a failed beat', async () => {
+    const h = build(SCOUT, { startBrowser: async () => { throw new Error('cdp probe\nexploded'); } });
+    await h.start();
+    h.beat()(); await flush();
+    expect(h.turns[0].prompt).toBe('[heartbeat] the browser this beat asked for could not be started — cdp probe exploded\n\nCheck the page.');
+    expect(h.logs).toContain(`${ENT.ns}:scout: browser not started — cdp probe exploded`);
+  });
+
+  it('invalid: browser: true without agent: (there is no turn to start it for), or a browser: that is not true/false — skipped + logged', async () => {
+    const cases = [
+      [{ frequency: '1h', browser: true, command: 'node scrape.js' }, 'browser: true without agent'],
+      [{ frequency: '1h', browser: 'yes', agent: 'e', prompt: 'x' }, 'browser "yes" is not true or false'],
+    ];
+    for (const [raw, msg] of cases) {
+      const h = build(raw);
+      expect((await h.loader.collect()).entries, msg).toEqual([]);
+      expect(h.logs.some((l) => l.includes(`${ENT.ns}:scout`) && l.includes(msg)), `${msg}: ${h.logs.join(' | ')}`).toBe(true);
+    }
+  });
+
+  it('browser: false is simply no browser — the turn runs, nothing is started', async () => {
+    const h = build({ ...SCOUT, browser: false });
+    await h.start();
+    h.beat()(); await flush();
+    expect(h.order).toEqual(['turn']);
   });
 });
 
@@ -1839,6 +2130,7 @@ describe('createHeartbeatLoader — run logging (fire + outcome, both action kin
 
     clockMs = Date.UTC(2026, 6, 2, 9, 1);   // past the cadence AND the one-shot
     registry.runDue(clockMs);
+    await new Promise((r) => setTimeout(r, 0));   // the one-shot writes its ledger row before it fires
     expect(calls).toHaveLength(3);
     expect(logs.filter((l) => l.includes('fire command'))).toHaveLength(2);
   });

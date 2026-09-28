@@ -31,9 +31,9 @@ import { echoRank } from '../src/spine/echo-priority.mjs';   // pure (no EGPT_HO
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
 
-let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, computeShellHeader, chatIdForEntity;
+let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, computeShellHeader, chatIdForEntity, boxedConversationFor, createHeartbeatBoxRunner;
 beforeAll(async () => {
-  ({ boot, shouldReapStrayWhisper, whisperPortOf, computeShellHeader, chatIdForEntity } = await import('../src/spine/boot.mjs'));
+  ({ boot, shouldReapStrayWhisper, whisperPortOf, computeShellHeader, chatIdForEntity, boxedConversationFor, createHeartbeatBoxRunner } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -386,7 +386,7 @@ describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
       makeSession: (opts) => { const s = fakeSession(opts); const turn = s.turn.bind(s); s.turn = (m, u) => { prompts.push(m); return turn(m, u); }; return s; },
       loadState: async () => state, writeState: async (s) => { state = s; },
       io: memIo(), ingest: false, now: () => Date.UTC(2026, 8, 25, 8, 0), tickMs: 0,
-      spawn: (cmd) => { spawned.push(cmd); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; },
+      spawn: (cmd, args) => { spawned.push({ cmd, args: Array.isArray(args) ? args : [] }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; },
       log: { line: (m) => logs.push(m) },
     });
     // boot's first tick fires the beat; its turn settles asynchronously
@@ -395,7 +395,11 @@ describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
   }
   const cleanup = (app) => { app.stop(); return fs.rm(lab, { recursive: true, force: true }); };
 
-  it('a heartbeats/ file is a beat that runs as the being\'s TURN; a command there, and any beat in the folder\'s config.yaml, never arm', async () => {
+  // A command in heartbeats/ ARMS since 2026-09-28 (operator: "structural: no ai … the command runs
+  // under their unprivileged account") — as a BOXED fire: boot's runner refuses it or hands it to the
+  // launcher, and nothing of it ever reaches the spine's own shell. Whether this host can box it (a
+  // win32 node with msys, a resident that has already run) decides only which of the two it is.
+  it('a heartbeats/ file runs as the being\'s TURN, or its command BOXED — never in the spine\'s shell; the folder\'s config.yaml still never arms', async () => {
     // 'sandbox', not 'regular' (2026-09-27): a being-written beat now runs only into a being that
     // resolves BOXED, and boot hands brainpool the host's platform — 'regular' is boxed on win32
     // alone, so this test would pass or fail by the machine it ran on. 'sandbox' is boxed on every one.
@@ -406,10 +410,11 @@ describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
       const ro = await fs.readFile(join(tmpHome, 'heartbeats.readonly.yaml'), 'utf8');
       expect(ro).toContain('name: room/lab:remind');
       expect(ro).toContain('source: rooms/lab/heartbeats/remind.yaml');
-      expect(ro).not.toContain('room/lab:escape');
+      expect(ro).toMatch(/name: room\/lab:escape[\s\S]*shell: boxed/);
       expect(ro).not.toContain('room/lab:cfg');
-      expect(logs.some((l) => l.includes('room/lab:escape: command: refused'))).toBe(true);
-      expect(spawned.filter((c) => /from-(heartbeats|config)/.test(c))).toEqual([]);
+      expect(logs).toContain('[heartbeat] room/lab:escape: fire boxed command — echo from-heartbeats');
+      expect(spawned.filter((s) => s.cmd !== 'powershell.exe' && JSON.stringify(s).includes('from-heartbeats'))).toEqual([]);
+      expect(JSON.stringify(spawned)).not.toContain('from-config');
       expect(prompts.some((m) => m.includes('Remind An to call Julio.'))).toBe(true);
     } finally { await cleanup(app); }
   });
@@ -989,6 +994,96 @@ describe('chatIdForEntity — a heartbeat entity namespace → the conversation 
     expect(chatIdForEntity(state, '/lobby')).toBeNull();
     expect(chatIdForEntity(state, 'shell/')).toBeNull();
     expect(chatIdForEntity(state, null)).toBeNull();
+  });
+});
+
+// A HEARTBEAT COMMAND A BEING WROTE runs boxed or not at all (operator 2026-09-27/28). It names no
+// being, so boxedConversationFor asks brainpool's `sandboxed` for EVERY being resident in the
+// conversation; the answer is faked here, the residents are the registry's own agents.<being> blocks.
+describe('boxedConversationFor — a being\'s heartbeat command runs only where every resident resolves boxed', () => {
+  const state = { contacts: {
+    whatsapp: {
+      '!julio:beeper.com': { slug: 'julio-2609250900', agents: { egpt: { threadId: 't1' } } },
+      '!crc:beeper.com': { slug: 'crc-2607161314', agents: { egpt: { threadId: 't2' }, wren: { access_level: 'all' } } },
+      '!new:beeper.com': { slug: 'new-2609280900' },
+    },
+  } };
+  const box = { egpt: { value: true, rung: 'level' }, wren: { value: false, rung: 'conversation' } };
+  const asked = [];
+  const sandboxedOf = async (being, ev) => { asked.push([being, ev]); return box[being]; };
+
+  it('every resident boxed → the conversation\'s address, each resident asked at it', async () => {
+    asked.length = 0;
+    expect(await boxedConversationFor(state, 'whatsapp/julio-2609250900', sandboxedOf)).toEqual({ surface: 'whatsapp', chatId: '!julio:beeper.com' });
+    expect(asked).toEqual([['egpt', { surface: 'whatsapp', chatId: '!julio:beeper.com' }]]);
+  });
+
+  it('ONE unboxed resident refuses it, naming the being and the rung', async () => {
+    await expect(boxedConversationFor(state, 'whatsapp/crc-2607161314', sandboxedOf))
+      .rejects.toThrow(/^refused — wren would run UNBOXED in whatsapp\/crc-2607161314 \(sandboxed: false, from the conversation rung\); a command a being wrote runs in its box or not at all/);
+  });
+
+  it('no resident at all, or no conversation, is refused too — never a default', async () => {
+    await expect(boxedConversationFor(state, 'whatsapp/new-2609280900', sandboxedOf)).rejects.toThrow(/^refused — no being has run in whatsapp\/new-2609280900/);
+    await expect(boxedConversationFor(state, 'whatsapp/never-seen', sandboxedOf)).rejects.toThrow(/^no conversation for whatsapp\/never-seen/);
+  });
+});
+
+// THE BOXED RUNNER boot hands the loader (createHeartbeatBoxRunner), driven with a fake spawn, win32
+// and a bash candidate that exists — so what reaches the launcher is READ, never run. The operator's
+// ruling (2026-09-28): a `script_path:` beat's textecute session gets sandbox_oauth_token exactly as a
+// boxed turn does — the same variable, the same -SetEnv element — and a plain `command:` beat gets
+// none. Assertions name the VARIABLE only; the value is never printed.
+describe('createHeartbeatBoxRunner — a being\'s command beat, boxed; only a script beat is handed the credential', () => {
+  const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
+  const state = { contacts: { room: { lab: { slug: 'lab', agents: { egpt: { threadId: 't1' } } } } } };
+  let room, bash;
+  beforeAll(async () => {
+    room = await fs.mkdtemp(join(os.tmpdir(), 'egpt-box-runner-'));
+    bash = join(room, 'bash.exe');
+    await fs.writeFile(bash, '');
+  });
+  afterAll(() => fs.rm(room, { recursive: true, force: true }));
+  function runner(config) {
+    const calls = [];
+    const run = createHeartbeatBoxRunner({
+      loadState: async () => state, sandboxedOf: async () => ({ value: true, rung: 'level' }), getConfig: () => config,
+      spawn: (bin, args) => { calls.push({ bin, args }); return { stdin: { end() {} } }; },
+      platform: 'win32', gitBashCandidates: [bash],
+    });
+    return { run, calls };
+  }
+  const setEnvNames = (args) => JSON.parse(args[args.indexOf('-SetEnv') + 1]).map((e) => e.slice(0, e.indexOf('=')));
+
+  it('a script_path: beat — its -SetEnv carries CLAUDE_CODE_OAUTH_TOKEN, in the one element beside the bash pair', async () => {
+    const { run, calls } = runner({ sandbox_oauth_token: `  ${TOKEN}  ` });
+    await run({ ns: 'room/lab', name: 'room/lab:dj', cwd: room, command: 'node "textecute.mjs" "dj.x.md"', scriptPath: 'dj.x.md' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].bin).toBe('powershell.exe');
+    expect(calls[0].args.filter((a) => a === '-SetEnv')).toHaveLength(1);
+    expect(setEnvNames(calls[0].args)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+    expect(JSON.parse(calls[0].args[calls[0].args.indexOf('-SetEnv') + 1]).includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`), 'the token, trimmed as brainpool reads it').toBe(true);
+  });
+
+  it('a plain command: beat — no credential, whatever config.yaml holds', async () => {
+    const { run, calls } = runner({ sandbox_oauth_token: TOKEN });
+    await run({ ns: 'room/lab', name: 'room/lab:date', cwd: room, command: 'date +%F' });
+    expect(setEnvNames(calls[0].args)).toEqual(['CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+  });
+
+  it('a script_path: beat with NO sandbox_oauth_token is REFUSED, like a boxed turn — before any spawn', async () => {
+    const { run, calls } = runner({});
+    await expect(run({ ns: 'room/lab', name: 'room/lab:dj', cwd: room, command: 'node x', scriptPath: 'dj.x.md' })).rejects.toThrow(/^refused — a script_path: beat .*`sandbox_oauth_token` is unset or blank/);
+    expect(calls).toEqual([]);
+  });
+
+  it('the long-command file is heartbeats/<beat>.command.sh, named from the beat, relative to the room', async () => {
+    await fs.mkdir(join(room, 'heartbeats'), { recursive: true });
+    const { run, calls } = runner({});
+    const long = `echo ${'x'.repeat(700)}`;
+    await run({ ns: 'room/lab', name: 'room/lab:primo', cwd: room, command: long });
+    expect(JSON.parse(calls[0].args[calls[0].args.indexOf('-InnerArgs') + 1])).toEqual(['heartbeats/primo.command.sh']);
+    expect(await fs.readFile(join(room, 'heartbeats', 'primo.command.sh'), 'utf8')).toBe(`${long}\n`);
   });
 });
 

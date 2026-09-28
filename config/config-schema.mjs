@@ -211,6 +211,12 @@ export const CONFIG_SCHEMA = {
       frequency: — a ONE-SHOT that fires once at/after that wall-clock time then
       never again. Timezone from default_time_zone, else machine local. Both
       frequency + when set → invalid, skipped.
+      Once means once across reloads and restarts (2026-09-28): the instant it
+      fired for is kept in state/heartbeats-daily.json beside the daily: rows,
+      so a when: left in place never fires again; an edited when: is a new
+      one-shot. Due while the node was down: daily:'s rule — up within the
+      2-minute grace it fires late, once; later it is skipped (logged once per
+      beat per process), never fired.
       Or  daily: "HH:MM"  (24-hour, operator 2026-09-16) — EVERY day at that
       wall-clock time in  time_zone:  (IANA name or a default_time_zone alias;
       absent → default_time_zone; invalid → entry skipped). At most once per
@@ -270,6 +276,12 @@ export const CONFIG_SCHEMA = {
                                      textecute itself)
       OVERLAP GUARD: unchanged — a still-running previous turn skips the tick and
       logs, so a slow being never stacks beats.
+      browser: true  (2026-09-28) beside agent: — before the turn the spine
+      starts its CDP browser through /chrome's own launch path (nothing launched
+      when it already answers). If it will not come up the turn still runs, its
+      prompt opening with one line saying why, and the log says so. browser:
+      false = no browser; any other value, or browser: true without agent:, is
+      invalid.
 
     THE DEFAULT BEAT is alive:
       When this block declares no alive, the spine injects one at boot's aliveMs
@@ -294,6 +306,27 @@ export const CONFIG_SCHEMA = {
       room, which is one on surface 'room' (conversations/room/<slug>/config.yaml)
       — may carry its own heartbeats: block. Entity beats are namespaced
       <surface>/<slug>:<name> so they cannot collide.
+
+    A BEING'S OWN BEATS (<entity>/heartbeats/<name>.yaml, 2026-09-25/28):
+      One file per beat, written by the being; the operator's rungs keep any name
+      they declare. Every one runs BOXED OR NOT AT ALL, in three kinds:
+        structural  a trigger + command: (or a bare script_path:), optionally
+                    post: "{stdout}" — run by setup/sandbox-logon-launcher.ps1
+                    as the conversation's pool account, cwd its room, with the
+                    global_read_paths mounts; stdout posts to that chat only.
+                    Refused (a FAILED run, logged) unless every being resident
+                    in the conversation resolves sandboxed. A command too long
+                    for the launcher's 1024-character command line runs from
+                    heartbeats/<name>.command.sh, written beside the beat. A
+                    script_path: beat's textecute session is handed
+                    sandbox_oauth_token, as a boxed turn is (refused when
+                    it is unset); a command: beat gets no credential.
+        browser     browser: true + agent: + prompt: (above)
+        pure AI     agent: + prompt: — a turn, refused unless that being
+                    resolves sandboxed and is not access_level: all.
+      agent: + script_path: stays invalid here: the spine reads that script as
+      the operator. frequency: has a 60 s floor here — finer is clamped, logged
+      once per beat — so a being's file never tightens the node's tick.
 
     RESOLVED SET:
       At boot the spine materializes the full resolved set to

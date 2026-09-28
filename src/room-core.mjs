@@ -177,9 +177,10 @@ export class Room {
   // THE BEING'S OWN SCHEDULE (operator 2026-09-25: "please add the possibility for beings to write
   // their own heartbeat … maybe a heartbeats/ with the different yaml files"). One <name>.yaml per
   // beat, read by the config resolver's walk (src/spine/config-resolver.mjs readHeartbeatFiles) as
-  // one more contributor to this entity's heartbeats. Being-writable, so it may schedule a TURN and
-  // never a COMMAND — the loader refuses the rest (src/spine/heartbeat-loader.mjs).
-  get heartbeatsDir()  { return join(this.baseDir(), HEARTBEATS_DIR); }    // one <name>.yaml per beat — turns only
+  // one more contributor to this entity's heartbeats. Being-writable, so whatever it schedules runs
+  // BOXED or not at all — a command in the conversation's box, a turn only into a boxed being
+  // (src/spine/heartbeat-loader.mjs, operator 2026-09-28).
+  get heartbeatsDir()  { return join(this.baseDir(), HEARTBEATS_DIR); }    // one <name>.yaml per beat — a being's own, run boxed or not at all
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
