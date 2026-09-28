@@ -1203,6 +1203,15 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 4. Backlog (known warts, smallest last)
 
+### Backburner: `discreet: true|false` on a reply (operator 2026-09-27)
+
+*"backburn for now, since i do not really know how to implement."* The idea: when a conversation is
+`discreet`, a being addressed in a 1:1 or a group does NOT answer there. It opens (or reuses) a
+secondary group named `egpt <contact name>|<group name>` and answers in it instead, so the original
+chat never sees the bot. Open questions, none ruled: who is in the secondary group (the asker and
+the operator?); what carries back to the original chat, if anything; where the flag lives (per
+conversation / per being, the usual rungs); creating a WhatsApp group through Beeper.
+
 ### Operator brain-dump 2026-07-14 (NEW — recorded; scoping mostly open)
 - **`/ignore <slug>` command (BACKBURNER):** a per-chat mute so agents in that
   chat/group/1:1 IGNORE MENTIONS from an unwanted user. `<slug>` resolves the user by
