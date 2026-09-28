@@ -482,7 +482,9 @@ export function createSpine({
 
   // --- STAND-DOWN: THE DEFERRED EXIT (plans/2609061200-SESSION-0-TO-1-HANDOVER-PLAN.md) ---
   //
-  //     /restart, /upgrade and /rewind leave IMMEDIATELY. This one must NOT. The operator's
+  //     /restart, /upgrade and /rewind leave IMMEDIATELY (2026-09-28: /restart and /upgrade no
+  //     longer do — they wait too, but KEEP SERVING while they wait; see THE RESTART DRAIN below.
+  //     Only /rewind still leaves on the spot). This one must NOT. The operator's
   //     ruling: "the departing spine finishes the turn it is writing, then stands down. The
   //     arriving spine says only THAT, never WHEN." A spine that dies mid-reply leaves the other
   //     end of the chat reading `interrupted — the link to the spine writing this reply dropped`
@@ -529,6 +531,10 @@ export function createSpine({
   // state). Exits promptly when nothing is in flight, which is the common case.
   function standdown(done) {
     if (standingDown) { note('standdown: already pending — ignored'); return; }
+    // A RESTART DRAIN ALREADY PENDING (2026-09-28): the stand-down takes it over. One exit, never
+    // two goDowns racing to process.exit, and 45 is the one the successor is waiting on. The turns
+    // the restart was waiting for are not abandoned: the stand-down drains what is in flight too.
+    if (restartDrain) { clearIntervalFn(restartDrain.timer); restartDrain = null; note('standdown: takes over the pending restart drain'); }
     standingDown = true;
     onDrained = done ?? null;
     // Pending DWELLS are disarmed here rather than gated in fireDwell, so there is still exactly
@@ -542,6 +548,94 @@ export function createSpine({
     dwellBy.clear();
     note(`standdown: PENDING — ${inFlight} turn(s) in flight; no new turns will be admitted`);
     if (inFlight === 0) drained();
+  }
+
+  // --- THE RESTART DRAIN (operator 2026-09-28, verbatim: "yes, restart should wait for turns in
+  //     progress"). ---
+  //
+  //     THE INCIDENT. kg, 16:10 that day: a deploy (setup/upgrade.ps1 drops /upgrade into the ingest
+  //     box) bounced the spine while being Ken had a live turn in chat delen4 — the operator's
+  //     steered message had just been taken (`[warm] … the model ACKNOWLEDGED the steered message`)
+  //     and Ken was running a WebSearch. /upgrade left the moment it was read, the turn died with
+  //     the process, and the operator's question was never answered.
+  //
+  //     SO /restart AND /upgrade WAIT NOW — but NOT the way a stand-down waits. A stand-down hands
+  //     the profile to another spine and refuses new turns; a restart comes straight back, so this
+  //     spine KEEPS SERVING while it waits: every new message is received, recorded and answered as
+  //     before. Refusing or holding them would only widen the window in which a message lands on a
+  //     spine about to die and comes back after the restart as backlog, which is never dispatched.
+  //     The drain ends at the first poll (once a second) that finds nothing in flight, so a turn
+  //     that starts DURING the drain extends it; nothing in flight at the start means no wait at
+  //     all — `done` runs synchronously, exactly as fast as before.
+  //
+  //     "IN FLIGHT" IS turns.mjs's `trains` (turns.busy()), not handleFastCounted's `inFlight`
+  //     above. trains is the instance boot shares with the mesh, so it also sees what `inFlight`
+  //     cannot — a fired auto-mode dwell and a relayed turn this node is answering for another —
+  //     and it NAMES the conversations, which is what the log and state/draining.json report.
+  //     `inFlight` is not added to it because it also counts the very message that asked for the
+  //     restart when that was typed in a chat, so a typed /restart would always wait for itself.
+  //     What this does NOT see, said here rather than tracked twice: a heartbeat `agent:` turn
+  //     (boot calls brain.turn directly), a room-relay brain-member capture (room-relay.mjs keeps
+  //     its own per-tab chain), and a message still in its fast phase — the restart window every
+  //     exit already had. A pending (unfired) dwell is not a turn either, per the standing ruling
+  //     above: a restart loses it and the next message re-arms.
+  //
+  //     THE CAP. A turn that never ends must not hold a deploy forever. A reply turn already dies at
+  //     turnTimeoutMs (10 min), but a queue can keep refilling, a relayed turn runs with no timeout
+  //     and a leaked train count would never drop — so at RESTART_DRAIN_CAP_MS the drain says so
+  //     loudly and leaves anyway, and whatever is still running dies with the process as it always
+  //     did before this drain existed.
+  //
+  //     ONLY 42/43 COME HERE (boot's announceAndExit). /rewind is the way BACK from bad code and
+  //     must not wait on a turn that code is writing; STOP never reaches announceAndExit (it is the
+  //     kill switch — "point blank"); a daemon wedge-kill is a SIGTERM to a spine that cannot drain.
+  const RESTART_DRAIN_CAP_MS = 30 * 60_000;   // 2026-09-28: three full-length (10 min) turns back to back — generous, but never an unbounded deploy
+  const RESTART_DRAIN_POLL_MS = 1_000;
+  const RESTART_DRAIN_LOG_MS = 30_000;
+  let restartDrain = null;   // { since, lastLog, timer, done, onWait } while an /upgrade or /restart waits
+  function inFlightTurns() {
+    const busy = turns.busy();
+    return { busy, n: busy.reduce((sum, [, c]) => sum + c, 0), list: busy.map(([k, c]) => (c > 1 ? `${k} ×${c}` : k)).join(', ') };
+  }
+  // What the drain publishes (boot writes it to state/draining.json for setup/upgrade.ps1): at the
+  // start and with every 30 s line, so the script always prints who the spine is waiting for now.
+  // Fire-and-forget like every other side effect this file hands out, with its own catch.
+  function publishDrain(d, t) {
+    const rec = { since: new Date(d.since).toISOString(), busy: t.busy.map(([k]) => k), turns: t.n, cap: RESTART_DRAIN_CAP_MS };
+    Promise.resolve().then(() => d.onWait?.(rec)).catch((e) => note(`drain: could not publish the drain state — ${e?.message ?? e}`));
+  }
+  function drainForRestart(done, { onWait = null } = {}) {
+    // A STAND-DOWN ALREADY DRAINING: leave now. A /restart is the operator's way out of a
+    // stand-down whose drain has wedged — its admission gate lets lifecycle commands through for
+    // exactly that — so it must not queue behind the same wedge.
+    if (standingDown) { note('drain: a stand-down is already draining — restarting now, without waiting'); done(); return; }
+    if (restartDrain) { note('drain: already waiting for turns in flight — no second drain'); return; }
+    const t = inFlightTurns();
+    if (!t.n) { done(); return; }
+    const since = clock.now();
+    // NOT unref'd: while it waits, this timer is what keeps the process here to leave with 42/43.
+    restartDrain = { since, lastLog: since, done, onWait, timer: setIntervalFn(pollRestartDrain, RESTART_DRAIN_POLL_MS) };
+    note(`drain: waiting for ${t.n} turn(s) before restarting — ${t.list} (cap ${RESTART_DRAIN_CAP_MS / 60_000} min; new messages are still answered)`);
+    publishDrain(restartDrain, t);
+  }
+  function pollRestartDrain() {
+    const d = restartDrain;
+    if (!d) return;
+    const t = inFlightTurns();
+    const waited = clock.now() - d.since;
+    if (!t.n) { endRestartDrain(`drain: nothing in flight after ${Math.round(waited / 1000)}s — restarting`); return; }
+    if (waited >= RESTART_DRAIN_CAP_MS) { endRestartDrain(`drain: CAP — ${t.n} turn(s) STILL in flight after ${RESTART_DRAIN_CAP_MS / 60_000} min: ${t.list} — restarting ANYWAY; they die with this process`); return; }
+    if (clock.now() - d.lastLog < RESTART_DRAIN_LOG_MS) return;
+    d.lastLog = clock.now();
+    note(`drain: still waiting after ${Math.round(waited / 1000)}s — ${t.n} turn(s): ${t.list}`);
+    publishDrain(d, t);
+  }
+  function endRestartDrain(line) {
+    const d = restartDrain;
+    restartDrain = null;
+    clearIntervalFn(d.timer);
+    note(line);
+    d.done();
   }
 
   // --- THE SINGLE INGESTION PATH (operator 2026-07-25: "an agent only replies when
@@ -1684,5 +1778,5 @@ export function createSpine({
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound, stats, standdown, resumedAt, backlogOf };
+  return { start, stop, tick, handleInbound, stats, standdown, drainForRestart, resumedAt, backlogOf };
 }

@@ -9,10 +9,13 @@
 //   /rewind <ref>   -> exit 44  (daemon checks out <ref>, then respawn)
 //   /standdown [p]  -> exit 45  (the Session 0 → Session 1 handover: the daemon does NOT
 //                                respawn — it watches state/spine.pid AND port p, and comes
-//                                back only once neither holds the profile. THE ONLY
-//                                DEFERRED ONE: boot routes 45 through spine.standdown(), which
-//                                stops admitting turns, drains the ones in flight and only THEN
-//                                exits — see spine.mjs. The other three leave immediately.)
+//                                back only once neither holds the profile. DEFERRED: boot
+//                                routes 45 through spine.standdown(), which stops admitting
+//                                turns, drains the ones in flight and only THEN exits.)
+//
+// 43 and 42 are deferred too since 2026-09-28 (operator: "yes, restart should wait for turns in
+// progress"): boot routes them through spine.drainForRestart(), which KEEPS SERVING and exits at
+// the first moment no turn is in flight (capped) — see spine.mjs. Only 44 leaves immediately.
 //
 // The file CONTENT is the command line ("/restart", "/rewind abc123"). Writers
 // should temp->rename for atomicity; the sweep skips dotfiles and *.tmp so a

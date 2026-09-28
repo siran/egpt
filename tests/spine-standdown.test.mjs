@@ -206,22 +206,34 @@ describe('spine — the deferred stand-down', () => {
 // fakes — the same technique tests/spine-ingest.test.mjs uses for boot's ingest `handle`, since
 // boot() itself wires no override seam for it — plus a source lock that boot really has the shape
 // being modelled here.
-describe('boot announceAndExit — 45 defers, the other three leave immediately', () => {
+//
+// 2026-09-28 ("yes, restart should wait for turns in progress"): 43 and 42 are deferred too now,
+// through spine.drainForRestart — which KEEPS SERVING, unlike this file's stand-down. Only 44 leaves
+// immediately. The drain itself, and the real boot() end to end, are in
+// tests/spine-restart-drain.test.mjs; this block keeps the 45 half and the source lock.
+describe('boot announceAndExit — 45 defers through the stand-down, 43/42 through the restart drain, 44 leaves immediately', () => {
   function makeAnnounceAndExit({ spine, goDown }) {
     return async (code) => {
       if (code === 45) { spine.standdown(() => { goDown(code); }); return; }
+      if (code === 42 || code === 43) { spine.drainForRestart(() => { goDown(code); }); return; }
       await goDown(code);
     };
   }
 
-  it('43 / 42 / 44 exit immediately, unchanged — the spine is never consulted', async () => {
-    const down = []; const consulted = [];
-    const announceAndExit = makeAnnounceAndExit({ spine: { standdown: () => consulted.push(true) }, goDown: (c) => down.push(c) });
+  it('44 exits immediately; 43 / 42 go to the restart drain, never to the stand-down', async () => {
+    const down = []; const standdowns = []; const drains = [];
+    const announceAndExit = makeAnnounceAndExit({
+      spine: { standdown: () => standdowns.push(true), drainForRestart: (done) => { drains.push(done); } },
+      goDown: (c) => down.push(c),
+    });
+    await announceAndExit(44);
+    expect(down).toEqual([44]);
     await announceAndExit(43);
     await announceAndExit(42);
-    await announceAndExit(44);
-    expect(down).toEqual([43, 42, 44]);
-    expect(consulted).toEqual([]);
+    expect(down).toEqual([44]);    // pending — the drain calls back when nothing is in flight
+    drains.forEach((done) => done());
+    expect(down).toEqual([44, 43, 42]);
+    expect(standdowns).toEqual([]);
   });
 
   it('45 goes through the spine and only goes down when the spine says it has drained', async () => {
@@ -236,6 +248,8 @@ describe('boot announceAndExit — 45 defers, the other three leave immediately'
   it('boot.mjs really is wired that way (source lock)', () => {
     const BOOT_SRC = readFileSync(new URL('../src/spine/boot.mjs', import.meta.url), 'utf8');
     expect(BOOT_SRC).toContain('if (code === 45) { spine.standdown(');
+    expect(BOOT_SRC).toContain('if (code === 42 || code === 43) {');
+    expect(BOOT_SRC).toContain('spine.drainForRestart(() => { goDown(restartCode)');
     expect(BOOT_SRC).toContain("writeStanddownTarget: (port) => writeFile(join(EGPT_HOME, 'standdown-target.txt'), port, 'utf8')");
   });
 });

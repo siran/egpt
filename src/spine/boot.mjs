@@ -8,7 +8,7 @@
 // the claude session factory, conv-state IO), so boot() itself is testable
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
-import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, readdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 
@@ -1050,6 +1050,14 @@ export async function boot({
     await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
     await writeFile(join(EGPT_HOME, 'state', 'spine.pid'), String(process.pid), 'utf8');
   } catch (e) { log.line?.(`[boot] spine.pid write failed: ${e?.message ?? e}`); }
+  // THE RESTART DRAIN'S SIGNAL (operator 2026-09-28, "yes, restart should wait for turns in
+  // progress"): state/draining.json exists exactly while an /upgrade or /restart waits for turns in
+  // flight — { since, busy: [convKey…], turns, cap } — so setup/upgrade.ps1 can tell a spine that
+  // is finishing turns from one that failed to bounce. The spine's drain publishes it (announceAndExit
+  // below) and goDown removes it on the way out. A spine that is only now booting is draining
+  // nothing, so one left behind by a STOP or a crash mid-drain goes here, before anyone reads it.
+  const drainingFile = join(EGPT_HOME, 'state', 'draining.json');
+  try { await unlink(drainingFile); } catch { /* none — the usual case */ }
 
   // Seed the profile's paste-ready templates (config/skeletons/*) + a commented example
   // agent-type file (config/agents/sonnet-high.yaml) — COPY-IF-MISSING, so operator edits
@@ -2610,6 +2618,7 @@ export async function boot({
     // operator watching a silent chat, and this is the last thing the process does.
     try { if (selfDm) await Promise.race([sayOnce({ chatId: selfDm, text: `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`, what: 'announce' }), new Promise((r) => setTimeout(r, 3000))]); }
     catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
+    try { await unlink(drainingFile); } catch { /* no drain was published — the usual case */ }
     exit(code);
   }
   // THE STAND-DOWN IS DEFERRED, NEVER ABRUPT (operator's ruling, plans/2609061200-SESSION-0-TO-1-
@@ -2621,8 +2630,28 @@ export async function boot({
   // ONE BRANCH, HERE, because this is where BOTH ways a lifecycle command arrives converge: the
   // ingest box below, and a /standdown typed in Self (commands.mjs dispatches on the same
   // lifecycleExit and leaves through this same injected `exit` seam).
+  //
+  // …AND 43/42 NOW WAIT TOO (operator 2026-09-28, verbatim: "yes, restart should wait for turns in
+  // progress" — after a deploy killed being Ken's live turn on kg). The same shape, one branch
+  // beside 45's: the spine's restart drain (spine.mjs drainForRestart) keeps SERVING while it
+  // waits, calls back at the first moment no turn is in flight — at once when none is — or at its
+  // cap, and goDown then runs unchanged. What it publishes while waiting goes to state/draining.json
+  // for setup/upgrade.ps1. A second /restart or /upgrade during the drain starts no second one, but
+  // an /upgrade arriving during a /restart's drain makes it leave as the /upgrade (42 outranks 43):
+  // otherwise the pull that deploy is waiting for would silently never happen. 44 still leaves on
+  // the spot: /rewind is the way back FROM bad code, and waiting on a turn that code is writing
+  // would defeat it.
+  let restartCode = null;   // the code a pending restart drain leaves with
   async function announceAndExit(code) {
     if (code === 45) { spine.standdown(() => { goDown(code).catch((e) => log.line?.(`[standdown] ${e?.message ?? e}`)); }); return; }
+    if (code === 42 || code === 43) {
+      restartCode = restartCode === 42 ? 42 : code;
+      spine.drainForRestart(() => { goDown(restartCode).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`)); }, {
+        // temp → rename, the ingest box's own rule for its writers: upgrade.ps1 never reads half a file.
+        onWait: async (rec) => { await writeFile(`${drainingFile}.tmp`, JSON.stringify(rec), 'utf8'); await rename(`${drainingFile}.tmp`, drainingFile); },
+      });
+      return;
+    }
     await goDown(code);
   }
 

@@ -3,6 +3,8 @@
 # The spine sweeps EGPT_HOME/state/ingest every second, consumes the file, and exits 42;
 # the daemon then does git pull + build + respawn (src/spine/ingest.mjs). That is the whole
 # deploy. This script adds the part that is tedious by hand: proving it actually landed.
+# Since 2026-09-28 the spine first finishes any turn in flight (state/draining.json says so
+# while it waits, capped at 30 min) -- this script waits that out before counting down.
 #
 # Use setup/deploy.ps1 INSTEAD when the change alters what the SUPERVISOR spawns (an
 # entry-point rename, daemon-runtime appPath). That one restarts the service and needs UAC.
@@ -26,9 +28,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$stop   = Join-Path $EgptHome 'STOP'
-$alive  = Join-Path $EgptHome 'state\alive.txt'
-$ingest = Join-Path $EgptHome 'state\ingest'
+$stop     = Join-Path $EgptHome 'STOP'
+$alive    = Join-Path $EgptHome 'state\alive.txt'
+$ingest   = Join-Path $EgptHome 'state\ingest'
+$draining = Join-Path $EgptHome 'state\draining.json'
+$spinePid = Join-Path $EgptHome 'state\spine.pid'
 
 # --- refuse on a stopped node: boot checks STOP first and exits clean, so an /upgrade
 #     dropped now would be consumed by a spine that never starts. ---
@@ -152,7 +156,6 @@ $peerSrcGit = {
 }
 
 $before = Get-ShortHead $git $Repo
-$beat0 = (Get-Item $alive).LastWriteTime
 
 # --- WHAT SHOULD LAND: the deploy is the daemon doing `git pull`, so the target is the
 #     remote's main. Resolve it FIRST. Without this the script can only compare the repo to
@@ -205,35 +208,105 @@ if ($git) {
 }
 Write-Host ""
 
-# --- temp -> rename, because the sweep skips *.tmp so a half-written file is never read ---
-New-Item -ItemType Directory -Force -Path $ingest | Out-Null
-$tmp   = Join-Path $ingest 'upgrade.tmp'
-$final = Join-Path $ingest 'upgrade'
-[IO.File]::WriteAllText($tmp, "/upgrade", (New-Object Text.UTF8Encoding $false))
-Move-Item -Path $tmp -Destination $final -Force
-Write-Host "dropped /upgrade into the ingest box -- waiting for the spine to bounce..." -ForegroundColor Yellow
-
-# --- the proof is the HEARTBEAT advancing: only a live spine writes alive.txt. The sha may
-#     legitimately not move (already current), so it is reported, never required. ---
-# A CHANGED HEARTBEAT ALONE IS NOT PROOF, and reading it as proof produced a false FAILURE on
-# 2026-08-08: the OLD spine's 60s beat can fire between the drop and the daemon finishing its
-# pull, so the loop saw "bounced", read the sha while git was still working, and reported the
-# node as stuck on old code -- while the pull was in fact succeeding. So when we know the
-# TARGET, wait for the repo to actually reach it; the heartbeat is the liveness half only.
-$ok = $false
-for ($i = 0; $i -lt $TimeoutSec; $i++) {
-  Start-Sleep -Seconds 1
-  if (Test-Path $stop) {
-    Write-Host "FAILED: $stop appeared during the deploy -- the node stopped itself." -ForegroundColor Red
-    foreach ($ln in (Get-Content $stop)) { Write-Host "  $ln" -ForegroundColor DarkGray }
-    exit 1
-  }
-  $beat = (Get-Item $alive).LastWriteTime -ne $beat0
-  if (-not $beat) { continue }
-  # Heartbeat moved. If we know what should have landed, hold out for it.
-  if (-not $target) { $ok = $true; break }
-  if ((Get-ShortHead $git $Repo) -eq $target) { $ok = $true; break }
+# --- THE SPINE MAY BE DRAINING (operator 2026-09-28: "yes, restart should wait for turns in
+#     progress"). /upgrade and /restart no longer leave the moment they are read: the spine keeps
+#     serving until no turn is in flight, and says so in state/draining.json -- { since, busy,
+#     turns, cap } -- until it exits. This returns that record while it is there AND still inside
+#     the spine's own cap plus a margin, else $null: a file a spine left behind by dying mid-drain
+#     (boot clears it too) can never hold a deploy past the cap. The cap is READ from the file,
+#     so the spine's one constant (src/spine/spine.mjs RESTART_DRAIN_CAP_MS) is the only copy. ---
+$DrainMarginSec = 120
+function Get-Drain {
+  if (-not (Test-Path $draining)) { return $null }
+  try {
+    $d = Get-Content -Raw $draining | ConvertFrom-Json
+    $until = [DateTimeOffset]::Parse($d.since).AddMilliseconds([double]$d.cap).AddSeconds($DrainMarginSec)
+  } catch { return $null }
+  if ([DateTimeOffset]::UtcNow -gt $until) { return $null }
+  return $d
 }
+
+# --- drop a lifecycle command into the ingest box and WAIT FOR THE BOUNCE. One procedure for the
+#     /upgrade below and for the /restart after config migrations, so both wait the same way. ---
+function Get-SpineBoot {
+  if (-not (Test-Path $spinePid)) { return $null }
+  return (Get-Item $spinePid).LastWriteTime
+}
+function Invoke-Bounce([string]$Command) {
+  # Sampled at the drop, not earlier: a beat from before the drop is not a bounce.
+  $beat0 = (Get-Item $alive).LastWriteTime
+  $boot0 = Get-SpineBoot
+  # --- temp -> rename, because the sweep skips *.tmp so a half-written file is never read ---
+  New-Item -ItemType Directory -Force -Path $ingest | Out-Null
+  $name  = $Command.TrimStart('/')
+  $tmp   = Join-Path $ingest "$name.tmp"
+  $final = Join-Path $ingest $name
+  [IO.File]::WriteAllText($tmp, $Command, (New-Object Text.UTF8Encoding $false))
+  Move-Item -Path $tmp -Destination $final -Force
+  Write-Host "dropped $Command into the ingest box -- waiting for the spine to bounce..." -ForegroundColor Yellow
+
+  # --- the proof is the HEARTBEAT advancing: only a live spine writes alive.txt. The sha may
+  #     legitimately not move (already current), so it is reported, never required. ---
+  # A CHANGED HEARTBEAT ALONE IS NOT PROOF, and reading it as proof produced a false FAILURE on
+  # 2026-08-08: the OLD spine's 60s beat can fire between the drop and the daemon finishing its
+  # pull, so the loop saw "bounced", read the sha while git was still working, and reported the
+  # node as stuck on old code -- while the pull was in fact succeeding. So when we know the
+  # TARGET, wait for the repo to actually reach it; the heartbeat is the liveness half only.
+  #
+  # A DRAINING SECOND IS NOT A COUNTDOWN SECOND (2026-09-28): while the spine says it is finishing
+  # turns, $TimeoutSec does not run, the draining spine's own beats are not a bounce (the baseline
+  # moves with them), and every ~30 s the script says who it is waiting for.
+  $drainSeen = $null
+  $drainTold = $null
+  $i = 0
+  while ($i -lt $TimeoutSec) {
+    Start-Sleep -Seconds 1
+    if (Test-Path $stop) {
+      Write-Host "FAILED: $stop appeared during the deploy -- the node stopped itself." -ForegroundColor Red
+      foreach ($ln in (Get-Content $stop)) { Write-Host "  $ln" -ForegroundColor DarkGray }
+      exit 1
+    }
+    $d = Get-Drain
+    if ($d) {
+      $beat0 = (Get-Item $alive).LastWriteTime
+      if (-not $drainSeen) { $drainSeen = Get-Date }
+      if (-not $drainTold -or ((Get-Date) - $drainTold).TotalSeconds -ge 30) {
+        Write-Host ("  the spine is waiting for " + $d.turns + " turn(s) to finish: " + (@($d.busy) -join ', ')) -ForegroundColor DarkYellow
+        $drainTold = Get-Date
+      }
+      continue
+    }
+    if ($drainSeen) {
+      if (Test-Path $draining) {
+        Write-Host "  the spine is PAST its own drain cap and has not left -- no longer waiting on it" -ForegroundColor Red
+      } else {
+        Write-Host ("  ...the turns finished after " + [int]((Get-Date) - $drainSeen).TotalSeconds + " s -- waiting for the bounce") -ForegroundColor DarkGray
+      }
+      $drainSeen = $null
+    }
+    $i++
+    $beat = (Get-Item $alive).LastWriteTime -ne $beat0
+    if (-not $beat) { continue }
+    # ...AND IT IS A NEW SPINE THAT BEAT (2026-09-28). The spine that was asked to leave keeps
+    # beating until the very moment it exits -- through its drain and through the going-down
+    # announce -- and for a /restart there is no new sha to hold out for, so a beat alone was
+    # read as a bounce that had not happened (measured: the /upgrade's own bounce beat passed for
+    # the /restart's). state/spine.pid is written once per boot (its TIME, not the pid, which
+    # Windows may reuse), so a newer spine.pid and a beat newer than it is the spine that came
+    # back. No spine.pid to compare -> the beat alone, as before.
+    if ($boot0) {
+      $bootNow = Get-SpineBoot
+      if (-not $bootNow -or $bootNow -eq $boot0) { continue }
+      if ((Get-Item $alive).LastWriteTime -le $bootNow) { continue }
+    }
+    # Heartbeat moved. If we know what should have landed, hold out for it.
+    if (-not $target) { return $true }
+    if ((Get-ShortHead $git $Repo) -eq $target) { return $true }
+  }
+  return $false
+}
+
+$ok = Invoke-Bounce '/upgrade'
 
 $after = Get-ShortHead $git $Repo
 
@@ -275,6 +348,7 @@ if ($ok -and $target -and $after -ne $target) {
 #     landed; it stops the migration chain, lets the peer still deploy, and fails this script
 #     at the end. ---
 $migrationsFailed = $false
+$migrationsApplied = $false
 $runner = Join-Path $Repo 'setup\migrate.mjs'
 $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
 Write-Host ""
@@ -289,15 +363,37 @@ if (-not (Test-Path $runner)) {
   # error and kill the report of the very failure it describes. Drop it for the call.
   $prevEAP = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  & $nodeExe $runner --egpt-home $EgptHome
+  # Tee'd, not captured: the runner's lines still print as they come, and the copy is how the
+  # step below knows whether anything was APPLIED (the runner's own per-migration line).
+  & $nodeExe $runner --egpt-home $EgptHome | Tee-Object -Variable migrateOut
   $migrateRc = $LASTEXITCODE
   $ErrorActionPreference = $prevEAP
+  $migrationsApplied = @($migrateOut | Where-Object { "$_" -match '\sAPPLIED - recorded' }).Count -gt 0
   if ($migrateRc -eq 2) {
     Write-Host "=== MIGRATIONS PENDING ELEVATION -- the node is not converged until they run (see above) ===" -ForegroundColor Yellow
   } elseif ($migrateRc -ne 0) {
     Write-Host "=== MIGRATIONS FAILED (exit $migrateRc) -- the deploy landed, the migration chain stopped ===" -ForegroundColor Red
     $migrationsFailed = $true
   }
+}
+
+# --- A MIGRATION THAT CHANGED THE NODE NEEDS ONE MORE BOUNCE (found live on kg, 2026-09-28).
+#     The migrations run AFTER the spine bounced, and the spine reads config.yaml ONCE, at boot
+#     (src/spine/boot.mjs `const cfg = readConfig()`; the per-message refresh re-scans the
+#     conversation/room resolver, never node keys). 0034 added `global_read_paths` at 16:10:37 to
+#     a spine that booted at 16:10:33, so every boxed session after it launched without its read
+#     mounts until the NEXT restart. So: anything APPLIED -> drop /restart and wait for that bounce
+#     exactly as for the /upgrade (it drains in-flight turns too). Nothing applied -> no restart. ---
+if ($migrationsApplied) {
+  Write-Host ""
+  Write-Host "config migrations applied - restarting once more so the spine reads them" -ForegroundColor Yellow
+  if (-not (Invoke-Bounce '/restart')) {
+    Write-Host "=== NO HEARTBEAT after the /restart ($TimeoutSec s) ===" -ForegroundColor Red
+    Write-Host "  The deploy and its migrations landed; the spine did not come back from the restart."
+    Write-Host "  Check the log:  $EgptHome\config\logs\service-stdout.log"
+    exit 1
+  }
+  Write-Host ("  restarted -- heartbeat: " + (Get-Item $alive).LastWriteTime.ToString('HH:mm:ss')) -ForegroundColor Green
 }
 
 # --- the peer, by running THIS SAME SCRIPT there over ssh: the remote copy does its own

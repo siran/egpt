@@ -330,6 +330,13 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     // bump returns how many turns were ALREADY on this key — the queued placeholder's "N ahead"
     bump: bumpTrain,
     drop: dropTrain,
+    // WHICH CONVERSATIONS HAVE A TURN RIGHT NOW, AND HOW MANY (operator 2026-09-28, "yes, restart
+    // should wait for turns in progress" — the restart drain in spine.mjs is its one reader).
+    // `trains` read out as it stands, [[convKey, in-flight+queued], …], never a second registry:
+    // it is the one count every turn on this instance already bumps and drops — the spine's reply
+    // and context turns, a fired auto-mode dwell, and the mesh responder's relayed turns.
+    // A QUEUED turn counts on purpose: its placeholder is already open in the chat.
+    busy: () => [...trains],
     // { key, pinned } — the key every seam below takes, and the pin the prompt is built from
     keyOf,
     // the live-turn identity register. Set as the turn body's FIRST act, cleared in the same

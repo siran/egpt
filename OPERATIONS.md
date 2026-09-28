@@ -68,6 +68,12 @@ every second, exits **42**, and the daemon pulls, builds, respawns — then veri
 prod SHA and a heartbeat that advanced. Exit codes: **42** `/upgrade`, **43**
 `/restart`, **44** `/rewind`, **45** `/standdown`.
 
+**A deploy waits for turns in progress (since 2026-09-28).** `/upgrade` and `/restart`
+no longer exit on the spot: the spine keeps answering and exits the moment no turn is
+running, or after **30 minutes** regardless (logged loudly). While it waits it writes
+`state/draining.json`, and `upgrade.ps1` prints who it is waiting for every ~30 s
+instead of counting down. `/rewind`, `STOP` and the daemon's wedge-restart stay immediate.
+
 `setup/deploy.ps1` is only for changes to what the **supervisor spawns** (entry
 point rename, `daemon-runtime` appPath), since an `/upgrade` respawns through the
 already-running supervisor. It restarts the service, needs admin, self-elevates
@@ -90,7 +96,9 @@ A structural change to a node — a service or task name, a config shape — shi
 `upgrade.ps1` runs `setup/migrate.mjs` from prod against the profile it deployed.
 What a node has applied lives in `<profile>/state/migrations-applied.json`, not in
 git. Each migration first checks whether the node is already there, and records
-"already satisfied" without acting.
+"already satisfied" without acting. If any migration is **APPLIED**, `upgrade.ps1`
+restarts the spine once more (same drain, same wait): the spine reads `config.yaml`
+only at boot, so it would otherwise run without the change until the next restart.
 
 ```
 node setup\migrate.mjs --dry-run      # what each pending migration would change; changes nothing
