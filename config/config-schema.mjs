@@ -1986,6 +1986,47 @@ export const CONFIG_SCHEMA = {
     group at all (setup/SANDBOX.md).
   `,
 
+  global_read_paths: `
+    Folders EVERY sandboxed being on this node can read, each mounted in its
+    home beside \`src\` under the name given here (operator 2026-09-28: "please
+    frame this in config.yaml as global_read_paths list"). A LIST of one-key
+    maps, <mount name>: <path>:
+
+      global_read_paths:
+        - repos: C:/Users/an/src/siran      # ~/repos in every pool profile
+
+      DEFAULT: unset (or empty) - no extra mount and no grant, exactly the
+      behaviour before this key existed.
+
+    HOW IT DIFFERS FROM allowed_paths ABOVE. allowed_paths is PER TURN: a
+    share ACE for the leased pool account, granted at launch and revoked with
+    the lease (and --add-dir for an unboxed being). global_read_paths is
+    STANDING: setup/provision-sandbox-account.ps1 grants the pool GROUP
+    inheritable ReadAndExecute on each path ONCE - a DACL write on a big tree
+    re-propagates over all of it, which a turn cannot afford - and the
+    launcher plants a junction of that name in every pool profile on every
+    lease. For big trees read by every being; the grant is read-only.
+    Unboxed beings get nothing from it.
+
+    EXCEPT SECRETS: before granting, the provisioner takes the pool off every
+    .env / .env.* under each path, and it stops - granting none of them - while
+    a .env there is readable by Everyone / Users / Authenticated Users. A .env
+    created later is readable until the provisioner runs again.
+
+    A PATH IS ONLY MOUNTED ONCE ITS GRANT IS ON IT: an entry the provisioner
+    has not run for yet (or whose folder is absent on this node) plants no
+    junction, and the launcher logs why. Re-run the provisioner after adding
+    or changing an entry. Removing one stops the mount; the standing grant
+    stays until taken off by hand (icacls <path> /remove:g egpt-sandbox-pool).
+
+    VALIDATED, and an invalid entry is SKIPPED with one log line naming it: the
+    mount name is letters, digits, - or _ and not \`src\` or \`egpt\` (the
+    built-in mounts) or a name listed earlier; the path is absolute with a
+    drive letter (msys /c/... and windows forms both accepted) and holds no
+    quote. brainpool.mjs globalReadPathsOf is the one reading of it, for the
+    spine and for the provisioner (setup/global-read-paths.mjs).
+  `,
+
   outbox_targets: `
     THE APPROVED DESTINATIONS a room's outbox/ may be drained to (operator
     2026-09-22: "we have to configure a map: acim-drive -> G:/My Drive/

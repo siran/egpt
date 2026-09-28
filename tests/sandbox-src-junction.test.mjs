@@ -117,27 +117,32 @@ describe('the pool profile gets a read-only src junction onto the eGPT checkout'
     // $env:USERPROFILE inside the scrub payload would be the POOL ACCOUNT's home — the
     // target has to be interpolated by the launcher, which runs as the operator.
     expect(src).toMatch(/\$repoRoot = Join-Path \(Join-Path \$env:USERPROFILE 'src'\) 'egpt'/);
-    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget -ReposRoot \$reposRoot\)/);
+    expect(scrubScript(src)).toMatch(/\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget -ReadMounts \$readMounts\)/);
     // ...and the launcher does not spell a junction out for itself any more.
     expect(src).not.toMatch(/-ItemType Junction/);
   });
 
-  it('`repos` is ~\\src\\siran, resolved by the launcher, and passed ONLY where that folder exists', () => {
+  it('the read mounts come from config.yaml global_read_paths - no folder is spelled in the launcher or the provisioner', () => {
     // Operator 2026-09-28: "sandboxed beings should have access to my 'C:\Users\an\src\siran', we
-    // can call it repos/". OPTIONAL: do has no such folder, and an empty -ReposRoot yields the
-    // two-link statement byte for byte (pinned, and run, in setup/sandbox-account.Tests.ps1).
+    // can call it repos/", then "please frame this in config.yaml as global_read_paths list". The
+    // launcher is HANDED the list (-ReadMounts, from the spine) and parses it with the ONE parser.
     const src = launcher();
-    expect(src).toMatch(/\$reposRoot = Join-Path \(Join-Path \$env:USERPROFILE 'src'\) 'siran'/);
-    expect(src).toMatch(/if \(-not \(Test-Path -LiteralPath \$reposRoot -PathType Container\)\) \{ \$reposRoot = '' \}/);
-    // ...and only once the provisioner's standing grant is on it, which it writes only after the
-    // .env carve: "granted" means "carved". Run for real in both Pester files.
-    expect(src).toMatch(/if \(\$reposRoot -and -not \(Test-SandboxPoolAcePresent -Path \$reposRoot -Grant 'Read' -Sid \(Get-SandboxPoolGroupSid\)\)\) \{ \$reposRoot = '' \}/);
-    expect(junctionGenerator(accountLib())).toMatch(/if \(\$ReposRoot\) \{ \$links\['repos'\] = \$ReposRoot \}/);
-    // The folder mounted is the folder granted, and the grant rides the ONE read list.
+    expect(src).toMatch(/\[string\]\$ReadMounts = ''/);
+    expect(src).toMatch(/\$ReadMountsList = ConvertFrom-JsonArgv -ParamName 'ReadMounts' -Raw \$ReadMounts/);
+    // Each entry keeps both gates: the folder exists, and only once the provisioner's standing grant
+    // is on it, which it writes only after the .env carve: "granted" means "carved". Run for real
+    // in both Pester files.
+    expect(src).toMatch(/if \(-not \(Test-Path -LiteralPath \$path -PathType Container\)\)/);
+    expect(src).toMatch(/elseif \(-not \(Test-SandboxPoolAcePresent -Path \$path -Grant 'Read' -Sid \(Get-SandboxPoolGroupSid\)\)\)/);
+    expect(junctionGenerator(accountLib())).toMatch(/foreach \(\$name in \$ReadMounts\.Keys\)/);
+    // The folder mounted is the folder granted: the provisioner walks the same key, and each path
+    // rides the ONE read list. Neither script spells a path in code any more.
     const p = provisioner();
-    expect(p).toMatch(/\$reposDir = Join-Path \(Join-Path \$env:USERPROFILE 'src'\) 'siran'/);
-    const readStep = p.slice(p.indexOf('$readOnly = [ordered]@{'), p.indexOf("-Grant 'Read'") + 20);
-    expect(readStep).toMatch(/= \$reposDir/);
+    expect(p).toMatch(/\$readPaths = Get-SandboxGlobalReadPaths/);
+    expect(p).toMatch(/\$readOnly\[.*\] = \$mount\.path/);
+    const code = (s) => s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect(code(src)).not.toMatch(/siran|\$reposRoot/);
+    expect(code(p)).not.toMatch(/siran|\$reposDir/);
   });
 
   it('they are planted AFTER the wipe, and the locked-entry report comes before them', () => {

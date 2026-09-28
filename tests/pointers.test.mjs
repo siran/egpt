@@ -100,15 +100,20 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(CARD).toMatch(/logged out/);
   });
 
-  // 2026-09-28: a sandboxed being's home holds two read-only mounts beside its room — `src`, the eGPT
-  // checkout (mounted since 2026-09-23 and named on no card until now), and `repos`, the operator's
-  // repositories (~\src\siran, operator: "we can call it repos/"). HOME-relative, not ./ paths: they
-  // are siblings of the room in the pool profile, not folders in it, so the check above does not
-  // apply to them and must not be bent to.
-  it('names ~/src/ and ~/repos/ — the read-only folders a sandboxed being has beside its room', () => {
-    expect(CARD).toMatch(/When I run sandboxed, my home holds two read-only folders beside this room/);
+  // 2026-09-28: a sandboxed being's home holds read-only mounts beside its room — `src`, the eGPT
+  // checkout (mounted since 2026-09-23 and named on no card until now), and one per entry of the
+  // node's config.yaml global_read_paths (operator: "please frame this in config.yaml as
+  // global_read_paths list"; kg's is `repos`, the operator's repositories). A card cannot render
+  // that list (fillCardPlaceholders fills scalars), so it names the kind and how to see which -
+  // true on a node with none as on kg. HOME-relative, not ./ paths: they are siblings of the room
+  // in the pool profile, not folders in it, so the check above does not apply to them and must not
+  // be bent to.
+  it('names ~/src/ and the operator\'s shared folders — the read-only folders a sandboxed being has beside its room', () => {
+    expect(CARD).toMatch(/When I run sandboxed, my home holds read-only folders beside this room/);
     expect(CARD).toMatch(/^ {2}~\/src\/ +my own code — the eGPT checkout$/m);
-    expect(CARD).toMatch(/^ {2}~\/repos\/ +the operator's repositories/m);
+    expect(CARD).toMatch(/^ {2}~\/<name>\/ +folders the operator shares with every being on this$/m);
+    expect(CARD).toMatch(/e\.g\. ~\/repos\/ \(his repositories\)/);
+    expect(CARD).toMatch(/`ls ~` shows\s+which this node has/);
   });
 
 });

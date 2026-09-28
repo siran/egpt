@@ -99,7 +99,7 @@
 #
 # PARAMS - ONE ARGV ELEMENT PER PARAMETER, AND THAT ELEMENT IS A JSON ARRAY.
 # Every caller-supplied LIST (-InnerArgs, -SharePath, -SharePathReadOnly,
-# -SetEnv) arrives as a SINGLE [string] holding a JSON array, which this script
+# -SetEnv, -ReadMounts) arrives as a SINGLE [string] holding a JSON array, which this script
 # parses itself (see ConvertFrom-JsonArgv below). NOTHING A CALLER SUPPLIES IS
 # EVER SEEN BY POWERSHELL'S PARAMETER BINDER AS A TOKEN, and that is the entire
 # point: the binder is what broke all three of the following. All three were
@@ -151,6 +151,7 @@
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File sandbox-logon-launcher.ps1 `
 #     -TargetFolder <dir> [-SharePath '["<dir>","<dir>"]'] `
 #     [-SharePathReadOnly '["<dir>"]'] [-SetEnv '["NAME=VALUE"]'] `
+#     [-ReadMounts '["NAME=<dir>"]'] `
 #     -InnerBin <absolute exe> -InnerArgs '["--print","--verbose",""]'
 # src/sandbox-cli-session.mjs's sandboxSpawn is THE one builder of that argv and
 # it JSON.stringify()s every one of them. There is no second shape to support.
@@ -203,7 +204,14 @@ param(
   [string]$SharePathReadOnly = '',
   # A JSON array of NAME=VALUE strings. A VALUE may legitimately be empty
   # ("FOO="); it lives inside the JSON, so nothing out here has to allow for it.
-  [string]$SetEnv = ''
+  [string]$SetEnv = '',
+  # THE NODE'S READ MOUNTS (config.yaml global_read_paths, operator 2026-09-28):
+  # a JSON array of NAME=PATH strings, the -SetEnv shape, validated by the spine
+  # (brainpool.mjs globalReadPathsOf). Each becomes a junction of that name beside
+  # `src` in the pool profile - see Clear-SandboxProfileContents. No ACE is
+  # written for it here: the pool group reads it through the provisioner's
+  # standing grant, and without that grant it is not mounted at all.
+  [string]$ReadMounts = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -215,9 +223,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
 # ---- THE ONE PARSER for the JSON-array parameters (see PARAMS above).
-# Four consumers, ONE implementation: -InnerArgs, -SharePath, -SharePathReadOnly
-# and -SetEnv all mean "a JSON array of strings" and must fail identically when
-# they are not one.
+# Five consumers, ONE implementation: -InnerArgs, -SharePath, -SharePathReadOnly,
+# -SetEnv and -ReadMounts all mean "a JSON array of strings" and must fail
+# identically when they are not one.
 #
 # PS 5.1 TRAP, and this repo has been bitten by it before, so it is spelled out
 # rather than trusted to memory. ConvertFrom-Json on a TOP-LEVEL ARRAY writes the
@@ -276,6 +284,14 @@ $InnerArgsList = ConvertFrom-JsonArgv -ParamName 'InnerArgs' -Raw $InnerArgs
 $SharePathList = ConvertFrom-JsonArgv -ParamName 'SharePath' -Raw $SharePath
 $SharePathReadOnlyList = ConvertFrom-JsonArgv -ParamName 'SharePathReadOnly' -Raw $SharePathReadOnly
 $SetEnvList    = ConvertFrom-JsonArgv -ParamName 'SetEnv'    -Raw $SetEnv
+$ReadMountsList = ConvertFrom-JsonArgv -ParamName 'ReadMounts' -Raw $ReadMounts
+# NAME=PATH or nothing, checked HERE, before a lease is taken: a malformed entry
+# is a caller bug, and it is loud rather than a mount that quietly never lands.
+# What a NAME may be, and what a PATH may hold, is the generator's to refuse
+# (Get-SandboxProfileJunctionStatement), at the one place they are interpolated.
+foreach ($mount in $ReadMountsList) {
+  if ($mount -notmatch '^[^=]+=.') { throw "sandbox-logon-launcher: -ReadMounts entry is not NAME=PATH: '$mount'" }
+}
 
 if (-not (Test-Path -LiteralPath $TargetFolder -PathType Container)) {
   throw "sandbox-logon-launcher: TargetFolder does not exist or is not a directory: $TargetFolder"
@@ -1576,43 +1592,67 @@ function Clear-SandboxProfileContents {
   # folder instead, which is the being's cwd, is durable, and is the one place it
   # can write. See Room.treeDirs in src/room-core.mjs.
   #
-  # `repos` IS ~\src\siran, READ-ONLY, AND ONLY WHERE IT EXISTS (operator ruling
-  # 2026-09-28: "sandboxed beings should have access to my 'C:\Users\an\src\siran',
-  # we can call it repos/"). do has no such folder, so this passes an EMPTY
-  # -ReposRoot there and the statement is the two-link one, byte for byte; the
-  # Test-Path is what keeps a node from paying 35 characters of the budget above
-  # for a link that could never land. See Get-SandboxProfileJunctionStatement.
-  # The other half, the standing group read on the target and the pool taken off
-  # every .env under it, is provision-sandbox-account.ps1's.
+  # THE NODE'S READ MOUNTS - config.yaml global_read_paths (operator 2026-09-28:
+  # "please frame this in config.yaml as global_read_paths list"), handed in as
+  # -ReadMounts - EACH READ-ONLY, EACH ONLY WHERE ITS FOLDER EXISTS AND ONLY ONCE
+  # THE PROVISIONER'S GRANT IS ON IT. kg's one entry is `repos`, the operator's
+  # ~\src\siran; do has none. With none passing, the statement is the two-link one,
+  # byte for byte. See Get-SandboxProfileJunctionStatement. The other half, the
+  # standing group read on each folder and the pool taken off every .env under
+  # it, is provision-sandbox-account.ps1's, reading the same key.
   #
-  # AND ONLY ONCE THAT OTHER HALF IS THERE (2026-09-28). The provisioner grants
-  # ~\src\siran only AFTER every .env under it is carved out - a carve that fails
-  # stops its run before the grant - so "the standing grant is on the folder"
-  # means "the carve is done". A launcher deployed before the provisioner has run,
-  # or while the provisioner refuses (as it will on reve today: ~\src\siran\writing
+  # WHY THE GRANT GATES THE LINK (2026-09-28). The provisioner grants a folder
+  # only AFTER every .env under it is carved out - a carve that fails stops its
+  # run before the grant - so "the standing grant is on the folder" means "the
+  # carve is done". A launcher handed an entry the provisioner has not run for
+  # yet, or while it refuses (as it will on reve today: ~\src\siran\writing
   # carries an explicit Everyone:(OI)(CI)(M), so writing\.env cannot be carved),
-  # must not hand beings a ~/repos they can only half-read and whose secrets are
-  # not yet carved. So no grant, no link: the statement is the two-link one, byte
-  # for byte. The question is Test-SandboxPoolAcePresent's - the same "already
-  # granted" predicate the provisioner's grant branches on, EXPLICIT ONLY, so an
-  # inherited read (the retired wide ~\src grant on a node that never narrowed)
-  # does not open it. One NTAccount translation and one DACL read per lease.
-  #
-  # ~\src\siran IS SPELLED TWICE, here as $reposRoot and in the provisioner as
-  # $reposDir - the folder mounted and the folder granted - because this script
-  # cannot be dot-sourced and so shares no variable with it. Change both together.
-  # ($repoRoot above it has a third spelling as well, in src/spine/being-link.mjs.)
+  # must not hand beings a mount they can only half-read and whose secrets are
+  # not yet carved. So no grant, no link, and one line saying which and why. The
+  # question is Test-SandboxPoolAcePresent's - the same "already granted"
+  # predicate the provisioner's grant branches on, EXPLICIT ONLY, so an inherited
+  # read (the retired wide ~\src grant on a node that never narrowed) does not
+  # open it. One NTAccount translation and one DACL read per entry per lease.
+  # ($repoRoot has a second spelling, in src/spine/being-link.mjs.)
   $repoRoot = Join-Path (Join-Path $env:USERPROFILE 'src') 'egpt'
-  $reposRoot = Join-Path (Join-Path $env:USERPROFILE 'src') 'siran'
-  if (-not (Test-Path -LiteralPath $reposRoot -PathType Container)) { $reposRoot = '' }
-  if ($reposRoot -and -not (Test-SandboxPoolAcePresent -Path $reposRoot -Grant 'Read' -Sid (Get-SandboxPoolGroupSid))) { $reposRoot = '' }
-  $scrubScript = @(
-    "`$r = '$profilePath'"
-    "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
-    "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
-    "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
-    (Get-SandboxProfileJunctionStatement -RepoRoot $repoRoot -RoomTarget $RoomTarget -ReposRoot $reposRoot)
-  ) -join '; '
+  $readMounts = [ordered]@{}
+  foreach ($entry in $ReadMountsList) {
+    $name, $path = $entry -split '=', 2
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+      Log "read mount '$name' not planted  - $path is not a folder on this node"
+    } elseif (-not (Test-SandboxPoolAcePresent -Path $path -Grant 'Read' -Sid (Get-SandboxPoolGroupSid))) {
+      Log "read mount '$name' not planted  - '$SandboxPoolGroup' holds no explicit read grant on $path yet (setup\provision-sandbox-account.cmd writes it, after carving out every .env under it)"
+    } else {
+      $readMounts[$name] = $path
+    }
+  }
+  # THE BUDGET (see Invoke-AsLeasedAccount's BUDGET note): MSDN's 1024 characters
+  # for the whole command line, over which CreateProcessWithLogonW fails the
+  # scrub outright - and with it `egpt`, so the turn is refused. One read mount
+  # of kg's size leaves 37 characters at an 80-character slug; a second can cross
+  # it. So the line is MEASURED - the very argv handed to Invoke-AsLeasedAccount
+  # below, joined the way it joins it - and read mounts are dropped from the END,
+  # one line each, until it fits. `src` and `egpt` are never dropped: with no read
+  # mount left the payload is what it always was, and an overrun is what it
+  # always was.
+  $psExe = Join-Path $PSHOME 'powershell.exe'
+  do {
+    $scrubScript = @(
+      "`$r = '$profilePath'"
+      "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
+      "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+      "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
+      (Get-SandboxProfileJunctionStatement -RepoRoot $repoRoot -RoomTarget $RoomTarget -ReadMounts $readMounts)
+    ) -join '; '
+    $scrubArgs = @('-NoProfile', '-NonInteractive', '-Command', $scrubScript)
+    $scrubLength = ((@($psExe) + $scrubArgs | ForEach-Object { Format-Win32Arg $_ }) -join ' ').Length
+    $overBudget = $scrubLength -gt 1024 -and $readMounts.Count -gt 0
+    if ($overBudget) {
+      $last = @($readMounts.Keys)[-1]
+      Log "read mount '$last' not planted this lease  - with it the scrub command line is $scrubLength characters, over the 1024 CreateProcessWithLogonW takes"
+      $readMounts.Remove($last)
+    }
+  } while ($overBudget)
 
   # IT STOPPED BEING PURELY HYGIENE when `egpt` joined the junction statement
   # (2026-09-23): this pass is the only thing that plants the being's working
@@ -1645,9 +1685,8 @@ function Clear-SandboxProfileContents {
     # existed, so a bug in the environment-block path cannot take the hygiene
     # pass down with it.
     $errHandle = [SandboxLogon]::GetStdHandle([SandboxLogon]::STD_ERROR_HANDLE)
-    $psExe = Join-Path $PSHOME 'powershell.exe'
     $rc = Invoke-AsLeasedAccount -AccountName $AccountName -Password $Password `
-      -Bin $psExe -BinArgs @('-NoProfile', '-NonInteractive', '-Command', $scrubScript) `
+      -Bin $psExe -BinArgs $scrubArgs `
       -WorkingDirectory $env:SystemRoot -LpDesktop $LpDesktop -Label 'profile scrub' `
       -StdOut $errHandle -StdError $errHandle
     if ($rc -ne 0) {

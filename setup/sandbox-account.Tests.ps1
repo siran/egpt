@@ -1975,35 +1975,59 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
   }
 
-  # ---- `repos` (operator 2026-09-28: "sandboxed beings should have access to my
-  # 'C:\Users\an\src\siran', we can call it repos/"). A THIRD row of the same
-  # table, and an OPTIONAL one: the launcher passes -ReposRoot only on a node that
-  # has the folder (do has none). A node without it must get exactly the
-  # statement it got before - pinned byte for byte here, because "nothing changed
-  # where the feature does not apply" is a claim to test, not a hope.
-  It 'WITHOUT -ReposRoot the statement is byte-identical to the two-link one it was before repos' {
+  # ---- THE NODE'S READ MOUNTS (config.yaml global_read_paths; operator
+  # 2026-09-28: "please frame this in config.yaml as global_read_paths list").
+  # EXTRA rows of the same table, and OPTIONAL ones: the launcher passes
+  # -ReadMounts with only the entries whose folder exists AND carries the
+  # provisioner's grant. A node with none must get exactly the statement it got
+  # before - pinned byte for byte here, because "nothing changed where the
+  # feature does not apply" is a claim to test, not a hope.
+  It 'WITHOUT -ReadMounts the statement is byte-identical to the two-link one it was before repos' {
     $pinned = 'foreach($j in @(@(''src'',''C:\r''),@(''egpt'',''C:\m''))){$s=Join-Path $r $j[0];ri -LiteralPath $s -Recurse -Force -EA 0;ni -ItemType Junction -Path $s -Target $j[1] -EA 0 >$null}'
     (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m') | Should BeExactly $pinned
-    # EMPTY is how the launcher says "not on this node", so it is the same
-    # statement too - never a `repos` link aimed at ''.
-    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot '') | Should BeExactly $pinned
+    # EMPTY is how the launcher says "none passed the gate", so it is the same
+    # statement too - never a link aimed at ''.
+    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReadMounts ([ordered]@{})) | Should BeExactly $pinned
   }
 
-  It 'WITH -ReposRoot a repos junction joins src and egpt, onto that folder, and the wipe takes it as a LINK' {
+  It 'WITH one read mount - in config.yaml''s C:/ form - its junction joins src and egpt, and the wipe takes it as a LINK' {
+    # The path arrives the way globalReadPathsOf normalises it, forward slashes,
+    # and the junction must still land (measured: New-Item resolves it).
     $repos = New-LedgerTempDir
     New-Item -ItemType Directory -Path (Join-Path $repos 'writing') -Force | Out-Null
     $r = $fakeProfile
-    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $room -ReposRoot $repos) | Should BeNullOrEmpty
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $room -ReadMounts ([ordered]@{ repos = ($repos -replace '\\', '/') })) | Should BeNullOrEmpty
     $link = Get-Item -LiteralPath (Join-Path $r 'repos') -Force
     (([int]$link.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0) | Should Be $true
     $link.Target | Should Be $repos
     (Test-Path -LiteralPath (Join-Path (Join-Path $r 'repos') 'writing')) | Should Be $true
     ((@(Get-ChildItem -LiteralPath $r -Force).Name | Sort-Object) -join ',') | Should Be 'egpt,repos,src'
     # The scrub's own wipe runs over it on the next lease, exactly as over the
-    # other two: the operator's repositories must survive it.
+    # other two: the operator's folder must survive it.
     Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
     (Test-Path -LiteralPath (Join-Path $repos 'writing')) | Should Be $true
+  }
+
+  It 'WITH two read mounts both land, after src and egpt, in the order given' {
+    $one = New-LedgerTempDir
+    $two = New-LedgerTempDir
+    $r = $fakeProfile
+    $s = Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReadMounts ([ordered]@{ repos = 'C:/a'; notes = 'C:/b' })
+    $s | Should Match ([regex]::Escape("@('src','C:\r'),@('egpt','C:\m'),@('repos','C:/a'),@('notes','C:/b')"))
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $room -ReadMounts ([ordered]@{ repos = $one; notes = $two })) | Out-Null
+    (Get-Item -LiteralPath (Join-Path $r 'repos') -Force).Target | Should Be $one
+    (Get-Item -LiteralPath (Join-Path $r 'notes') -Force).Target | Should Be $two
+  }
+
+  It 'REFUSES a read mount it cannot plant safely - a reserved or bad name, or a quote in the path - naming it' {
+    # globalReadPathsOf skips all of these before they reach a launcher; this is
+    # the last line, at the one place a name and a path are interpolated into a
+    # command the leased account runs.
+    foreach ($bad in @(@{ src = 'C:/a' }, @{ EGPT = 'C:/a' }, @{ 'a b' = 'C:/a' }, @{ 'a;b' = 'C:/a' }, @{ repos = "C:/it's" })) {
+      $name = @($bad.Keys)[0]
+      { Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReadMounts $bad } | Should Throw "read mount '$name'"
+    }
   }
 
   It 'the whole scrub payload still fits the 1024-character CreateProcessWithLogonW budget' {
@@ -2022,24 +2046,25 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     # Not one double quote in it: Format-Win32Arg escapes every " as \", costing
     # two characters of a budget that is already two thirds spent.
     ($real -match '"') | Should Be $false
-    # WITH `repos` (2026-09-28) the table is three rows again, the size it was
-    # when 935/942/985 above were measured. MEASURED the same way on reve: the
-    # row costs 35 characters at the real ~\src\siran, and the whole command
-    # line reads 937 / 944 / 987 at 30 / 37 / 80-character slugs - 37 to spare
-    # at the wide end. The bound below is this statement's share plus that row.
-    # A node without the folder does not pay it - the launcher passes no
-    # -ReposRoot there.
+    # WITH ONE READ MOUNT (kg's `repos`, 2026-09-28) the table is three rows
+    # again, the size it was when 935/942/985 above were measured. MEASURED the
+    # same way on reve: the row costs 35 characters at the real ~\src\siran, and
+    # the whole command line reads 937 / 944 / 987 at 30 / 37 / 80-character
+    # slugs - 37 to spare at the wide end. The bound below is this statement's
+    # share plus that row. A SECOND mount of that size can cross 1024 at a long
+    # slug; the launcher drops the mounts that do not fit, by name (see
+    # sandbox-logon-launcher.Tests.ps1).
     $withRepos = Get-SandboxProfileJunctionStatement `
       -RepoRoot (Join-Path $env:USERPROFILE 'src\egpt') `
       -RoomTarget (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp\a-conversation-slug-of-ordinary-length') `
-      -ReposRoot (Join-Path $env:USERPROFILE 'src\siran')
+      -ReadMounts ([ordered]@{ repos = (Join-Path $env:USERPROFILE 'src\siran') })
     ($withRepos.Length -lt 341) | Should Be $true
     ($withRepos -match '"') | Should Be $false
   }
 
   It 'is the statement the LAUNCHER actually uses - not a second copy of it' {
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
-    ($src -match '\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget -ReposRoot \$reposRoot\)') | Should Be $true
+    ($src -match '\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget -ReadMounts \$readMounts\)') | Should Be $true
     # ...and the launcher no longer spells a junction out for itself.
     ($src -match '-ItemType Junction') | Should Be $false
   }
@@ -2765,70 +2790,138 @@ Describe 'Protect-SandboxSecretFile (the .env carve-out, on a real throwaway fil
   }
 }
 
-# THE LAUNCHER'S GATE, AGAINST A REAL DACL (2026-09-28). The launcher mounts
-# `repos` only when the provisioner's standing grant is on ~\src\siran - which
-# the provisioner writes only after every .env under it is carved out.
-# sandbox-logon-launcher.Tests.ps1 proves the wiring with a stubbed answer (that
-# file writes no DACL); this runs the same three shipped lines against a
-# throwaway home whose src\siran really is, or is not, granted - by
-# Grant-SandboxPoolAce, the provisioner's own call - with the current user
-# standing in for the pool group.
-Describe 'the launcher mounts repos only over the provisioner''s grant (a real DACL)' {
-  $fakeHome = $null
-  $siran = $null
-  function Resolve-LauncherReposRoot([string]$ProfileRoot) {
-    $saved = $env:USERPROFILE
-    try {
-      $env:USERPROFILE = $ProfileRoot
-      Invoke-Expression (Get-LauncherStatement '^\s*\$reposRoot = Join-Path')
-      Invoke-Expression (Get-LauncherStatement '^\s*if \(-not \(Test-Path -LiteralPath \$reposRoot')
-      Invoke-Expression (Get-LauncherStatement '^\s*if \(\$reposRoot -and -not \(Test-SandboxPoolAcePresent')
-      return $reposRoot
-    } finally {
-      $env:USERPROFILE = $saved
-    }
+# THE LAUNCHER'S GATE, AGAINST A REAL DACL (2026-09-28). The launcher mounts a
+# global_read_paths entry only when the provisioner's standing grant is on its
+# folder - which the provisioner writes only after every .env under it is carved
+# out. sandbox-logon-launcher.Tests.ps1 proves the wiring with a stubbed answer
+# (that file writes no DACL); this runs the same shipped statements against a
+# throwaway folder that really is, or is not, granted - by Grant-SandboxPoolAce,
+# the provisioner's own call - with the current user standing in for the pool
+# group.
+function Get-LauncherStatementBlock([string]$Pattern) {
+  $lines = @(Get-Content -LiteralPath $script:LauncherScript)
+  $start = @(0..($lines.Count - 1) | Where-Object { $lines[$_] -match $Pattern })
+  if ($start.Count -ne 1) { throw "expected exactly ONE launcher line matching /$Pattern/, found $($start.Count)" }
+  $i = $start[0]
+  for ($n = 1; $n -le 60; $n++) {
+    if (($i + $n - 1) -ge $lines.Count) { break }
+    $text = ($lines[$i..($i + $n - 1)]) -join "`r`n"
+    $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errs)
+    if (@($errs).Count -eq 0) { return $text }
+  }
+  throw "could not complete a statement starting at launcher line $($i + 1) for /$Pattern/"
+}
+Describe 'the launcher mounts a read path only over the provisioner''s grant (a real DACL)' {
+  $readRoot = $null
+  $script:GateLogged = $null
+  function Resolve-LauncherReadMounts([string[]]$ReadMountsList) {
+    function Log([string]$msg) { $script:GateLogged.Add($msg) }
+    Invoke-Expression (Get-LauncherStatement '^\s*\$readMounts = \[ordered\]@\{\}')
+    Invoke-Expression (Get-LauncherStatementBlock '^\s*foreach \(\$entry in \$ReadMountsList\)')
+    return $readMounts
   }
 
   BeforeEach {
     $script:TraverseSavedGroup = $SandboxPoolGroup
     $script:SandboxPoolGroup = $script:MeName
-    $fakeHome = New-LedgerTempDir
-    $siran = Join-Path $fakeHome 'src\siran'
-    New-Item -ItemType Directory -Path $siran -Force | Out-Null
+    $script:GateLogged = New-Object System.Collections.Generic.List[string]
+    $readRoot = Join-Path (New-LedgerTempDir) 'src\siran'
+    New-Item -ItemType Directory -Path $readRoot -Force | Out-Null
   }
 
   AfterEach {
     $script:SandboxPoolGroup = $script:TraverseSavedGroup
   }
 
-  It 'REPRODUCE: the folder is there but not granted (reve today) - no repos link' {
-    (Resolve-LauncherReposRoot $fakeHome) | Should Be ''
+  It 'REPRODUCE: the folder is there but not granted (reve today) - no link, and the launcher says why' {
+    (Resolve-LauncherReadMounts @("repos=$readRoot")).Count | Should Be 0
+    ($script:GateLogged -join ';') | Should Match "read mount 'repos' not planted"
   }
 
-  It 'the provisioner''s grant is on it - the repos link' {
-    Grant-SandboxPoolAce -Path $siran -Grant 'Read' | Out-Null
-    (Resolve-LauncherReposRoot $fakeHome) | Should Be $siran
+  It 'the provisioner''s grant is on it - the link, in config.yaml''s C:/ form too' {
+    Grant-SandboxPoolAce -Path $readRoot -Grant 'Read' | Out-Null
+    $fwd = $readRoot -replace '\\', '/'
+    $got = Resolve-LauncherReadMounts @("repos=$fwd")
+    (@($got.Keys) -join ',') | Should Be 'repos'
+    $got['repos'] | Should Be $fwd
+    $script:GateLogged.Count | Should Be 0
   }
 
   It 'an INHERITED read - the retired wide ~\src grant on a node that never narrowed - does not open it' {
-    # The provisioner's grant is EXPLICIT on ~\src\siran and follows the carve; a
-    # read inherited from ~\src says nothing about whether the carve ran.
-    Grant-SandboxPoolAce -Path (Join-Path $fakeHome 'src') -Grant 'Read' | Out-Null
-    (Resolve-LauncherReposRoot $fakeHome) | Should Be ''
+    # The provisioner's grant is EXPLICIT on each read path and follows the carve;
+    # a read inherited from above says nothing about whether the carve ran.
+    Grant-SandboxPoolAce -Path (Split-Path -Parent $readRoot) -Grant 'Read' | Out-Null
+    (Resolve-LauncherReadMounts @("repos=$readRoot")).Count | Should Be 0
+  }
+
+  It 'EACH entry is gated on its own: a granted one mounts beside an ungranted one' {
+    $other = New-LedgerTempDir
+    Grant-SandboxPoolAce -Path $other -Grant 'Read' | Out-Null
+    $got = Resolve-LauncherReadMounts @("repos=$readRoot", "notes=$other")
+    (@($got.Keys) -join ',') | Should Be 'notes'
+  }
+}
+
+# THE PROVISIONER READS global_read_paths THROUGH NODE (PowerShell cannot parse
+# YAML), from the profile EGPT_HOME names - a FIXTURE here, never the operator's.
+# Get-SandboxGlobalReadPaths runs setup\global-read-paths.mjs, which answers with
+# the spine's own reading (brainpool.mjs globalReadPathsOf) as one line of JSON.
+Describe 'Get-SandboxGlobalReadPaths (the provisioner''s list, read by node from a fixture profile)' {
+  $savedHome = $null
+  $fixture = $null
+  BeforeEach {
+    $savedHome = $env:EGPT_HOME
+    $fixture = Join-Path (New-LedgerTempDir) '.egpt'
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'config') -Force | Out-Null
+    $env:EGPT_HOME = $fixture
+  }
+  AfterEach {
+    $env:EGPT_HOME = $savedHome
+  }
+  function Set-FixtureConfig([string[]]$Lines) {
+    [System.IO.File]::WriteAllText((Join-Path $fixture 'config\config.yaml'), (($Lines -join "`r`n") + "`r`n"))
+  }
+
+  It 'kg''s entry comes back as one mount; an invalid one is skipped and NAMED' {
+    Set-FixtureConfig @('node_name: kg', 'global_read_paths:', '  - repos: C:/Users/an/src/siran', '  - src: C:/x', '  - notes: /d/notes')
+    $got = Get-SandboxGlobalReadPaths
+    (@($got.mounts | ForEach-Object { "$($_.name)=$($_.path)" }) -join ';') | Should Be 'repos=C:/Users/an/src/siran;notes=D:/notes'
+    @($got.skipped).Count | Should Be 1
+    @($got.skipped)[0] | Should Match 'entry 2 .*reserved'
+  }
+
+  It 'a node WITHOUT the key reads as no mounts at all - nothing to carve, nothing to grant' {
+    Set-FixtureConfig @('node_name: do')
+    $got = Get-SandboxGlobalReadPaths
+    @($got.mounts).Count | Should Be 0
+    @($got.skipped).Count | Should Be 0
+  }
+
+  It 'prints ONLY this key - nothing else in config.yaml leaves node' {
+    Set-FixtureConfig @('node_name: kg', 'sandbox_oauth_token: sk-ant-oat01-FIXTURE-NOT-REAL', 'global_read_paths:', '  - repos: C:/r')
+    $raw = (Get-SandboxGlobalReadPaths | ConvertTo-Json -Depth 5 -Compress)
+    $raw | Should Not Match 'FIXTURE-NOT-REAL'
+    $raw | Should Not Match 'node_name'
   }
 }
 
 # The provisioner's half, read off the shipped script: the carve comes BEFORE the
-# read grant on ~\src\siran (see the carve's first-run test above for why), and
-# ~\src\siran rides the ONE read list rather than a grant of its own.
-Describe 'the provisioner carves the .env files out, then grants ~\src\siran through the one read list' {
-  It 'the carve step runs before the read grant' {
+# read grant (see the carve's first-run test above for why), both walk the list
+# Get-SandboxGlobalReadPaths returned, and each path rides the ONE read list
+# rather than a grant of its own.
+Describe 'the provisioner carves the .env files out, then grants each global_read_paths folder through the one read list' {
+  It 'the carve step runs before the read grant, over the configured list - no path is spelled in the script' {
     $carve = Get-ProvisionLineIndex 'Protect-SandboxSecretFile -Path'
     $grant = Get-ProvisionLineIndex 'Grant-PoolOn -Targets \$readOnly -Grant ''Read'''
     $carve | Should BeLessThan $grant
-    # ...and it walks the same folder the read list grants, by the same variable.
-    (Get-ProvisionStatement 'Find-SandboxSecretFiles -Root') | Should Match '-Root \$reposDir'
-    (Get-ProvisionStatement '= \$reposDir$') | Should Match '~\\repos'
+    # ...the list is read once, before the first step writes anything...
+    (Get-ProvisionLineIndex '\$readPaths = Get-SandboxGlobalReadPaths') | Should BeLessThan (Get-ProvisionLineIndex 'Ensure-SandboxPool$')
+    # ...and both steps walk it, by the same variable.
+    (Get-ProvisionStatement 'Find-SandboxSecretFiles -Root') | Should Match '-Root \$mount\.path'
+    (Get-ProvisionStatement '\$readOnly\[.*\] = \$mount\.path') | Should Match '~\\\$\(\$mount\.name\)'
+    # No path is spelled in its CODE any more; comments may still tell the story.
+    @(Get-Content -LiteralPath $script:ProvisionSandboxScript | Where-Object { $_ -notmatch '^\s*#' -and $_ -match 'siran' }).Count | Should Be 0
   }
 
   It 'a carve that FAILED stops the run rather than granting the tree over a readable secret' {

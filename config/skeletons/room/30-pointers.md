@@ -10,11 +10,12 @@
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 
-When I run sandboxed, my home holds two read-only folders beside this room:
+When I run sandboxed, my home holds read-only folders beside this room:
 
   ~/src/            my own code — the eGPT checkout
-  ~/repos/          the operator's repositories — writing, research, radio, …
-                    (not every node has them)
+  ~/<name>/         folders the operator shares with every being on this
+                    node, e.g. ~/repos/ (his repositories) — `ls ~` shows
+                    which this node has
 
   chrome            {{chrome.bin}}
   chrome profile    {{chrome.profile_dir}}  (--user-data-dir for CDP)

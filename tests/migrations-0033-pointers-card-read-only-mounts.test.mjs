@@ -64,7 +64,7 @@ describe('0033 on a card that never names the read-only mounts', () => {
     expect(p.changes).toEqual([
       `${cardPath(h)}:${CHROME_LINE_NO}  add one block before the chrome lines (${BLOCK.length} lines):`,
       ...BLOCK.map((l) => `  + ${l}`),
-      'a sandboxed being has ~/src (the eGPT checkout) and ~/repos (~\\src\\siran) mounted read-only (setup/sandbox-account.ps1) - a being that is not told does not look',
+      'a sandboxed being has ~/src (the eGPT checkout) mounted read-only, and one folder beside it per config.yaml global_read_paths entry (setup/sandbox-account.ps1) - a being that is not told does not look',
       'backup first, beside it: <file>.bak-0033-<timestamp>',
     ]);
   });
@@ -97,25 +97,27 @@ describe('0033 on a card that never names the read-only mounts', () => {
     expect(readFileSync(cardPath(h), 'utf8')).toBe(crlf(['# Pointers', '', '  ./media/  files from this chat', '', 'I look.', '', ...BLOCK]));
   });
 
-  it('the block names the two mounts the launcher plants, read-only, and says only a sandboxed being has them', () => {
+  it('the block names the mounts the launcher plants, read-only, and says only a sandboxed being has them', () => {
     const text = BLOCK.join('\n');
     expect(text).toMatch(/sandboxed/);
     expect(text).toMatch(/read-only/);
     expect(text).toMatch(/^ {2}~\/src\/ /m);
-    expect(text).toMatch(/^ {2}~\/repos\/ /m);
-    // `repos` is optional per node (the launcher passes it only where ~\src\siran exists and the
-    // provisioner has granted it).
-    expect(text).toMatch(/not every node has them/);
+    // The rest are config.yaml global_read_paths, per node (the launcher mounts each only where its
+    // folder exists and the provisioner has granted it), so the card names the kind - kg's `repos`
+    // as the example - and how a being sees which this node has.
+    expect(text).toMatch(/^ {2}~\/<name>\/ /m);
+    expect(text).toMatch(/e\.g\. ~\/repos\//);
+    expect(text).toMatch(/`ls ~` shows/);
   });
 });
 
 describe('0033 is satisfied where it has nothing to do', () => {
-  it('the card already names ~/repos/, wherever the operator put it', async () => {
+  it('the card already names ~/src/, wherever the operator put it', async () => {
     const h = home({ card: AFTER });
     const p = await plan(ctxFor(h));
     expect(p.satisfied).toBe(true);
-    expect(p.notes[0]).toBe(`${cardPath(h)} already names ~/repos/`);
-    const moved = home({ card: crlf(['# Pointers', '', 'My repos: ~/repos/ (read-only).']) });
+    expect(p.notes[0]).toBe(`${cardPath(h)} already names ~/src/`);
+    const moved = home({ card: crlf(['# Pointers', '', 'My code: ~/src/ (read-only).']) });
     expect((await plan(ctxFor(moved))).satisfied).toBe(true);
   });
 

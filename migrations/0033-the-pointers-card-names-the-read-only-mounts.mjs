@@ -1,13 +1,16 @@
-// 0033 — the pointers card names ~/src/ and ~/repos/, the two read-only folders a sandboxed being
-// has beside its room.
+// 0033 — the pointers card names ~/src/ and the operator's shared folders, the read-only folders a
+// sandboxed being has beside its room.
 //
 // THE RULING (operator, 2026-09-28): "sandboxed beings should have access to my
-// 'C:\Users\an\src\siran', we can call it repos/". Every pool profile now carries a `repos` junction
-// onto ~\src\siran beside the `src` one onto the eGPT checkout, both read-only
-// (setup/sandbox-account.ps1, Get-SandboxProfileJunctionStatement; the standing grant and the .env
-// carve-out are setup/provision-sandbox-account.ps1's). A being learns its surroundings from ONE card,
-// config/skeletons/room/30-pointers.md, and NO card had ever named `src` either - since 2026-09-23 a
-// boxed being could read its own code and was never told where. So the card names both.
+// 'C:\Users\an\src\siran', we can call it repos/", then "please frame this in config.yaml as
+// global_read_paths list". Every pool profile now carries, beside the `src` junction onto the eGPT
+// checkout, one read-only junction per entry of the node's config.yaml global_read_paths - kg's is
+// `repos`, onto ~\src\siran (setup/sandbox-account.ps1, Get-SandboxProfileJunctionStatement; the
+// standing grant and the .env carve-out are setup/provision-sandbox-account.ps1's; 0034 writes kg's
+// entry). A being learns its surroundings from ONE card, config/skeletons/room/30-pointers.md, and
+// NO card had ever named `src` either - since 2026-09-23 a boxed being could read its own code and
+// was never told where. So the card names `src`, and the shared folders by kind: a card cannot
+// render a config list, and `ls ~` is true on every node.
 //
 // WHY A MIGRATION: 0017's, 0030's and 0032's reason. boot's seedSkeletons is COPY-IF-MISSING, so a node
 // that already carries the card never receives the repo's new block; the profile copy is the one the
@@ -19,7 +22,7 @@
 // (0032's place).
 //
 // SATISFIED, NOT REFUSED (a refusal STOPS THE WHOLE CHAIN — setup/migrate.mjs, the 0003/0007/0011/0012
-// lesson): the card already names ~/repos/, wherever the operator put it, or there is no card on this
+// lesson): the card already names ~/src/, wherever the operator put it, or there is no card on this
 // node (boot's seeder plants the repo's).
 //
 // IT REFUSES, NAMING THE PLACE, only on a card that is not valid UTF-8 (an edit would re-encode bytes
@@ -31,19 +34,20 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const elevated = false;
-export const summary = "the room's pointers card names ~/src/ and ~/repos/, the read-only folders a sandboxed being has beside its room";
+export const summary = "the room's pointers card names ~/src/ and the operator's shared folders, the read-only folders a sandboxed being has beside its room";
 
 const CARD = ['config', 'skeletons', 'room', '30-pointers.md'];
 // The block as the repo card carries it, one line per element.
 export const BLOCK = [
-  'When I run sandboxed, my home holds two read-only folders beside this room:',
+  'When I run sandboxed, my home holds read-only folders beside this room:',
   '',
   '  ~/src/            my own code — the eGPT checkout',
-  "  ~/repos/          the operator's repositories — writing, research, radio, …",
-  '                    (not every node has them)',
+  '  ~/<name>/         folders the operator shares with every being on this',
+  '                    node, e.g. ~/repos/ (his repositories) — `ls ~` shows',
+  '                    which this node has',
 ];
-// What "already says it" means: the new mount's name, wherever the operator put it.
-const SAYS_IT = '~/repos/';
+// What "already says it" means: the mount every boxed being has, wherever the operator put it.
+const SAYS_IT = '~/src/';
 // A chrome line of the card's pointer block: indented, then `chrome` (`chrome` and `chrome profile`).
 const CHROME_LINE = /^\s+chrome\b/;
 
@@ -80,7 +84,7 @@ export async function plan(ctx) {
     changes: [
       where,
       ...BLOCK.map((l) => `  + ${l}`),
-      'a sandboxed being has ~/src (the eGPT checkout) and ~/repos (~\\src\\siran) mounted read-only (setup/sandbox-account.ps1) - a being that is not told does not look',
+      'a sandboxed being has ~/src (the eGPT checkout) mounted read-only, and one folder beside it per config.yaml global_read_paths entry (setup/sandbox-account.ps1) - a being that is not told does not look',
       'backup first, beside it: <file>.bak-0033-<timestamp>',
     ],
     apply: async () => {

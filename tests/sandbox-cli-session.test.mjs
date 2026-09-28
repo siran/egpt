@@ -701,6 +701,30 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
     expect(jsonArgOf(args, '-SharePathReadOnly')).toEqual(['C:\\ro']);
   });
 
+  // ── THE NODE'S READ MOUNTS (operator 2026-09-28: "please frame this in config.yaml as
+  //    global_read_paths list"). brainpool.mjs hands the validated list as sandboxReadMounts; the
+  //    launcher mounts each beside `src` once the provisioner's standing grant is on it. SAME
+  //    CONTRACT as every list here: one flag, ONE argv element holding a JSON array of STRINGS -
+  //    `NAME=PATH`, the -SetEnv shape - because ConvertFrom-JsonArgv parses nothing else. ──
+  it('REPRODUCE-FIRST: a node read mount reaches the launcher as ONE -ReadMounts element of NAME=PATH strings', async () => {
+    const args = await argvFor({ sandboxReadMounts: [{ name: 'repos', path: 'C:/Users/an/src/siran' }, { name: 'notes', path: 'D:/notes' }] });
+    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:/Users/an/src/siran', 'notes=D:/notes']);
+    const i = args.indexOf('-ReadMounts');
+    expect(args[i + 2].startsWith('-'), '-ReadMounts carries more than one argv value').toBe(true);
+    // ...before -InnerBin, in the launcher's param-block order, and -InnerArgs is still last.
+    expect(i).toBeGreaterThan(args.indexOf('-SetEnv'));
+    expect(i).toBeLessThan(args.indexOf('-InnerBin'));
+    expect(args[args.length - 2]).toBe('-InnerArgs');
+  });
+
+  it('WITH NO READ MOUNTS the flag is absent entirely, so the argv is byte-identical to what it was', async () => {
+    const plain = await argvFor();
+    expect(plain).not.toContain('-ReadMounts');
+    for (const junk of [undefined, [], 'C:\\not-an-array', null, [null, 42, {}, { name: 'x' }, { path: 'C:/y' }]]) {
+      expect(await argvFor({ sandboxReadMounts: junk }), `sandboxReadMounts=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
+    }
+  });
+
   it("engine: 'codex' and 'pi' route through the SAME sandboxSpawn, so both get -SharePath and -InnerArgs in the same shape", () => {
     for (const engine of ['codex', 'pi']) {
       const calls = [];

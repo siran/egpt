@@ -3,7 +3,7 @@
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect, vi } from 'vitest';
-import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef, resolveSandboxed } from '../src/spine/brainpool.mjs';
+import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef, resolveSandboxed, globalReadPathsOf } from '../src/spine/brainpool.mjs';
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
@@ -2675,6 +2675,102 @@ describe('brainpool.turn — sandbox_oauth_token reaches brainOptions ONLY for a
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions.sandboxOauthToken).toBe(TOKEN);   // it really did travel...
     for (const l of logs) expect(l, `a log line leaked the token: ${l}`).not.toContain(TOKEN);
+  });
+});
+
+// ── global_read_paths (operator 2026-09-28: "please frame this in config.yaml as global_read_paths
+//    list"). A node-level LIST of one-key maps `<mount name>: <path>`; the provisioner grants each
+//    path to the pool group (standing, after the .env carve) and the launcher mounts it beside `src`
+//    in every pool profile. globalReadPathsOf is the ONE reading of it - the spine's, and the
+//    provisioner's through setup/global-read-paths.mjs. An invalid entry is skipped with one line
+//    naming it; unset or empty is nothing at all. ──
+describe('globalReadPathsOf — the one reading of config.yaml global_read_paths', () => {
+  const read = (value) => { const logs = []; return { mounts: globalReadPathsOf(value, (l) => logs.push(l)), logs }; };
+
+  it('a good entry, in either path form, comes back as { name, path } in config order', () => {
+    const { mounts, logs } = read([{ repos: 'C:/Users/an/src/siran' }, { notes: '/c/Users/an/Documents/notes' }]);
+    expect(mounts).toEqual([
+      { name: 'repos', path: 'C:/Users/an/src/siran' },
+      { name: 'notes', path: 'C:/Users/an/Documents/notes' },
+    ]);
+    expect(logs).toEqual([]);
+  });
+
+  it('UNSET or EMPTY is nothing, and says nothing', () => {
+    for (const v of [undefined, null, []]) expect(read(v)).toEqual({ mounts: [], logs: [] });
+  });
+
+  it('a bad mount name is skipped with one line naming it; the good entry beside it survives', () => {
+    const { mounts, logs } = read([{ 'my repos': 'C:/x' }, { 'a/b': 'C:/y' }, { repos: 'C:/Users/an/src/siran' }]);
+    expect(mounts).toEqual([{ name: 'repos', path: 'C:/Users/an/src/siran' }]);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toMatch(/global_read_paths entry 1 .*"my repos".* skipped - the mount name must be letters, digits, - or _/);
+    expect(logs[1]).toMatch(/global_read_paths entry 2 .* skipped/);
+  });
+
+  it('the built-in mounts `src` and `egpt` are reserved, in any case', () => {
+    const { mounts, logs } = read([{ src: 'C:/a' }, { EGPT: 'C:/b' }]);
+    expect(mounts).toEqual([]);
+    expect(logs).toHaveLength(2);
+    for (const l of logs) expect(l).toMatch(/reserved/);
+  });
+
+  it('a RELATIVE path (or a drive-less rooted one, or none) is skipped', () => {
+    const { mounts, logs } = read([{ a: 'src/siran' }, { b: '\\Users\\an' }, { c: null }, { d: 42 }]);
+    expect(mounts).toEqual([]);
+    expect(logs).toHaveLength(4);
+    for (const l of logs) expect(l).toMatch(/not an absolute path/);
+  });
+
+  it('a second entry for the same mount name (any case) is skipped - one name, one junction', () => {
+    const { mounts, logs } = read([{ repos: 'C:/a' }, { Repos: 'C:/b' }]);
+    expect(mounts).toEqual([{ name: 'repos', path: 'C:/a' }]);
+    expect(logs[0]).toMatch(/entry 2 .* skipped - .*already/);
+  });
+
+  it('a path with a quote in it is skipped - the launcher plants it inside a quoted scrub command', () => {
+    const { mounts, logs } = read([{ q: "C:/it's" }]);
+    expect(mounts).toEqual([]);
+    expect(logs[0]).toMatch(/quote/);
+  });
+
+  it('an entry that is not ONE `<name>: <path>` pair, and a value that is not a list, say so', () => {
+    expect(read([{ a: 'C:/a', b: 'C:/b' }, 'C:/c']).logs).toHaveLength(2);
+    const notList = read({ repos: 'C:/Users/an/src/siran' });
+    expect(notList.mounts).toEqual([]);
+    expect(notList.logs[0]).toMatch(/global_read_paths is not a list/);
+  });
+});
+
+describe('brainpool.turn — global_read_paths reaches brainOptions ONLY for a sandboxed turn', () => {
+  const defaults = (sandboxed) => ({ agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed } } } });
+  const KG = [{ repos: 'C:/Users/an/src/siran' }];
+
+  it('sandboxed:true with the key set → brainOptions.sandboxReadMounts is the validated list', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: { ...defaults(true), global_read_paths: KG }, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxReadMounts).toEqual([{ name: 'repos', path: 'C:/Users/an/src/siran' }]);
+  });
+
+  it('THE COMMON CASE: the key unset (or empty, or all invalid) → no sandboxReadMounts at all, so the launcher argv is unchanged', async () => {
+    for (const global_read_paths of [undefined, [], [{ src: 'C:/x' }]]) {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: { ...defaults(true), global_read_paths }, platform: 'win32' });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions, `global_read_paths=${JSON.stringify(global_read_paths)} was forwarded`).not.toHaveProperty('sandboxReadMounts');
+    }
+  });
+
+  it('sandboxed:false → nothing: an unboxed turn runs as the operator and mounts nothing', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: { ...defaults(false), global_read_paths: KG }, platform: 'win32' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxReadMounts');
+  });
+
+  it('an invalid entry is named in the turn log, not dropped silently', async () => {
+    const logs = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { config: { ...defaults(true), global_read_paths: [{ egpt: 'C:/x' }] }, platform: 'win32', onLog: (l) => logs.push(String(l)) });
+    await brain.turn('e', ev);
+    expect(logs.some((l) => /global_read_paths entry 1 .*skipped .*reserved/.test(l))).toBe(true);
   });
 });
 

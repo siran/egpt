@@ -758,10 +758,10 @@ function Protect-SandboxCredDir {
   Log "hardened $CredDir  - inheritance off, FullControl for SYSTEM, Administrators and $($principals[2].Translate([System.Security.Principal.NTAccount]).Value) only"
 }
 
-# ---- THE .env CARVE-OUT (operator ruling 2026-09-28). ~\src\siran is mounted in
-# every pool profile as `repos`, READ-ONLY, through a STANDING inheritable
-# (OI)(CI)(RX) for the pool group - "EXCEPT secrets": a .env under it must not be
-# readable by the pool. The grant is inheritable because the subtree is the
+# ---- THE .env CARVE-OUT (operator ruling 2026-09-28). Each config.yaml
+# global_read_paths folder (kg: ~\src\siran, as `repos`) is mounted in every pool
+# profile READ-ONLY, through a STANDING inheritable (OI)(CI)(RX) for the pool
+# group - "EXCEPT secrets": a .env under it must not be readable by the pool. The grant is inheritable because the subtree is the
 # point, so a .env inherits the pool's read exactly like the file beside it. The
 # carve-out is what makes it different, one file at a time.
 #
@@ -949,6 +949,34 @@ function Protect-SandboxSecretFile {
   }
 }
 
+# THE FOLDERS THE CARVE AND THE STANDING READ GRANT ARE FOR: this node's
+# config.yaml global_read_paths (operator 2026-09-28: "please frame this in
+# config.yaml as global_read_paths list"), for provision-sandbox-account.ps1.
+# PowerShell cannot parse YAML, so node reads it - setup\global-read-paths.mjs,
+# which is the spine's own reading (brainpool.mjs globalReadPathsOf), so the
+# folder granted here is the folder the launcher mounts. The profile is the one
+# EGPT_HOME names, else ~\.egpt (src/egpt-home.mjs). Only that key comes back:
+#   { mounts = @({ name; path }...); skipped = @('<why an entry was skipped>'...) }
+# ANY FAILURE THROWS: a provisioner that cannot read the list cannot know what
+# to carve, and must not carry on as if the node had none.
+function Get-SandboxGlobalReadPaths {
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw "node is not on PATH - config.yaml global_read_paths cannot be read" }
+  $helper = Join-Path $PSScriptRoot 'global-read-paths.mjs'
+  # upgrade.ps1's PS 5.1 trap: under 'Stop', a native stderr line this host
+  # captures is a terminating error that hides the real one. Dropped for the call.
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $out = & $node $helper
+    $rc = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prevEAP
+  }
+  if ($rc -ne 0) { throw "$helper exited $rc - config.yaml global_read_paths could not be read (see above)" }
+  return (($out -join "`n") | ConvertFrom-Json)
+}
+
 # NOTE (2026-08-26): the per-lease scratch-profile wipe used to live here as
 # Clear-SandboxAccountProfile, deleting the whole Win32_UserProfile (registry
 # entry + directory) via Remove-CimInstance. That needs local-Administrator
@@ -964,13 +992,14 @@ function Protect-SandboxSecretFile {
 # THE JUNCTIONS EVERY POOL PROFILE GETS, AS ONE STATEMENT - the tail of the
 # payload Clear-SandboxProfileContents runs as the leased account after the wipe.
 #
-# TWO LINKS AND AN OPTIONAL THIRD, ONE GENERATOR. The table below is the only
+# TWO LINKS AND OPTIONAL MORE, ONE GENERATOR. The table below is the only
 # place any is named, because adding one by copying another is how two would drift into
 # disagreeing about the existence guard or the error handling:
-#   src   -> ~\src\egpt, the EDITABLE eGPT checkout, read-only
-#   egpt  -> this lease's Room (see below - not a convenience)
-#   repos -> ~\src\siran, the operator's repositories, read-only - OPTIONAL,
-#            only where that folder exists (2026-09-28, see the end of this note)
+#   src    -> ~\src\egpt, the EDITABLE eGPT checkout, read-only
+#   egpt   -> this lease's Room (see below - not a convenience)
+#   <name> -> each config.yaml global_read_paths entry, read-only - OPTIONAL,
+#             only where the launcher's gate lets it through (2026-09-28, see
+#             the end of this note); kg's one is `repos`, ~\src\siran
 #
 # `src` IS THE REPO, AND IT USED TO BE THE OPERATOR'S WHOLE ~\src (operator
 # ruling 2026-09-23: "dismiss mounting ~/src always, that was a faux-pas", and
@@ -1075,28 +1104,32 @@ function Protect-SandboxSecretFile {
 # 2026-09-23). If anything here ever starts recursing THROUGH a reparse point,
 # this is a conversation-history shredder - stop rather than adjust it.
 #
-# ---- `repos` IS THE OPTIONAL THIRD ROW (operator ruling 2026-09-28: "sandboxed
-# beings should have access to my 'C:\Users\an\src\siran', we can call it
-# repos/"). ~\src\siran - the operator's own repositories, writing, research,
-# radio and the rest - mounted beside `src`, READ-ONLY, through the same
+# ---- THE READ MOUNTS ARE THE OPTIONAL ROWS (operator ruling 2026-09-28:
+# "sandboxed beings should have access to my 'C:\Users\an\src\siran', we can call
+# it repos/", then "please frame this in config.yaml as global_read_paths list").
+# Each entry of the node's config.yaml global_read_paths - kg's is `repos`, the
+# operator's own repositories - mounted beside `src`, READ-ONLY, through the same
 # mechanism and the same two halves: this link, and a STANDING (OI)(CI)(RX) for
 # the pool group on the target, written by provision-sandbox-account.ps1, which
 # also carries the one exception the ruling made ("EXCEPT secrets": the pool is
 # taken off every .env under it).
 #
-# OPTIONAL, AND ABSENT MEANS BYTE-IDENTICAL. The launcher passes -ReposRoot only
-# on a node that has the folder (do has none) AND carries the provisioner's
-# standing grant on it (written only after the .env carve - see the launcher),
-# and a statement with no `repos` row is exactly the two-link one above - pinned
-# in sandbox-account.Tests.ps1.
+# OPTIONAL, AND NONE MEANS BYTE-IDENTICAL. The launcher passes in -ReadMounts
+# only the entries whose folder exists AND carries the provisioner's standing
+# grant (written only after the .env carve - see the launcher), and a statement
+# with no read mount is exactly the two-link one above - pinned in
+# sandbox-account.Tests.ps1.
 # The -EA 0 would make a dangling target harmless anyway; the reason not to rely
 # on it is the BUDGET. MEASURED 2026-09-28 on reve, whole scrub command line with
 # the real profile and src lengths, exe and flags included:
 #   slug 30 -> 902 without repos, 937 with     slug 80 -> 952 without, 987 with
-# i.e. the row costs 35 characters and puts the table back at three rows, the
+# i.e. kg's row costs 35 characters and puts the table back at three rows, the
 # size of the 935/942/985 measurement above: 37 characters of margin at an
-# 80-character slug. A node without the folder should not pay that for a link
-# that could never land.
+# 80-character slug. A SECOND row that size can cross 1024, so for these rows -
+# and only these - the launcher measures the whole command line before the
+# launch and drops read mounts from the end, by name, until it fits (see
+# Clear-SandboxProfileContents). The "no invented limit" rule above still holds
+# for src and egpt: with no read mount the payload is exactly what it was.
 function Get-SandboxProfileJunctionStatement {
   param(
     # THE REPO, not the operator's ~\src: C:\Users\an\src\egpt. Named -RepoRoot
@@ -1106,14 +1139,25 @@ function Get-SandboxProfileJunctionStatement {
     # MANDATORY on purpose: a caller that forgot it would silently produce a
     # profile with no `egpt` mount, i.e. a turn with nowhere to run.
     [Parameter(Mandatory = $true)][string]$RoomTarget,
-    # ~\src\siran, or empty: no `repos` row at all (see above).
-    [string]$ReposRoot = ''
+    # The node's read mounts that passed the launcher's gate, as an ORDERED
+    # name -> path map; none (the default) is no extra row at all (see above).
+    [System.Collections.IDictionary]$ReadMounts = @{}
   )
   $links = [ordered]@{
     'src'  = $RepoRoot
     'egpt' = $RoomTarget
   }
-  if ($ReposRoot) { $links['repos'] = $ReposRoot }
+  # REFUSED, NOT SKIPPED: the spine never sends any of these (globalReadPathsOf
+  # skips them first), so one here is a caller bug. The name becomes a directory
+  # in the profile and must not replace src or egpt ($links is case-insensitive,
+  # as NTFS is); the name and the path are both interpolated inside '...' below.
+  foreach ($name in $ReadMounts.Keys) {
+    $path = [string]$ReadMounts[$name]
+    if ($name -notmatch '^[A-Za-z0-9_-]+$' -or $links.Contains($name) -or $path -match "['""]") {
+      throw "Get-SandboxProfileJunctionStatement: refusing read mount '$name' -> '$path'  - the name must be letters, digits, - or _ and not one already in the table (src, egpt), and the path must hold no quote"
+    }
+    $links[$name] = $path
+  }
   $pairs = @($links.Keys | ForEach-Object { "@('$_','$($links[$_])')" }) -join ','
   return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
 }

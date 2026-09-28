@@ -447,6 +447,47 @@ function withNodeAllowedPaths(def, config) {
   return { ...def, allowed_paths: { ...own, ...Object.fromEntries(extra) } };
 }
 
+// ── THE NODE-LEVEL `global_read_paths:` (operator 2026-09-28: "please frame this in config.yaml as
+// global_read_paths list") ─────────────────────────────────────────────────────────────────────
+// A LIST of one-key maps, `- <mount name>: <path>`. Each path is a STANDING read grant to the
+// sandbox pool GROUP, written once by setup/provision-sandbox-account.ps1 (after it carves every
+// .env under it out), and a junction of that name beside `src` in every pool profile, planted per
+// lease by setup/sandbox-logon-launcher.ps1. See CONFIG_SCHEMA.global_read_paths for how it differs
+// from allowed_paths above.
+//
+// THE ONE READING OF IT: this turn's -ReadMounts (sandbox-cli-session.mjs) and the provisioner's
+// list (setup/global-read-paths.mjs) both come from here, so the folder granted and the folder
+// mounted cannot disagree. Pure; returns [{ name, path }] in config order, path normalizeCwd'd
+// exactly as the allowed_paths walk reads one.
+//
+// AN INVALID ENTRY IS SKIPPED WITH ONE LINE NAMING IT, never silently and never by throwing: a typo
+// in one entry must not cost every sandboxed turn its other mounts, or the node its turns. The name
+// is a junction's name in the pool profile and `src`/`egpt` are the two it already has; the path
+// must carry a drive (a junction targets a local volume) and no quote (the launcher plants it
+// inside a single-quoted scrub command).
+const GLOBAL_READ_RESERVED = ['src', 'egpt'];
+export function globalReadPathsOf(value, onLog = () => {}) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    onLog(`config.yaml global_read_paths is not a list (a YAML list of \`- <mount name>: <path>\` entries) - no read mounts`);
+    return [];
+  }
+  const mounts = [];
+  value.forEach((entry, i) => {
+    const skip = (why) => onLog(`config.yaml global_read_paths entry ${i + 1} (${JSON.stringify(entry)}) skipped - ${why}`);
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).length !== 1) return skip('each entry is ONE `<mount name>: <path>` pair');
+    const [name, raw] = Object.entries(entry)[0];
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) return skip('the mount name must be letters, digits, - or _');
+    if (GLOBAL_READ_RESERVED.includes(name.toLowerCase())) return skip(`\`${name}\` is reserved - the built-in ${GLOBAL_READ_RESERVED.join(' and ')} mounts`);
+    if (mounts.some((m) => m.name.toLowerCase() === name.toLowerCase())) return skip(`\`${name}\` is already listed above`);
+    const path = typeof raw === 'string' ? normalizeCwd(raw.trim()) : '';
+    if (!/^[A-Za-z]:[\\/]/.test(path)) return skip('not an absolute path (<drive>:/... or /<drive>/...)');
+    if (/['"]/.test(path)) return skip('a path with a quote in it cannot ride the launcher\'s scrub command');
+    mounts.push({ name, path });
+  });
+  return mounts;
+}
+
 // THE ONE agent-def resolver (operator 2026-08-14: "remove the concept of siblings" —
 // every agent under agents[<name>], defaultKey included, resolves the SAME way; was
 // `siblingDef`, and renamed because it no longer is). Its
@@ -1182,6 +1223,11 @@ export function createBrainPool({
       // must stay distinguishable all the way to the launcher — see sandboxSharePathsFor.
       const { writable: sandboxSharePaths, readOnly: sandboxSharePathsReadOnly } =
         sandboxed === true ? sandboxSharePathsFor(def) : { writable: [], readOnly: [] };
+      // THE NODE'S READ MOUNTS (operator 2026-09-28, config.yaml `global_read_paths`), gated on
+      // `sandboxed` for the share paths' reason: they are junctions in a POOL profile, and an
+      // unboxed turn runs as the operator in his own. Read per turn like the credential above, so
+      // an invalid entry is named in this turn's log.
+      const sandboxReadMounts = sandboxed === true ? globalReadPathsOf(getConfig()?.global_read_paths, onLog) : [];
       const baseOpts = {
         engine,
         cwd,
@@ -1249,6 +1295,10 @@ export function createBrainPool({
         // these paths.
         ...(sandboxSharePaths.length ? { sandboxSharePaths } : {}),
         ...(sandboxSharePathsReadOnly.length ? { sandboxSharePathsReadOnly } : {}),
+        // ...and the node's read mounts, which sandbox-cli-session.mjs turns into the launcher's
+        // `-ReadMounts`. Spread in only when there are any, so a node without the key keeps the
+        // argv it had.
+        ...(sandboxReadMounts.length ? { sandboxReadMounts } : {}),
         // ...and the one way a boxed being can ask its spine for anything (operator 2026-09-26:
         // "for now only the browser"): a handle that mints a per-session credential for THIS being
         // in THIS room, which sandbox-cli-session.mjs turns into three -SetEnv entries and revokes

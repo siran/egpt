@@ -989,58 +989,105 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     (@([regex]::Matches($src, '(?m)^\s*\$sandboxCwd = ')).Count) | Should Be 1
   }
 
-  # `repos` (operator 2026-09-28): ~\src\siran, mounted only where it exists AND
-  # only once the provisioner's standing grant is on it - which it writes only
-  # after every .env under it is carved out. The launcher's own three lines are
-  # RUN here against a throwaway USERPROFILE and then fed to the generator, so the
-  # "no link" halves are the shipped code's behaviour and not a reading of it.
-  #
+  # THE NODE'S READ MOUNTS (config.yaml global_read_paths, operator 2026-09-28:
+  # "please frame this in config.yaml as global_read_paths list"). The spine
+  # hands them as ONE -ReadMounts element, a JSON array of NAME=PATH strings, and
+  # each is mounted only where its folder exists AND carries the provisioner's
+  # standing grant - which it writes only after every .env under it is carved
+  # out. The launcher's own statements are RUN here, so every "no link" half is
+  # the shipped code's behaviour and not a reading of it.
+  It '-ReadMounts goes through the ONE JSON parser: kg''s element parses, none is no entries, and a malformed entry THROWS' {
+    Invoke-Expression (Get-LauncherStatementBlock '^function ConvertFrom-JsonArgv')
+    $parse = Get-LauncherStatement '^\$ReadMountsList = ConvertFrom-JsonArgv'
+    $shape = Get-LauncherStatementBlock '^foreach \(\$mount in \$ReadMountsList\)'
+    # What sandbox-cli-session.mjs sends on kg.
+    $ReadMounts = '["repos=C:/Users/an/src/siran"]'
+    Invoke-Expression $parse; Invoke-Expression $shape
+    ($ReadMountsList -join '|') | Should Be 'repos=C:/Users/an/src/siran'
+    # The default: a node without the key sends no flag at all.
+    $ReadMounts = ''
+    Invoke-Expression $parse; Invoke-Expression $shape
+    @($ReadMountsList).Count | Should Be 0
+    # A bare path is not NAME=PATH: loud, before any lease is taken.
+    $ReadMounts = '["C:/Users/an/src/siran"]'
+    Invoke-Expression $parse
+    { Invoke-Expression $shape } | Should Throw 'NAME=PATH'
+  }
+
   # THE GRANT QUESTION IS ANSWERED BY A STUB, because this file writes no DACL
-  # (see the header). The stub records what it was ASKED, so the wiring - this
+  # (see the header). The stub records what it was ASKED, so the wiring - each
   # path, the Read row, the pool group's SID - is what is proved here; the
   # predicate itself, against a real grant and a real inherited one, is proved in
-  # sandbox-account.Tests.ps1 ('the launcher mounts repos only over the
+  # sandbox-account.Tests.ps1 ('the launcher mounts a read path only over the
   # provisioner's grant').
-  It 'plants repos only where ~\src\siran exists AND carries the provisioner''s grant - otherwise the two-link statement' {
+  It 'plants each read mount only where its folder exists AND carries the provisioner''s grant, and says why not' {
     $groupSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1100')
     function Get-SandboxPoolGroupSid { return $groupSid }
     $asked = New-Object System.Collections.Generic.List[string]
-    $granted = $false
-    function Test-SandboxPoolAcePresent { param($Path, $Grant, $Sid) $asked.Add("$Path|$Grant|$($Sid.Value)"); return $granted }
-    $resolve = {
-      Invoke-Expression (Get-LauncherStatement '^\s*\$reposRoot = Join-Path')
-      Invoke-Expression (Get-LauncherStatement '^\s*if \(-not \(Test-Path -LiteralPath \$reposRoot')
-      Invoke-Expression (Get-LauncherStatement '^\s*if \(\$reposRoot -and -not \(Test-SandboxPoolAcePresent')
-      $reposRoot
-    }
+    $grantedOn = @()
+    function Test-SandboxPoolAcePresent { param($Path, $Grant, $Sid) $asked.Add("$Path|$Grant|$($Sid.Value)"); return ($grantedOn -contains $Path) }
+    $logged = New-Object System.Collections.Generic.List[string]
+    function Log([string]$msg) { $logged.Add($msg) }
+    $gate = { Invoke-Expression (Get-LauncherStatement '^\s*\$readMounts = \[ordered\]@\{\}'); Invoke-Expression (Get-LauncherStatementBlock '^\s*foreach \(\$entry in \$ReadMountsList\)'); $readMounts }
     $twoLink = Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m'
-    $saved = $env:USERPROFILE
     $fakeHome = New-GateTempDir
-    $siran = Join-Path $fakeHome 'src\siran'
-    try {
-      $env:USERPROFILE = $fakeHome
-      # No folder: no link, and the grant is not even asked about.
-      (. $resolve) | Should Be ''
-      $asked.Count | Should Be 0
-      # Folder present, NO grant (reve today, or any node before its provisioner
-      # run): still no link - the statement is the two-link one, byte for byte.
-      New-Item -ItemType Directory -Path $siran -Force | Out-Null
-      $noGrant = . $resolve
-      $noGrant | Should Be ''
-      (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot $noGrant) | Should BeExactly $twoLink
-      # ...and what it asked is exactly the provisioner's grant: this path, the
-      # Read row, the pool GROUP's SID.
-      $asked[0] | Should Be "$siran|Read|$($groupSid.Value)"
-      # Folder present AND granted: the repos link joins the table.
-      $granted = $true
-      $withGrant = . $resolve
-      $withGrant | Should Be $siran
-      (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot $withGrant) | Should Match ([regex]::Escape("@('repos','$siran')"))
-    } finally {
-      $env:USERPROFILE = $saved
-    }
+    $siran = (Join-Path $fakeHome 'src\siran') -replace '\\', '/'
+    $gone = (Join-Path $fakeHome 'no-such') -replace '\\', '/'
+    $ReadMountsList = @("repos=$siran", "gone=$gone")
+    New-Item -ItemType Directory -Path $siran -Force | Out-Null
+    # Folder present, NO grant (any node before its provisioner run): no link -
+    # the statement is the two-link one, byte for byte - and one line each.
+    $noGrant = . $gate
+    $noGrant.Count | Should Be 0
+    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReadMounts $noGrant) | Should BeExactly $twoLink
+    # ...and what it asked is exactly the provisioner's grant: this path, the
+    # Read row, the pool GROUP's SID. The missing folder is not even asked about.
+    ($asked -join ';') | Should Be "$siran|Read|$($groupSid.Value)"
+    ($logged -join ';') | Should Match "read mount 'repos' not planted .*no explicit read grant on $([regex]::Escape($siran))"
+    ($logged -join ';') | Should Match "read mount 'gone' not planted .*$([regex]::Escape($gone)) is not a folder on this node"
+    # Granted: that one link joins the table; the missing one still does not.
+    $grantedOn = @($siran)
+    $withGrant = . $gate
+    (@($withGrant.Keys) -join ',') | Should Be 'repos'
+    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReadMounts $withGrant) | Should Match ([regex]::Escape("@('repos','$siran')"))
     # ...and it is handed to the ONE generator, on the ONE call line.
-    (Get-LauncherStatement '\(Get-SandboxProfileJunctionStatement -RepoRoot') | Should Match '-ReposRoot \$reposRoot\)$'
+    (Get-LauncherStatement '\(Get-SandboxProfileJunctionStatement -RepoRoot') | Should Match '-ReadMounts \$readMounts\)$'
+  }
+
+  # THE 1024-CHARACTER BUDGET (Invoke-AsLeasedAccount's BUDGET note). One mount
+  # the size of kg's leaves 37 characters at an 80-character slug; a second can
+  # cross it, and CreateProcessWithLogonW then fails the WHOLE scrub - no `egpt`,
+  # the turn refused. So the launcher measures the command line it is about to
+  # hand over and drops read mounts from the END until it fits, one line each.
+  It 'drops the read mounts that would push the scrub past 1024 characters, last first and by name - never src or egpt' {
+    Invoke-Expression (Get-LauncherStatementBlock '^function Format-Win32Arg')
+    $logged = New-Object System.Collections.Generic.List[string]
+    function Log([string]$msg) { $logged.Add($msg) }
+    $build = Get-LauncherStatementBlock '^\s*do \{$'
+    $profilePath = 'C:\Users\egpt-sbx-07'
+    $AccountName = 'egpt-sbx-07'
+    $psExe = 'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $repoRoot = 'C:\Users\an\src\egpt'
+    $RoomTarget = 'C:\Users\an\.egpt\conversations\whatsapp\' + ('s' * 80)
+    # kg's one mount: fits, nothing dropped.
+    $readMounts = [ordered]@{ repos = 'C:/Users/an/src/siran' }
+    Invoke-Expression $build
+    (@($readMounts.Keys) -join ',') | Should Be 'repos'
+    $logged.Count | Should Be 0
+    $fits = ((@($psExe) + $scrubArgs | ForEach-Object { Format-Win32Arg $_ }) -join ' ').Length
+    ($fits -le 1024) | Should Be $true
+    # Three more of that size do not: the last ones go, each named, until it fits.
+    $readMounts = [ordered]@{ repos = 'C:/Users/an/src/siran'; notes = 'C:/Users/an/Documents/notes'; music = 'C:/Users/an/Music/library'; books = 'C:/Users/an/Documents/books' }
+    Invoke-Expression $build
+    $kept = @($readMounts.Keys)
+    $kept[0] | Should Be 'repos'
+    ($kept.Count -lt 4) | Should Be $true
+    $logged.Count | Should Be (4 - $kept.Count)
+    ($logged -join ';') | Should Match "read mount 'books' not planted this lease .*over the 1024"
+    ((@($psExe) + $scrubArgs | ForEach-Object { Format-Win32Arg $_ }) -join ' ').Length -le 1024 | Should Be $true
+    # ...and the payload handed over is the one measured, with src and egpt in it.
+    $scrubScript | Should Match ([regex]::Escape("@('src','$repoRoot'),@('egpt','$RoomTarget')"))
+    $scrubArgs[-1] | Should BeExactly $scrubScript
   }
 }
 

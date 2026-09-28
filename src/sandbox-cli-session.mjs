@@ -15,8 +15,8 @@
 // straight through. See setup/sandbox-logon-launcher.ps1's header for the
 // full mechanism + the verified deviations from the original spec
 // (CreateProcessWithLogonW over CreateProcessAsUser; and the ARGUMENT CONTRACT —
-// -InnerArgs, -SharePath, -SharePathReadOnly and -SetEnv are each exactly ONE argv
-// element holding a JSON array, so PowerShell's parameter binder never tokenizes
+// -InnerArgs, -SharePath, -SharePathReadOnly, -SetEnv and -ReadMounts are each exactly ONE
+// argv element holding a JSON array, so PowerShell's parameter binder never tokenizes
 // caller data).
 //
 // warm-cli-session.mjs's spawnProc() already resolves `bin` (full claude.exe
@@ -380,6 +380,17 @@ export function createSandboxCliSession(options = {}) {
       .map((p) => p.trim()),
   )].filter((p) => !sharePaths.includes(p));
 
+  // THE NODE'S READ MOUNTS (operator 2026-09-28, config.yaml `global_read_paths`, validated by
+  // brainpool.mjs's globalReadPathsOf and handed here as options.sandboxReadMounts): a junction of
+  // each name beside `src` in the pool profile, onto a folder the pool GROUP already reads through
+  // the provisioner's standing grant - so, unlike the two lists above, no ACE is written per turn.
+  // NAME=PATH STRINGS, the -SetEnv shape, because ConvertFrom-JsonArgv parses a JSON array of
+  // strings and nothing else (see the TWO FLAGS note above). An entry missing either half is
+  // dropped, and none at all contributes ZERO argv elements.
+  const readMounts = (Array.isArray(options.sandboxReadMounts) ? options.sandboxReadMounts : [])
+    .filter((m) => typeof m?.name === 'string' && m.name && typeof m?.path === 'string' && m.path)
+    .map((m) => `${m.name}=${m.path}`);
+
   // THE BASH THE CLI'S OWN Bash TOOL WILL SPAWN — see GIT_BASH_ENV above for the measured defect
   // and for why msys64 is the first candidate. ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
   // CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable, so a codex/pi turn is untouched. Null
@@ -455,6 +466,8 @@ export function createSandboxCliSession(options = {}) {
       // for readers.) A codex/pi turn has no store, so with a token alone this is byte-identical
       // to what it was, and with neither it still contributes ZERO argv elements.
       ...(setEnv.length ? ['-SetEnv', JSON.stringify(setEnv)] : []),
+      // The node's read mounts, same shape, its own flag; absent when the node has none.
+      ...(readMounts.length ? ['-ReadMounts', JSON.stringify(readMounts)] : []),
       '-InnerBin', bin,
       // The WHOLE inner argv as ONE element. Empty elements, `--flags` and repeated flags all
       // ride INSIDE the JSON, verbatim, and the launcher's ConvertFrom-JsonArgv hands them to
