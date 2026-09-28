@@ -1045,6 +1045,60 @@ describe('/agents refresh|rethread|reset - the three conversation-lifecycle verb
       expect(sent[0].text).toMatch(/for HFM/);
     });
 
+    // (operator 2026-09-28: "please enable: /agent refresh <agent> <channel slug> so i can fire
+    // from eGPT Admin".) The trailing conversation is the whole rest of the line, so a chat name
+    // with spaces resolves through resolveTarget like any fragment. Fired FROM eGPT Admin, whose
+    // own name shares the word "eGPT" — which is exactly why a one-word "eGPT" is ambiguous.
+    describe('a multi-word trailing conversation, fired from another chat', () => {
+      const RODZ = '!rodz:beeper.local', ADMIN = '!admin:beeper.local';
+      function seedTwo() {
+        const state = seedLifecycle(SURFACE, RODZ, { pushedName: 'eGPT Rodz Lulu An', slugHint: 'eGPT Rodz Lulu An' });
+        return ensureContact(state, SURFACE, ADMIN, { pushedName: 'eGPT Admin', slugHint: 'eGPT Admin' }).state;
+      }
+      const fire = async (body) => {
+        const state = seedTwo();
+        const room = Room.forChat(SURFACE, getContact(state, SURFACE, RODZ).slug);
+        const h = harness({ state, io: transcriptIo(room) });
+        await h.cmds.run({ chatId: ADMIN, surface: SURFACE, body });
+        return h;
+      };
+
+      it('/agents refresh e eGPT Rodz Lulu An refreshes THAT chat — not "don\'t know where to put"', async () => {
+        const { sent, getState } = await fire('/agents refresh e eGPT Rodz Lulu An');
+        succeeded(sent);
+        expect(sent[0].text).toMatch(/for eGPT Rodz Lulu An/);
+        expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.identityInjectedAt).toBeNull();
+        expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.threadId).toBe('thread-abc');
+        expect(getContact(getState(), SURFACE, ADMIN).entry.agents?.e).toBeUndefined();        // the chat it was typed in is untouched
+      });
+
+      it('a value-taking verb takes the multi-word conversation too — /agents auto on e eGPT Rodz Lulu An', async () => {
+        const { sent, getState } = await fire('/agents auto on e eGPT Rodz Lulu An');
+        expect(sent[0].text).toMatch(/eGPT Rodz Lulu An.*→ on/);
+        expect(getBeing(getState(), SURFACE, RODZ, 'e').mode).toBe('on');
+      });
+
+      it('a single-word fragment still works — /agents refresh e lulu', async () => {
+        const { sent, getState } = await fire('/agents refresh e lulu');
+        succeeded(sent);
+        expect(sent[0].text).toMatch(/for eGPT Rodz Lulu An/);
+        expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.identityInjectedAt).toBeNull();
+      });
+
+      it('an ambiguous fragment is still refused with the matches — /agents refresh e eGPT, nothing written', async () => {
+        const { sent, writes } = await fire('/agents refresh e eGPT');
+        expect(sent[0].text).toMatch(/"eGPT" matches 2: .*eGPT Rodz Lulu An/);
+        expect(sent[0].text).toMatch(/eGPT Admin/);
+        expect(writes).toHaveLength(0);
+      });
+
+      it('=<slug> AND a multi-word trailing name is still "named twice", nothing written', async () => {
+        const { sent, writes } = await fire('/agents=admin refresh e eGPT Rodz Lulu An');
+        expect(sent[0].text).toMatch(/conversation named twice \(=admin and eGPT Rodz Lulu An\)/);
+        expect(writes).toHaveLength(0);
+      });
+    });
+
     it('/agents refresh all arms EVERY resident being', async () => {
       let state = ensureContact(emptyState(), SURFACE, JID, CTX).state;
       state = patchContact(state, SURFACE, JID, {
@@ -2941,7 +2995,7 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   const parse = (s) => normalizeAgentsArgs(s.split(/\s+/).filter(Boolean));
 
   it('a 0-arity verb places verb, target, conversation', () => {
-    expect(parse('rethread p spoiler')).toMatchObject({ args: ['p', 'rethread', undefined], slug: 'spoiler', extra: [] });
+    expect(parse('rethread p spoiler')).toMatchObject({ args: ['p', 'rethread', undefined], slug: 'spoiler' });
     expect(parse('rethread p')).toMatchObject({ args: ['p', 'rethread', undefined], slug: null });
     expect(parse('refresh p')).toMatchObject({ args: ['p', 'refresh', undefined], slug: null });
   });
@@ -2972,14 +3026,34 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
     expect(parse('p spoiler')).toMatchObject({ args: ['p'], slug: 'spoiler' });
   });
 
+  // (operator 2026-09-28: "please enable: /agent refresh <agent> <channel slug> so i can fire
+  // from eGPT Admin".) Chat names and slugs carry spaces (`eGPT Rodz Lulu An-2609201419`), but
+  // the conversation slot took ONE token: `refresh e eGPT Rodz Lulu An` read the conversation as
+  // "eGPT" and answered `don't know where to put "Rodz Lulu An"`. Every shape, same rule.
+  it('everything after the handle is ONE conversation term, single-spaced, in every verb shape', () => {
+    expect(parse('refresh e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'refresh', undefined], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('rethread all eGPT Rodz Lulu An')).toMatchObject({ args: ['all', 'rethread', undefined], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('auto mention e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'auto', 'mention'], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('access_level all e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'access_level', 'all'], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('e eGPT   Rodz Lulu An')).toMatchObject({ args: ['e'], slug: 'eGPT Rodz Lulu An' });
+  });
+
   it('the RETIRED object-first order is recognised as such — not misparsed, not silently accepted', () => {
     expect(parse('p rethread').retired).toMatchObject({ handle: 'p', verb: 'rethread' });
     expect(parse('e auto mention').retired).toMatchObject({ handle: 'e', verb: 'auto', rest: ['mention'] });
     expect(parse('p rethread').args).toBeUndefined();
   });
 
-  it('a token the grammar cannot place is REPORTED, never silently dropped', () => {
-    expect(parse('rethread p spoiler junk').extra).toEqual(['junk']);
+  // Was `.extra` → ['junk'], answered `don't know where to put "junk"`. Since 2026-09-28 a
+  // trailing word is part of the conversation term (the multi-word test above), so there is no
+  // longer a token the grammar cannot place. The property guarded is unchanged: the word is
+  // still never silently dropped — it reaches resolveTarget, which names it when nothing matches.
+  it('a trailing word is never silently dropped — it is part of the conversation, and reported if no chat matches', async () => {
+    expect(parse('rethread p spoiler junk')).toMatchObject({ args: ['p', 'rethread', undefined], slug: 'spoiler junk' });
+    const { cmds, sent, writes } = harness({ state: ensureContact(emptyState(), 'whatsapp', '!sp', { pushedName: 'spoiler', slugHint: 'spoiler' }).state });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/agents rethread e spoiler junk' });
+    expect(sent[0].text).toMatch(/no chat matches "spoiler junk"/);
+    expect(writes).toHaveLength(0);
   });
 
   // BOTH mistakes at once (old order AND the old word) get ONE reply that fixes both, rather

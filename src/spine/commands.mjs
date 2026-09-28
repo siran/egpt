@@ -388,18 +388,23 @@ const LIVE_AGENT_SUBS = Object.keys(AGENT_SUB_ARITY).filter((v) => !Object.hasOw
 // Every level name in the operator-facing text comes from ACCESS_LEVELS (permission-levels.mjs),
 // never a literal: the tier list is spelled out in ONE place, and a new tier updates this line,
 // the refusals below and /help together or not at all. Same rule now holds for the verb list.
-export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: refresh | rethread | reset | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status.`;
+export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: refresh | rethread | reset | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status. <conversation> is the rest of the line, spaces and all: \`/agents refresh e eGPT Rodz Lulu An\`.`;
 
 // args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
-// slug, extra }, or { retired } for the old order. Pure; exported for tests.
+// slug }, or { retired } for the old order. Pure; exported for tests.
+//
+// The conversation is EVERYTHING after the handle, joined with single spaces (operator
+// 2026-09-28: "please enable: /agent refresh <agent> <channel slug> so i can fire from eGPT
+// Admin"). It was one token, and chat names and slugs carry spaces (`eGPT Rodz Lulu An-
+// 2609201419`), so `refresh e eGPT Rodz Lulu An` resolved "eGPT" and answered `don't know
+// where to put "Rodz Lulu An"`. With nothing left over in any shape, that reply went too.
 export function normalizeAgentsArgs(args) {
   const verb = args[0]?.toLowerCase();
   if (verb && Object.hasOwn(AGENT_SUB_ARITY, verb)) {
     const takesValue = AGENT_SUB_ARITY[verb] === 1;
     const value = takesValue ? args[1] : undefined;
     const handle = takesValue ? args[2] : args[1];
-    const trailing = args.slice(takesValue ? 3 : 2);
-    return { args: [handle, args[0], value], slug: trailing[0] ?? null, extra: trailing.slice(1) };
+    return { args: [handle, args[0], value], slug: args.slice(takesValue ? 3 : 2).join(' ') || null };
   }
   // No leading verb: either the bare status form (`<handle> [<conv>]`) or the retired
   // object-first order, which is recognisable exactly — and worth recognising, to say so.
@@ -407,7 +412,7 @@ export function normalizeAgentsArgs(args) {
   if (second && Object.hasOwn(AGENT_SUB_ARITY, second)) {
     return { retired: { handle: args[0], verb: args[1], rest: args.slice(2) } };
   }
-  return { args: [args[0]], slug: args[1] ?? null, extra: args.slice(2) };
+  return { args: [args[0]], slug: args.slice(1).join(' ') || null };
 }
 
 // The whole surface is PLURAL (operator 2026-08-29: "we should keep only '/agents', '/rooms',
@@ -892,7 +897,7 @@ export function createCommands({
     const agentsMatch = /^\/agents(?:=(\S+))?(?:\s+(.+?))?\s*$/i.exec(line);
     if (agentsMatch) {
       const raw = (agentsMatch[2] ?? '').trim().split(/\s+/).filter(Boolean);
-      const { args, slug, extra, retired } = normalizeAgentsArgs(raw);
+      const { args, slug, retired } = normalizeAgentsArgs(raw);
       // The retired object-first order gets its own line back, rebuilt into the new one —
       // naming the exact replacement, not just the rule.
       if (retired) {
@@ -906,7 +911,6 @@ export function createCommands({
         await send?.(ev.chatId, `/agents: the verb comes first now — \`${fixed}\``);
         return;
       }
-      if (extra.length) { await send?.(ev.chatId, `/agents: don't know where to put "${extra.join(' ')}" — ${AGENTS_USAGE}`); return; }
       if (slug && agentsMatch[1]) { await send?.(ev.chatId, `/agents: conversation named twice (=${agentsMatch[1]} and ${slug}) — name it once`); return; }
       await agentsCmd(ev, agentsMatch[1] || slug || null, args);
       return;
