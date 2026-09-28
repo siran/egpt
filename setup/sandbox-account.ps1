@@ -758,6 +758,197 @@ function Protect-SandboxCredDir {
   Log "hardened $CredDir  - inheritance off, FullControl for SYSTEM, Administrators and $($principals[2].Translate([System.Security.Principal.NTAccount]).Value) only"
 }
 
+# ---- THE .env CARVE-OUT (operator ruling 2026-09-28). ~\src\siran is mounted in
+# every pool profile as `repos`, READ-ONLY, through a STANDING inheritable
+# (OI)(CI)(RX) for the pool group - "EXCEPT secrets": a .env under it must not be
+# readable by the pool. The grant is inheritable because the subtree is the
+# point, so a .env inherits the pool's read exactly like the file beside it. The
+# carve-out is what makes it different, one file at a time.
+#
+# CARVED OUT MEANS TWO FACTS ON THE FILE: its DACL is PROTECTED (inheritance off),
+# and it holds no Allow ACE for any pool SID. Protected, or the next propagation
+# over the tree - the provisioner's own grant, or anyone's - hands the read
+# straight back. No pool ACE, because that IS the read. (And, checked but never
+# written: no read for a broad group every pool account is in - see "A BROAD
+# READ IS REFUSED" below.)
+#
+# WITHOUT TOUCHING ANYONE ELSE'S ACCESS, which is why inheritance goes off with
+# /inheritance:d and never :r. `d` COPIES every inherited ACE onto the file as an
+# explicit one, so the operator, SYSTEM, Administrators and whatever else could
+# read it through inheritance still can, from an explicit ACE now. Only the
+# pool's ACEs come off after that.
+#
+# TWO icacls CALLS, NOT ONE (measured 2026-09-28 on a throwaway file whose read
+# for BUILTIN\Guests was inherited): `icacls f /inheritance:d /remove:g *<sid>`
+# exits 0, prints "Successfully processed 1 files", protects the DACL - and
+# leaves the Guests ACE on it, now EXPLICIT. It removes before it copies, so the
+# remove finds nothing to remove. `/inheritance:d`, then `/remove:g`, removes it -
+# and the second of those is Revoke-SandboxPathAces itself, the one revoke.
+# sandbox-account.Tests.ps1 keeps that measurement as a test. The DACL read back
+# afterwards is the verdict either way, never the exit code - the rule the one
+# revoke already lives by.
+#
+# THE POOL IS THE GROUP AND ITS SIXTEEN ACCOUNTS, not the group alone, and the
+# accounts are there because of `d`. A lease's share from a being's allowed_paths
+# is an inheritable ACE naming ONE pool account. If a share covers a folder with a
+# .env in it when this runs, `d` freezes that account's inherited ACE into an
+# explicit one ON THE FILE, and the lease's revoke - which takes the ACE off the
+# SHARE PATH - can never reach it. Removing the group alone would turn a one-turn
+# share into a permanent read of the secret. (A Deny for the pool is left alone:
+# it is already on the right side.)
+#
+# LIMITS, said here rather than discovered:
+#  - A .env CREATED LATER inherits the pool's read like any new file under the
+#    tree, and stays readable until the provisioner runs again. Nothing watches
+#    the tree.
+#  - A .env MOVED IN from elsewhere on the same volume keeps the DACL it had there
+#    (an NTFS move within a volume is a rename, and the descriptor rides along).
+#    What that DACL allows is what it allows until the next run carves it.
+#  - NAMES, not contents: `.env` and `.env.*` (so `.env.example`, a template, is
+#    carved too). Nothing else is - not `.envrc`, not a key file, not a token in a
+#    remote URL in .git\config. The ruling named .env.
+#
+# A BROAD READ IS REFUSED, NOT CARVED (measured on reve 2026-09-28, the day this
+# was written). ~\src\siran\writing carries an EXPLICIT Everyone:(OI)(CI)(M), so
+# writing\.env inherits Everyone:(M) - and every pool account is in Everyone, as
+# it is in Authenticated Users and BUILTIN\Users. Taking the pool's own ACEs off
+# such a file changes nothing about who can read it, and `d` would make it worse:
+# it would COPY Everyone:(M) onto the file as an explicit ACE, where removing the
+# grant from the folder later could never reach it. So a file that one of those
+# three can READ (the ReadData bit) is 'failed', named by SID, and NOTHING is
+# written to it. It is not this script's ACE to remove - the operator's rule is
+# "without touching anyone else's access" - and the provisioner stops before the
+# tree is granted, which is what makes the operator see it. Other groups a pool
+# token carries (INTERACTIVE, LOCAL, "Local account") are NOT checked: a file
+# that granted one of them read would pass as carved out.
+#
+# THREE FUNCTIONS, split like Grant-SandboxPoolAce and its predicate so the
+# decision can be asked - and tested - without a write: the WALK (which files),
+# the DECISION (what one DACL needs, from an ACL object, so Pester can hand it one
+# built in memory), and the CARVE (the decision, /inheritance:d, the one revoke,
+# the read-back).
+
+# THE WALK. NAME-ONLY: it lists directories and never opens a file. It does not
+# descend into .git, node_modules, venv*, .venv or __pycache__ - generated or
+# vendored trees, and the bulk of ~\src\siran's 68k items (two Python venvs in
+# bmai alone) - and it never follows a REPARSE POINT, file or directory, so a
+# junction inside the tree cannot walk it out of the tree and have the carve
+# re-ACL a file somewhere else. A directory it cannot list THROWS, naming it:
+# a .env the walk could not see is a .env it did not carve, and that is not a
+# quiet outcome. Full paths, sorted, so the provisioner's lines read in order.
+function Find-SandboxSecretFiles {
+  param([Parameter(Mandatory = $true)][string]$Root)
+  $found = New-Object System.Collections.Generic.List[string]
+  $pending = New-Object System.Collections.Generic.Stack[System.IO.DirectoryInfo]
+  $pending.Push((New-Object System.IO.DirectoryInfo($Root)))
+  $reparse = [int][System.IO.FileAttributes]::ReparsePoint
+  while ($pending.Count -gt 0) {
+    foreach ($entry in $pending.Pop().GetFileSystemInfos()) {
+      if (([int]$entry.Attributes -band $reparse) -ne 0) { continue }
+      $name = $entry.Name
+      if ($entry -is [System.IO.DirectoryInfo]) {
+        if ($name -ne '.git' -and $name -ne 'node_modules' -and $name -notlike 'venv*' -and $name -ne '.venv' -and $name -ne '__pycache__') { $pending.Push($entry) }
+      } elseif ($name -eq '.env' -or $name -like '.env.*') {
+        [void]$found.Add($entry.FullName)
+      }
+    }
+  }
+  $found.Sort([System.StringComparer]::OrdinalIgnoreCase)
+  return $found.ToArray()
+}
+
+# THE DECISION for one file, from its DACL: { CarvedOut, DisableInheritance,
+# RemoveSids, BroadSids }. Pure - no path, no read, no write - so every branch is
+# tested against a DACL built in memory. Inherited AND explicit ACEs both count
+# ($true, $true): an inherited read is the case this exists for. BroadSids are
+# the Everyone / Authenticated Users / BUILTIN\Users ACEs that can read the file
+# - see "A BROAD READ IS REFUSED" above; any at all means not carved out, and not
+# carvable by this script.
+function Get-SandboxSecretFileAction {
+  param(
+    [Parameter(Mandatory = $true)][System.Security.AccessControl.FileSystemSecurity]$Acl,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier[]]$Sids
+  )
+  $pool = @($Sids | ForEach-Object { $_.Value })
+  $wide = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
+  $readData = [int][System.Security.AccessControl.FileSystemRights]::ReadData
+  $allows = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) |
+      Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
+  $held = @($allows | Where-Object { $pool -contains $_.IdentityReference.Value } | ForEach-Object { $_.IdentityReference.Value } | Select-Object -Unique)
+  $broad = @($allows | Where-Object { $wide -contains $_.IdentityReference.Value -and ([int]$_.FileSystemRights -band $readData) -ne 0 } |
+      ForEach-Object { $_.IdentityReference.Value } | Select-Object -Unique)
+  $protected = $Acl.AreAccessRulesProtected
+  return [pscustomobject]@{
+    CarvedOut          = ($protected -and $held.Count -eq 0 -and $broad.Count -eq 0)
+    DisableInheritance = (-not $protected)
+    RemoveSids         = $held
+    BroadSids          = $broad
+  }
+}
+
+# THE CARVE for one file. Check first, so a carved file costs no write at all;
+# then `/inheritance:d` if the DACL is not protected yet; then the pool's ACEs -
+# explicit ones by now - come off through Revoke-SandboxPathAces, THE ONE REVOKE
+# in this sandbox (the same /remove:g, read before and after, that every lease
+# and the sweep go through - not a second one beside it); then the DACL is read
+# again and decided again, and THAT is the verdict. No 2>&1, for the reason
+# Grant-SandboxPoolAce gives.
+#
+# THE POOL BY NAME (-AccountNames: the group and its accounts), because that is
+# what the one revoke takes; resolved to SIDs here once, for the decision. A name
+# that does not resolve is 'failed' - a pool this cannot name is a pool it cannot
+# prove is off the file.
+#
+# RETURNS A RECORD, LOGS NOTHING - { Path, Status, Message }, Status one of
+# 'carved out', 'already carved out', 'failed' - so the provisioner prints it and
+# Pester asserts on it. A throw inside becomes 'failed' for this file alone.
+function Protect-SandboxSecretFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string[]]$AccountNames
+  )
+  $record = { param([string]$Status, [string]$Message) [pscustomobject]@{ Path = $Path; Status = $Status; Message = $Message } }
+  try {
+    $nameOf = @{}
+    foreach ($n in $AccountNames) { $nameOf[(New-Object System.Security.Principal.NTAccount($n)).Translate([System.Security.Principal.SecurityIdentifier]).Value] = $n }
+    $sids = @($nameOf.Keys | ForEach-Object { New-Object System.Security.Principal.SecurityIdentifier($_) })
+    # -ErrorAction Stop: an unreadable DACL must be 'failed', never an empty rule
+    # set read as "no pool ACE here".
+    $plan = Get-SandboxSecretFileAction -Acl (Get-Acl -LiteralPath $Path -ErrorAction Stop) -Sids $sids
+    if ($plan.CarvedOut) { return (& $record 'already carved out' 'inheritance off and no pool ACE on it - nothing written') }
+    # BEFORE ANY WRITE: `/inheritance:d` here would copy the broad ACE onto the
+    # file for good (see "A BROAD READ IS REFUSED").
+    if ($plan.BroadSids.Count -gt 0) {
+      $who = @($plan.BroadSids | ForEach-Object {
+          $named = $_
+          try { $named = "$_ (" + (New-Object System.Security.Principal.SecurityIdentifier($_)).Translate([System.Security.Principal.NTAccount]).Value + ')' } catch { }
+          $named
+        }) -join ', '
+      return (& $record 'failed' "readable by every pool account through $who, an ACE this script did not write and does not remove - nothing written; take it off the folder it is inherited from (or the file), then re-run")
+    }
+    $out = @()
+    if ($plan.DisableInheritance) {
+      $out += & icacls.exe $Path '/inheritance:d'
+      $out += "(/inheritance:d exit $LASTEXITCODE)"
+    }
+    if ($plan.RemoveSids.Count -gt 0) {
+      foreach ($rec in @(Revoke-SandboxPathAces -Path $Path -AccountNames @($plan.RemoveSids | ForEach-Object { $nameOf[$_] }))) {
+        $out += "$($rec.Account): $($rec.Status) - $($rec.Message)"
+      }
+    }
+    $after = Get-SandboxSecretFileAction -Acl (Get-Acl -LiteralPath $Path -ErrorAction Stop) -Sids $sids
+    if (-not $after.CarvedOut) {
+      return (& $record 'failed' "still readable by the pool after icacls - protected=$(-not $after.DisableInheritance), pool ACE(s) left: $(@($after.RemoveSids) -join ', ') - $($out -join ' ')")
+    }
+    $what = @()
+    if ($plan.DisableInheritance) { $what += 'inheritance off (every inherited ACE kept, as an explicit one)' }
+    $what += if ($plan.RemoveSids.Count -gt 0) { "$($plan.RemoveSids.Count) pool ACE(s) removed" } else { 'no pool ACE was on it' }
+    return (& $record 'carved out' ($what -join ', '))
+  } catch {
+    return (& $record 'failed' $_.Exception.Message)
+  }
+}
+
 # NOTE (2026-08-26): the per-lease scratch-profile wipe used to live here as
 # Clear-SandboxAccountProfile, deleting the whole Win32_UserProfile (registry
 # entry + directory) via Remove-CimInstance. That needs local-Administrator
@@ -773,11 +964,13 @@ function Protect-SandboxCredDir {
 # THE JUNCTIONS EVERY POOL PROFILE GETS, AS ONE STATEMENT - the tail of the
 # payload Clear-SandboxProfileContents runs as the leased account after the wipe.
 #
-# TWO LINKS, ONE GENERATOR. The table below is the only place either is named,
-# because adding one by copying the other is how the two would drift into
+# TWO LINKS AND AN OPTIONAL THIRD, ONE GENERATOR. The table below is the only
+# place any is named, because adding one by copying another is how two would drift into
 # disagreeing about the existence guard or the error handling:
 #   src   -> ~\src\egpt, the EDITABLE eGPT checkout, read-only
 #   egpt  -> this lease's Room (see below - not a convenience)
+#   repos -> ~\src\siran, the operator's repositories, read-only - OPTIONAL,
+#            only where that folder exists (2026-09-28, see the end of this note)
 #
 # `src` IS THE REPO, AND IT USED TO BE THE OPERATOR'S WHOLE ~\src (operator
 # ruling 2026-09-23: "dismiss mounting ~/src always, that was a faux-pas", and
@@ -881,6 +1074,29 @@ function Protect-SandboxCredDir {
 # -NonInteractive, so it throws and the stale link survives (measured
 # 2026-09-23). If anything here ever starts recursing THROUGH a reparse point,
 # this is a conversation-history shredder - stop rather than adjust it.
+#
+# ---- `repos` IS THE OPTIONAL THIRD ROW (operator ruling 2026-09-28: "sandboxed
+# beings should have access to my 'C:\Users\an\src\siran', we can call it
+# repos/"). ~\src\siran - the operator's own repositories, writing, research,
+# radio and the rest - mounted beside `src`, READ-ONLY, through the same
+# mechanism and the same two halves: this link, and a STANDING (OI)(CI)(RX) for
+# the pool group on the target, written by provision-sandbox-account.ps1, which
+# also carries the one exception the ruling made ("EXCEPT secrets": the pool is
+# taken off every .env under it).
+#
+# OPTIONAL, AND ABSENT MEANS BYTE-IDENTICAL. The launcher passes -ReposRoot only
+# on a node that has the folder (do has none) AND carries the provisioner's
+# standing grant on it (written only after the .env carve - see the launcher),
+# and a statement with no `repos` row is exactly the two-link one above - pinned
+# in sandbox-account.Tests.ps1.
+# The -EA 0 would make a dangling target harmless anyway; the reason not to rely
+# on it is the BUDGET. MEASURED 2026-09-28 on reve, whole scrub command line with
+# the real profile and src lengths, exe and flags included:
+#   slug 30 -> 902 without repos, 937 with     slug 80 -> 952 without, 987 with
+# i.e. the row costs 35 characters and puts the table back at three rows, the
+# size of the 935/942/985 measurement above: 37 characters of margin at an
+# 80-character slug. A node without the folder should not pay that for a link
+# that could never land.
 function Get-SandboxProfileJunctionStatement {
   param(
     # THE REPO, not the operator's ~\src: C:\Users\an\src\egpt. Named -RepoRoot
@@ -889,12 +1105,15 @@ function Get-SandboxProfileJunctionStatement {
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     # MANDATORY on purpose: a caller that forgot it would silently produce a
     # profile with no `egpt` mount, i.e. a turn with nowhere to run.
-    [Parameter(Mandatory = $true)][string]$RoomTarget
+    [Parameter(Mandatory = $true)][string]$RoomTarget,
+    # ~\src\siran, or empty: no `repos` row at all (see above).
+    [string]$ReposRoot = ''
   )
   $links = [ordered]@{
     'src'  = $RepoRoot
     'egpt' = $RoomTarget
   }
+  if ($ReposRoot) { $links['repos'] = $ReposRoot }
   $pairs = @($links.Keys | ForEach-Object { "@('$_','$($links[$_])')" }) -join ','
   return "foreach(`$j in @($pairs)){`$s=Join-Path `$r `$j[0];ri -LiteralPath `$s -Recurse -Force -EA 0;ni -ItemType Junction -Path `$s -Target `$j[1] -EA 0 >`$null}"
 }

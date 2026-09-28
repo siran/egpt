@@ -1575,13 +1575,43 @@ function Clear-SandboxProfileContents {
   # conversation the being actually works in. They live in the CONVERSATION
   # folder instead, which is the being's cwd, is durable, and is the one place it
   # can write. See Room.treeDirs in src/room-core.mjs.
+  #
+  # `repos` IS ~\src\siran, READ-ONLY, AND ONLY WHERE IT EXISTS (operator ruling
+  # 2026-09-28: "sandboxed beings should have access to my 'C:\Users\an\src\siran',
+  # we can call it repos/"). do has no such folder, so this passes an EMPTY
+  # -ReposRoot there and the statement is the two-link one, byte for byte; the
+  # Test-Path is what keeps a node from paying 35 characters of the budget above
+  # for a link that could never land. See Get-SandboxProfileJunctionStatement.
+  # The other half, the standing group read on the target and the pool taken off
+  # every .env under it, is provision-sandbox-account.ps1's.
+  #
+  # AND ONLY ONCE THAT OTHER HALF IS THERE (2026-09-28). The provisioner grants
+  # ~\src\siran only AFTER every .env under it is carved out - a carve that fails
+  # stops its run before the grant - so "the standing grant is on the folder"
+  # means "the carve is done". A launcher deployed before the provisioner has run,
+  # or while the provisioner refuses (as it will on reve today: ~\src\siran\writing
+  # carries an explicit Everyone:(OI)(CI)(M), so writing\.env cannot be carved),
+  # must not hand beings a ~/repos they can only half-read and whose secrets are
+  # not yet carved. So no grant, no link: the statement is the two-link one, byte
+  # for byte. The question is Test-SandboxPoolAcePresent's - the same "already
+  # granted" predicate the provisioner's grant branches on, EXPLICIT ONLY, so an
+  # inherited read (the retired wide ~\src grant on a node that never narrowed)
+  # does not open it. One NTAccount translation and one DACL read per lease.
+  #
+  # ~\src\siran IS SPELLED TWICE, here as $reposRoot and in the provisioner as
+  # $reposDir - the folder mounted and the folder granted - because this script
+  # cannot be dot-sourced and so shares no variable with it. Change both together.
+  # ($repoRoot above it has a third spelling as well, in src/spine/being-link.mjs.)
   $repoRoot = Join-Path (Join-Path $env:USERPROFILE 'src') 'egpt'
+  $reposRoot = Join-Path (Join-Path $env:USERPROFILE 'src') 'siran'
+  if (-not (Test-Path -LiteralPath $reposRoot -PathType Container)) { $reposRoot = '' }
+  if ($reposRoot -and -not (Test-SandboxPoolAcePresent -Path $reposRoot -Grant 'Read' -Sid (Get-SandboxPoolGroupSid))) { $reposRoot = '' }
   $scrubScript = @(
     "`$r = '$profilePath'"
     "if (`$env:USERNAME -ne '$AccountName' -or `$env:USERPROFILE -ne `$r) { [Console]::Error.WriteLine('sandbox-logon-launcher: scrub REFUSED - running as ' + `$env:USERNAME + ' at ' + `$env:USERPROFILE); exit 11 }"
     "Get-ChildItem -LiteralPath `$r -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
     "[Console]::Error.WriteLine('sandbox-logon-launcher: scrubbed ' + `$r + ', ' + @(Get-ChildItem -LiteralPath `$r -Force -Recurse -ErrorAction SilentlyContinue).Count + ' locked entries left')"
-    (Get-SandboxProfileJunctionStatement -RepoRoot $repoRoot -RoomTarget $RoomTarget)
+    (Get-SandboxProfileJunctionStatement -RepoRoot $repoRoot -RoomTarget $RoomTarget -ReposRoot $reposRoot)
   ) -join '; '
 
   # IT STOPPED BEING PURELY HYGIENE when `egpt` joined the junction statement

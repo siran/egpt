@@ -1975,6 +1975,37 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
   }
 
+  # ---- `repos` (operator 2026-09-28: "sandboxed beings should have access to my
+  # 'C:\Users\an\src\siran', we can call it repos/"). A THIRD row of the same
+  # table, and an OPTIONAL one: the launcher passes -ReposRoot only on a node that
+  # has the folder (do has none). A node without it must get exactly the
+  # statement it got before - pinned byte for byte here, because "nothing changed
+  # where the feature does not apply" is a claim to test, not a hope.
+  It 'WITHOUT -ReposRoot the statement is byte-identical to the two-link one it was before repos' {
+    $pinned = 'foreach($j in @(@(''src'',''C:\r''),@(''egpt'',''C:\m''))){$s=Join-Path $r $j[0];ri -LiteralPath $s -Recurse -Force -EA 0;ni -ItemType Junction -Path $s -Target $j[1] -EA 0 >$null}'
+    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m') | Should BeExactly $pinned
+    # EMPTY is how the launcher says "not on this node", so it is the same
+    # statement too - never a `repos` link aimed at ''.
+    (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot '') | Should BeExactly $pinned
+  }
+
+  It 'WITH -ReposRoot a repos junction joins src and egpt, onto that folder, and the wipe takes it as a LINK' {
+    $repos = New-LedgerTempDir
+    New-Item -ItemType Directory -Path (Join-Path $repos 'writing') -Force | Out-Null
+    $r = $fakeProfile
+    Invoke-Expression (Get-SandboxProfileJunctionStatement -RepoRoot $target -RoomTarget $room -ReposRoot $repos) | Should BeNullOrEmpty
+    $link = Get-Item -LiteralPath (Join-Path $r 'repos') -Force
+    (([int]$link.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0) | Should Be $true
+    $link.Target | Should Be $repos
+    (Test-Path -LiteralPath (Join-Path (Join-Path $r 'repos') 'writing')) | Should Be $true
+    ((@(Get-ChildItem -LiteralPath $r -Force).Name | Sort-Object) -join ',') | Should Be 'egpt,repos,src'
+    # The scrub's own wipe runs over it on the next lease, exactly as over the
+    # other two: the operator's repositories must survive it.
+    Get-ChildItem -LiteralPath $r -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    (@(Get-ChildItem -LiteralPath $r -Force).Count) | Should Be 0
+    (Test-Path -LiteralPath (Join-Path $repos 'writing')) | Should Be $true
+  }
+
   It 'the whole scrub payload still fits the 1024-character CreateProcessWithLogonW budget' {
     # MSDN's lpCommandLine limit is real and ENFORCED (see Invoke-AsLeasedAccount's
     # BUDGET note) - a long command line fails with E_INVALIDARG rather than
@@ -1991,11 +2022,24 @@ Describe 'the pool profile junctions (as the launcher scrub really plants them)'
     # Not one double quote in it: Format-Win32Arg escapes every " as \", costing
     # two characters of a budget that is already two thirds spent.
     ($real -match '"') | Should Be $false
+    # WITH `repos` (2026-09-28) the table is three rows again, the size it was
+    # when 935/942/985 above were measured. MEASURED the same way on reve: the
+    # row costs 35 characters at the real ~\src\siran, and the whole command
+    # line reads 937 / 944 / 987 at 30 / 37 / 80-character slugs - 37 to spare
+    # at the wide end. The bound below is this statement's share plus that row.
+    # A node without the folder does not pay it - the launcher passes no
+    # -ReposRoot there.
+    $withRepos = Get-SandboxProfileJunctionStatement `
+      -RepoRoot (Join-Path $env:USERPROFILE 'src\egpt') `
+      -RoomTarget (Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp\a-conversation-slug-of-ordinary-length') `
+      -ReposRoot (Join-Path $env:USERPROFILE 'src\siran')
+    ($withRepos.Length -lt 341) | Should Be $true
+    ($withRepos -match '"') | Should Be $false
   }
 
   It 'is the statement the LAUNCHER actually uses - not a second copy of it' {
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
-    ($src -match '\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget\)') | Should Be $true
+    ($src -match '\(Get-SandboxProfileJunctionStatement -RepoRoot \$repoRoot -RoomTarget \$RoomTarget -ReposRoot \$reposRoot\)') | Should Be $true
     # ...and the launcher no longer spells a junction out for itself.
     ($src -match '-ItemType Junction') | Should Be $false
   }
@@ -2458,6 +2502,339 @@ Describe 'Grant-SandboxPoolAce writes an EXPLICIT ACE even where an inherited on
     Test-SandboxPoolAcePresent -Path $child -Grant 'Read' -Sid $script:MeSid | Out-Null
     Test-SandboxPoolAcePresent -Path $parent -Grant 'Read' -Sid $script:MeSid | Out-Null
     $script:IcaclsSpy.Count | Should Be 0
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE .env CARVE-OUT (operator 2026-09-28). ~\src\siran is mounted in every pool
+# profile as `repos`, READ-ONLY, through a STANDING inheritable read for the pool
+# group - "EXCEPT secrets": a .env under it must not be readable by the pool.
+# Three pieces, tested apart: the WALK (which files), the DECISION (what one
+# file's DACL needs, against DACLs built in memory - no path, no write), and the
+# CARVE itself (real icacls on a real throwaway file).
+Describe 'Find-SandboxSecretFiles (the name-only .env walk)' {
+  It 'finds .env and .env.<anything>, and nothing under .git, node_modules, venv*, .venv or __pycache__' {
+    $root = New-LedgerTempDir
+    foreach ($f in @('.env', 'app\.env', 'app\.env.local', 'app\deep\er\.env.production',
+        'app\venv\.env', 'app\venv-3.11\lib\.env', 'app\.venv\.env', 'app\node_modules\pkg\.env',
+        'app\.git\.env', 'app\__pycache__\.env',
+        'app\not.env', 'app\.envrc', 'app\env', 'app\.environment', 'app\README.md')) {
+      $p = Join-Path $root $f
+      New-Item -ItemType Directory -Path (Split-Path -Parent $p) -Force | Out-Null
+      Set-Content -LiteralPath $p -Value 'x' -Encoding Ascii
+    }
+    $found = @(Find-SandboxSecretFiles -Root $root | ForEach-Object { $_.Substring($root.Length + 1) })
+    ($found -join ',') | Should Be '.env,app\.env,app\.env.local,app\deep\er\.env.production'
+  }
+
+  It 'never follows a junction out of the tree - it would re-ACL a file somewhere else' {
+    $root = New-LedgerTempDir
+    $outside = New-LedgerTempDir
+    Set-Content -LiteralPath (Join-Path $outside '.env') -Value 'x' -Encoding Ascii
+    New-Item -ItemType Junction -Path (Join-Path $root 'linked') -Target $outside | Out-Null
+    @(Find-SandboxSecretFiles -Root $root).Count | Should Be 0
+  }
+
+  It 'a tree with no .env is an empty answer, not a throw' {
+    $root = New-LedgerTempDir
+    New-Item -ItemType Directory -Path (Join-Path $root 'a\b') -Force | Out-Null
+    @(Find-SandboxSecretFiles -Root $root).Count | Should Be 0
+  }
+}
+
+Describe 'Get-SandboxSecretFileAction (the carve-out decision, against DACLs built in memory)' {
+  # SDDL, because it is the one in-memory form that can mark an ACE INHERITED
+  # (the ID flag) and a DACL PROTECTED (D:P) - the two facts this decides on.
+  # SYNTHETIC SIDs: a pool group, one pool account, the operator.
+  $script:SecPool = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1100')
+  $script:SecAcct = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1105')
+  function New-SecretAcl([string]$Sddl) {
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetSecurityDescriptorSddlForm($Sddl)
+    return $acl
+  }
+  $op = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+
+  It 'REPRODUCE: a .env under the standing read inherits the pool read - inheritance off AND the pool off' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:(A;ID;FA;;;$op)(A;ID;0x1200a9;;;$($script:SecPool.Value))") -Sids @($script:SecPool, $script:SecAcct)
+    $a.CarvedOut | Should Be $false
+    $a.DisableInheritance | Should Be $true
+    (@($a.RemoveSids) -join ',') | Should Be $script:SecPool.Value
+  }
+
+  It 'protected with no pool ACE is carved out already - nothing to do' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(A;;FA;;;$op)") -Sids @($script:SecPool, $script:SecAcct)
+    $a.CarvedOut | Should Be $true
+    $a.DisableInheritance | Should Be $false
+    @($a.RemoveSids).Count | Should Be 0
+  }
+
+  It 'protected but still carrying a pool ACE (an explicit one) is NOT carved out - remove only' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(A;;FA;;;$op)(A;;0x1200a9;;;$($script:SecPool.Value))") -Sids @($script:SecPool)
+    $a.CarvedOut | Should Be $false
+    $a.DisableInheritance | Should Be $false
+    (@($a.RemoveSids) -join ',') | Should Be $script:SecPool.Value
+  }
+
+  It 'NOT protected and no pool ACE yet is still NOT carved out - the next propagation would bring the read' {
+    # The first-run case: the provisioner carves BEFORE it grants, so the file has
+    # nothing of the pool's yet and needs inheritance off all the same.
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:(A;ID;FA;;;$op)") -Sids @($script:SecPool)
+    $a.CarvedOut | Should Be $false
+    $a.DisableInheritance | Should Be $true
+    @($a.RemoveSids).Count | Should Be 0
+  }
+
+  It 'a pool ACCOUNT counts as the pool - a lease ACE is a read of the secret too' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(A;;FA;;;$op)(A;;0x1301bf;;;$($script:SecAcct.Value))") -Sids @($script:SecPool, $script:SecAcct)
+    $a.CarvedOut | Should Be $false
+    (@($a.RemoveSids) -join ',') | Should Be $script:SecAcct.Value
+  }
+
+  It 'a DENY for the pool is not something to remove - it is already on the right side' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(D;;0x1200a9;;;$($script:SecPool.Value))(A;;FA;;;$op)") -Sids @($script:SecPool)
+    $a.CarvedOut | Should Be $true
+  }
+
+  It 'REPRODUCE (reve, 2026-09-28): a read through Everyone is still a read by the pool - NOT carved out, and named' {
+    # ~\src\siran\writing carries an explicit Everyone:(OI)(CI)(M), so writing\.env
+    # inherits it. Every pool account is in Everyone; taking the pool's own ACEs off
+    # changes nothing, and turning inheritance off would FREEZE Everyone:(M) onto the
+    # file, where a later fix on the folder could never reach it.
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:(A;OICIID;0x1301bf;;;S-1-1-0)(A;ID;FA;;;$op)") -Sids @($script:SecPool)
+    $a.CarvedOut | Should Be $false
+    (@($a.BroadSids) -join ',') | Should Be 'S-1-1-0'
+  }
+
+  It 'Authenticated Users and BUILTIN\Users count the same way; a broad ACE with no read bit does not' {
+    $a = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(A;;FA;;;$op)(A;;0x1200a9;;;S-1-5-11)(A;;0x1200a9;;;S-1-5-32-545)") -Sids @($script:SecPool)
+    $a.CarvedOut | Should Be $false
+    ((@($a.BroadSids) | Sort-Object) -join ',') | Should Be 'S-1-5-11,S-1-5-32-545'
+    # WRITE_DATA only (0x2): it does not read the secret, so it is not this check's.
+    $w = Get-SandboxSecretFileAction -Acl (New-SecretAcl "D:P(A;;FA;;;$op)(A;;0x2;;;S-1-1-0)") -Sids @($script:SecPool)
+    $w.CarvedOut | Should Be $true
+  }
+}
+
+Describe 'Protect-SandboxSecretFile (the .env carve-out, on a real throwaway file)' {
+  # BUILTIN\Guests STANDS IN FOR THE POOL GROUP: it resolves on every box, this
+  # test grants and removes it only on its own temp dir, and it is NOT the current
+  # user - so "the pool is gone" and "the owner's access is unchanged" are two
+  # separate claims, each checked on its own.
+  $script:SecGuests = (New-Object System.Security.Principal.NTAccount('BUILTIN\Guests')).Translate([System.Security.Principal.SecurityIdentifier])
+  function Get-SecretRules([string]$Path) {
+    return @((Get-Acl -LiteralPath $Path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+  }
+  # Everyone but the stand-in pool, as "who / allow-or-deny / what", with the
+  # inherited-or-explicit flag deliberately LEFT OUT: turning an inherited ACE
+  # into the same explicit one is exactly what the carve does to them.
+  function Get-SecretOthers([string]$Path) {
+    return ((Get-SecretRules $Path | Where-Object { $_.IdentityReference.Value -ne $script:SecGuests.Value } |
+        ForEach-Object { "$($_.IdentityReference.Value)|$($_.AccessControlType)|$([int]$_.FileSystemRights)" } | Sort-Object) -join ';')
+  }
+  $dir = $null
+  $file = $null
+
+  # A throwaway directory shaped like the operator's profile: SYSTEM,
+  # Administrators and the owner, and NOTHING broad. $env:TEMP here inherits
+  # BUILTIN\Users and Authenticated Users, which the carve rightly refuses to call
+  # carved out - so the tree is cut loose from it first. Its own temp dir only.
+  function New-SecretTempDir {
+    $d = New-LedgerTempDir
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $d '/inheritance:r' '/grant:r' "*$($script:MeSid.Value):(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    return $d
+  }
+  # An inheritable Modify on the folder, through REAL icacls so it propagates onto
+  # the file already in it - the way a lease share, or the Everyone ACE on reve's
+  # writing folder, reaches a .env.
+  function Grant-SecretFolderModify([string]$Path, [string]$Sid) {
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $Path '/grant' "*${Sid}:(OI)(CI)(M)" | Out-Null
+  }
+
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = 'BUILTIN\Guests'
+    $dir = New-SecretTempDir                                  # stands in for ~\src\siran
+    Grant-SandboxPoolAce -Path $dir -Grant 'Read' | Out-Null  # the standing, inheritable read
+    $file = Join-Path $dir '.env'
+    Set-Content -LiteralPath $file -Value 'SECRET=1' -Encoding Ascii
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'REPRODUCE: under the standing read grant a .env inherits the pool read like every other file' {
+    @(Get-SecretRules $file | Where-Object { $_.IdentityReference.Value -eq $script:SecGuests.Value -and $_.IsInherited }).Count | Should Be 1
+    (Get-Acl -LiteralPath $file).AreAccessRulesProtected | Should Be $false
+  }
+
+  It 'carves it out: no pool ACE of any kind, inheritance off, and everyone else keeps exactly what they had' {
+    $others = Get-SecretOthers $file
+    $rec = Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests')
+    $rec.Status | Should Be 'carved out'
+    $rec.Path | Should Be $file
+    @(Get-SecretRules $file | Where-Object { $_.IdentityReference.Value -eq $script:SecGuests.Value }).Count | Should Be 0
+    (Get-Acl -LiteralPath $file).AreAccessRulesProtected | Should Be $true
+    Get-SecretOthers $file | Should Be $others
+    # ...and the owner still reads it, which is the operator's half of the ruling.
+    (Get-Content -LiteralPath $file) | Should Be 'SECRET=1'
+  }
+
+  It 'a second run writes NOTHING and says so' {
+    Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests') | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    $rec = Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests')
+    $rec.Status | Should Be 'already carved out'
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'the read grant arriving AFTER the carve does not reach the file - why the provisioner carves first' {
+    # The first-run order: nothing of the pool's on the file yet, carve, THEN the
+    # grant on the tree above it. A protected DACL takes no inherited ACE, so the
+    # grant's own propagation never hands the pool the secret, not even for the
+    # seconds between two steps.
+    $fresh = New-SecretTempDir
+    $f = Join-Path $fresh '.env'
+    Set-Content -LiteralPath $f -Value 'SECRET=2' -Encoding Ascii
+    (Protect-SandboxSecretFile -Path $f -AccountNames @('BUILTIN\Guests')).Status | Should Be 'carved out'
+    Grant-SandboxPoolAce -Path $fresh -Grant 'Read' | Out-Null
+    @(Get-SecretRules $f | Where-Object { $_.IdentityReference.Value -eq $script:SecGuests.Value }).Count | Should Be 0
+    # A SIBLING that was not carved does get it - the grant really did propagate.
+    Set-Content -LiteralPath (Join-Path $fresh 'README.md') -Value 'x' -Encoding Ascii
+    @(Get-SecretRules (Join-Path $fresh 'README.md') | Where-Object { $_.IdentityReference.Value -eq $script:SecGuests.Value }).Count | Should Be 1
+  }
+
+  It 'takes a pool ACCOUNT''s inherited lease ACE off too, so /inheritance:d cannot freeze a one-turn share into a standing read' {
+    # BUILTIN\Backup Operators stands in for one pool account holding a lease
+    # share on the folder: resolvable everywhere, and not one of the broad groups.
+    $acct = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-551')
+    Grant-SecretFolderModify $dir $acct.Value
+    @(Get-SecretRules $file | Where-Object { $_.IdentityReference.Value -eq $acct.Value }).Count | Should BeGreaterThan 0
+    (Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests', 'BUILTIN\Backup Operators')).Status | Should Be 'carved out'
+    @(Get-SecretRules $file | Where-Object { $_.IdentityReference.Value -eq $acct.Value -or $_.IdentityReference.Value -eq $script:SecGuests.Value }).Count | Should Be 0
+  }
+
+  It 'REFUSES a .env readable through Everyone and writes NOTHING - the writing\.env shape on reve, 2026-09-28' {
+    # Every pool account is in Everyone, so no removal of the POOL's ACEs makes this
+    # unreadable - and /inheritance:d would copy Everyone:(M) onto the file, where
+    # removing it from the folder later could never reach it. Not this script's ACE
+    # to take off: it says so, by SID, and leaves the file exactly as it found it.
+    Grant-SecretFolderModify $dir 'S-1-1-0'
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    $rec = Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests')
+    $rec.Status | Should Be 'failed'
+    $rec.Message | Should Match 'S-1-1-0'
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-Acl -LiteralPath $file).AreAccessRulesProtected | Should Be $false
+  }
+
+  It 'MEASURED: ONE combined icacls call is not enough - it protects the file and leaves the pool ACE on it' {
+    # Why the carve is two calls. `/inheritance:d /remove:g` in one invocation
+    # exits 0, reports the file processed, and removes before it copies - so the
+    # remove finds no explicit ACE, and the copy then makes the pool's one explicit.
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $file '/inheritance:d' '/remove:g' "*$($script:SecGuests.Value)" | Out-Null
+    $LASTEXITCODE | Should Be 0
+    (Get-Acl -LiteralPath $file).AreAccessRulesProtected | Should Be $true
+    @(Get-SecretRules $file | Where-Object { $_.IdentityReference.Value -eq $script:SecGuests.Value -and -not $_.IsInherited }).Count | Should Be 1
+  }
+
+  It 'a file whose DACL cannot be read (here: gone) is reported failed, not thrown and not skipped' {
+    $rec = Protect-SandboxSecretFile -Path (Join-Path $dir 'no-such\.env') -AccountNames @('BUILTIN\Guests')
+    $rec.Status | Should Be 'failed'
+  }
+
+  It 'a pool name that does not resolve is failed - a pool it cannot name is one it cannot prove is off the file' {
+    $rec = Protect-SandboxSecretFile -Path $file -AccountNames @('egpt-no-such-group-zzz')
+    $rec.Status | Should Be 'failed'
+    (Get-Acl -LiteralPath $file).AreAccessRulesProtected | Should Be $false
+  }
+
+  It 'the pool ACEs come off through the ONE revoke, not an icacls /remove:g of its own' {
+    # tests/sandbox-ace-reclaim.test.mjs locks "one place in the library performs
+    # the /remove:g"; this is the behaviour behind that: the second icacls the
+    # carve issues is Revoke-SandboxPathAces's own, `/remove:g ... /C`. The file is
+    # protected for real first, so the pool's ACE is EXPLICIT - the state the
+    # revoke is handed in a real carve, and the one it acts on.
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $file '/inheritance:d' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests') | Out-Null
+    $script:IcaclsSpy.Count | Should Be 1
+    (@($script:IcaclsSpy[0]) -join ' ') | Should Be "$file /remove:g *$($script:SecGuests.Value) /C"
+  }
+}
+
+# THE LAUNCHER'S GATE, AGAINST A REAL DACL (2026-09-28). The launcher mounts
+# `repos` only when the provisioner's standing grant is on ~\src\siran - which
+# the provisioner writes only after every .env under it is carved out.
+# sandbox-logon-launcher.Tests.ps1 proves the wiring with a stubbed answer (that
+# file writes no DACL); this runs the same three shipped lines against a
+# throwaway home whose src\siran really is, or is not, granted - by
+# Grant-SandboxPoolAce, the provisioner's own call - with the current user
+# standing in for the pool group.
+Describe 'the launcher mounts repos only over the provisioner''s grant (a real DACL)' {
+  $fakeHome = $null
+  $siran = $null
+  function Resolve-LauncherReposRoot([string]$ProfileRoot) {
+    $saved = $env:USERPROFILE
+    try {
+      $env:USERPROFILE = $ProfileRoot
+      Invoke-Expression (Get-LauncherStatement '^\s*\$reposRoot = Join-Path')
+      Invoke-Expression (Get-LauncherStatement '^\s*if \(-not \(Test-Path -LiteralPath \$reposRoot')
+      Invoke-Expression (Get-LauncherStatement '^\s*if \(\$reposRoot -and -not \(Test-SandboxPoolAcePresent')
+      return $reposRoot
+    } finally {
+      $env:USERPROFILE = $saved
+    }
+  }
+
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+    $fakeHome = New-LedgerTempDir
+    $siran = Join-Path $fakeHome 'src\siran'
+    New-Item -ItemType Directory -Path $siran -Force | Out-Null
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+  }
+
+  It 'REPRODUCE: the folder is there but not granted (reve today) - no repos link' {
+    (Resolve-LauncherReposRoot $fakeHome) | Should Be ''
+  }
+
+  It 'the provisioner''s grant is on it - the repos link' {
+    Grant-SandboxPoolAce -Path $siran -Grant 'Read' | Out-Null
+    (Resolve-LauncherReposRoot $fakeHome) | Should Be $siran
+  }
+
+  It 'an INHERITED read - the retired wide ~\src grant on a node that never narrowed - does not open it' {
+    # The provisioner's grant is EXPLICIT on ~\src\siran and follows the carve; a
+    # read inherited from ~\src says nothing about whether the carve ran.
+    Grant-SandboxPoolAce -Path (Join-Path $fakeHome 'src') -Grant 'Read' | Out-Null
+    (Resolve-LauncherReposRoot $fakeHome) | Should Be ''
+  }
+}
+
+# The provisioner's half, read off the shipped script: the carve comes BEFORE the
+# read grant on ~\src\siran (see the carve's first-run test above for why), and
+# ~\src\siran rides the ONE read list rather than a grant of its own.
+Describe 'the provisioner carves the .env files out, then grants ~\src\siran through the one read list' {
+  It 'the carve step runs before the read grant' {
+    $carve = Get-ProvisionLineIndex 'Protect-SandboxSecretFile -Path'
+    $grant = Get-ProvisionLineIndex 'Grant-PoolOn -Targets \$readOnly -Grant ''Read'''
+    $carve | Should BeLessThan $grant
+    # ...and it walks the same folder the read list grants, by the same variable.
+    (Get-ProvisionStatement 'Find-SandboxSecretFiles -Root') | Should Match '-Root \$reposDir'
+    (Get-ProvisionStatement '= \$reposDir$') | Should Match '~\\repos'
+  }
+
+  It 'a carve that FAILED stops the run rather than granting the tree over a readable secret' {
+    $throw = Get-ProvisionLineIndex 'still readable by the pool'
+    $grant = Get-ProvisionLineIndex 'Grant-PoolOn -Targets \$readOnly -Grant ''Read'''
+    $throw | Should BeLessThan $grant
   }
 }
 

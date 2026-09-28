@@ -37,6 +37,9 @@
 #     the step after that one takes the old wide grant back off, and puts ~\src's
 #     traverse ACE back, because `/remove:g` cannot take off one of a principal's
 #     two ACEs and the walk-through is what makes the checkout reachable at all;
+#   the same inheritable ReadAndExecute on ~\src\siran, the operator's
+#     repositories (2026-09-28, mounted as `repos`) - EXCEPT its .env files,
+#     which the step BEFORE that grant takes the whole pool off;
 #   inheritable Modify to the pool GROUP on pi's own config dir;
 #   per-lease Modify to ONE pool ACCOUNT on ONE conversation folder  - NOT here;
 #     that is the launcher's, granted at launch and revoked with the lease. The
@@ -64,7 +67,7 @@ if (-not $isElevated) {
 # window... please make script show progress"). Each step announces its number
 # and what it is about to touch before it starts, then reports its own elapsed
 # seconds. A step that finds nothing to do says so in one line.
-$StepCount = 8
+$StepCount = 9
 $script:StepIndex = 0
 function Start-Step {
   param([Parameter(Mandatory = $true)][string]$What, [string]$Warn = '')
@@ -145,7 +148,59 @@ try {
     'A node provisioned before 2026-09-27 has these WITHOUT S, and this run rewrites each such one once. A DACL write on a container re-propagates inheritance over its whole subtree, so ~ (the whole profile) and ~\src can take minutes. Not hung. A converged node writes nothing and says "already granted".'
   Stop-Step $step (Grant-PoolOn -Targets $ancestors -Grant 'Traverse')
 
-  # THE STANDING READ GRANTS. All four go to the pool GROUP, ReadAndExecute and
+  # ---- THE .env CARVE-OUT, BEFORE THE GRANT IT IS THE EXCEPTION TO (operator
+  # ruling 2026-09-28: sandboxed beings get ~\src\siran as `repos`, read-only,
+  # standing - "EXCEPT secrets"). The grant is the next step's; this one takes the
+  # pool off every .env under that tree first. The mechanism, why "the pool" is
+  # the group AND its sixteen accounts, and every limit are at
+  # Protect-SandboxSecretFile in sandbox-account.ps1. The two an operator needs
+  # on this page:
+  #   - a .env CREATED LATER inherits the pool's read, and stays readable until
+  #     this script runs again;
+  #   - a .env MOVED IN from elsewhere on the same volume keeps the DACL it had
+  #     there, until the same;
+  #   - a .env that Everyone, Authenticated Users or BUILTIN\Users can read is
+  #     REFUSED and left exactly as it is: every pool account is in those groups,
+  #     and the ACE is not this script's to remove. The run stops here naming it.
+  #     reve had one on the day this was written - ~\src\siran\writing carries an
+  #     explicit Everyone:(OI)(CI)(M), so writing\.env inherits it (icacls,
+  #     2026-09-28).
+  #
+  # BEFORE THE GRANT, NOT AFTER IT. A carved file's DACL is protected, and a
+  # protected DACL takes no inherited ACE, so when the next step's grant
+  # propagates over ~\src\siran it never reaches a secret - not even for the
+  # seconds a walk and two icacls calls per file would leave open the other way
+  # round (proved on a real file in sandbox-account.Tests.ps1). On every later
+  # run the order is moot: each file is found already carved and nothing is
+  # written.
+  #
+  # A FAILED CARVE STOPS THE RUN, before anything is granted on the tree - the
+  # same rule as the retirement step below: granting over a secret the pool could
+  # still open is the one outcome this step exists to prevent.
+  #
+  # ~\src\siran IS SPELLED TWICE, here as $reposDir and in the launcher as
+  # $reposRoot - the folder granted and the folder mounted. Change both together.
+  $reposDir = Join-Path (Join-Path $env:USERPROFILE 'src') 'siran'
+  $step = Start-Step "taking '$SandboxPoolGroup' off every .env under $reposDir, before the read grant on it" `
+    'A name-only walk - no file is opened - that skips .git, node_modules, venv*, .venv and __pycache__. Each .env found gets inheritance off (every inherited ACE kept, as an explicit one) and the pool''s ACEs removed; one that Everyone or Users can read is refused and left untouched. A converged node writes nothing.'
+  if (-not (Test-Path -LiteralPath $reposDir)) {
+    Write-Host "         the operator's repositories ($reposDir): not on this node  - skipped"
+    Stop-Step $step 'nothing to carve  - not on this node'
+  } else {
+    # THE POOL BY NAME: the group and each of its accounts. All of them exist by
+    # now - steps 1 and 2 made them.
+    $poolNames = @($SandboxPoolGroup) + @(Get-SandboxPoolAccountNames)
+    $carved = @(Find-SandboxSecretFiles -Root $reposDir | ForEach-Object { Protect-SandboxSecretFile -Path $_ -AccountNames $poolNames })
+    # NAMES ONLY, relative to the tree. Nothing here ever reads what is in a file.
+    foreach ($rec in $carved) { Write-Host "         $($rec.Path.Substring($reposDir.Length + 1)): $($rec.Status)  - $($rec.Message)" }
+    $failedCarves = @($carved | Where-Object { $_.Status -eq 'failed' }).Count
+    if ($failedCarves -gt 0) {
+      throw "$failedCarves .env file(s) under $reposDir are still readable by the pool  - see the line(s) above; nothing was granted on that tree"
+    }
+    Stop-Step $step "$(@($carved | Where-Object { $_.Status -eq 'carved out' }).Count) carved out, $(@($carved | Where-Object { $_.Status -eq 'already carved out' }).Count) already carved out"
+  }
+
+  # THE STANDING READ GRANTS. All five go to the pool GROUP, ReadAndExecute and
   # never more, inheritable because the subtree is the point. Windows UNIONS
   # Allow ACEs, so none of them can be narrowed by anything granted later -
   # narrowing one means REMOVING it, which is what the step after this does for
@@ -171,6 +226,15 @@ try {
   #                  one grant on the npm root covers both engines. Global npm
   #                  packages are public code; no credential lives here (pi's
   #                  auth.json is in ~\.pi).
+  #   ~\src\siran    the operator's repositories, READ ONLY (operator 2026-09-28:
+  #                  "sandboxed beings should have access to my
+  #                  'C:\Users\an\src\siran', we can call it repos/"). The target
+  #                  of the `repos` junction, standing for the reason ~\src\egpt's
+  #                  is (below), and with the same cost stated: all 16 pool
+  #                  accounts can read all of it, at all times - every .env under
+  #                  it excepted, by the step above. 68,320 items on reve, so a
+  #                  FIRST run pays one inheritance pass over them. Skipped where
+  #                  absent (do has none).
   #
   # ~\src\egpt IS STANDING, NOT PER-TURN, and that is a decision rather than an
   # accident. It is the other half of the `src` junction the launcher plants in
@@ -215,10 +279,11 @@ try {
     'the Claude Code bin dir' = Join-Path $env:USERPROFILE '.local\bin'
     'the RUNNING eGPT tree'   = Join-Path $env:USERPROFILE 'bin\egpt'
     'the EDITABLE eGPT checkout (what every pool profile mounts as ~\src)' = $repoDir
+    "the operator's repositories (what every pool profile mounts as ~\repos)" = $reposDir
     'the npm global root'     = Join-Path $env:APPDATA 'npm'
   }
   $step = Start-Step "standing read-only grants for '$SandboxPoolGroup' on $($readOnly.Count) tool and source directories" `
-    'A FIRST run writes these, and ~\src\egpt alone takes minutes: it is full of node_modules and every DACL write re-propagates inheritance over the lot. Not hung. A node already provisioned writes nothing and says "already granted".'
+    'A FIRST run writes these, and ~\src\egpt alone takes minutes: it is full of node_modules and every DACL write re-propagates inheritance over the lot. ~\src\siran (68k items on reve) pays the same pass once. Not hung. A node already provisioned writes nothing and says "already granted".'
   Stop-Step $step (Grant-PoolOn -Targets $readOnly -Grant 'Read')
 
   # ---- AND THE OLD WIDE GRANT COMES OFF. BOTH HALVES OR IT IS A MIRROR OF THE
@@ -353,7 +418,7 @@ try {
   $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
   Stop-Step $step "$(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them"
 
-  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders (including {4}, walk-through and NOT read), ReadAndExecute on the CLI tool dirs and on {5} (the standing read-only view every pool profile's src junction points at), and Modify on pi's config dir. Credential dir {6} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $repoDir, $CredDir)
+  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders (including {4}, walk-through and NOT read), ReadAndExecute on the CLI tool dirs and on {5} (the standing read-only view every pool profile's src junction points at), on {7} where it exists (the repos junction's target, every .env in it carved out), and Modify on pi's config dir. Credential dir {6} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $repoDir, $CredDir, $reposDir)
 } catch {
   Write-Host ("FAILED after {0:n1}s at step {1}/{2}: {3}" -f $runWatch.Elapsed.TotalSeconds, $script:StepIndex, $StepCount, $_.Exception.Message)
   exit 1

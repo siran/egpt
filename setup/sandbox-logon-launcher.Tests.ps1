@@ -988,6 +988,60 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     ($src -match '-OperatorSrc') | Should Be $false
     (@([regex]::Matches($src, '(?m)^\s*\$sandboxCwd = ')).Count) | Should Be 1
   }
+
+  # `repos` (operator 2026-09-28): ~\src\siran, mounted only where it exists AND
+  # only once the provisioner's standing grant is on it - which it writes only
+  # after every .env under it is carved out. The launcher's own three lines are
+  # RUN here against a throwaway USERPROFILE and then fed to the generator, so the
+  # "no link" halves are the shipped code's behaviour and not a reading of it.
+  #
+  # THE GRANT QUESTION IS ANSWERED BY A STUB, because this file writes no DACL
+  # (see the header). The stub records what it was ASKED, so the wiring - this
+  # path, the Read row, the pool group's SID - is what is proved here; the
+  # predicate itself, against a real grant and a real inherited one, is proved in
+  # sandbox-account.Tests.ps1 ('the launcher mounts repos only over the
+  # provisioner's grant').
+  It 'plants repos only where ~\src\siran exists AND carries the provisioner''s grant - otherwise the two-link statement' {
+    $groupSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-1111111111-2222222222-3333333333-1100')
+    function Get-SandboxPoolGroupSid { return $groupSid }
+    $asked = New-Object System.Collections.Generic.List[string]
+    $granted = $false
+    function Test-SandboxPoolAcePresent { param($Path, $Grant, $Sid) $asked.Add("$Path|$Grant|$($Sid.Value)"); return $granted }
+    $resolve = {
+      Invoke-Expression (Get-LauncherStatement '^\s*\$reposRoot = Join-Path')
+      Invoke-Expression (Get-LauncherStatement '^\s*if \(-not \(Test-Path -LiteralPath \$reposRoot')
+      Invoke-Expression (Get-LauncherStatement '^\s*if \(\$reposRoot -and -not \(Test-SandboxPoolAcePresent')
+      $reposRoot
+    }
+    $twoLink = Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m'
+    $saved = $env:USERPROFILE
+    $fakeHome = New-GateTempDir
+    $siran = Join-Path $fakeHome 'src\siran'
+    try {
+      $env:USERPROFILE = $fakeHome
+      # No folder: no link, and the grant is not even asked about.
+      (. $resolve) | Should Be ''
+      $asked.Count | Should Be 0
+      # Folder present, NO grant (reve today, or any node before its provisioner
+      # run): still no link - the statement is the two-link one, byte for byte.
+      New-Item -ItemType Directory -Path $siran -Force | Out-Null
+      $noGrant = . $resolve
+      $noGrant | Should Be ''
+      (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot $noGrant) | Should BeExactly $twoLink
+      # ...and what it asked is exactly the provisioner's grant: this path, the
+      # Read row, the pool GROUP's SID.
+      $asked[0] | Should Be "$siran|Read|$($groupSid.Value)"
+      # Folder present AND granted: the repos link joins the table.
+      $granted = $true
+      $withGrant = . $resolve
+      $withGrant | Should Be $siran
+      (Get-SandboxProfileJunctionStatement -RepoRoot 'C:\r' -RoomTarget 'C:\m' -ReposRoot $withGrant) | Should Match ([regex]::Escape("@('repos','$siran')"))
+    } finally {
+      $env:USERPROFILE = $saved
+    }
+    # ...and it is handed to the ONE generator, on the ONE call line.
+    (Get-LauncherStatement '\(Get-SandboxProfileJunctionStatement -RepoRoot') | Should Match '-ReposRoot \$reposRoot\)$'
+  }
 }
 
 # The launch summary is the ONE launcher line sandbox-cli-session.mjs forwards to
