@@ -148,8 +148,9 @@
 //     into the SAME conversation (its ns, nothing in the file can name another), same overlap guard.
 //     A refusal is a FAILED run carrying the reason. A bare script_path's script is thereby read by
 //     textecute INSIDE the box, as the pool account — which closes the file-read hole that got every
-//     script_path: refused here until 2026-09-28; its textecute session is handed sandbox_oauth_token
-//     exactly as a boxed turn is (the request carries `scriptPath`; a plain command gets no credential).
+//     script_path: refused here until 2026-09-28. Every boxed beat is handed sandbox_oauth_token
+//     exactly as a boxed turn is, when config.yaml has one; a script_path beat (the request carries
+//     `scriptPath`), whose textecute cannot work without it, is refused when there is none.
 //   BROWSER — `browser: true` + `agent:` + `prompt:`: a pure-AI turn that first asks boot's
 //     startBrowser (/chrome's own launch path) for the CDP browser; see _browserPreface.
 //   PURE AI — `agent:` + `prompt:`: runs as that being, through brainpool.turn.
@@ -578,7 +579,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
  * @param {(p:{ns:string, name:string, text:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message into its entity's chat, injected by boot. Throws → the run logs FAILED.
  * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
- * @param {(p:{ns:string, name:string, cwd:string, command:string, scriptPath?:string}) => Promise<any>} [deps.spawnBoxed]   a BEING-WRITTEN command beat's runner, injected by boot (createHeartbeatBoxRunner): refuses (rejects) unless the conversation runs boxed, else resolves the child of setup/sandbox-logon-launcher.ps1 running the command as the conversation's pool account. `scriptPath` marks a script_path: beat, whose textecute session is handed the sandbox credential. The loader never spawns a being's command itself.
+ * @param {(p:{ns:string, name:string, cwd:string, command:string, scriptPath?:string}) => Promise<any>} [deps.spawnBoxed]   a BEING-WRITTEN command beat's runner, injected by boot (createHeartbeatBoxRunner): refuses (rejects) unless the conversation runs boxed, else resolves the child of setup/sandbox-logon-launcher.ps1 running the command as the conversation's pool account. `scriptPath` marks a script_path: beat, refused when there is no sandbox credential for its textecute (every boxed beat is handed it when there is). The loader never spawns a being's command itself.
  * @param {() => Promise<{ok:boolean, detail?:string}>} [deps.startBrowser]   a `browser: true` beat's browser start, injected by boot: commands.startBrowser, /chrome's own launch path (idempotent)
  * @param {string} [deps.platform]                      process.platform seam — win32 runs command beats under POSIX bash
  * @param {() => string|null} [deps.resolvePosixBash]   the POSIX bash resolver seam (sandbox-cli-session.mjs resolveSandboxGitBash)
@@ -757,7 +758,7 @@ export function createHeartbeatLoader({
     };
     if (beingWritten) {
       if (typeof spawnBoxed !== 'function') { settle('no boxed runner wired — boot injects spawnBoxed'); return; }
-      // scriptPath rides along so boot can hand textecute's session the credential (a command gets none)
+      // scriptPath rides along so boot can refuse a script beat when there is no credential for textecute
       Promise.resolve().then(() => spawnBoxed({ ns, name: entry.name, cwd, command, ...(scriptPath ? { scriptPath } : {}) })).then(watch, (e) => settle(e?.message ?? e));
       return;
     }

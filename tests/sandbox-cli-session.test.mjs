@@ -1012,10 +1012,11 @@ describe('sandbox-cli-session — spawnBoxedCommand: a being\'s heartbeat comman
     expect(jsonArgOf(args, '-SetEnv').some((e) => /^(CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR)=/.test(e))).toBe(false);
   });
 
-  // A script_path: beat's textecute opens its own Claude session, so the caller hands the credential
-  // (operator 2026-09-28) — the SAME variable, in the SAME one -SetEnv element a boxed turn uses.
+  // Boot hands every boxed beat the credential when config.yaml has one (operator 2026-09-28: "a
+  // sandboxed being is running claude from sandbox credentials and thus executes any command with
+  // those privileges") — the SAME variable, in the SAME one -SetEnv element a boxed turn uses.
   // Names only in the assertions: the value is never printed.
-  it('handed sandboxOauthToken (a script beat): CLAUDE_CODE_OAUTH_TOKEN joins the one -SetEnv element, first, as in a turn; blank is none', () => {
+  it('handed sandboxOauthToken: CLAUDE_CODE_OAUTH_TOKEN joins the one -SetEnv element, first, as in a turn; blank is none', () => {
     const names = (args) => jsonArgOf(args, '-SetEnv').map((e) => e.slice(0, e.indexOf('=')));
     const script = run('node t.mjs dj.x.md', { sandboxOauthToken: ` ${TOKEN} ` }).args;
     expect(names(script)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);

@@ -317,10 +317,11 @@ export const CONFIG_SCHEMA = {
                     Refused (a FAILED run, logged) unless every being resident
                     in the conversation resolves sandboxed. A command too long
                     for the launcher's 1024-character command line runs from
-                    heartbeats/<name>.command.sh, written beside the beat. A
-                    script_path: beat's textecute session is handed
-                    sandbox_oauth_token, as a boxed turn is (refused when
-                    it is unset); a command: beat gets no credential.
+                    heartbeats/<name>.command.sh, written beside the beat.
+                    Every one is handed sandbox_oauth_token, as a boxed
+                    turn is, when it is set; unset, a script_path: beat is
+                    refused (its textecute needs it) and a command: beat
+                    runs without it.
         browser     browser: true + agent: + prompt: (above)
         pure AI     agent: + prompt: — a turn, refused unless that being
                     resolves sandboxed and is not access_level: all.

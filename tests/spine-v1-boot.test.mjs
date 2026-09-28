@@ -1031,10 +1031,11 @@ describe('boxedConversationFor — a being\'s heartbeat command runs only where 
 
 // THE BOXED RUNNER boot hands the loader (createHeartbeatBoxRunner), driven with a fake spawn, win32
 // and a bash candidate that exists — so what reaches the launcher is READ, never run. The operator's
-// ruling (2026-09-28): a `script_path:` beat's textecute session gets sandbox_oauth_token exactly as a
-// boxed turn does — the same variable, the same -SetEnv element — and a plain `command:` beat gets
-// none. Assertions name the VARIABLE only; the value is never printed.
-describe('createHeartbeatBoxRunner — a being\'s command beat, boxed; only a script beat is handed the credential', () => {
+// rulings (2026-09-28): EVERY boxed beat gets sandbox_oauth_token exactly as a boxed turn does — the
+// same variable, the same -SetEnv element — when config.yaml has one; a `script_path:` beat (whose
+// textecute cannot work without it) is refused when it does not, a `command:` beat just runs without.
+// Assertions name the VARIABLE only; the value is never printed.
+describe('createHeartbeatBoxRunner — a being\'s beat, boxed, handed the credential a boxed turn gets', () => {
   const TOKEN = 'sk-ant-oat01-FAKE-TEST-TOKEN-NOT-REAL';
   const state = { contacts: { room: { lab: { slug: 'lab', agents: { egpt: { threadId: 't1' } } } } } };
   let room, bash;
@@ -1065,10 +1066,21 @@ describe('createHeartbeatBoxRunner — a being\'s command beat, boxed; only a sc
     expect(JSON.parse(calls[0].args[calls[0].args.indexOf('-SetEnv') + 1]).includes(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`), 'the token, trimmed as brainpool reads it').toBe(true);
   });
 
-  it('a plain command: beat — no credential, whatever config.yaml holds', async () => {
+  // THE OPERATOR'S RULING (2026-09-28): "a sandboxed being is running claude from sandbox credentials
+  // and thus executes any command with those privileges" — the box already holds the token in every
+  // turn, so a command beat run in that box is handed it too, exactly as a turn is.
+  it('REPRODUCE-FIRST: a plain command: beat is handed the credential too, when config.yaml has one', async () => {
     const { run, calls } = runner({ sandbox_oauth_token: TOKEN });
     await run({ ns: 'room/lab', name: 'room/lab:date', cwd: room, command: 'date +%F' });
-    expect(setEnvNames(calls[0].args)).toEqual(['CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+    expect(setEnvNames(calls[0].args)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+  });
+
+  it('a plain command: beat with NO sandbox_oauth_token configured just runs — no entry, no refusal (a command does not need it)', async () => {
+    for (const config of [{}, { sandbox_oauth_token: '   ' }]) {
+      const { run, calls } = runner(config);
+      await run({ ns: 'room/lab', name: 'room/lab:date', cwd: room, command: 'date +%F' });
+      expect(setEnvNames(calls[0].args), JSON.stringify(Object.keys(config))).toEqual(['CLAUDE_CODE_GIT_BASH_PATH', 'MSYS2_PATH_TYPE']);
+    }
   });
 
   it('a script_path: beat with NO sandbox_oauth_token is REFUSED, like a boxed turn — before any spawn', async () => {

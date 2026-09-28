@@ -515,11 +515,12 @@ function readMountEntriesOf(list) {
 // i.e. in the room — and the same read mounts a boxed turn gets. -SetEnv carries the bash pair a
 // boxed CLI is handed (CLAUDE_CODE_GIT_BASH_PATH + MSYS2_PATH_TYPE=inherit, see GIT_BASH_ENV above)
 // and nothing else of a turn's: no CLI store, no share path, none of the operator's own environment.
-// THE ONE EXCEPTION IS THE CREDENTIAL (operator 2026-09-28), and only when the caller hands one: a
-// `script_path:` beat runs textecute, which opens its own Claude session in the box, so it is handed
-// sandbox_oauth_token exactly as a boxed turn is — CLAUDE_CODE_OAUTH_TOKEN (OAUTH_ENV_NAME above), in
-// the same one -SetEnv element, normalised the same way, never logged. A plain `command:` beat gets
-// none. The bash is THE resolver's (resolveSandboxGitBash, msys64 first, never WSL), the one the
+// THE ONE EXCEPTION IS THE CREDENTIAL (operator 2026-09-28: "a sandboxed being is running claude from
+// sandbox credentials and thus executes any command with those privileges"), whenever the caller hands
+// one — boot does for every beat when config.yaml has sandbox_oauth_token: CLAUDE_CODE_OAUTH_TOKEN
+// (OAUTH_ENV_NAME above), in the same one -SetEnv element, normalised the same way, never logged. A
+// `script_path:` beat's textecute needs it for its own Claude session; a command holds nothing its
+// box's turns do not. The bash is THE resolver's (resolveSandboxGitBash, msys64 first, never WSL), the one the
 // loader runs the operator's beats under, handed `-c <command>` exactly as they are (measured live
 // 2026-09-28 as egpt-sbx-00 through the launcher: the non-login `bash -c` finds /usr/bin's date and
 // cat, node and git, and PWD is the room's mount).

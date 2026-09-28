@@ -466,9 +466,9 @@ function withNodeAllowedPaths(def, config) {
 // must carry a drive (a junction targets a local volume) and no quote (the launcher plants it
 // inside a single-quoted scrub command).
 // THE ONE READING OF config.yaml's `sandbox_oauth_token` (see the credential note in turn() below):
-// a boxed turn's, and — operator 2026-09-28 — a boxed heartbeat `script_path:` beat's, whose
-// textecute opens its own Claude session in the box (boot.mjs createHeartbeatBoxRunner). Unset or
-// blank → ''. NEVER LOGGED, by either caller.
+// a boxed turn's, and — operator 2026-09-28 — every boxed heartbeat beat's (boot.mjs
+// createHeartbeatBoxRunner): the box already holds it in every turn. Unset or blank → ''. NEVER
+// LOGGED, by either caller.
 export function sandboxOauthTokenOf(config) {
   return String(config?.sandbox_oauth_token ?? '').trim();
 }

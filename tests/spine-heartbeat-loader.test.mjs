@@ -1590,8 +1590,8 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     await h.start();
     h.beat('dj')(); await flush();
     expect(h.calls).toHaveLength(0);
-    // scriptPath rides the request so boot hands textecute's session the credential; a plain
-    // command's request (the tests above) carries none
+    // scriptPath rides the request so boot can refuse a script beat with no credential for textecute;
+    // a plain command's request (the tests above) carries none
     expect(requests(h)).toEqual([{ ns: h.ns, name: `${h.ns}:dj`, cwd: h.dir, command: `node "${TEXTECUTE}" "dj.x.md"`, scriptPath: 'dj.x.md' }]);
   });
 

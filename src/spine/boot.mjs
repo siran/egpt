@@ -634,16 +634,19 @@ export async function boxedConversationFor(state, ns, sandboxedOf) {
 // spawnBoxedCommand — the launch a boxed turn makes, a bash where the CLI would be). A command too long
 // for the launcher's 1024-character command line is written beside the beat, as
 // heartbeats/<name>.command.sh, and run from there. The loader treats the child like any other.
-// A `script_path:` beat (the loader passes its scriptPath) runs textecute, which opens its own Claude
-// session, so it is handed sandbox_oauth_token exactly as a boxed turn is (brainpool.mjs
-// sandboxOauthTokenOf — the one reading of it) and REFUSED, like a turn, when there is none: without it
-// the session dies at the API with a message naming neither the key nor the fix. A plain `command:`
-// beat is handed no credential. Never logs the value. `platform` / `gitBashCandidates` are test seams.
+// EVERY boxed beat is handed sandbox_oauth_token exactly as a boxed turn is (brainpool.mjs
+// sandboxOauthTokenOf — the one reading of it), when config.yaml has one — operator 2026-09-28: "a
+// sandboxed being is running claude from sandbox credentials and thus executes any command with those
+// privileges", so a command run in the same box holds nothing its turns do not. A `script_path:` beat
+// (the loader passes its scriptPath) runs textecute, which opens its own Claude session and cannot
+// work without it, so with none it is REFUSED, like a turn: otherwise the session dies at the API with
+// a message naming neither the key nor the fix. A plain `command:` beat with none just runs without
+// the entry. Never logs the value. `platform` / `gitBashCandidates` are test seams.
 export function createHeartbeatBoxRunner({ loadState, sandboxedOf, getConfig, spawn, onLog = () => {}, platform, gitBashCandidates }) {
   return async ({ ns, name, cwd, command, scriptPath }) => {
     await boxedConversationFor(await loadState(), ns, sandboxedOf);
     const say = (m) => onLog(`${name}: ${m}`);
-    const sandboxOauthToken = scriptPath ? sandboxOauthTokenOf(getConfig()) : '';
+    const sandboxOauthToken = sandboxOauthTokenOf(getConfig());
     if (scriptPath && !sandboxOauthToken) throw new Error('refused — a script_path: beat runs textecute\'s own Claude session in the box, and config.yaml\'s `sandbox_oauth_token` is unset or blank: it is the only credential a boxed session ever gets (see sandbox-cli-session.mjs, OAUTH_REMEDY)');
     return spawnBoxedCommand({
       targetFolder: cwd, command,
