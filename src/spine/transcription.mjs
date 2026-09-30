@@ -27,7 +27,7 @@
 // rule: a NEGATIVE delay is a hard mute (HEARD, never SPOKEN).
 import { buildTranscriptionPipeline } from '../transcription-pipeline.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeViaEndpoint } from '../tools/transcriptor.mjs';
+import { transcribeViaEndpoint, publishTranscript } from '../tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../tools/whisper-server.mjs';
 import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
@@ -57,6 +57,9 @@ export function createTranscription({
   const { transcribe, stop } = buildTranscriptionPipeline({
     profile,
     transcribeViaEndpoint,
+    // reconcile a local fallback decode to the worker that was down, so it never re-decodes those bytes
+    // (operator 2026-09-29). The worker records it by sha (decode-once.put) — idempotent, HMAC-signed.
+    publishTranscript,
     reachable: async (url, ms) => { try { await fetch(url, { method: 'GET', signal: AbortSignal.timeout(ms) }); return true; } catch { return false; } },
     startWhisperServer,
     makeWhisperServerTranscriber,

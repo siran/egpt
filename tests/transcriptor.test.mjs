@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  startTranscriptorServer, transcribeViaEndpoint, makeRemoteFirstTranscriber, signAudio,
+  startTranscriptorServer, transcribeViaEndpoint, makeRemoteFirstTranscriber, signAudio, publishTranscript,
 } from '../src/tools/transcriptor.mjs';
 
 const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';   // base64url, any 32ish bytes
@@ -636,6 +636,126 @@ describe('transcriptor — "do you have this sha?" first, and a memory that outl
     expect(logs.some((m) => /lookup [0-9a-f]{12} from \S+ unknown — the audio follows/.test(m))).toBe(true);
     expect(c.decodes).toBe(0);
     expect(await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY })).toBe('transcript #1');
+  });
+});
+
+// ── "I DECODED THIS SHA ELSEWHERE": RECONCILING A LOCAL FALLBACK TO THE WORKER (operator 2026-09-29) ──
+// "make sure there is no double transcription of voice audios; dolly should identify them by hash." When
+// dolly's worker is unreachable a node decodes on its OWN whisper-cli; that result used to stay on that
+// node, so when the same bytes reached dolly later (a re-delivery after a wake, or the other account/node
+// on a shared chat) dolly decoded them a SECOND time. The node now PUTs {sha -> transcript} to dolly,
+// which records it (decode-once.put) and answers the later arrival from memory — no decode anywhere else.
+describe('transcriptor — a locally-decoded transcript published to the worker (PUT /v1/transcript/<sha>)', () => {
+  const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const fileOf = (tag, bytes = Buffer.from(tag)) => { const p = join(dir, `${tag}-${Math.random().toString(36).slice(2)}.ogg`); writeFileSync(p, bytes); return p; };
+  const counting = () => { const c = { decodes: 0 }; c.transcribe = async (_p, _cfg, _log, meta) => { c.decodes += 1; if (meta) meta.durationSec = 2.5; return `transcript #${c.decodes}`; }; return c; };
+  const lookupOf = (endpoint, bytes) => { const ts = Date.now(); return fetch(`${endpoint}/v1/transcript/${sha(bytes)}`, { headers: { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, bytes) } }); };
+  // raw PUT with a signed { sha, transcript, ... } body (the shape publishTranscript sends).
+  const putRaw = (endpoint, s, body = Buffer.from(JSON.stringify({ sha: s, transcript: 'x' })), urlSha = s, headers = null) => {
+    const ts = Date.now();
+    return fetch(`${endpoint}/v1/transcript/${urlSha}`, { method: 'PUT', headers: headers ?? { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, body) }, body });
+  };
+
+  it('REPRODUCE→FIX: a locally-decoded sha, published to the worker, is a lookup hit — the worker never decodes it', async () => {
+    const bytes = Buffer.from('opus-voice-note-bytes-'.repeat(40));
+    const s = sha(bytes);
+    // THE GAP (current behavior with no reconcile): the same bytes reaching the worker are decoded there
+    // — a SECOND mesh decode after the node's own local one.
+    const gap = counting();
+    const wGap = await startServer({ transcribe: gap.transcribe, stateDir: join(dir, 'gap') });
+    await transcribeViaEndpoint(fileOf('note', bytes), { endpoint: wGap.endpoint, keyB64: KEY });
+    expect(gap.decodes).toBe(1);
+    // THE FIX: the node publishes its local decode first; the worker answers the arrival from memory.
+    const fix = counting();
+    const wFix = await startServer({ transcribe: fix.transcribe, stateDir: join(dir, 'fix') });
+    expect(await publishTranscript(wFix.endpoint, { keyB64: KEY, sha: s, transcript: 'kg local transcript', durationSec: 6 })).toBe(true);
+    const meta = {};
+    expect(await transcribeViaEndpoint(fileOf('note', bytes), { endpoint: wFix.endpoint, keyB64: KEY }, () => {}, meta)).toBe('kg local transcript');
+    expect(fix.decodes).toBe(0);          // dolly identified the bytes by hash and decoded nothing
+    expect(meta.durationSec).toBe(6);     // the published duration rides back with it
+  });
+
+  it('a published sha answers the lookup with no audio and no decode', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+    const bytes = Buffer.from('a-note-only-kg-decoded '.repeat(20));
+    expect(await publishTranscript(w.endpoint, { keyB64: KEY, sha: sha(bytes), transcript: 'hola', durationSec: 3 })).toBe(true);
+    const r = await lookupOf(w.endpoint, bytes);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, transcript: 'hola', durationSec: 3 });
+    expect(c.decodes).toBe(0);
+  });
+
+  it('publishing is idempotent: twice, and over what the worker decoded itself, changes nothing', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+    const bytes = Buffer.from('dup '.repeat(30)); const s = sha(bytes);
+    expect((await putRaw(w.endpoint, s)).status).toBe(200);
+    expect(await (await putRaw(w.endpoint, s)).json()).toEqual({ ok: true, stored: 'recent' });   // second publish → no-op
+    // over a sha the worker decoded itself: put must not clobber the real decode
+    await transcribeViaEndpoint(audioPath, { endpoint: w.endpoint, keyB64: KEY });                // decodes → transcript #1
+    const already = sha(readFileSync(audioPath));
+    expect((await (await putRaw(w.endpoint, already)).json()).stored).toBe('recent');
+    expect((await (await lookupOf(w.endpoint, readFileSync(audioPath))).json()).transcript).toBe('transcript #1');
+    expect(c.decodes).toBe(1);
+  });
+
+  it('a POST of published bytes is also a hit: served from the recorded transcript, no decode', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+    const bytes = Buffer.from('posted-after-publish '.repeat(15)); const s = sha(bytes);
+    expect(await publishTranscript(w.endpoint, { keyB64: KEY, sha: s, transcript: 'from a node', durationSec: 8 })).toBe(true);
+    const ts = Date.now();
+    const r = await fetch(`${w.endpoint}/v1/transcribe`, { method: 'POST', headers: { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, bytes) }, body: bytes });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, transcript: 'from a node', durationSec: 8 });
+    expect(c.decodes).toBe(0);
+  });
+
+  it('the published memory outlives a restart: still a hit, still no decode', async () => {
+    const c = counting(); const stateDir = join(dir, 'state');
+    const bytes = Buffer.from('persist '.repeat(25)); const s = sha(bytes);
+    const first = await startServer({ transcribe: c.transcribe, stateDir });
+    expect(await publishTranscript(first.endpoint, { keyB64: KEY, sha: s, transcript: 'kept', durationSec: 4 })).toBe(true);
+    first.s.close();
+    const again = await startServer({ transcribe: c.transcribe, stateDir });
+    expect(await (await lookupOf(again.endpoint, bytes)).json()).toMatchObject({ ok: true, transcript: 'kept', durationSec: 4 });
+    expect(c.decodes).toBe(0);
+  });
+
+  it('rejects unsigned, wrong-key, stale, tampered, and sha-mismatched publishes; stores nothing', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+    const s = 'a'.repeat(64);
+    const body = Buffer.from(JSON.stringify({ sha: s, transcript: 'x' }));
+    expect((await putRaw(w.endpoint, s, body, s, {})).status).toBe(401);                                              // unsigned
+    const ts = Date.now();
+    expect((await putRaw(w.endpoint, s, body, s, { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(OTHER_KEY, ts, body) })).status).toBe(401);   // wrong key
+    const stale = Date.now() - 120_000;
+    expect((await putRaw(w.endpoint, s, body, s, { 'x-egpt-ts': String(stale), 'x-egpt-sig': signAudio(KEY, stale, body) })).status).toBe(401);   // stale
+    expect((await putRaw(w.endpoint, s, body, s, { 'x-egpt-ts': String(ts), 'x-egpt-sig': signAudio(KEY, ts, Buffer.from('other')) })).status).toBe(401);   // tampered body
+    // a valid signature over THIS body, but pinned to a different sha in the URL: the sha it claims is not the signed one
+    expect((await putRaw(w.endpoint, s, body, 'b'.repeat(64))).status).toBe(400);
+    expect((await lookupOf(w.endpoint, Buffer.from('nothing was stored'))).status).toBe(404);
+  });
+
+  it('an empty transcript is refused 422 and not remembered', async () => {
+    const c = counting();
+    const w = await startServer({ transcribe: c.transcribe, stateDir: join(dir, 'state') });
+    const s = 'c'.repeat(64);
+    expect((await putRaw(w.endpoint, s, Buffer.from(JSON.stringify({ sha: s, transcript: '' })))).status).toBe(422);
+  });
+
+  it('publishTranscript against an OLD worker with no publish route returns false, without throwing', async () => {
+    // The old worker's routing (958e88b): only POST /v1/transcribe; everything else 404.
+    const old = createServer((req, res) => { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'not found' })); });
+    await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+    servers.push({ close: () => { old.closeAllConnections?.(); old.close(); } });
+    expect(await publishTranscript(`http://127.0.0.1:${old.address().port}`, { keyB64: KEY, sha: 'd'.repeat(64), transcript: 'x' })).toBe(false);
+  });
+
+  it('publishTranscript to an unreachable worker returns false, without throwing', async () => {
+    expect(await publishTranscript('http://127.0.0.1:9', { keyB64: KEY, sha: 'e'.repeat(64), transcript: 'x', timeoutMs: 1000 })).toBe(false);
   });
 });
 

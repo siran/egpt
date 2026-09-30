@@ -37,6 +37,11 @@ export function buildTranscriptionPipeline({
   // routesToOwnTranscriptor(cfg) (src/spine/transcriptor-worker.mjs) — { at, endpoint } of the remote
   // rung that is THIS node's own transcriptor, or null. The one definition, handed in, not re-derived.
   ownTranscriptor = null,
+  // publishTranscript(endpoint, { keyB64, sha, transcript, durationSec }) (src/tools/transcriptor.mjs) —
+  // reconciles a LOCAL fallback decode to the worker rung that could not decode it, so that worker never
+  // decodes those bytes again (operator 2026-09-29: "dolly should identify them by hash"). Injected; null
+  // (tests, or a node with no worker rung) turns reconciliation off, exactly like `reachable`.
+  publishTranscript = null,
   now = () => Date.now(),
   onTransition = () => {},        // ({from, to, recovered}) -> void
   onLog = () => {},
@@ -49,7 +54,39 @@ export function buildTranscriptionPipeline({
   const local = new Map();         // local name -> { server, transcribe, starting, error }
   const failReason = new Map();    // engine name -> last failure reason (surfaced to Self on fallback)
   const decodeOnce = createDecodeOnce({ now });
+  // Local decodes waiting to be reconciled to a worker that was down when they were decoded (operator
+  // 2026-09-29). Bounded so an outage cannot grow it without limit; flushed by tryRemote when the worker
+  // rung is next reachable, and each entry drops as soon as the worker accepts it (idempotent there).
+  const pendingReconcile = new Map();     // `${endpoint}\0${sha}` -> { endpoint, keyB64, sha, transcript, durationSec }
+  const RECONCILE_MAX = 256;
   let lastWinner = null;
+
+  // Reconcile a transcript this node decoded LOCALLY to a worker rung that did not decode it (unreachable,
+  // in cooldown, or a 413). Immediate when the worker is reachable (a 413'd file — dolly is up, it only
+  // refused these bytes); otherwise the rung is in cooldown, so the result is HELD and flushPending sends
+  // it when tryRemote next finds the rung reachable. Best-effort and idempotent on the worker.
+  function reconcile(worker, sha, transcript, durationSec) {
+    if (!publishTranscript || !worker.endpoint || !worker.keyB64) return;
+    const key = `${worker.endpoint}\u0000${sha}`;
+    const item = { endpoint: worker.endpoint, keyB64: worker.keyB64, sha, transcript, durationSec };
+    const downUntil = breaker.get(worker.name);
+    if (downUntil && downUntil > now()) return hold(key, item);        // worker rung down → send on reconnect
+    publishTranscript(item.endpoint, item).then((ok) => { if (!ok) hold(key, item); }, () => hold(key, item));
+  }
+  function hold(key, item) {
+    pendingReconcile.set(key, item);
+    while (pendingReconcile.size > RECONCILE_MAX) pendingReconcile.delete(pendingReconcile.keys().next().value);
+  }
+  // The worker rung answered a probe (or none is configured and we are about to use it): send everything
+  // decoded locally for that endpoint while it was down. Fire-and-forget; an entry drops only once the
+  // worker accepts it, so a still-down worker keeps it for the next try.
+  function flushPending(endpoint) {
+    if (!publishTranscript) return;
+    for (const [key, item] of [...pendingReconcile]) {
+      if (item.endpoint !== endpoint) continue;
+      publishTranscript(item.endpoint, item).then((ok) => { if (ok) pendingReconcile.delete(key); }, () => {});
+    }
+  }
 
   async function tryRemote(eng, audioPath, log, meta, decodingHere) {
     const downUntil = breaker.get(eng.name);
@@ -63,6 +100,7 @@ export function buildTranscriptionPipeline({
       onLog(`pipeline: remote "${eng.name}" unreachable — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
       return null;
     }
+    flushPending(eng.endpoint);   // reachable (or no probe) → reconcile anything decoded locally while it was down
     if (ownTranscriptor && eng.endpoint === ownTranscriptor.endpoint) await decodingHere();   // this node's own worker
     try {
       const t = await transcribeViaEndpoint(
@@ -158,11 +196,14 @@ export function buildTranscriptionPipeline({
   // `onDecodeHere` (header) rides with the walk this call STARTS; a call that joins a running or
   // recent decode never passes it on, which is what makes the mark once per note per node.
   async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null, onDecodeHere = null) {
-    const once = await readFile(audioPath).then((bytes) => decodeOnce(sha256Hex(bytes), () => {
-      const decoded = {};
-      return { result: walk(audioPath, cfg, log, decoded, onDecodeHere).then((transcript) => ({ transcript, meta: decoded })) };
-    }), () => null);
-    if (!once) return walk(audioPath, cfg, log, meta, onDecodeHere);
+    const once = await readFile(audioPath).then((bytes) => {
+      const sha = sha256Hex(bytes);   // the reconcile key too: the walk it starts hands it on to reconcile()
+      return { sha, ...decodeOnce(sha, () => {
+        const decoded = {};
+        return { result: walk(audioPath, cfg, log, decoded, onDecodeHere, sha).then((transcript) => ({ transcript, meta: decoded })) };
+      }) };
+    }, () => null);
+    if (!once) return walk(audioPath, cfg, log, meta, onDecodeHere, null);
     const { served, job } = once;
     if (served) log(`transcribe: ${audioPath.split(/[\\/]/).pop()} served from an existing decode of the same bytes (${served})`);
     const { transcript, meta: decoded } = await job.result;
@@ -170,7 +211,7 @@ export function buildTranscriptionPipeline({
     return transcript;
   }
 
-  async function walk(audioPath, cfg, log, meta, onDecodeHere = null) {
+  async function walk(audioPath, cfg, log, meta, onDecodeHere = null, sha = null) {
     // The hook is AWAITED before the first on-node decode starts, so whatever it puts up is up
     // before that decode spends its first second, and its end can never run ahead of it. Neither
     // half may cost the transcript: a throw is logged and the decode goes on.
@@ -181,14 +222,22 @@ export function buildTranscriptionPipeline({
       try { end = await onDecodeHere(); }
       catch (e) { onLog(`pipeline: the decode-start hook threw — ${e?.message ?? e}`); }
     };
+    const failedWorkers = [];   // whisper-server-remote rungs that did NOT answer this note (candidates to reconcile to)
     try {
       for (const eng of engines) {
         let t = null;
-        if (eng.type === 'whisper-server-remote') t = await tryRemote(eng, audioPath, log, meta, decodingHere);
+        if (eng.type === 'whisper-server-remote') {
+          t = await tryRemote(eng, audioPath, log, meta, decodingHere);
+          if (!t && eng.endpoint) failedWorkers.push({ name: eng.name, endpoint: eng.endpoint, keyB64: eng.token });
+        }
         else if (eng.type === 'whisper-server-local') t = await tryLocal(eng, audioPath, cfg, log, meta, decodingHere);
         else if (eng.type === 'whisper-cli') t = await tryCli(eng, audioPath, log, meta, decodingHere);
         else { onLog(`pipeline: "${eng.name}" has unknown type "${eng.type}" — skipping`); continue; }
         if (t) {
+          // A LOCAL rung produced this transcript while a worker rung above it did not — reconcile it to
+          // those workers by sha so THEY never decode these bytes (operator 2026-09-29). A remote rung
+          // that won is already in its worker's store, so it never reconciles.
+          if (sha && eng.type !== 'whisper-server-remote') for (const w of failedWorkers) reconcile(w, sha, t, meta?.durationSec);
           if (lastWinner && lastWinner !== eng.name) {
             const recovered = idxOf(eng.name) < idxOf(lastWinner);
             // On a fall-BACK, surface WHY the prior engine failed this note (the

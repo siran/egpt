@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTranscriptionPipeline } from '../src/transcription-pipeline.mjs';
@@ -488,5 +489,96 @@ describe('transcription pipeline — the decode says when it runs on this node',
     expect(await pipe.transcribe(file('t.ogg'), {}, () => {}, {}, async () => { throw new Error('no mouth'); })).toBe('REMOTE');
     expect(logs.join('\n')).toMatch(/no mouth/);
     expect(await pipe.transcribe(file('n.ogg'), {}, () => {}, {}, async () => null)).toBe('REMOTE');
+  });
+});
+
+// ── A LOCAL FALLBACK DECODE IS RECONCILED TO THE WORKER (operator 2026-09-29) ──
+// kg's worker rung (dolly) is unreachable, so kg decodes on its own whisper-cli. That transcript used to
+// stay on kg; when dolly came back and the same bytes reached it, dolly decoded them again. kg now
+// publishes {sha -> transcript} to dolly's endpoint (src/tools/transcriptor.mjs publishTranscript) —
+// immediately if dolly is reachable (a 413'd file), else held and flushed when the worker rung is next
+// reachable — so dolly identifies the bytes by hash and never re-decodes. publishTranscript is INJECTED;
+// with none injected (the tests above) reconciliation is off and nothing changes.
+describe('transcription pipeline — a local fallback decode is reconciled to the worker', () => {
+  let dir;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'egpt-pipeline-reconcile-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  const file = (name, bytes) => { const p = join(dir, name); writeFileSync(p, bytes); return p; };
+  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const NOTE = Buffer.from('opus-voice-note-bytes-'.repeat(20));
+  const WORKER_CLI = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://dolly:23390', token: 'k', cooldown_ms: 1000 }, cli: { type: 'whisper-cli', command: 'wc', model_path: 'm' } };
+  // records every publish; returns ok (controllable) so a "down" worker's publish fails and is held.
+  const publisher = () => { const p = { calls: [], ok: true, publishTranscript: async (endpoint, item) => { p.calls.push({ endpoint, ...item }); return p.ok; } }; return p; };
+
+  it('REPRODUCE→FIX: worker down → cli decodes → published to the worker when it is reachable again', async () => {
+    const pub = publisher(); pub.ok = false;                     // dolly down: publishes fail, are held
+    let up = false;
+    const { pipe, advance } = mk({
+      profile: WORKER_CLI, publishTranscript: pub.publishTranscript,
+      reachable: async () => up,
+      transcribeViaEndpoint: async () => { if (!up) throw new Error('down'); return 'REMOTE'; },
+      cli: async (_p, _cfg, _log, meta) => { if (meta) meta.durationSec = 9; return 'CLI TEXT'; },
+    });
+    // 1. dolly down → kg falls back to cli; the reconcile is HELD (worker rung is in cooldown, no publish yet)
+    expect(await pipe.transcribe(file('a.ogg', NOTE), {}, () => {}, {})).toBe('CLI TEXT');
+    await tick();
+    expect(pub.calls).toEqual([]);
+    // 2. dolly back up, cooldown elapsed; the next note's tryRemote finds it reachable and flushes the hold
+    advance(1001); up = true; pub.ok = true;
+    expect(await pipe.transcribe(file('b.ogg', Buffer.from('another note')), {}, () => {}, {})).toBe('REMOTE');
+    await tick();
+    expect(pub.calls).toEqual([{ endpoint: 'http://dolly:23390', keyB64: 'k', sha: sha256(NOTE), transcript: 'CLI TEXT', durationSec: 9 }]);
+  });
+
+  it('a worker that refuses one file (413) is reachable, so the reconcile publishes immediately', async () => {
+    const pub = publisher();
+    const tooLarge = () => Object.assign(new Error('worker 413: body too large'), { status: 413 });
+    const { pipe } = mk({
+      profile: WORKER_CLI, publishTranscript: pub.publishTranscript,
+      transcribeViaEndpoint: async () => { throw tooLarge(); },
+      cli: async (_p, _cfg, _log, meta) => { if (meta) meta.durationSec = 12; return 'CLI VIDEO TEXT'; },
+    });
+    const bytes = Buffer.from('big video bytes');
+    expect(await pipe.transcribe(file('v.mp4', bytes), {}, () => {}, {})).toBe('CLI VIDEO TEXT');
+    await tick();
+    expect(pub.calls).toEqual([{ endpoint: 'http://dolly:23390', keyB64: 'k', sha: sha256(bytes), transcript: 'CLI VIDEO TEXT', durationSec: 12 }]);
+  });
+
+  it('two notes decoded locally during the outage both reconcile once, and are not re-published after', async () => {
+    const pub = publisher(); pub.ok = false; let up = false;
+    const { pipe, advance } = mk({
+      profile: WORKER_CLI, publishTranscript: pub.publishTranscript, reachable: async () => up,
+      transcribeViaEndpoint: async () => { if (!up) throw new Error('down'); return 'REMOTE'; },
+      cli: async () => 'CLI',
+    });
+    const A = Buffer.from('note A'), B = Buffer.from('note B');
+    await pipe.transcribe(file('a.ogg', A), {}, () => {}, {});
+    await pipe.transcribe(file('b.ogg', B), {}, () => {}, {});
+    await tick();
+    expect(pub.calls).toEqual([]);
+    advance(1001); up = true; pub.ok = true;
+    await pipe.transcribe(file('c.ogg', Buffer.from('note C')), {}, () => {}, {});   // reachable → flush both
+    await tick();
+    expect(pub.calls.map((c) => c.sha).sort()).toEqual([sha256(A), sha256(B)].sort());
+    await pipe.transcribe(file('d.ogg', Buffer.from('note D')), {}, () => {}, {});   // accepted → not re-sent
+    await tick();
+    expect(pub.calls).toHaveLength(2);
+  });
+
+  it('nothing is published when the worker decodes the note itself', async () => {
+    const pub = publisher();
+    const { pipe } = mk({ profile: WORKER_CLI, publishTranscript: pub.publishTranscript });   // remote wins → REMOTE
+    expect(await pipe.transcribe(file('a.ogg', NOTE), {}, () => {}, {})).toBe('REMOTE');
+    await tick();
+    expect(pub.calls).toEqual([]);
+  });
+
+  it('a profile with no worker rung (cli only) never publishes', async () => {
+    const pub = publisher();
+    const { pipe } = mk({ profile: { fallback_order: ['cli'], cli: { type: 'whisper-cli', command: 'wc', model_path: 'm' } }, publishTranscript: pub.publishTranscript, cli: async () => 'CLI' });
+    expect(await pipe.transcribe(file('a.ogg', NOTE), {}, () => {}, {})).toBe('CLI');
+    await tick();
+    expect(pub.calls).toEqual([]);
   });
 });

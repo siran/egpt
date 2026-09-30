@@ -91,6 +91,73 @@ describe('decode-once — a durable memory', () => {
   });
 });
 
+// ── put: A DECODE LEARNED FROM ELSEWHERE (operator 2026-09-29) ──
+// A node whose worker rung is unreachable decodes on its own whisper-cli; that result is handed to the
+// worker's store through put() so the worker never decodes those bytes again ("dolly should identify
+// them by hash"). It behaves as a completed decode: remembered, persisted, bounded, TTL'd — but it is
+// idempotent and never clobbers a real decode.
+describe('decode-once — put: a decode learned from elsewhere', () => {
+  it('records a new sha and persists it; a later call is served \'recent\' and never decodes', async () => {
+    const store = memStore();
+    const once = createDecodeOnce({ store, now: () => 1000 });
+    expect(once.put('k', { transcript: 'from kg', meta: { durationSec: 5 } })).toBe('stored');
+    expect(store.saves.at(-1)).toEqual([['k', { at: 1000, value: { transcript: 'from kg', meta: { durationSec: 5 } } }]]);
+    const d = decodes({ transcript: 'decoded', meta: {} });
+    const { served, job } = once('k', d.start);
+    expect(served).toBe('recent');
+    expect(await job.result).toEqual({ transcript: 'from kg', meta: { durationSec: 5 } });
+    expect(d.n).toBe(0);
+  });
+
+  it('is idempotent: a sha already recorded is left as it is, put twice or over a real decode', async () => {
+    const once = createDecodeOnce({ store: memStore() });
+    expect(once.put('k', { transcript: 'first', meta: {} })).toBe('stored');
+    expect(once.put('k', { transcript: 'second', meta: {} })).toBe('recent');       // no clobber
+    expect(await once('k').job.result).toEqual({ transcript: 'first', meta: {} });
+    once('d', decodes({ transcript: 'decoded here', meta: {} }).start);
+    await settle();
+    expect(once.put('d', { transcript: 'published', meta: {} })).toBe('recent');     // the worker's own decode wins
+    expect(await once('d').job.result).toEqual({ transcript: 'decoded here', meta: {} });
+  });
+
+  it('a sha being decoded right now is not clobbered: returns \'running\' and stores nothing', async () => {
+    const once = createDecodeOnce();
+    let resolve; const job = { result: new Promise((r) => { resolve = r; }) };
+    once('k', () => job);                                                            // a decode is in flight
+    expect(once.put('k', { transcript: 'from elsewhere', meta: {} })).toBe('running');
+    resolve({ transcript: 'the real decode', meta: {} });
+    await settle();
+    expect((await once('k').job.result).transcript).toBe('the real decode');
+  });
+
+  it('an empty or absent transcript is not stored', () => {
+    const store = memStore();
+    const once = createDecodeOnce({ store });
+    expect(once.put('a', { transcript: '', meta: {} })).toBe(null);
+    expect(once.put('b', {})).toBe(null);
+    expect(once.put('c', null)).toBe(null);
+    expect(store.saves).toEqual([]);
+    expect(once('a').served).toBe(null);
+  });
+
+  it('a put past the TTL is evicted like any other recent result', () => {
+    let clock = 0;
+    const once = createDecodeOnce({ store: memStore(), now: () => clock });
+    once.put('k', { transcript: 'x', meta: {} });
+    clock = DURABLE_TTL_MS + 1;
+    expect(once('k').served).toBe(null);
+  });
+
+  it('stays bounded: no save holds more than DURABLE_MAX, the oldest is pushed out', () => {
+    const store = memStore();
+    const once = createDecodeOnce({ store, now: () => 5 });
+    for (let i = 0; i <= DURABLE_MAX; i++) once.put(`k${i}`, { transcript: `t${i}`, meta: {} });
+    expect(Math.max(...store.saves.map((s) => s.length))).toBe(DURABLE_MAX);
+    expect(once('k0').served).toBe(null);
+    expect(once(`k${DURABLE_MAX}`).served).toBe('recent');
+  });
+});
+
 describe('fileStore — the memory on disk', () => {
   let dir;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'egpt-decode-once-')); });

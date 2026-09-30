@@ -32,6 +32,14 @@
 //        headers: x-egpt-ts (epoch ms), x-egpt-sig (base64url HMAC)
 //        401 bad/missing/stale signature · 413 too big · 422 transcription
 //        produced nothing (caller falls back to local whisper)
+//   PUT  /v1/transcript/<sha256>   → 200 { ok, stored }: "I decoded this sha elsewhere" (operator
+//        2026-09-29). A node whose worker rung was unreachable decoded these bytes on its own
+//        whisper-cli and hands the result here, so this worker records it (decode-once.put) and never
+//        decodes those bytes again — dolly identifies them by hash. Body is JSON { sha, transcript,
+//        durationSec? }; signed like a POST of that body (HMAC over `${ts}.${sha256(body)}`) with the
+//        sha INSIDE the signed body, so neither sha nor transcript can be swapped in flight. Idempotent:
+//        a sha already decoded or in flight is left as it is. 400 sha mismatch/bad json · 401 bad/stale
+//        signature · 422 empty transcript.
 
 import { createServer } from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -192,6 +200,38 @@ export async function startTranscriptorServer({
       onLog(`transcriptor: lookup ${sha.slice(0, 12)} from ${from} served from an existing decode (${served === 'recent' ? 'a recent result' : 'already queued or decoding'}) — nothing uploaded`);
       return answer(served, job, Date.now());
     }
+    // "I DECODED THIS SHA ELSEWHERE" (operator 2026-09-29). A node that decoded these bytes on its own
+    // whisper-cli while this worker was unreachable PUTs the {sha -> transcript} here so this worker
+    // learns the sha is done and never decodes it again (the lookup/POST of those bytes is then a hit).
+    // The claimed sha rides inside the signed body, so the signature (over sha256(body), exactly a POST
+    // of this JSON) covers both the sha and the transcript. decode-once.put is idempotent: a sha already
+    // decoded or in flight is left untouched, so a re-publish, or a publish of what this worker already
+    // has, changes nothing.
+    const publish = req.method === 'PUT' ? /^\/v1\/transcript\/([0-9a-f]{64})$/.exec(req.url) : null;
+    if (publish) {
+      const urlSha = publish[1];
+      const chunks = [];
+      let size = 0, overflow = false;
+      req.on('data', (c) => { size += c.length; if (size > MAX_BODY_BYTES) { if (!overflow) json(413, { ok: false, error: 'body too large' }); overflow = true; return; } chunks.push(c); });
+      req.on('error', () => { /* client drop */ });
+      req.on('end', () => {
+        if (overflow) return;
+        const body = Buffer.concat(chunks);
+        if (!_sigOk(keyB64, req.headers['x-egpt-ts'], sha256Hex(body), req.headers['x-egpt-sig'])) {
+          onLog(`transcriptor: REJECTED unsigned/stale publish from ${from}`);
+          return json(401, { ok: false, error: 'bad signature' });
+        }
+        let payload;
+        try { payload = JSON.parse(body.toString('utf8')); } catch { return json(400, { ok: false, error: 'bad json' }); }
+        if (payload?.sha !== urlSha) return json(400, { ok: false, error: 'sha mismatch' });   // the URL sha must be the one signed in the body
+        if (typeof payload.transcript !== 'string' || !payload.transcript) return json(422, { ok: false, error: 'empty transcript' });
+        const meta = Number.isFinite(payload.durationSec) ? { durationSec: payload.durationSec } : {};
+        const stored = decodeOnce.put(urlSha, { transcript: payload.transcript, meta });
+        onLog(`transcriptor: publish ${urlSha.slice(0, 12)} from ${from} (${payload.transcript.length}ch) — ${stored === 'stored' ? 'recorded' : `already known (${stored})`}`);
+        return json(200, { ok: true, stored });
+      });
+      return;
+    }
     if (req.method !== 'POST' || req.url !== '/v1/transcribe') {
       return json(404, { ok: false, error: 'not found' });
     }
@@ -274,6 +314,30 @@ export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeo
   if (meta && Number.isFinite(j.durationSec)) meta.durationSec = j.durationSec;   // duration from the worker's WAV (#3)
   log(`transcribe: remote worker → ${j.transcript.length}ch in ${j.ms ?? '?'}ms${known ? ' (it knew these bytes: nothing uploaded)' : ''}`);
   return j.transcript;
+}
+
+// PUBLISH a transcript this node decoded locally to a worker (operator 2026-09-29). The worker records
+// {sha -> transcript} so it never decodes those bytes again — the reconcile that closes the "decoded on
+// kg while dolly was down, decoded again on dolly later" gap. Best-effort and idempotent: returns true
+// only on the worker's 200; any failure (worker down, an OLD worker with no publish route, a refusal)
+// returns false WITHOUT throwing, so the caller keeps the result pending and tries again when the worker
+// is next reachable. Signed exactly like a POST of the JSON body, with the sha inside that signed body.
+export async function publishTranscript(endpoint, { keyB64, sha, transcript, durationSec, timeoutMs = CLIENT_TIMEOUT_MS } = {}) {
+  if (!endpoint || !keyB64 || !sha || !transcript) return false;
+  const url = endpoint.replace(/\/+$/, '');
+  const body = Buffer.from(JSON.stringify({ sha, transcript, ...(Number.isFinite(durationSec) ? { durationSec } : {}) }));
+  const ts = Date.now();
+  try {
+    const res = await fetch(`${url}/v1/transcript/${sha}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-egpt-ts': String(ts), 'x-egpt-sig': _signSha(keyB64, ts, sha256Hex(body)) },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.ok;
+  } catch {
+    return false;   // worker unreachable or no publish route — the caller re-tries on the next reachable contact
+  }
 }
 
 // Drop-in replacement for transcribeAudioFile with remote-first behavior:

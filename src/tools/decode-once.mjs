@@ -51,7 +51,7 @@ export function createDecodeOnce({ now = () => Date.now(), store = null } = {}) 
 
   // -> { served, job }. served: null (this call started the decode, or, with no `start`, nothing is
   // known and job is null), 'running', or 'recent'.
-  return function decodeOnce(key, start = null) {
+  const decodeOnce = function decodeOnce(key, start = null) {
     for (const [k, r] of recent) { if (now() - r.at <= ttlMs) break; recent.delete(k); }
     const hit = recent.get(key);
     if (hit) return { served: 'recent', job: { result: Promise.resolve(hit.value) } };
@@ -67,6 +67,30 @@ export function createDecodeOnce({ now = () => Date.now(), store = null } = {}) 
     }, () => {}).finally(() => running.delete(key));
     return { served: null, job };
   };
+
+  // A DECODE THIS STORE DID NOT RUN, LEARNED FROM ELSEWHERE (operator 2026-09-29: "no double
+  // transcription of voice audios; dolly should identify them by hash"). When a node's worker rung is
+  // unreachable it decodes on its OWN whisper-cli, and that result never reached the worker's store — so
+  // the same bytes decoded a second time on the worker when they later arrived there (a re-delivery after
+  // a wake, or the other account/node on a shared chat). That node now hands the {sha -> value} here so
+  // the worker records it as if it had decoded those bytes: a later lookup or POST of the same sha is a
+  // hit, and no decode runs anywhere else in the mesh. IDEMPOTENT and it never clobbers a real decode: a
+  // sha already remembered (recent) or in flight (running) is left as it is — same bytes, same transcript
+  // — so publishing twice, or publishing what the worker already has, is a no-op. An empty/absent
+  // transcript is not stored (the same rule the decode path keeps). Returns 'recent' | 'running' |
+  // 'stored' | null. Persisted through the same store as a real decode, so it outlives the process too.
+  decodeOnce.put = function put(key, value) {
+    for (const [k, r] of recent) { if (now() - r.at <= ttlMs) break; recent.delete(k); }
+    if (recent.has(key)) return 'recent';
+    if (running.has(key)) return 'running';
+    if (!value?.transcript) return null;
+    recent.set(key, { at: now(), value });
+    if (recent.size > max) recent.delete(recent.keys().next().value);
+    store?.save([...recent]);
+    return 'stored';
+  };
+
+  return decodeOnce;
 }
 
 // The durable memory as one JSON file, [[sha256, { at, value }], ...] oldest first, rewritten whole
