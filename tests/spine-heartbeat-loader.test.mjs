@@ -1362,7 +1362,10 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     child.stdout.emit('data', '\n\n');
     child.emit('close', 0);
     await flush();
-    expect(h.posts).toEqual([{ ns: 'whatsapp/primes', name: 'whatsapp/primes:prime', text: 'Hola muchachas y muchachos, el primo del día es 1637' }]);
+    expect(h.posts).toEqual([
+      { ns: 'whatsapp/primes', name: 'whatsapp/primes:prime', text: '🫀 prime' },   // the firing announcement (short name), first
+      { ns: 'whatsapp/primes', name: 'whatsapp/primes:prime', text: 'Hola muchachas y muchachos, el primo del día es 1637' },
+    ]);
     expect(h.logs).toEqual([
       'whatsapp/primes:prime: fire command — node prime.js',
       'whatsapp/primes:prime: ok in 0ms — posted: Hola muchachas y muchachos, el primo del día es 1637',
@@ -1377,10 +1380,10 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     child.emit('exit', 0);                  // exit fires while stdout is still draining
     child.stdout.emit('data', '1637\n');
     await flush();
-    expect(h.posts).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);        // the firing announcement; the post: output waits for close
     child.emit('close', 0);
     await flush();
-    expect(h.posts.map((p) => p.text)).toEqual(['1637']);
+    expect(h.posts.map((p) => p.text)).toEqual(['🫀 prime', '1637']);
   });
 
   it('a NONZERO exit posts nothing and logs FAILED with the exit code', async () => {
@@ -1390,7 +1393,7 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     h.calls[0].child.stdout.emit('data', '1637\n');
     h.calls[0].child.emit('close', 1);
     await flush();
-    expect(h.posts).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);   // the firing announcement only — the nonzero exit posts no output
     expect(h.logs.at(-1)).toBe('whatsapp/primes:prime: FAILED in 0ms — exited 1');
   });
 
@@ -1401,7 +1404,7 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     h.calls[0].child.stdout.emit('data', ' \n\t\n');
     h.calls[0].child.emit('close', 0);
     await flush();
-    expect(h.posts).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);   // the firing announcement only — empty stdout posts no output
     expect(h.logs.at(-1)).toBe('whatsapp/primes:prime: FAILED in 0ms — empty stdout — nothing posted');
   });
 
@@ -1412,7 +1415,7 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     h.calls[0].child.emit('error', new Error('ENOENT bash'));
     h.calls[0].child.emit('close', null, 'SIGTERM');
     await flush();
-    expect(h.posts).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);   // the firing announcement only — the spawn error posts no output
     expect(h.logs.filter((l) => l.includes('FAILED'))).toEqual(['whatsapp/primes:prime: FAILED in 0ms — ENOENT bash']);
   });
 
@@ -1463,7 +1466,7 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     h.beat()(at + 90_000);
     await flush();
     expect(h.calls).toHaveLength(1);
-    expect(h.posts.map((p) => p.text)).toEqual(['Hola muchachas y muchachos, el primo del día es 1637']);
+    expect(h.posts.map((p) => p.text)).toEqual(['🫀 prime', 'Hola muchachas y muchachos, el primo del día es 1637']);
   });
 
   it('the readonly view shows the post: template beside the command', async () => {
@@ -1579,7 +1582,10 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     h.boxed[0].child.emit('exit', 0);            // exit fires while stdout is still draining — post waits for close
     h.boxed[0].child.stdout.emit('data', '1637\n');
     h.boxed[0].child.emit('close', 0); await flush();
-    expect(h.posts).toEqual([{ ns: h.ns, name: `${h.ns}:primo`, text: 'el primo es 1637' }]);
+    expect(h.posts).toEqual([
+      { ns: h.ns, name: `${h.ns}:primo`, text: '🫀 primo' },   // the firing announcement (short name), into this chat, first
+      { ns: h.ns, name: `${h.ns}:primo`, text: 'el primo es 1637' },
+    ]);
     expect(h.logs.at(-1)).toBe(`${h.ns}:primo: ok in 0ms — posted: el primo es 1637`);
   });
 
@@ -1633,7 +1639,7 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     await h.start();
     h.beat('p')(); await flush();
     expect(h.calls).toHaveLength(0);
-    expect(h.posts).toEqual([]);
+    expect(h.posts).toEqual([{ ns: h.ns, name: `${h.ns}:p`, text: '🫀 p' }]);   // the firing announcement (short name) fired; the box refused, so no output
     expect(h.logs).toEqual([`${h.ns}:p: fire boxed command — node prime.js`, `${h.ns}:p: FAILED in 0ms — ${why}`]);
     h.beat('p')(); await flush();
     expect(h.logs.filter((l) => l.includes('FAILED'))).toHaveLength(2);   // the overlap guard was released
@@ -1698,7 +1704,10 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     h.calls[0].child.stdout.emit('data', '251\n');
     h.calls[0].child.emit('close', 0);
     await flush();
-    expect(h.posts).toEqual([{ ns: h.ns, name: `${h.ns}:primo-del-dia`, text: 'el primo del día es 251' }]);
+    expect(h.posts).toEqual([
+      { ns: h.ns, name: `${h.ns}:primo-del-dia`, text: '🫀 primo-del-dia' },   // the firing announcement (short name), first
+      { ns: h.ns, name: `${h.ns}:primo-del-dia`, text: 'el primo del día es 251' },
+    ]);
   });
 
   // DOLLY'S RADIO WnL BEAT: `agent: djh` + `script_path:` — a TURN, into djh, which is access_level: all.
@@ -2133,5 +2142,119 @@ describe('createHeartbeatLoader — run logging (fire + outcome, both action kin
     await new Promise((r) => setTimeout(r, 0));   // the one-shot writes its ledger row before it fires
     expect(calls).toHaveLength(3);
     expect(logs.filter((l) => l.includes('fire command'))).toHaveLength(2);
+  });
+});
+
+// ── THE FIRING ANNOUNCEMENT + silent: (operator 2026-09-30: "the bridge should announce it is
+//    triggering a heartbeat, unless the heartbeat is silent, in which case it posts in eGPT Admin").
+//    At the LOADER seam: every beat that SENDS into a chat posts a "🫀 <name>" notice through the SAME
+//    dispatchPost the entity path uses, BEFORE its output; silent: is threaded to dispatchPost AND
+//    dispatchTurn so boot can swap the destination chat. Where the swap actually lands (own chat vs
+//    eGPT Admin) is boot's, tested against a real bridge in spine-heartbeat-silent.test.mjs. ──
+describe('createHeartbeatLoader — firing announcement + silent:', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const ENT = { dir: '/home/c/whatsapp/x', ns: 'whatsapp/x' };
+  const ANNOUNCE = '🫀 beat';   // the beat's OWN short name, not the qualified whatsapp/x:beat
+
+  // One beat named `beat` (entity) or a node block. dispatchPost/dispatchTurn record their payloads
+  // AND push to a shared `order` log, so "announce precedes output" is assertable.
+  function build(raw, { node } = {}) {
+    const logs = [], posts = [], turns = [], order = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = makeRegistry();
+    const loader = makeLoader({
+      getConfig: () => ({ default_time_zone: 'UTC', agents: { egpt: { default: true, handles: ['e'] }, pi: {} }, ...(node ? { heartbeats: node } : {}) }),
+      aliveMs: 0, egptHome: '/home', procCwd: '/checkout', spawn,
+      listEntityDirs: async () => [ENT],
+      readEntityConfig: async () => ({ heartbeats: (raw && !node) ? { beat: raw } : {} }),
+      dispatchPost: async (p) => { posts.push(p); order.push(`post:${p.text}`); },
+      dispatchTurn: async (t) => { turns.push(t); order.push(`turn:${t.name}`); return { text: 'the reply' }; },
+      io: { writeFile: async () => {}, mkdir: async () => {}, readFile: async () => 'script body\n' },
+      onLog: (m) => logs.push(m), now: () => 1_000_000,
+    });
+    return {
+      loader, registry, logs, posts, turns, order, calls,
+      async start() { loader.wrapRegistry(registry); await loader.collect(); await loader.activate({ stats: () => ({}) }); logs.length = 0; },
+      beat: (name = 'whatsapp/x:beat') => registry.registered.find((r) => r.name === name)?.fn,
+    };
+  }
+
+  it('a post: command beat announces 🫀 into its chat BEFORE its output', async () => {
+    const h = build({ frequency: '24h', command: 'node x.js', post: 'out: {stdout}' });
+    await h.start();
+    h.beat()();
+    expect(h.posts[0]).toEqual({ ns: 'whatsapp/x', name: 'whatsapp/x:beat', text: ANNOUNCE, silent: undefined });   // fired synchronously, before the child even runs
+    h.calls[0].child.stdout.emit('data', '1637\n');
+    h.calls[0].child.emit('close', 0);
+    await flush();
+    expect(h.order).toEqual([`post:${ANNOUNCE}`, 'post:out: 1637']);   // announce, THEN the post: output
+  });
+
+  it('an agent turn beat announces 🫀 into its chat BEFORE its reply', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'do a thing' });
+    await h.start();
+    h.beat()();
+    await flush();
+    expect(h.posts[0]).toEqual({ ns: 'whatsapp/x', name: 'whatsapp/x:beat', text: ANNOUNCE, silent: undefined });
+    expect(h.turns).toHaveLength(1);
+    expect(h.order).toEqual([`post:${ANNOUNCE}`, 'turn:whatsapp/x:beat']);   // announce, THEN the turn (whose reply posts)
+  });
+
+  it('a node-level beat (no ns / no chat) does NOT announce', async () => {
+    const h = build(null, { node: { sweep: { frequency: '1h', command: 'node sweep.js' } } });
+    await h.start();
+    h.beat('sweep')();
+    h.calls[0].child.emit('exit', 0);
+    await flush();
+    expect(h.posts).toEqual([]);           // nothing announced — a node beat has no chat
+    expect(h.order).toEqual([]);
+  });
+
+  it('a plain entity command beat (no post:, no chat output) does NOT announce', async () => {
+    const h = build({ frequency: '5s', command: 'node j.js' });   // command only, no post:
+    await h.start();
+    h.beat()();
+    h.calls[0].child.emit('exit', 0);
+    await flush();
+    expect(h.posts).toEqual([]);
+  });
+
+  it('silent: true on a post: beat threads silent to BOTH the announce and the output post', async () => {
+    const h = build({ frequency: '24h', command: 'node x.js', post: 'out: {stdout}', silent: true });
+    await h.start();
+    h.beat()();
+    h.calls[0].child.stdout.emit('data', '1637\n');
+    h.calls[0].child.emit('close', 0);
+    await flush();
+    expect(h.posts).toEqual([
+      { ns: 'whatsapp/x', name: 'whatsapp/x:beat', text: ANNOUNCE, silent: true },
+      { ns: 'whatsapp/x', name: 'whatsapp/x:beat', text: 'out: 1637', silent: true },
+    ]);
+  });
+
+  it('silent: true on an agent beat threads silent to the announce post AND to dispatchTurn', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'do a thing', silent: true });
+    await h.start();
+    h.beat()();
+    await flush();
+    expect(h.posts[0]).toEqual({ ns: 'whatsapp/x', name: 'whatsapp/x:beat', text: ANNOUNCE, silent: true });
+    expect(h.turns[0]).toMatchObject({ being: 'egpt', ns: 'whatsapp/x', name: 'whatsapp/x:beat', silent: true });
+  });
+
+  it('REGRESSION: a non-silent beat carries no silent flag and its action shape is unchanged', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi' });
+    const e = (await h.loader.collect()).entries.find((x) => x.name === 'whatsapp/x:beat');
+    expect(e.action).toEqual({ kind: 'turn', being: 'egpt', prompt: 'hi', cwd: '/home/c/whatsapp/x', ns: 'whatsapp/x' });   // no `silent` key
+    await h.start();
+    h.beat()();
+    await flush();
+    expect(h.turns[0].silent).toBeUndefined();
+    expect(h.posts[0].silent).toBeUndefined();
+  });
+
+  it('a non-boolean silent: is malformed — the whole entry is skipped + logged', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi', silent: 'yes' });
+    expect((await h.loader.collect()).entries).toEqual([]);
+    expect(h.logs.some((l) => l.includes('whatsapp/x:beat: silent "yes" is not true or false — skipped'))).toBe(true);
   });
 });

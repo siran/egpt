@@ -2865,18 +2865,30 @@ export async function boot({
   // first, like the alert above: the log does not need a network. Unset => the log is all there
   // is (fail-closed, like the advice channel).
   const adminChannelDeclared = () => { const c = getConfig()?.admin_channel; const s = c == null ? '' : String(c).trim(); return s || null; };
+  // eGPT Admin (config.yaml `admin_channel`), resolved to a concrete chat id — the ONE resolveChatId
+  // call the compaction notice AND a `silent:` heartbeat share, never a second copy (the operator's
+  // 2026-09-30 ruling routes a silent beat's whole output here). A configured NAME becomes its room by
+  // the bridge's own resolveChatId, the resolver the send already runs. Returns { chatId } on success,
+  // else { reason } — 'unset' | 'no-chat' | 'unresolvable' (with `to`/`error`) — so each caller FAILS
+  // CLOSED in its own words: the notice stays in the log, a silent beat posts nothing.
+  const resolveAdminChat = async () => {
+    const to = adminChannelDeclared();
+    if (!to) return { reason: 'unset' };
+    const on = outbound(null, to).bridge;
+    if (typeof on?.resolveChatId !== 'function') return { chatId: to, to };
+    try {
+      const chatId = await on.resolveChatId(to);
+      if (!chatId) return { reason: 'no-chat', to };
+      return { chatId, to };
+    } catch (e) { return { reason: 'unresolvable', to, error: e?.message ?? String(e) }; }
+  };
   const noticeToAdmin = async (text, being) => {
     log.line?.(`[compact] ${text}`);
-    const to = adminChannelDeclared();
-    if (!to) { log.line?.('[compact] admin_channel is not set in config.yaml - the notice stays in this log'); return false; }
-    const on = outbound(null, to).bridge;
-    let chatId = to;
-    if (typeof on?.resolveChatId === 'function') {
-      try { chatId = await on.resolveChatId(to); }
-      catch (e) { log.line?.(`[compact] admin_channel ${JSON.stringify(to)} could not be resolved - notice not sent: ${e?.message ?? e}`); return false; }
-      if (!chatId) { log.line?.(`[compact] admin_channel ${JSON.stringify(to)} names no chat on this node - notice not sent`); return false; }
-    }
-    return sayOnce({ being, chatId, text, what: 'compaction' });
+    const r = await resolveAdminChat();
+    if (r.reason === 'unset') { log.line?.('[compact] admin_channel is not set in config.yaml - the notice stays in this log'); return false; }
+    if (r.reason === 'no-chat') { log.line?.(`[compact] admin_channel ${JSON.stringify(r.to)} names no chat on this node - notice not sent`); return false; }
+    if (r.reason === 'unresolvable') { log.line?.(`[compact] admin_channel ${JSON.stringify(r.to)} could not be resolved - notice not sent: ${r.error}`); return false; }
+    return sayOnce({ being, chatId: r.chatId, text, what: 'compaction' });
   };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
@@ -3054,6 +3066,19 @@ export async function boot({
   // in the profile. Verified on Windows cmd + POSIX sh (spawn shell:true).
   const aliveCommand = 'echo beat > state/alive.txt';
 
+  // A `silent:` beat's destination (operator 2026-09-30): eGPT Admin, or null with a fail-closed
+  // warning — post NOTHING, never the beat's own chat (that would defeat "silent"). Mirrors the
+  // compaction notice's fail-closed behavior and shares its resolveAdminChat (the ONE admin lookup).
+  const silentBeatAdminChat = async (ns) => {
+    const r = await resolveAdminChat();
+    if (r.chatId) return r.chatId;
+    const why = r.reason === 'unset' ? 'not set in config.yaml'
+      : r.reason === 'no-chat' ? `set but names no chat on this node (${JSON.stringify(r.to)})`
+      : `unresolvable (${JSON.stringify(r.to)}: ${r.error})`;
+    log.line?.(`[heartbeat] ${ns}: silent beat, but admin_channel is ${why} — nothing posted`);
+    return null;
+  };
+
   // AN `agent:` HEARTBEAT RUNS AS A BEING (operator 2026-08-22). A bare `script_path:` spawns
   // textecute.mjs, whose own CLI session sits OUTSIDE the being system — no persona, no
   // transcript, and no access_level / allowed_users / sandboxed, so a scheduled agent ran
@@ -3071,7 +3096,14 @@ export async function boot({
   // nothing posted. A failure-shaped result (isBrainFailureResult, the spine's own test) is not a
   // reply: it throws, so nothing is posted and the beat's outcome line says FAILED. The LOADER still
   // logs the run's one outcome line from the returned result.
-  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten }) => {
+  //
+  // SILENT (operator 2026-09-30): a `silent:` beat's reply posts to eGPT Admin, nothing to its own
+  // chat. The turn STILL RUNS in the entity's conversation (its context is where the being lives) —
+  // only the reply's destination swaps to the admin chat, through the SAME sayOnce the entity path
+  // uses. Fail-closed like the compaction notice: admin unset/unresolvable → the reply is not posted,
+  // never falling back to the own chat (silentBeatAdminChat logs the warning). There is no placeholder
+  // to redirect (this path posts the final reply, not a live stream), so swapping the chat is enough.
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     const ev = { surface: target.surface, chatId: target.chatId };
@@ -3081,15 +3113,31 @@ export async function boot({
     if (isBrainFailureResult(text)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
     if (isSilenceReply(text)) return res;
     const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
+    if (silent) {
+      const chatId = await silentBeatAdminChat(ns);
+      if (!chatId) return res;   // fail-closed: reply not posted, never the own chat
+      if (!(await sayOnce({ being, chatId, text, opts: tag, tag, what: 'turn' }))) throw new Error('not delivered to eGPT Admin');
+      return res;
+    }
     await heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
     return res;
   };
 
-  // A `post:` HEARTBEAT (2026-09-16): a command's stdout, said into the chat the beat was declared
-  // in, in the NODE's own voice: no tag — no body emoji, no label — so the port adds only the node
-  // signature. Recorded under 'system', the label a command reply is recorded under
-  // (wrapCommandsForTranscript).
-  const dispatchHeartbeatPost = async ({ ns, text }) => {
+  // A `post:` HEARTBEAT (2026-09-16): a command's stdout — AND every beat's firing announcement
+  // (2026-09-30) — said into the chat the beat was declared in, in the NODE's own voice: no tag — no
+  // body emoji, no label — so the port adds only the node signature. Recorded under 'system', the
+  // label a command reply is recorded under (wrapCommandsForTranscript).
+  //
+  // SILENT (operator 2026-09-30): a `silent:` beat posts to eGPT Admin instead, nothing to its own
+  // chat — the SAME sayOnce send, destination swapped, no transcript record in the entity (the message
+  // never went there; the compaction notice logs none either). Fail-closed: admin unset/unresolvable →
+  // nothing posted, never the own chat (silentBeatAdminChat logs the warning).
+  const dispatchHeartbeatPost = async ({ ns, text, silent }) => {
+    if (silent) {
+      const chatId = await silentBeatAdminChat(ns);
+      if (!chatId) return false;   // fail-closed: nothing posted, never the own chat
+      return sayOnce({ being: null, chatId, text, opts: {}, tag: {}, what: 'post' });
+    }
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     await heartbeatSay({ being: null, ns, ev: { surface: target.surface, chatId: target.chatId }, text, tag: {}, recordAs: 'system', what: 'post' });
@@ -3344,6 +3392,7 @@ export async function boot({
     spine, bridge, shellPort, pool, cfg, peerNodes,      // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
     noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer
+    dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
 
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's

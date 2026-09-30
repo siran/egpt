@@ -90,6 +90,23 @@
 // has its chat PLACED once at registration (placeChat): a scheduled send has no arrival to learn
 // the chat's connection from, which after a restart left it on the wrong account.
 //
+// THE FIRING ANNOUNCEMENT + `silent:` (operator 2026-09-30: "the bridge should announce it is
+// triggering a heartbeat, unless the heartbeat is `silent`, in which case it posts in eGPT Admin").
+// EVERY beat that SENDS into a chat — a `post:` command, an `agent:` turn (agent beats included, the
+// operator was explicit: they already post a reply, and now the fire too) — posts a short one-line
+// notice (_ANNOUNCE, `🫀 <name>`, the beat's OWN short name) into that chat just before it runs, so an unattended beat is
+// visible the instant it FIRES, not only in the run log. The announce rides the SAME dispatchPost the
+// entity post path already uses (node voice), fire-and-forget BEFORE the action so it precedes the
+// output; its own failure only logs and never blocks the beat. A plain command beat (no chat output)
+// and a node-level beat (no chat at all) do NOT announce — exactly the set placeChat already places.
+// `silent: true` sends the WHOLE beat to eGPT Admin instead of its own chat: the announcement AND the
+// output (a command's `post:` text, or an agent beat's reply) both land there, NOTHING in the own
+// chat. It is carried on the action here and threaded to boot's dispatchPost/dispatchTurn, which swap
+// the destination chat to the admin one (the SAME resolution the compaction notice uses); admin
+// unset or unresolvable is FAIL-CLOSED — nothing is posted and a warning logs, never a fallback to
+// the own chat (that would defeat "silent"). A non-boolean `silent:` skips the entry, like any other
+// malformed field.
+//
 // THE KEY WAS `ai_run:` UNTIL 2026-08-22. It named neither a path nor its type, while
 // house style names paths explicitly (model_path, conversation_path, home_dir) — and now
 // that `agent:` carries the "an AI runs this" meaning by naming WHO, the other key only
@@ -276,6 +293,13 @@ function _replyPrefix(text) {
   const s = String(text ?? '').trim().replace(/\s+/g, ' ');
   return s.length > _REPLY_MAX ? `${s.slice(0, _REPLY_MAX)}…` : s;
 }
+
+// THE FIRING-ANNOUNCEMENT TEXT (operator 2026-09-30) — the one line a beat posts into its chat (or
+// eGPT Admin, when silent) as it fires. ONE place, so the exact wording is trivially changed; it
+// appears in real chats, so it is short and human-readable. `shortName` is the beat's OWN name — the
+// `<name>` half of the `<ns>:<name>` the loader keys it by (operator 2026-09-30: the notice shows the
+// short name everywhere, own chat and eGPT Admin alike, never the qualified form).
+const _ANNOUNCE = (shortName) => `🫀 ${shortName}`;
 
 // ── frequency parser (pure) ─────────────────────────────────────────────────
 // A number is taken as milliseconds; a string is `<quantity><unit>` with unit
@@ -521,6 +545,10 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
   const hasWhen = raw?.when != null;
   const hasDaily = raw?.daily != null;
   if (raw?.time_zone != null && !hasDaily) { onLog(`${name}: time_zone without daily — skipped (time_zone: is the zone of a daily: time; when: uses default_time_zone)`); return null; }
+  // `silent: true` routes the WHOLE beat (its firing announcement AND its output) to eGPT Admin
+  // instead of the beat's own chat (operator 2026-09-30) — carried on the action below, threaded to
+  // boot's dispatchers. A non-boolean is malformed, skipped + logged like any other bad field.
+  if (raw?.silent != null && typeof raw.silent !== 'boolean') { onLog(`${name}: silent ${JSON.stringify(raw.silent)} is not true or false — skipped`); return null; }
 
   const action = _resolveAction({ name, raw, isAlive, aliveCommand, cwd, aliveCwd, ns, agents, source, beingWritten, onLog });
   if (action === _INVALID_ACTION) return null;
@@ -529,6 +557,8 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
   // boxed, and for an access_level 'all' being (a scheduled turn has no sender for allowed_users) —
   // see the header.
   if (action && beingWritten) Object.assign(action, { beingWritten: true, ns });
+  // Carried only when true, so a non-silent action's shape is unchanged (the loader's toEqual locks).
+  if (action && raw?.silent === true) action.silent = true;
 
   // ── daily: every day at a wall-clock time in a zone (see the header) ──
   if (hasDaily) {
@@ -576,8 +606,8 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time AND for each run's elapsed time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
- * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line.
- * @param {(p:{ns:string, name:string, text:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message into its entity's chat, injected by boot. Throws → the run logs FAILED.
+ * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean, silent?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line. `silent` → boot posts the reply to eGPT Admin, not the entity's chat.
+ * @param {(p:{ns:string, name:string, text:string, silent?:boolean}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message — AND every beat's firing announcement — into its entity's chat, injected by boot. `silent` → boot posts to eGPT Admin, not the entity's chat. Throws → the run logs FAILED (an announce failure only logs).
  * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
  * @param {(p:{ns:string, name:string, cwd:string, command:string, scriptPath?:string}) => Promise<any>} [deps.spawnBoxed]   a BEING-WRITTEN command beat's runner, injected by boot (createHeartbeatBoxRunner): refuses (rejects) unless the conversation runs boxed, else resolves the child of setup/sandbox-logon-launcher.ps1 running the command as the conversation's pool account. `scriptPath` marks a script_path: beat, refused when there is no sandbox credential for its textecute (every boxed beat is handed it when there is). The loader never spawns a being's command itself.
  * @param {() => Promise<{ok:boolean, detail?:string}>} [deps.startBrowser]   a `browser: true` beat's browser start, injected by boot: commands.startBrowser, /chrome's own launch path (idempotent)
@@ -678,7 +708,7 @@ export function createHeartbeatLoader({
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
       const e = _normalizeEntry({ name, source: NODE_FILE, cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, ns: null, agents: agentsMap, timeZone, nowMs, onLog, logOnce: _logOnce });
-      if (e) entries.push(e);
+      if (e) { e.shortName = name; entries.push(e); }   // the beat's OWN name — what the firing announcement shows
     }
 
     // 2. Default alive: inject the default alive COMMAND (boot's aliveCommand,
@@ -689,7 +719,7 @@ export function createHeartbeatLoader({
     //    the readonly view will show this real command. `nativeShell`: this beat is
     //    LIVENESS and runs on the platform shell, never the POSIX bash (see the header).
     if (!aliveDeclared && aliveMs > 0) {
-      entries.push({ name: 'alive', source: NODE_FILE, everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd, nativeShell: true } });
+      entries.push({ name: 'alive', shortName: 'alive', source: NODE_FILE, everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd, nativeShell: true } });
     }
 
     // 3. Entity entries: each conversation/room's resolved heartbeats block (its
@@ -702,7 +732,7 @@ export function createHeartbeatLoader({
       for (const [name, raw] of Object.entries(heartbeats)) {
         if (!raw || typeof raw !== 'object') { onLog(`${ns}:${name}: not a heartbeat block — skipped`); continue; }
         const e = _normalizeEntry({ name: `${ns}:${name}`, source: heartbeatSource[name], cwd: dir, raw, isAlive: false, aliveFallbackMs, aliveCommand, aliveCwd, ns, agents: agentsMap, beingWritten: beingWritten.has(name), timeZone, nowMs, onLog, logOnce: _logOnce });
-        if (e) entries.push(e);
+        if (e) { e.shortName = name; entries.push(e); }   // the beat's OWN name (un-namespaced) — what the firing announcement shows
       }
     }
 
@@ -730,7 +760,7 @@ export function createHeartbeatLoader({
   function _spawnAction(entry, stats, startedMs, onSettle) {
     const { queueDepth = 0, oldestMs = 0 } = stats?.() ?? {};
     const childEnv = { ...env, EGPT_HOME: egptHome, EGPT_QUEUE_DEPTH: String(queueDepth), EGPT_QUEUE_OLDEST_MS: String(oldestMs) };
-    const { command, cwd, post, ns, beingWritten, scriptPath } = entry.action;
+    const { command, cwd, post, ns, beingWritten, scriptPath, silent } = entry.action;
     let settled = false;
     let stdout = '';
     const settle = async (failure) => {
@@ -743,7 +773,7 @@ export function createHeartbeatLoader({
         if (!out) failure = 'empty stdout — nothing posted';
         else if (typeof dispatchPost !== 'function') failure = 'no post dispatcher wired — boot injects dispatchPost';
         else {
-          try { await dispatchPost({ ns, name: entry.name, text }); posted = ` — posted: ${_replyPrefix(text)}`; }
+          try { await dispatchPost({ ns, name: entry.name, text, silent }); posted = ` — posted: ${_replyPrefix(text)}`; }
           catch (e) { failure = `post failed: ${e?.message ?? e}`; }
         }
       }
@@ -780,7 +810,7 @@ export function createHeartbeatLoader({
   // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
   // which is the only trace a turn otherwise leaves (its output is the script's business).
   async function _dispatchTurn(entry, startedMs, onSettle) {
-    const { being, script, prompt: line, cwd, ns, beingWritten, browser } = entry.action;
+    const { being, script, prompt: line, cwd, ns, beingWritten, browser, silent } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
       // A `prompt:` beat hands its one-liner over AS the trigger text — textecute's frame is for scripts.
@@ -790,7 +820,7 @@ export function createHeartbeatLoader({
         prompt = framePrompt(basename(path), await readFile(path, 'utf8'));
       }
       if (browser) prompt = `${await _browserPreface(entry.name)}${prompt}`;
-      const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten });
+      const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten, silent });
       const reply = _replyPrefix(res?.text);
       onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
     } catch (e) {
@@ -814,12 +844,31 @@ export function createHeartbeatLoader({
     return `[heartbeat] the browser this beat asked for could not be started — ${why}\n\n`;
   }
 
+  // A beat that SENDS into its entity's chat — a `post:` command (its stdout) or an `agent:` turn
+  // (its reply). These, and only these, both announce their fire and have their chat PLACED: a plain
+  // command posts nothing, a node-level beat has no chat. ONE predicate, shared with _placeChats.
+  const _sendsToChat = (a) => !!a?.ns && (a.post != null || a.kind === 'turn');
+
+  // The firing announcement, through the SAME dispatchPost the entity post path uses (node voice), with
+  // `silent` threaded so a silent beat's notice lands in eGPT Admin, not the beat's own chat. Its own
+  // failure only logs — an unreachable chat must never take down the beat it is announcing.
+  async function _announce(entry) {
+    const a = entry.action;
+    try { await dispatchPost({ ns: a.ns, name: entry.name, text: _ANNOUNCE(entry.shortName), silent: a.silent }); }
+    catch (e) { onLog(`${entry.name}: announce failed — ${e?.message ?? e}`); }
+  }
+
   // Run an entry's action, whichever kind it is. ONE fire path, so the overlap guard, the
   // one-shot latch below and the FIRE LINE cover a turn exactly as they cover a spawn — the
   // fire line belongs here for that reason; the outcome differs per kind, so it does not.
+  //
+  // The firing announcement goes out HERE, fire-and-forget BEFORE the action, for every beat that
+  // sends into a chat — so it precedes the output (a command settles only after its child exits; a
+  // turn's reply only after it resolves) without awaiting it and stalling the spawn.
   function _fire(entry, stats, onSettle) {
     const a = entry.action;
     onLog(a.kind === 'turn' ? `${entry.name}: fire turn — ${a.being} ${a.script ?? `prompt: ${_replyPrefix(a.prompt)}`}` : `${entry.name}: fire ${a.beingWritten ? 'boxed ' : ''}command — ${a.command}`);
+    if (_sendsToChat(a) && typeof dispatchPost === 'function') _announce(entry);
     const startedMs = now();
     if (a.kind === 'turn') { _dispatchTurn(entry, startedMs, onSettle); return; }
     _spawnAction(entry, stats, startedMs, onSettle);
@@ -918,7 +967,7 @@ export function createHeartbeatLoader({
     if (typeof placeChat !== 'function') return;
     for (const e of entries) {
       const a = e.action;
-      if (!a?.ns || !(a.post != null || a.kind === 'turn') || _placed.has(a.ns)) continue;
+      if (!_sendsToChat(a) || _placed.has(a.ns)) continue;
       _placed.add(a.ns);
       try { await placeChat({ ns: a.ns, name: e.name }); }
       catch (err) { onLog(`${e.name}: could not place its chat — ${err?.message ?? err}`); }

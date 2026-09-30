@@ -896,11 +896,14 @@ describe('a heartbeat `post:` in a chat both accounts are in is said ONCE by the
     await deliver(byConnection.primary, BOTH_AS_PRIMARY, 'qué tal', { atE: false });
     const before = { sent: byConnection.primary.sent.length, streams: byConnection.primary.streams.length };
     app.spine.tick();
-    await waitFor(() => byConnection.secondary.sent.length > 0);
-    await new Promise((r) => setTimeout(r, 20));   // room for a second send or an edit to show up, if there were one
+    await waitFor(() => byConnection.secondary.sent.length >= 2);        // the firing announcement, then the post: output
+    await new Promise((r) => setTimeout(r, 20));   // room for an unexpected extra send or an edit to show up, if there were one
 
     expect(calls.some((c) => c.cmd.includes('nth_prime.sh 259'))).toBe(true);
-    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: `${TEXT}${encodeNodeSignature('kg')}` }]);   // once, its OWN room; only the node signature
+    expect(byConnection.secondary.sent).toEqual([
+      { chatId: BOTH_AS_SECONDARY, text: `🫀 primo-del-dia${encodeNodeSignature('kg')}` },   // the firing announcement (short name), node voice, in its OWN room
+      { chatId: BOTH_AS_SECONDARY, text: `${TEXT}${encodeNodeSignature('kg')}` },             // then the post: output; only the node signature on each
+    ]);
     expect(byConnection.secondary.streams).toEqual([]);                  // no ⏳ placeholder
     expect(byConnection.primary.streams.length).toBe(before.streams);
     expect(byConnection.secondary.edits).toEqual([]);                    // no edit on either bridge
@@ -966,10 +969,13 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
 
     expect(lines.join('\n')).toContain(`[heartbeat] whatsapp/${SLUG}:primo-del-dia: ${BOTH_AS_PRIMARY} is a chat on 'primary'`);
     app.spine.tick();
-    await waitFor(() => byConnection.secondary.sent.length > 0);
+    await waitFor(() => byConnection.secondary.sent.length >= 2);   // the firing announcement, then the post: output
     await quiet();
 
-    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed(TEXT) }]);   // no stamp, but the bridge's seal + node id
+    expect(byConnection.secondary.sent).toEqual([
+      { chatId: BOTH_AS_SECONDARY, text: sealed('🫀 primo-del-dia') },   // the firing announcement (short name), sealed, no stamp
+      { chatId: BOTH_AS_SECONDARY, text: sealed(TEXT) },                 // then the post: output
+    ]);
     expect(byConnection.primary.sent).toEqual([]);
     expect(byConnection.primary.streams).toEqual([]);
     expect(byConnection.secondary.streams).toEqual([]);
@@ -998,12 +1004,15 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
 
     expect(lines.join('\n')).toContain(`[heartbeat] whatsapp/${SLUG}:el-porque: ${BOTH_AS_PRIMARY} is a chat on 'primary'`);   // A applies to turn beats too
     app.spine.tick();
-    await waitFor(() => byConnection.secondary.sent.length > 0);
+    await waitFor(() => byConnection.secondary.sent.length >= 2);   // the firing announcement, then the turn's reply
     await quiet();
 
     expect(script.prompts).toHaveLength(1);
     expect(script.prompts[0]).toContain(LINE);
-    expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: `📐 Gauss: Porque ningún primo hasta 40 lo divide. ${SEAL}${encodeNodeSignature('kg', 'gauss')}` }]);   // the being's stamp AND the bridge's seal + node id, naming the being (kg/gauss)
+    expect(byConnection.secondary.sent).toEqual([
+      { chatId: BOTH_AS_SECONDARY, text: sealed('🫀 el-porque') },   // the firing announcement (short name), node voice, no stamp
+      { chatId: BOTH_AS_SECONDARY, text: `📐 Gauss: Porque ningún primo hasta 40 lo divide. ${SEAL}${encodeNodeSignature('kg', 'gauss')}` },   // then the reply: the being's stamp AND the bridge's seal + node id, naming the being (kg/gauss)
+    ]);
     expect(byConnection.secondary.streams).toEqual([]);
     expect(byConnection.secondary.edits).toEqual([]);
     expect(byConnection.primary.sent).toEqual([]);
@@ -1020,10 +1029,11 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
       await declare({ [SLUG]: ['el-porque:', '  frequency: 24h', '  agent: gauss', '  prompt: "Di algo solo si hace falta."'] });
       const { app, byConnection, lines } = await bootWith(withGauss(), { state: known(BOTH_AS_PRIMARY), makeSession: scriptedSession(script) });
       app.spine.tick();
-      await waitFor(() => lines.some((l) => l.includes('el-porque: ok in')));
+      await waitFor(() => lines.some((l) => l.includes('el-porque: ok in')) && byConnection.secondary.sent.length >= 1);
       await quiet();
       expect(script.prompts, JSON.stringify(silence)).toHaveLength(1);
-      expect(byConnection.secondary.sent, JSON.stringify(silence)).toEqual([]);
+      // the beat FIRED, so it announced; the turn declined, so no reply follows — the announce (short name) alone
+      expect(byConnection.secondary.sent, JSON.stringify(silence)).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed('🫀 el-porque') }]);
       expect(byConnection.primary.sent).toEqual([]);
       expect(byConnection.secondary.streams).toEqual([]);
       app.stop();
@@ -1036,10 +1046,11 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
       await declare({ [SLUG]: ['el-porque:', '  frequency: 24h', '  agent: gauss', '  prompt: "Di en una frase por qué 1637 es primo."'] });
       const { app, byConnection, lines } = await bootWith(withGauss(), { state: known(BOTH_AS_PRIMARY), makeSession: scriptedSession(script) });
       app.spine.tick();
-      await waitFor(() => lines.some((l) => l.includes('el-porque: FAILED in')));
+      await waitFor(() => lines.some((l) => l.includes('el-porque: FAILED in')) && byConnection.secondary.sent.length >= 1);
       await quiet();
       expect(lines.some((l) => l.includes('el-porque: FAILED in'))).toBe(true);
-      expect(byConnection.secondary.sent).toEqual([]);
+      // the beat FIRED, so it announced; the turn failed, so no reply follows — the announce (short name) alone
+      expect(byConnection.secondary.sent).toEqual([{ chatId: BOTH_AS_SECONDARY, text: sealed('🫀 el-porque') }]);
       expect(byConnection.primary.sent).toEqual([]);
       expect(byConnection.secondary.streams).toEqual([]);
       expect(byConnection.primary.streams).toEqual([]);

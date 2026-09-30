@@ -11,6 +11,7 @@
                                 post: "{stdout}" says its output in this chat
                     browser     browser: true + agent: + prompt:
                     pure AI     agent: + prompt:
+                    any beat may add silent: true — posts to eGPT Admin, not this chat
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 

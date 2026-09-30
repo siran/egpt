@@ -205,6 +205,22 @@ export const CONFIG_SCHEMA = {
                    command: node src/tools/textecute.mjs reports/daily.x.md }
         runs a plain-text script on cadence (the overlap guard covers a long
         browser run).
+      silent
+        true → the WHOLE beat goes to eGPT Admin (config admin_channel), not the
+        beat's own chat: the firing announcement AND the output (a command
+        post:'s text, or an agent beat's reply) both land there, nothing in the
+        own chat. Default false. admin_channel unset/unresolvable → nothing is
+        posted (fail-closed) and a warning logs; it never falls back to the own
+        chat. A non-boolean skips the entry.
+
+    FIRING ANNOUNCEMENT (operator 2026-09-30):
+      Every beat that SENDS into a chat — a post: command, an agent: turn — posts
+      a one-line "🫀 <name>" notice (the beat's OWN short name, never the
+      <ns>:<name> form) into that chat just before it runs, so an unattended beat
+      is visible the instant it fires, not only in the run log.
+      A plain command beat (no chat output) and a node-level beat (no chat) do
+      not announce. With silent: true the announcement — and the output — go to
+      eGPT Admin instead (see silent above).
 
     TRIGGER (operator 2026-07-02):
       An entry may use  when: <M/D/YYYY H:MMa | 24h | ISO>  INSTEAD of
