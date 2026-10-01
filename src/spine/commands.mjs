@@ -462,10 +462,16 @@ const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 
 // ── /fork + /end (operator 2026-10-01) ──────────────────────────────────────────────────────────
 // The two fixed strings the feature posts, module-scope so a test asserts against the SAME constant
-// the handler sends (no drift). FORK_PLACEHOLDER replaces the operator's /fork message while the
-// fork is live (deleted by /end). The fork group gets NO opener message — the configurable header
-// (config.fork.header) is prepended to E's first turn input in the group, not posted (brainpool.mjs).
-export const FORK_PLACEHOLDER = '🤖↔️🤔 ...';
+// the handler sends (no drift). The fork path's user-facing TEXTS live in config.fork (operator
+// 2026-10-01: "all goes in config.yaml") — placeholder, title ({group} template), header. These are
+// the small built-in FALLBACKS so /fork never edits to an empty string or makes an untitled group
+// when a key is unset; the real text is set in config.yaml on each node. config.fork.placeholder
+// replaces the operator's /fork message while the fork is live (deleted by /end); config.fork.title
+// ({group} = the parent chat's name) is the group's title; config.fork.header (brainpool.mjs) is
+// prepended to E's first turn input in the group, never posted. Exported so tests assert the
+// fallback without re-hardcoding the strings. header has NO fallback: unset → no header.
+export const FORK_PLACEHOLDER_DEFAULT = '🤖↔️🤔 ...';
+export const FORK_TITLE_DEFAULT = 'egpt fork {group}';
 
 // The one id form that addresses the SECONDARY account (Rodz) from the PRIMARY account's roster is
 // the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @dolly-egpt:beeper.com is the secondary's
@@ -3143,14 +3149,20 @@ export function createCommands({
     const participantIDs = [...new Set([selfPhone, partner].filter(Boolean))];
     const accountID = await forkBridge.chatAccountId(ev.chatId);
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || cRoom.slug || ev.chatId;
+    // The user-facing texts come from config.fork (operator 2026-10-01: "all goes in config.yaml"),
+    // falling back to the built-in defaults only so /fork never edits to an empty string or makes an
+    // untitled group. title is a {group} template filled with the parent chat's name.
+    const forkCfg = cfg().fork ?? {};
+    const placeholder = (typeof forkCfg.placeholder === 'string' && forkCfg.placeholder.trim()) ? forkCfg.placeholder : FORK_PLACEHOLDER_DEFAULT;
+    const title = ((typeof forkCfg.title === 'string' && forkCfg.title.trim()) ? forkCfg.title : FORK_TITLE_DEFAULT).replaceAll('{group}', String(cTitle ?? ''));
 
     // ── mutations begin (every precondition above has passed) ──
     // (a) EDIT the operator's /fork message into the placeholder — it STAYS a reply to the forked
     //     message because editMessage only changes the text.
-    await forkBridge.editMessage(ev.chatId, ev.msgId, FORK_PLACEHOLDER);
+    await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
     // (b) CREATE the group: operator + Rodz, forced to a group. NO opener message — the configurable
     //     header (config.fork.header) is prepended to E's FIRST turn input in the group, not posted.
-    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title: `egpt fork ${cTitle}` });
+    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title });
     const forkChatId = created?.chatID ?? created?.chatId ?? null;
     if (!forkChatId) {
       onLog(`/fork: createGroup returned no chatID (${JSON.stringify(created)}) — aborted after placeholder edit`);

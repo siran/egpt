@@ -25,7 +25,7 @@ const TEST_HOME = vi.hoisted(() => {
   process.env.EGPT_HOME = dir;
   return dir;
 });
-import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, FORK_PLACEHOLDER } from '../src/spine/commands.mjs';
+import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, FORK_PLACEHOLDER_DEFAULT, FORK_TITLE_DEFAULT } from '../src/spine/commands.mjs';
 import { resolveBeingDef, sandboxSharePathsFor, createBrainPool } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { ensureContact, recordThread, getBeing, getContact, slugDir, emptyState, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
@@ -118,30 +118,42 @@ function roomsWithC() {
 }
 
 // ── /fork ───────────────────────────────────────────────────────────────────────────────────────
+// The fork texts come from config.fork (operator 2026-10-01: "all goes in config.yaml"). These are
+// the CONFIGURED values the happy-path harness supplies; a separate test covers the unset→default path.
+const FORK_PLACEHOLDER_CFG = '🔀 forking, un momento…';
+const FORK_TITLE_CFG = 'egpt bifurcación de {group}';
 describe('/fork — happy path (fake bridge, temp store, in-memory state)', () => {
-  const CFG = beeperCfg(AN, RODZ);
+  const CFG = { ...beeperCfg(AN, RODZ), fork: { placeholder: FORK_PLACEHOLDER_CFG, title: FORK_TITLE_CFG } };
   const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' };
 
-  it('edits the /fork message to the placeholder', async () => {
+  it('edits the /fork message to config.fork.placeholder', async () => {
     seedSourceThread();
     const { cmds, calls } = harness({ config: CFG, rooms: roomsWithC() });
     await cmds.run({ ...EV });
     expect(calls.edit).toHaveLength(1);
-    expect(calls.edit[0]).toEqual({ chatId: C_CHAT, msgId: 'cmd1', text: FORK_PLACEHOLDER });
+    expect(calls.edit[0]).toEqual({ chatId: C_CHAT, msgId: 'cmd1', text: FORK_PLACEHOLDER_CFG });
   });
 
-  it('creates a type:"group" with the right title, participants incl. the resolved Rodz id, and NO opener', async () => {
+  it('creates a type:"group" titled from config.fork.title ({group} filled), participants incl. Rodz, NO opener', async () => {
     seedSourceThread();
     const { cmds, calls } = harness({ config: CFG, rooms: roomsWithC() });
     await cmds.run({ ...EV });
     expect(calls.create).toHaveLength(1);
     const c = calls.create[0];
     expect(c.type).toBe('group');
-    expect(c.title).toBe('egpt fork Proyecto X');
+    expect(c.title).toBe('egpt bifurcación de Proyecto X');   // config.fork.title with {group} filled
     expect('messageText' in c).toBe(false);         // NO opener — the configurable header replaces it
     expect(c.participantIDs).toContain(RODZ);       // the resolved secondary (Rodz)
     expect(c.participantIDs).toContain(AN);         // the operator too
     expect(c.accountID).toBe('whatsapp');
+  });
+
+  it('placeholder + title fall back to the built-in defaults when config.fork is unset', async () => {
+    seedSourceThread();
+    const { cmds, calls } = harness({ config: beeperCfg(AN, RODZ), rooms: roomsWithC() });   // no fork block
+    await cmds.run({ ...EV });
+    expect(calls.edit[0].text).toBe(FORK_PLACEHOLDER_DEFAULT);
+    expect(calls.create[0].title).toBe(FORK_TITLE_DEFAULT.replace('{group}', 'Proyecto X'));
   });
 
   it('forks the thread — the copy IS the new session (sessionId + cwd rewritten per record), the original is byte-unchanged', async () => {
