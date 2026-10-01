@@ -246,10 +246,12 @@ const sendSettled = async (bridge, text, opts) => {
 
 const waitFor = async (cond, ms = 10000) => {
   const t0 = Date.now();
-  while (!cond()) {
+  let v;
+  while (!(v = cond())) {
     if (Date.now() - t0 > ms) throw new Error('waitFor timeout');
     await new Promise((r) => setTimeout(r, 20));
   }
+  return v;   // the matched value, so a test can wait for the EXACT post/delete it then asserts on
 };
 
 // A fake clock for the Phase 3b promotion timers — injected as the bridge's `scheduler` so a
@@ -2731,10 +2733,10 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');                          // verbatim — no model turn, no new content
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));   // the ack POST lands a tick after the upload
     expect(ack).toBeTruthy();                                                 // immediate ack, OUR OWN new message …
     expect(ack.replyToMessageID).toBe('tn-audio');                            // … replying to the ORIGINAL quoted text
-    const mediaPost = fake.posts.find((p) => p.attachment);
+    const mediaPost = await waitFor(() => fake.posts.find((p) => p.attachment));   // the media POST is a SEPARATE call after the upload
     expect(mediaPost).toBeTruthy();                                           // the synthesized audio, sent as media
     expect(mediaPost.replyToMessageID).toBe('tn-audio');                      // …as a reply to the ORIGINAL quoted message (not the ack)
     await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack IS deletable/deleted
@@ -2818,7 +2820,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack deleted …
     expect(fake.deletes.some((d) => d.messageID === 'reply-bare')).toBe(false);       // … the trigger is never touched
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-bare', text: 'plain human line' })] });
@@ -2853,7 +2855,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('this is what E said earlier');   // found via _seenText, not transcript.md
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
     expect(fake.deletes.some((d) => d.messageID === 'reply-own')).toBe(false);   // the trigger is never touched
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', text: 'plain human line' })] });
@@ -2907,9 +2909,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-synthfail', text: '@e', isSender: true, linkedMessageID: 'tn-fail' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-synthfail'));
     expect(fake.uploads).toHaveLength(0);
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     expect(ack).toBeTruthy();                                                       // ack IS posted before synthesis is attempted …
-    expect(fake.deletes.some((d) => d.messageID === ack.confirmedID)).toBe(true);   // … and cleaned up on decline
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // … and cleaned up on decline
     expect(fake.deletes.some((d) => d.messageID === 'reply-synthfail')).toBe(false);   // trigger never touched
     expect(incoming.find((i) => i.from.msgKey === 'reply-synthfail').from.atEStart).toBe(true);   // fell through, not eaten
   });
@@ -2921,9 +2923,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-throw', text: '@e', isSender: true, linkedMessageID: 'tn-throw' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-throw'));
     expect(fake.uploads).toHaveLength(0);
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     expect(ack).toBeTruthy();
-    expect(fake.deletes.some((d) => d.messageID === ack.confirmedID)).toBe(true);
+    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
     expect(fake.deletes.some((d) => d.messageID === 'reply-throw')).toBe(false);
     expect(incoming.find((i) => i.from.msgKey === 'reply-throw').from.atEStart).toBe(true);
   });
@@ -2972,9 +2974,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     await waitFor(() => fake.uploads.length === 1);
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');                          // verbatim — no model turn, no new content
-    const mediaPost = fake.posts.find((p) => p.attachment);
+    const mediaPost = await waitFor(() => fake.posts.find((p) => p.attachment));   // the media POST lands a tick after the upload
     expect(mediaPost.replyToMessageID).toBe('tn-fb');                         // audio replies to the ORIGINAL quoted text
-    const ack = fake.posts.find((p) => p.text === '🔊 reading…');
+    const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
     expect(fake.deletes.some((d) => d.messageID === 'reply-fbtxt')).toBe(false);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-fbtxt', text: 'plain human line' })] });

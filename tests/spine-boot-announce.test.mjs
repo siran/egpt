@@ -119,7 +119,7 @@ describe('boot.mjs — restart-announce read-back', () => {
   it('a MISSING sidecar (cold boot) still announces — "egpt started", not silence', async () => {
     await clearSidecar();
     const { app, spy } = await bootNode();
-    await waitFor(() => spy.sent.length > 0);
+    await waitFor(() => spy.sent.some((s) => /egpt started/.test(s.text)), { timeoutMs: 10000 });   // the exact asserted send; 2s default is too tight under load
 
     const started = spy.sent.find((s) => /egpt started/.test(s.text));
     expect(started, JSON.stringify(spy.sent)).toBeTruthy();
@@ -131,7 +131,11 @@ describe('boot.mjs — restart-announce read-back', () => {
     await clearSidecar();
     await fs.writeFile(SIDECAR, JSON.stringify({ chatId: SELF_CHAT, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
     const { app, spy } = await bootNode();
-    await waitFor(() => spy.sent.length > 0 || !existsSync(SIDECAR));
+    // Wait for the EXACT thing asserted — the back-up send AND the sidecar consumed. The old
+    // `spy.sent.length > 0 || !existsSync(SIDECAR)` could be satisfied by the unlink alone (the
+    // announce unlinks the sidecar a tick before its send lands), reading `backUp` as undefined
+    // under load. 10s budget: this file's waitFor RETURNS (doesn't throw) at its 2s default.
+    await waitFor(() => spy.sent.some((s) => /egpt back up!/.test(s.text)) && !existsSync(SIDECAR), { timeoutMs: 10000 });
 
     const backUp = spy.sent.find((s) => /egpt back up!/.test(s.text));
     expect(backUp, JSON.stringify(spy.sent)).toBeTruthy();
