@@ -463,9 +463,9 @@ const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 // ── /fork + /end (operator 2026-10-01) ──────────────────────────────────────────────────────────
 // The two fixed strings the feature posts, module-scope so a test asserts against the SAME constant
 // the handler sends (no drift). FORK_PLACEHOLDER replaces the operator's /fork message while the
-// fork is live (deleted by /end); FORK_OPENER is the fork group's first message.
+// fork is live (deleted by /end). The fork group gets NO opener message — the configurable header
+// (config.fork.header) is prepended to E's first turn input in the group, not posted (brainpool.mjs).
 export const FORK_PLACEHOLDER = '🤖↔️🤔 ...';
-export const FORK_OPENER = 'reply to a message with /end to send it back to the original chat.';
 
 // The one id form that addresses the SECONDARY account (Rodz) from the PRIMARY account's roster is
 // the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @dolly-egpt:beeper.com is the secondary's
@@ -477,15 +477,17 @@ function phoneDigitsOf(v) {
   return (/^\+?[\d\s().-]+$/.test(s) && d.length >= 7) ? d : null;
 }
 
-// Resolve the SECONDARY account's (Rodz's) participant id for /fork, from config ALONE. The operator
-// enumerates both of the operator's accounts' phones in config.peer_spine.accounts (beeper.mjs:759,
-// "the pair the operator names by hand"); Rodz is the one that is NOT this install's own identity
-// (selfIds). 0 or >1 non-self phone => null => the caller STOPS rather than create a group with a
-// wrong/missing member. Pure + exported so the rule is unit-tested, and so boot can swap it.
+// Resolve the SECONDARY account's (Rodz's) participant id for /fork, from config ALONE (operator
+// correction 2026-10-01: the two accounts are named by `config.beeper.primary.phone` and
+// `config.beeper.secondary.phone`, not the old peer_spine construct). Rodz is whichever of the two
+// is NOT this install's own number (selfIds). Fewer than two phones, or no unique partner after
+// exclusion => null => the caller STOPS rather than create a group with a wrong/missing member.
+// Pure + exported so the rule is unit-tested, and so boot can swap it.
 export function resolveSecondaryParticipantId(config, selfIds = []) {
-  const accounts = Array.isArray(config?.peer_spine?.accounts) ? config.peer_spine.accounts : [];
+  const phones = [...new Set([config?.beeper?.primary?.phone, config?.beeper?.secondary?.phone].map(phoneDigitsOf).filter(Boolean))];
+  if (phones.length < 2) return null;
   const selfSet = new Set((Array.isArray(selfIds) ? selfIds : []).map(phoneDigitsOf).filter(Boolean));
-  const others = [...new Set(accounts.map(phoneDigitsOf).filter(Boolean))].filter((d) => !selfSet.has(d));
+  const others = phones.filter((d) => !selfSet.has(d));
   return others.length === 1 ? `+${others[0]}` : null;
 }
 
@@ -667,7 +669,7 @@ export function createCommands({
     chatTitle:     async () => null,    // (chatId) -> the chat's display title
   },
   // Every identifier THIS install answers to (boot: earBridge.selfIdentities) — the self side of
-  // Rodz resolution: Rodz is the account in config.peer_spine.accounts that is NOT one of these.
+  // Rodz resolution: Rodz is the config.beeper phone (primary/secondary) that is NOT one of these.
   selfIds = async () => [],
   // Resolve the SECONDARY account's (Rodz's) participant id for /fork. null => the handler STOPs
   // and creates nothing. Default (null here) = the pure config rule resolveSecondaryParticipantId
@@ -3131,7 +3133,7 @@ export function createCommands({
     //     nothing created (operator: "rather than creating a group with a wrong/missing member").
     const partner = await forkPartnerOf();
     if (!partner) {
-      onLog("/fork: could not resolve the secondary (Rodz) participant id from config — refusing, nothing created. Expected config.peer_spine.accounts to name the operator's two phone numbers.");
+      onLog('/fork: could not resolve the secondary (Rodz) participant id from config — refusing, nothing created. Expected config.beeper.primary.phone and config.beeper.secondary.phone.');
       await send?.(ev.chatId, '/fork: cannot resolve Rodz (the secondary account) from config — refusing to create a group with a missing member');
       return;
     }
@@ -3146,8 +3148,9 @@ export function createCommands({
     // (a) EDIT the operator's /fork message into the placeholder — it STAYS a reply to the forked
     //     message because editMessage only changes the text.
     await forkBridge.editMessage(ev.chatId, ev.msgId, FORK_PLACEHOLDER);
-    // (b) CREATE the group: operator + Rodz, forced to a group, opener as its first message.
-    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title: `egpt fork ${cTitle}`, messageText: FORK_OPENER });
+    // (b) CREATE the group: operator + Rodz, forced to a group. NO opener message — the configurable
+    //     header (config.fork.header) is prepended to E's FIRST turn input in the group, not posted.
+    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title: `egpt fork ${cTitle}` });
     const forkChatId = created?.chatID ?? created?.chatId ?? null;
     if (!forkChatId) {
       onLog(`/fork: createGroup returned no chatID (${JSON.stringify(created)}) — aborted after placeholder edit`);
@@ -3178,10 +3181,12 @@ export function createCommands({
       onLog(`/fork: thread copy ${srcFound.jsonlPath} -> ${destJsonl} failed — ${e?.message ?? e}`);
     }
     // (d) register the fork thread for the being, (e) grant it READ-ONLY access to C's folder, and
-    //     (f) persist the /end mapping — one load/patch/write transaction on the fork entry.
+    //     (f) persist the /end mapping + the one-shot header state — one load/patch/write on the fork
+    //     entry. originalTitle = the parent group's name (fills {group} in config.fork.header);
+    //     headerPending arms the header for E's FIRST turn in the group (brainpool.mjs clears it).
     state = recordThread(state, surface, forkChatId, newThreadId, undefined, being);
     state = patchBeing(state, surface, forkChatId, being, { allowed_paths: { [cFolder]: { allowed_tools: ['Read', 'Glob', 'Grep'] } } });
-    state = patchContact(state, surface, forkChatId, { fork: { originalChatId: ev.chatId, placeholderId: ev.msgId ?? null, forkedMessageId: ev.replyToId } });
+    state = patchContact(state, surface, forkChatId, { fork: { originalChatId: ev.chatId, placeholderId: ev.msgId ?? null, forkedMessageId: ev.replyToId, originalTitle: cTitle, headerPending: true } });
     await writeState(state);
     onLog(`/fork: ${cTitle} -> group ${forkChatId} (thread ${newThreadId} forked from ${srcThreadId}${copied ? '' : ' [COPY FAILED]'}; member ${partner})`);
     if (!copied) await send?.(ev.chatId, '/fork: group created but the thread copy failed — see logs');

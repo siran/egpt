@@ -25,9 +25,10 @@ const TEST_HOME = vi.hoisted(() => {
   process.env.EGPT_HOME = dir;
   return dir;
 });
-import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, FORK_PLACEHOLDER, FORK_OPENER } from '../src/spine/commands.mjs';
-import { resolveBeingDef, sandboxSharePathsFor } from '../src/spine/brainpool.mjs';
-import { ensureContact, recordThread, getBeing, getContact, slugDir, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
+import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, FORK_PLACEHOLDER } from '../src/spine/commands.mjs';
+import { resolveBeingDef, sandboxSharePathsFor, createBrainPool } from '../src/spine/brainpool.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
+import { ensureContact, recordThread, getBeing, getContact, slugDir, emptyState, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
 
 const C_CHAT = '!chatC';
@@ -43,10 +44,12 @@ const SRC_LINES = [
 ];
 const SRC_CONTENT = SRC_LINES.join('\n') + '\n';
 
-// AN's primary + Rodz's secondary phones, the pair config.peer_spine.accounts names. idKey/
-// resolveSecondaryParticipantId reads the phone — the one id form that crosses the two accounts.
+// AN's primary + Rodz's secondary phones, named by config.beeper.{primary,secondary}.phone.
+// resolveSecondaryParticipantId reads those two phones — the one id form that crosses the accounts.
 const AN = '+16468217865';
 const RODZ = '+13472576794';
+// The config shape the resolver reads (operator correction 2026-10-01).
+const beeperCfg = (primary, secondary) => ({ beeper: { primary: { phone: primary }, secondary: { phone: secondary } } });
 
 class TmpRoom extends Room {
   constructor(dir, slug) { super(); this._dir = dir; this.slug = slug; }
@@ -116,7 +119,7 @@ function roomsWithC() {
 
 // ── /fork ───────────────────────────────────────────────────────────────────────────────────────
 describe('/fork — happy path (fake bridge, temp store, in-memory state)', () => {
-  const CFG = { peer_spine: { accounts: [AN, RODZ] } };
+  const CFG = beeperCfg(AN, RODZ);
   const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' };
 
   it('edits the /fork message to the placeholder', async () => {
@@ -127,7 +130,7 @@ describe('/fork — happy path (fake bridge, temp store, in-memory state)', () =
     expect(calls.edit[0]).toEqual({ chatId: C_CHAT, msgId: 'cmd1', text: FORK_PLACEHOLDER });
   });
 
-  it('creates a type:"group" with the right title, participants incl. the resolved Rodz id, and the opener', async () => {
+  it('creates a type:"group" with the right title, participants incl. the resolved Rodz id, and NO opener', async () => {
     seedSourceThread();
     const { cmds, calls } = harness({ config: CFG, rooms: roomsWithC() });
     await cmds.run({ ...EV });
@@ -135,7 +138,7 @@ describe('/fork — happy path (fake bridge, temp store, in-memory state)', () =
     const c = calls.create[0];
     expect(c.type).toBe('group');
     expect(c.title).toBe('egpt fork Proyecto X');
-    expect(c.messageText).toBe(FORK_OPENER);
+    expect('messageText' in c).toBe(false);         // NO opener — the configurable header replaces it
     expect(c.participantIDs).toContain(RODZ);       // the resolved secondary (Rodz)
     expect(c.participantIDs).toContain(AN);         // the operator too
     expect(c.accountID).toBe('whatsapp');
@@ -207,14 +210,14 @@ describe('/fork — happy path (fake bridge, temp store, in-memory state)', () =
     const { cmds, getState } = harness({ config: CFG, rooms: roomsWithC() });
     await cmds.run({ ...EV });
     const fork = getContact(getState(), 'whatsapp', FORK_CHAT)?.entry?.fork;
-    expect(fork).toEqual({ originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0' });
+    expect(fork).toEqual({ originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0', originalTitle: 'Proyecto X', headerPending: true });
   });
 });
 
 describe('/fork — refusals create nothing', () => {
   it('no reply target → an error, and NOTHING is created', async () => {
     seedSourceThread();
-    const { cmds, sent, calls } = harness({ config: { peer_spine: { accounts: [AN, RODZ] } }, rooms: roomsWithC() });
+    const { cmds, sent, calls } = harness({ config: beeperCfg(AN, RODZ), rooms: roomsWithC() });
     await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: null, chatName: 'Proyecto X', body: '/fork' });
     expect(sent[0].text).toMatch(/reply to a message with \/fork/);
     expect(calls.create).toHaveLength(0);
@@ -223,7 +226,7 @@ describe('/fork — refusals create nothing', () => {
 
   it('Rodz id unresolvable → the handler refuses + logs, and creates NOTHING (no group, no placeholder edit)', async () => {
     seedSourceThread();
-    const { cmds, sent, logs, calls, getState } = harness({ config: {}, rooms: roomsWithC() });   // no peer_spine ⇒ null
+    const { cmds, sent, logs, calls, getState } = harness({ config: {}, rooms: roomsWithC() });   // no beeper phones ⇒ null
     await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' });
     expect(sent[0].text).toMatch(/cannot resolve Rodz/i);
     expect(logs.some((l) => /could not resolve the secondary \(Rodz\)/i.test(l))).toBe(true);
@@ -235,7 +238,7 @@ describe('/fork — refusals create nothing', () => {
 
   it('ambiguous config (both accounts, no self id to disambiguate) → refuses, creates nothing', async () => {
     seedSourceThread();
-    const { cmds, sent, calls } = harness({ config: { peer_spine: { accounts: [AN, RODZ] } }, selfIds: [], rooms: roomsWithC() });
+    const { cmds, sent, calls } = harness({ config: beeperCfg(AN, RODZ), selfIds: [], rooms: roomsWithC() });
     await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' });
     expect(sent[0].text).toMatch(/cannot resolve Rodz/i);
     expect(calls.create).toHaveLength(0);
@@ -251,14 +254,14 @@ describe('/fork — refusals create nothing', () => {
 });
 
 // ── /end ────────────────────────────────────────────────────────────────────────────────────────
-// A fork conversation carrying the mapping + a transcript with the chosen message M (#M1).
-function stateWithFork() {
+// A fork conversation carrying the FULL mapping /fork writes + a transcript with the chosen message M.
+const FORK_MAPPING = { originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0', originalTitle: 'Proyecto X', headerPending: true };
+function stateWithFork(mapping = FORK_MAPPING) {
   let st = seedState();
   st = ensureContact(st, 'whatsapp', FORK_CHAT, { pushedName: 'egpt fork Proyecto X' }).state;
-  // the mapping /fork would have written
   const c = getContact(st, 'whatsapp', FORK_CHAT);
   st = { ...st, contacts: { ...st.contacts, whatsapp: { ...st.contacts.whatsapp,
-    [c.jid]: { ...st.contacts.whatsapp[c.jid], fork: { originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0' } } } } };
+    [c.jid]: { ...st.contacts.whatsapp[c.jid], fork: { ...mapping } } } } };
   return st;
 }
 
@@ -305,7 +308,85 @@ describe('restart safety — the /end mapping survives a reload', () => {
     await writeConvState(yamlPath, stateWithFork());
     const reloaded = await readConvState(yamlPath);
     const fork = getContact(reloaded, 'whatsapp', FORK_CHAT)?.entry?.fork;
-    expect(fork).toEqual({ originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0' });
+    expect(fork).toEqual(FORK_MAPPING);   // all 5 fields survive, incl. the one-shot headerPending
+  });
+});
+
+// ── the fork header — prepended to E's FIRST turn input in the fork group, once ─────────────────
+// This fires in brainpool.turn (the one turn path), not in commands.mjs, so it is exercised through
+// createBrainPool with a fake warm pool whose `calls[i].message` is exactly the prompt E received.
+function fakePool(result) {
+  const calls = [];
+  return { calls, run(key, message, _onPartial, opts) { calls.push({ key, message, opts }); return Promise.resolve(result); }, steer: async () => false, evict() {} };
+}
+// A fork conversation with a RESUMED thread (so firstMsg is the plain line) + the fork mapping.
+function forkConvState({ headerPending = true } = {}) {
+  let st = ensureContact(emptyState(), 'whatsapp', FORK_CHAT, { pushedName: 'egpt fork Proyecto X', slugHint: 'egpt fork Proyecto X' }).state;
+  st = recordThread(st, 'whatsapp', FORK_CHAT, 'fork-sid-1', undefined, 'e');
+  const c = getContact(st, 'whatsapp', FORK_CHAT);
+  st = { ...st, contacts: { ...st.contacts, whatsapp: { ...st.contacts.whatsapp,
+    [c.jid]: { ...st.contacts.whatsapp[c.jid], fork: { originalChatId: C_CHAT, placeholderId: 'cmd1', forkedMessageId: 'M0', originalTitle: 'Proyecto X', headerPending } } } } };
+  return st;
+}
+function forkBrainHarness({ header = 'forked from group {group}, read-access granted to its conversation folder', headerPending = true } = {}) {
+  let state = forkConvState({ headerPending });
+  const pool = fakePool({ text: 'ok', sessionId: 'fork-sid-1' });
+  const loadState = async () => state;
+  const writeState = async (s) => { state = s; };
+  const cfg = { agents: { e: { conversation_defaults: { access_level: 'regular' } } }, ...(header != null ? { fork: { header } } : {}) };
+  const brain = createBrainPool({
+    pool,
+    getConfig: () => cfg,
+    contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
+    loadState, writeState,
+    io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
+    resolveConfig: () => ({}),
+    loadFeed: async () => '',       // no feed → the raw (header-prefixed) line is E's whole prompt
+    loadManifest: async () => '',
+    loadPermission: () => null,
+  });
+  return { brain, pool, getState: () => state };
+}
+const forkEv = (body) => ({ surface: 'whatsapp', chatId: FORK_CHAT, chatName: 'egpt fork Proyecto X', line: `An@[egpt fork Proyecto X].wa (14:05) #m1: ${body}`, body });
+
+describe('fork header — config.fork.header, {group} filled, first message only', () => {
+  it('prepends the header (with {group}=parent name) to E\'s first turn input, then clears the flag', async () => {
+    const { brain, pool, getState } = forkBrainHarness();
+    await brain.turn('e', forkEv('vamos'));
+    expect(pool.calls[0].message).toContain('forked from group Proyecto X, read-access granted to its conversation folder');
+    expect(pool.calls[0].message).toContain('vamos');   // the real message rides right after the header
+    expect(getContact(getState(), 'whatsapp', FORK_CHAT).entry.fork.headerPending).toBe(false);
+  });
+
+  it('fires ONLY once — the second message carries no header', async () => {
+    const { brain, pool } = forkBrainHarness();
+    await brain.turn('e', forkEv('uno'));
+    await brain.turn('e', forkEv('dos'));
+    expect(pool.calls[1].message).not.toContain('forked from group');
+    expect(pool.calls[1].message).toContain('dos');
+  });
+
+  it('config.fork.header unset → no header, nothing prepended, flag left untouched (skip silently)', async () => {
+    const { brain, pool, getState } = forkBrainHarness({ header: null });
+    await brain.turn('e', forkEv('vamos'));
+    expect(pool.calls[0].message).not.toContain('forked from group');
+    expect(pool.calls[0].message).toContain('vamos');
+    expect(getContact(getState(), 'whatsapp', FORK_CHAT).entry.fork.headerPending).toBe(true);
+  });
+
+  it('a NON-fork conversation never gets a header (no fork mapping ⇒ no prepend)', async () => {
+    let state = recordThread(ensureContact(emptyState(), 'whatsapp', C_CHAT, { pushedName: 'Proyecto X' }).state, 'whatsapp', C_CHAT, 'sid-x', undefined, 'e');
+    const pool = fakePool({ text: 'ok', sessionId: 'sid-x' });
+    const loadState = async () => state;
+    const brain = createBrainPool({
+      pool, getConfig: () => ({ agents: { e: { conversation_defaults: { access_level: 'regular' } } }, fork: { header: 'forked from group {group}' } }),
+      contacts: createContacts({ loadState, writeState: async (s) => { state = s; }, io: { mkdir: async () => {} } }),
+      loadState, writeState: async (s) => { state = s; },
+      io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
+      resolveConfig: () => ({}), loadFeed: async () => '', loadManifest: async () => '', loadPermission: () => null,
+    });
+    await brain.turn('e', { surface: 'whatsapp', chatId: C_CHAT, chatName: 'Proyecto X', line: 'An@[Proyecto X].wa (14:05) #m1: hola', body: 'hola' });
+    expect(pool.calls[0].message).not.toContain('forked from group');
   });
 });
 
@@ -349,21 +430,21 @@ describe('rewriteForkSessionJsonl — sessionId + cwd rewrite, non-JSON verbatim
 });
 
 // ── the Rodz resolution rule (pure) ─────────────────────────────────────────────────────────────
-describe('resolveSecondaryParticipantId — phone-only, non-self, exactly-one-or-null', () => {
-  it('returns the account that is NOT this install, by phone', () => {
-    expect(resolveSecondaryParticipantId({ peer_spine: { accounts: [AN, RODZ] } }, [AN])).toBe(RODZ);
+describe('resolveSecondaryParticipantId — the two config.beeper phones, non-self, exactly-one-or-null', () => {
+  it('returns the beeper phone that is NOT this install', () => {
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, RODZ), [AN])).toBe(RODZ);
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, RODZ), [RODZ])).toBe(AN);
   });
-  it('ignores the @dolly-egpt:beeper.com form (not a phone) and resolves the phone', () => {
-    expect(resolveSecondaryParticipantId({ peer_spine: { accounts: [RODZ, '@dolly-egpt:beeper.com'] } }, [AN])).toBe(RODZ);
+  it('fewer than two phones ⇒ null (refuse)', () => {
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, undefined), [AN])).toBe(null);                 // only one phone set
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, '@dolly-egpt:beeper.com'), [AN])).toBe(null);  // a non-phone field
+    expect(resolveSecondaryParticipantId({}, [AN])).toBe(null);                                        // no beeper block
   });
-  it('ambiguous (both accounts, no self) ⇒ null', () => {
-    expect(resolveSecondaryParticipantId({ peer_spine: { accounts: [AN, RODZ] } }, [])).toBe(null);
-  });
-  it('no peer_spine ⇒ null', () => {
-    expect(resolveSecondaryParticipantId({}, [AN])).toBe(null);
-    expect(resolveSecondaryParticipantId({ peer_spine: { accounts: [] } }, [AN])).toBe(null);
+  it('no unique partner after excluding self ⇒ null', () => {
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, RODZ), [])).toBe(null);   // neither excluded ⇒ 2 remain
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, AN), [])).toBe(null);     // same number twice ⇒ <2 unique
   });
   it('normalizes phone shapes (digits-only compare) when excluding self', () => {
-    expect(resolveSecondaryParticipantId({ peer_spine: { accounts: ['+1 (646) 821-7865', RODZ] } }, ['16468217865'])).toBe(RODZ);
+    expect(resolveSecondaryParticipantId(beeperCfg('+1 (646) 821-7865', RODZ), ['16468217865'])).toBe(RODZ);
   });
 });
