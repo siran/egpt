@@ -1444,6 +1444,32 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
 
+  // --- create a group chat / archive a chat (Beeper Desktop API) — added for /fork + /end
+  // (operator 2026-10-01). -------------------------------------------------------------------
+  // CREATE: POST /v1/chats { accountID, participantIDs, type, title, messageText } — the documented
+  // create-chat operation (developers.beeper.com, create_chat; the deprecated /v0/create-chat lists
+  // the same body). `type:"group"` forces a group even for a single participant, which is how /fork
+  // makes a two-person (operator + Rodz) group rather than a 1:1 DM. The parsed response carries
+  // `{ success, chatID }` (the id, e.g. "!…:beeper.com") — returned VERBATIM so the caller reads
+  // chatID. NOT exercisable from here: a real POST creates a real WhatsApp group, so the only live
+  // run is the operator typing /fork (out of scope for the build — every test injects a fake). Same
+  // guard → try/catch → return shape as editMessage/deleteMessage, but returns the response (not a
+  // bool) because the caller needs the new chatID.
+  async function createGroup({ accountID, participantIDs, type = 'group', title, messageText } = {}) {
+    if (!accountID || !Array.isArray(participantIDs) || !participantIDs.length) return null;
+    try { return await api('POST', '/v1/chats', { accountID, participantIDs, type, title, messageText }); }
+    catch (e) { onLog(`beeper: createGroup failed [${accountID}] — ${e?.message ?? e}`); return null; }
+  }
+  // ARCHIVE: POST /v1/chats/{id}/archive { archived } — the documented archive operation
+  // (developers.beeper.com, chats resource; the `archived` boolean is optional and defaults to
+  // archiving). One-shot, used by /end to put the fork group away once its chosen message has gone
+  // back. Same guard/try-catch/boolean-return shape as deleteMessage. Not exercised live here.
+  async function archiveChat(chatID, { archived = true } = {}) {
+    if (!chatID) return false;
+    try { await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/archive`, { archived }); return true; }
+    catch (e) { onLog(`beeper: archive failed [${chatID}] — ${e?.message ?? e}`); return false; }
+  }
+
   // --- reactions / media SEND (Beeper Desktop local API) -----------------------
   // Verified against the live Desktop API + docs (2026-07-04):
   //   REACT : POST /v1/chats/{c}/messages/{id}/reactions  { reactionKey }
@@ -2474,6 +2500,11 @@ export async function startBeeperBridge(opts = {}) {
     // stream; also available to callers that hold a real id).
     editMessage:   (chatId, messageId, text) => editMessage(chatId, messageId, text),
     deleteMessage: (chatId, messageId)       => deleteMessage(chatId, messageId),
+    // CREATE a group chat / ARCHIVE a chat (operator 2026-10-01, /fork + /end). createGroup is
+    // POST /v1/chats (the documented create-chat op; returns { success, chatID }); archiveChat is
+    // POST /v1/chats/{id}/archive. Thin wrappers over the closures above, like editMessage/deleteMessage.
+    createGroup:   (opts)                    => createGroup(opts),
+    archiveChat:   (chatId, opts)            => archiveChat(chatId, opts),
     // Conversation-E limbs (ROADMAP §3): send a reaction / a media file; and the
     // fail-closed ownership probe (also drives inbound replyToBot). Reply-to already
     // rides send()'s replyToMessageID.

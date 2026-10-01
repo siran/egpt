@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, deleteBeing, getContact, getBeing, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, ensureContact, recordThread, findThreadJsonl, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -26,6 +26,7 @@ import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-
 import { addressed, addressableTokens } from './router.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join, basename } from 'node:path';
 import * as YAML from 'yaml';
@@ -459,6 +460,62 @@ function parseNodeAddressable(text) {
 // has no transport at all, so no co-account peer can have heard it either.
 const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 
+// ── /fork + /end (operator 2026-10-01) ──────────────────────────────────────────────────────────
+// The two fixed strings the feature posts, module-scope so a test asserts against the SAME constant
+// the handler sends (no drift). FORK_PLACEHOLDER replaces the operator's /fork message while the
+// fork is live (deleted by /end); FORK_OPENER is the fork group's first message.
+export const FORK_PLACEHOLDER = '🤖↔️🤔 ...';
+export const FORK_OPENER = 'reply to a message with /end to send it back to the original chat.';
+
+// The one id form that addresses the SECONDARY account (Rodz) from the PRIMARY account's roster is
+// the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @dolly-egpt:beeper.com is the secondary's
+// OWN-account id and does NOT reach it from here — investigation 2026-10-01). phoneDigitsOf returns
+// the bare digits of a phone-shaped id, or null for anything else (a matrix/@user id, a slug, a name).
+function phoneDigitsOf(v) {
+  const s = String(v ?? '').trim();
+  const d = s.replace(/\D/g, '');
+  return (/^\+?[\d\s().-]+$/.test(s) && d.length >= 7) ? d : null;
+}
+
+// Resolve the SECONDARY account's (Rodz's) participant id for /fork, from config ALONE. The operator
+// enumerates both of the operator's accounts' phones in config.peer_spine.accounts (beeper.mjs:759,
+// "the pair the operator names by hand"); Rodz is the one that is NOT this install's own identity
+// (selfIds). 0 or >1 non-self phone => null => the caller STOPS rather than create a group with a
+// wrong/missing member. Pure + exported so the rule is unit-tested, and so boot can swap it.
+export function resolveSecondaryParticipantId(config, selfIds = []) {
+  const accounts = Array.isArray(config?.peer_spine?.accounts) ? config.peer_spine.accounts : [];
+  const selfSet = new Set((Array.isArray(selfIds) ? selfIds : []).map(phoneDigitsOf).filter(Boolean));
+  const others = [...new Set(accounts.map(phoneDigitsOf).filter(Boolean))].filter((d) => !selfSet.has(d));
+  return others.length === 1 ? `+${others[0]}` : null;
+}
+
+// claude's projects/<dir> naming rule — the FORWARD of conversations-state.reverseSanitizeCwd: a cwd
+// becomes a project-dir by replacing \ / : . _ with '-'. /fork copies the forked jsonl into the dir
+// matching the FORK conversation's cwd so a cwd-scoped `--resume` finds it under the fork's box store.
+const sanitizeCwdDir = (p) => String(p).replace(/[\\/:._]/g, '-');
+
+// THE FORK COPY IS A TRANSFORM, not a byte copy (coordinator 2026-10-01, verified against a real
+// boxed session file). Every claude-code jsonl record carries `sessionId: "<the filename id>"`, and
+// user records carry `cwd: "<that conversation's folder>"`. A raw copy to `<newThreadId>.jsonl` would
+// leave every record disclaiming its own id and pointing at C's folder, so `--resume <newThreadId>`
+// loads a session that denies it is that session — the "silently blank fork". So rewrite, per line,
+// `sessionId` → the new thread id and `cwd` → the FORK conversation's own folder, on every record
+// that has each field; leave every other field (uuid/parentUuid/message/timestamp/type) untouched. A
+// line that does not parse as JSON passes through VERBATIM (never dropped). Exported so the rewrite is
+// unit-testable with no fs; the caller does the read/write through the injectable io seam.
+export function rewriteForkSessionJsonl(raw, { sessionId, cwd }) {
+  return String(raw).split('\n').map((line) => {
+    if (!line) return line;                 // blank line (incl. the trailing one) stays blank
+    let rec;
+    try { rec = JSON.parse(line); } catch { return line; }   // non-JSON → verbatim
+    if (rec && typeof rec === 'object' && !Array.isArray(rec)) {
+      if ('sessionId' in rec) rec.sessionId = sessionId;
+      if ('cwd' in rec) rec.cwd = cwd;
+    }
+    return JSON.stringify(rec);
+  }).join('\n');
+}
+
 export function createCommands({
   getConfig = () => ({}),
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
@@ -591,6 +648,32 @@ export function createCommands({
   // message's line in transcript.md. Defaults: no backlog, UTC.
   backlogOf = () => [],
   timeZone = null,
+  // ── /fork + /end seams (operator 2026-10-01) ─────────────────────────────────────────────
+  // A "fork" spins a private side-group (operator + Rodz) carrying a COPY of this chat's E-thread,
+  // works there, then /end sends one chosen message back to the original chat. forkBridge groups
+  // the beeper facade methods the two verbs need — all off the SAME bridge the chat lives on (boot
+  // wires them off earBridge, where resolveChatId/listChats already come from; createGroup +
+  // archiveChat are the two methods newly added to the facade, the rest already existed). postReply
+  // posts text into a chat as a new reply to a message id (bridge.send with replyToMessageID).
+  // chatAccountId/chatTitle resolve the original chat's account + display name for the group create.
+  // Safe no-op defaults so a standalone/test createCommands never touches a real bridge.
+  forkBridge = {
+    editMessage:   async () => false,   // (chatId, msgId, text) -> bool
+    createGroup:   async () => null,    // ({accountID, participantIDs, type, title, messageText}) -> { success, chatID } | null
+    postReply:     async () => false,   // (chatId, text, replyToMessageID) -> truthy on success
+    deleteMessage: async () => false,   // (chatId, msgId) -> bool
+    archiveChat:   async () => false,   // (chatId) -> bool
+    chatAccountId: async () => null,    // (chatId) -> the accountID the chat lives on
+    chatTitle:     async () => null,    // (chatId) -> the chat's display title
+  },
+  // Every identifier THIS install answers to (boot: earBridge.selfIdentities) — the self side of
+  // Rodz resolution: Rodz is the account in config.peer_spine.accounts that is NOT one of these.
+  selfIds = async () => [],
+  // Resolve the SECONDARY account's (Rodz's) participant id for /fork. null => the handler STOPs
+  // and creates nothing. Default (null here) = the pure config rule resolveSecondaryParticipantId
+  // over cfg() + selfIds(); boot may inject its own. A tripped/unresolvable resolver is the lock
+  // that a group is never created with a wrong/missing member.
+  resolveForkPartner = null,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -1027,6 +1110,18 @@ export function createCommands({
     // targetId is no longer live), refreshing its targetId. A no-op when already live.
     const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
     if (activateMatch) { await activate(ev, activateMatch[1]); return; }
+
+    // /fork — reply /fork to a message to spin a private side-group carrying a COPY of this chat's
+    // E-thread; /end — reply /end to a message in that group to send it back here (operator
+    // 2026-10-01). Both take NO args (they act on the reply target) and sit pre-catch-all like the
+    // rest. Operator-only automatically: isCommand gates every '/'-verb except /recap behind
+    // isOperator, so neither handler re-checks it (same as chrome/radio). NOT in NODE_ADDRESSABLE:
+    // like /restart, they are local to the node the chat lives on, never `/fork=<node>`. Written as
+    // `<name>Match = /^\/word…` so the /help drift guard (tests/spine-commands.test.mjs) sees them.
+    const forkMatch = /^\/fork\b[\s\S]*$/i.exec(line);
+    if (forkMatch) { await fork(ev); return; }
+    const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
+    if (endMatch) { await end(ev); return; }
 
     // /e and /egpt carry NO special meaning any more (retired 2026-08-15 — see § /agents
     // above, which replaces the whole family). A bare `/e` or `/e <anything>` no longer gets
@@ -2996,6 +3091,132 @@ export function createCommands({
     const cleaned = body ? cleanQuotedBody(body) : null;
     if (!cleaned) { await nothingToRead(); return; }
     await radio(ev, 'say', cleaned, null);
+  }
+
+  // ── /fork and /end (operator 2026-10-01) ────────────────────────────────────────────────────
+  // /fork (the operator REPLIES /fork to a message in chat C): spin a private side-group carrying a
+  // COPY of C's E-thread, so the operator can work the problem with E away from C, then /end one
+  // chosen message back into C. THE HARD CONSTRAINT the operator set: resolve EVERY precondition —
+  // the reply target, C's room, C's source thread, AND Rodz's id — BEFORE any bridge/fs/state
+  // mutation, so a group is NEVER created with a wrong or missing member (an unresolvable Rodz STOPS
+  // the whole command, having created nothing). Only after all of that passes does the placeholder
+  // edit + group create run. ev.chatId's OWN room is resolved (not convRoomOf's joined-room
+  // redirect): /fork acts on the chat it was typed in.
+  const forkPartnerOf = async () => (resolveForkPartner
+    ? await resolveForkPartner(cfg())
+    : resolveSecondaryParticipantId(cfg(), await selfIds()));
+
+  async function fork(ev) {
+    const surface = surfaceOf(ev);
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/fork: conversation state not wired'); return; }
+    // (1) a reply target is required — /fork forks the conversation AROUND one specific message.
+    if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /fork'); return; }
+    // (2) C's own folder — the read root the fork's E is granted (read-only) below, and the proof C
+    //     is a real conversation on this node.
+    const cRoom = await resolveConvRoom(surface, ev.chatId);
+    if (!cRoom) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
+    const cFolder = cRoom.baseDir();
+    const being = defaultKey;
+    // (3) the SOURCE thread — C's current E-thread — and its jsonl on disk. E is sandboxed, so its
+    //     thread lives in the box store (~/.egpt-jsonl/<id>), scanned by id. No thread / no jsonl =
+    //     no context to carry: STOP before any mutation rather than fork an empty side-group.
+    let state = await loadState();
+    const srcThreadId = getBeing(state, surface, ev.chatId, being)?.threadId ?? null;
+    if (!srcThreadId) { await send?.(ev.chatId, `/fork: ${being} has no thread in this chat yet — nothing to fork`); return; }
+    const srcStore = jsonlStoreDirOf(srcThreadId, { jsonlStoreRoot });
+    const srcFound = (srcStore ? findThreadJsonl(srcThreadId, [], { projectsRoot: join(srcStore, 'projects') }) : null)
+      ?? findThreadJsonl(srcThreadId, []);
+    if (!srcFound) { await send?.(ev.chatId, `/fork: can't find ${being}'s thread store for #${srcThreadId} — nothing to fork`); return; }
+    // (4) RODZ — the one member the group must carry besides the operator. Unresolvable => STOP,
+    //     nothing created (operator: "rather than creating a group with a wrong/missing member").
+    const partner = await forkPartnerOf();
+    if (!partner) {
+      onLog("/fork: could not resolve the secondary (Rodz) participant id from config — refusing, nothing created. Expected config.peer_spine.accounts to name the operator's two phone numbers.");
+      await send?.(ev.chatId, '/fork: cannot resolve Rodz (the secondary account) from config — refusing to create a group with a missing member');
+      return;
+    }
+    // The operator's OWN phone (optional) rides as the first participant so the group is operator +
+    // Rodz literally; absent, type:"group" still forces a group around Rodz + the creating account.
+    const selfPhone = ((await selfIds()) || []).map((v) => { const d = phoneDigitsOf(v); return d ? `+${d}` : null; }).find(Boolean) ?? null;
+    const participantIDs = [...new Set([selfPhone, partner].filter(Boolean))];
+    const accountID = await forkBridge.chatAccountId(ev.chatId);
+    const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || cRoom.slug || ev.chatId;
+
+    // ── mutations begin (every precondition above has passed) ──
+    // (a) EDIT the operator's /fork message into the placeholder — it STAYS a reply to the forked
+    //     message because editMessage only changes the text.
+    await forkBridge.editMessage(ev.chatId, ev.msgId, FORK_PLACEHOLDER);
+    // (b) CREATE the group: operator + Rodz, forced to a group, opener as its first message.
+    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title: `egpt fork ${cTitle}`, messageText: FORK_OPENER });
+    const forkChatId = created?.chatID ?? created?.chatId ?? null;
+    if (!forkChatId) {
+      onLog(`/fork: createGroup returned no chatID (${JSON.stringify(created)}) — aborted after placeholder edit`);
+      await send?.(ev.chatId, '/fork: could not create the fork group');
+      return;
+    }
+    // (c) FORK the thread: mint a NEW id, register the fork conversation (ensureContact FIRST —
+    //     recordThread & the patches below no-op on an unknown contact), then TRANSFORM-copy C's
+    //     E-thread jsonl into the new thread's store at the project dir matching the FORK
+    //     conversation's cwd (so a cwd-scoped resume finds it), rewriting each record's sessionId →
+    //     newThreadId and cwd → the fork conversation's folder (rewriteForkSessionJsonl above) so the
+    //     copy IS the new session, not one disclaiming its own id. `flag: 'wx'` keeps the never-clobber
+    //     guarantee the old COPYFILE_EXCL had: an existing dest throws EEXIST → refuse, nothing written.
+    const newThreadId = randomUUID();
+    state = await loadState();
+    const ensured = ensureContact(state, surface, forkChatId, { pushedName: `egpt fork ${cTitle}`, slugHint: `egpt-fork-${cRoom.slug}` });
+    state = ensured.state;
+    const forkConvDir = slugDir(surface, ensured.slug);
+    const forkProjDir = join(jsonlStoreDirOf(newThreadId, { jsonlStoreRoot }), 'projects', sanitizeCwdDir(forkConvDir));
+    const destJsonl = join(forkProjDir, `${newThreadId}.jsonl`);
+    let copied = false;
+    try {
+      await mkdir(forkProjDir, { recursive: true });
+      const srcRaw = await readFile(srcFound.jsonlPath, 'utf8');
+      await writeFile(destJsonl, rewriteForkSessionJsonl(srcRaw, { sessionId: newThreadId, cwd: forkConvDir }), { flag: 'wx' });
+      copied = true;
+    } catch (e) {
+      onLog(`/fork: thread copy ${srcFound.jsonlPath} -> ${destJsonl} failed — ${e?.message ?? e}`);
+    }
+    // (d) register the fork thread for the being, (e) grant it READ-ONLY access to C's folder, and
+    //     (f) persist the /end mapping — one load/patch/write transaction on the fork entry.
+    state = recordThread(state, surface, forkChatId, newThreadId, undefined, being);
+    state = patchBeing(state, surface, forkChatId, being, { allowed_paths: { [cFolder]: { allowed_tools: ['Read', 'Glob', 'Grep'] } } });
+    state = patchContact(state, surface, forkChatId, { fork: { originalChatId: ev.chatId, placeholderId: ev.msgId ?? null, forkedMessageId: ev.replyToId } });
+    await writeState(state);
+    onLog(`/fork: ${cTitle} -> group ${forkChatId} (thread ${newThreadId} forked from ${srcThreadId}${copied ? '' : ' [COPY FAILED]'}; member ${partner})`);
+    if (!copied) await send?.(ev.chatId, '/fork: group created but the thread copy failed — see logs');
+  }
+
+  // /end (the operator REPLIES /end to a message M in a fork group): send M's text back into the
+  // ORIGINAL chat as a NEW reply to the forked message, delete the "working" placeholder there, and
+  // archive the fork group. Requires BOTH a stored fork mapping on THIS chat (so it IS a fork group)
+  // AND a reply target.
+  async function end(ev) {
+    const surface = surfaceOf(ev);
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/end: conversation state not wired'); return; }
+    const mapping = getContact(await loadState(), surface, ev.chatId)?.entry?.fork ?? null;
+    if (!mapping || !mapping.originalChatId) { await send?.(ev.chatId, '/end: not a fork group (nothing to send back)'); return; }
+    if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /end to send it back to the original chat'); return; }
+    // Read M's text out of THIS (fork) chat's transcript — the SAME walk /radio say's quick-reply
+    // uses: the quoted id -> its one entry's body, then strip the node/bridge/persona wrap.
+    const room = await resolveConvRoom(surface, ev.chatId);
+    let text = null;
+    if (room) { try { text = await readFile(room.transcriptPath, 'utf8'); } catch { text = null; } }
+    const body = text ? bodyForMessageId(text, ev.replyToId) : null;
+    const cleaned = body ? cleanQuotedBody(body) : null;
+    if (!cleaned) { await send?.(ev.chatId, '/end: nothing to send — reply to a message that has text'); return; }
+    // (1) post M's text into the ORIGINAL chat as a NEW reply to the forked message (a new message
+    //     NOTIFIES — an edit would not). Fail here => leave the fork intact, nothing deleted/archived.
+    const posted = await forkBridge.postReply(mapping.originalChatId, cleaned, mapping.forkedMessageId);
+    if (!posted) { await send?.(ev.chatId, '/end: could not post to the original chat — fork left intact'); return; }
+    // (2) delete the placeholder in the original chat; (3) confirm in the fork group BEFORE archiving
+    //     (a post to an archived chat can un-archive it); (4) archive the fork group.
+    if (mapping.placeholderId) await forkBridge.deleteMessage(mapping.originalChatId, mapping.placeholderId);
+    await send?.(ev.chatId, 'sent to the original chat.');
+    await forkBridge.archiveChat(ev.chatId);
+    // (5) clear the mapping so a second /end is a no-op (reload fresh before the final write).
+    await writeState(patchContact(await loadState(), surface, ev.chatId, { fork: null }));
+    onLog(`/end: group ${ev.chatId} -> original ${mapping.originalChatId} (replied to ${mapping.forkedMessageId}; placeholder ${mapping.placeholderId} deleted)`);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),

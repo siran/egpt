@@ -936,6 +936,15 @@ export function getBeing(state, surface, jid, being) {
     mode:               b?.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
+    // PER-CONVERSATION allowed_paths OVERRIDE (operator 2026-10-01, /fork's read-only grant). Same
+    // shape as config.yaml's agents.<being>.allowed_paths — a { path: grant } map where a grant
+    // whose allowed_tools OMIT the write-class tools is READ-ONLY (brainpool.mjs allowedPathsFor).
+    // Read by resolveConv and MERGED OVER the being's def paths in resolveBeingDef
+    // (withConvAllowedPaths), so a single conversation can grant its being an extra read root
+    // without editing the type file. This is what lets /fork give the fork conversation's E a
+    // read-only grant on the ORIGINAL chat's folder. null/absent = no per-conversation paths,
+    // byte-identical to before.
+    allowedPaths:       b?.allowed_paths      ?? null,
     // IS AN IDENTITY RE-FEED ARMED for this being's RUNNING thread (operator 2026-09-10,
     // `/agents refresh <handle>`). Read by brainpool.mjs's turn(): an armed RESUMED thread
     // re-wraps with the identity feed on its next turn and stamps identityInjectedAt back,

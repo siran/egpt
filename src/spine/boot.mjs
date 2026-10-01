@@ -2997,6 +2997,23 @@ export async function boot({
     ...(session1 ? { launchChrome: (o) => launchChromeDirectFn({ ...o, onLog: (m) => log.line?.(`[chrome] ${m}`) }) } : {}),
     backlogOf: (ev) => spineLate?.backlogOf(ev) ?? [],   // /recap — the spine's wake backlog for this chat (spineLate, above)
     timeZone: transcriptTimeZone,                        // …read out on the transcript's own clock
+    // /fork + /end (operator 2026-10-01) — the beeper ops the two verbs need, ALL off earBridge (the
+    // account chat C lives on; resolveChatId/listChats above already come off it). createGroup +
+    // archiveChat are the two methods newly added to the beeper facade; the rest already existed.
+    // postReply is bridge.send with replyToMessageID (a NEW reply, which notifies). chatAccountId
+    // reads the chat's account off its raw record (for the group create); chatTitle its display name.
+    forkBridge: {
+      editMessage:   (chatId, msgId, text)            => earBridge.editMessage(chatId, msgId, text),
+      createGroup:   (opts)                           => earBridge.createGroup(opts),
+      postReply:     (chatId, text, replyToMessageID) => earBridge.send(text, { chatId, replyToMessageID }),
+      deleteMessage: (chatId, msgId)                  => earBridge.deleteMessage(chatId, msgId),
+      archiveChat:   (chatId)                         => earBridge.archiveChat(chatId),
+      chatAccountId: async (chatId) => { try { return (await earBridge.chatRaw(chatId))?.accountID ?? null; } catch { return null; } },
+      chatTitle:     (chatId)                         => earBridge.getChatName(chatId),
+    },
+    // WHO this install answers as — the self side of Rodz resolution (resolveForkPartner is left to
+    // its default: the pure config rule resolveSecondaryParticipantId over config + these).
+    selfIds: async () => { try { return await earBridge.selfIdentities(); } catch { return []; } },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);

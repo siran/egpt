@@ -447,6 +447,24 @@ function withNodeAllowedPaths(def, config) {
   return { ...def, allowed_paths: { ...own, ...Object.fromEntries(extra) } };
 }
 
+// THE CONVERSATION'S OWN extra allowed_paths (operator 2026-10-01, /fork). The same merge as
+// withNodeAllowedPaths, ONE TIER MORE SPECIFIC: a path declared on THIS conversation's being block
+// (conversations.yaml agents.<being>.allowed_paths, read by getBeing → resolveConv as allowedPaths)
+// is added to — and WINS over — the def's own and the node's, so applied LAST (after
+// withNodeAllowedPaths). The point is /fork granting the fork conversation's E a read-only grant on
+// the ORIGINAL chat's folder without editing any type file or the node config. A read-only grant is
+// expressed the same way everywhere: a value `{ allowed_tools: [Read, Glob, Grep] }` (no write
+// tools) → allowedPathsFor classifies it read-only → sandboxSharePathsReadOnly → the launcher's
+// -SharePathReadOnly ReadAndExecute ACE. null/empty = the def OBJECT ITSELF, byte-identical to
+// before for every other caller.
+function withConvAllowedPaths(def, convAllowedPaths) {
+  const pathMap = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+  const conv = pathMap(convAllowedPaths);
+  if (!conv || !Object.keys(conv).length) return def;
+  const own = pathMap(def?.allowed_paths) ?? {};
+  return { ...def, allowed_paths: { ...own, ...conv } };
+}
+
 // ── THE NODE-LEVEL `global_read_paths:` (operator 2026-09-28: "please frame this in config.yaml as
 // global_read_paths list") ─────────────────────────────────────────────────────────────────────
 // A LIST of one-key maps, `- <mount name>: <path>`. Each path is a STANDING read grant to the
@@ -522,7 +540,7 @@ export function globalReadPathsOf(value, onLog = () => {}) {
 // view calls this SAME resolver instead of re-deriving the algorithm a second time
 // (name-the-existing-thing). createBrainPool's turn() below now calls this exported version,
 // passing its own closure vars, in place of the private closure this used to be.
-export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode', configuration = null, onLog = () => {} } = {}) {
+export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains = null, brainType = 'ccode', configuration = null, convAllowedPaths = null, onLog = () => {} } = {}) {
   // The node's own config, read ONCE: its `agents:` map names this being, and its top-level
   // `allowed_paths:` is the node-wide read grant every def leaves here carrying
   // (withNodeAllowedPaths, above — applied at BOTH returns, so a being with no resolvable
@@ -560,10 +578,10 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
       }
     }
     def ??= brains?.resolve?.(agent.configuration, { convDir, agent: being }) ?? null;
-    if (def) return withNodeAllowedPaths(shapeDef(being, def, agent, brainType), config);
+    if (def) return withConvAllowedPaths(withNodeAllowedPaths(shapeDef(being, def, agent, brainType), config), convAllowedPaths);
     // configuration named but no file → fall through to the bare def (keeps the being runnable)
   }
-  return withNodeAllowedPaths({
+  return withConvAllowedPaths(withNodeAllowedPaths({
     name: (agent && typeof agent === 'object' ? agent.name : null) ?? being,
     type: brainType,
     model: null,
@@ -575,7 +593,7 @@ export function resolveBeingDef(being, convDir, { getConfig = () => ({}), brains
     // `configuration:` by silently running the being as eGPT while config.yaml plainly says
     // otherwise. `undefined` when the entry states none, i.e. exactly the shape this object had.
     personality: personalityFor(agent, null),
-  }, config);
+  }, config), convAllowedPaths);
 }
 
 // THE PROVENANCE FRAME a SCOPED turn's prompt carries (operator 2026-08-31). One instance now
@@ -995,6 +1013,10 @@ export function createBrainPool({
       // one resolver turn() and /agents share — is where the two are resolved and a bad value
       // refused. null = this conversation states none.
       configuration: b?.configuration ?? null,
+      // PER-CONVERSATION allowed_paths (operator 2026-10-01, /fork) — read from the scope's block
+      // like everything above, handed to resolveBeingDef (turn() below) as convAllowedPaths and
+      // merged over the def's own paths (withConvAllowedPaths). null = this conversation states none.
+      allowedPaths: b?.allowedPaths ?? null,
     };
   }
 
@@ -1006,7 +1028,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, sources } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -1091,7 +1113,7 @@ export function createBrainPool({
       // the type file's allowed_tools (which may legitimately include bare Bash/Agent) passes
       // through verbatim rather than being capped to DEFAULT_ALLOWED_TOOLS.
       // `configuration` is this conversation's own (resolveConv) — null where it states none.
-      const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType, configuration, onLog });
+      const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType, configuration, convAllowedPaths: allowedPaths, onLog });
       let def = rawDef.dangerously_skip_permissions === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
       let runModel, runEffort;
       if (being === defaultKey) {

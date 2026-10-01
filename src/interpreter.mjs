@@ -85,6 +85,8 @@ export const COMMANDS = [
   // port instead. A command that takes the node down and leaves it down, missing from the one
   // table whose stated job is to say what exists honestly, is a trap.
   { cmd: '/standdown',      surface: 'shell',     usage: '/standdown [port]',                              desc: 'hand this profile to another spine: finish the turn in flight, refuse new ones, then exit with code 45. egpt-daemon does NOT respawn — it watches this profile\'s state/spine.pid AND [port] (default: the console port this profile serves), and brings this spine back only once NEITHER names a live holder. The Session 1 logon spine sends this for itself; typing it by hand parks the node until something takes the profile.', wired: true },
+  { cmd: '/fork',           surface: 'shell',     usage: '/fork',                                          desc: 'reply /fork to a message to spin a PRIVATE side-group (you + Rodz) carrying a copy of this chat\'s E-thread; work the problem there, then reply /end to one message to send it back here. Your /fork message becomes a 🤖↔️🤔 placeholder until /end.', wired: true },
+  { cmd: '/end',            surface: 'shell',     usage: '/end',                                           desc: 'reply /end to a message in a fork group to send that message back into the original chat (as a new reply to the forked message), delete the placeholder there, and archive the fork group.', wired: true },
 
   { section: 'SESSIONS' },
   { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session', wired: true },
