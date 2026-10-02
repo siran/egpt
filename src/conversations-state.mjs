@@ -1292,6 +1292,15 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   const resolved = _resolveByJid(state, surface, jid);
   if (resolved) {
     const cur = resolved.entry;
+    // AN ALIAS NEVER RENAMES ITS PRIMARY (operator 2026-10-01, /fork alias model; also correct
+    // for the pre-existing multi-JID human). When `jid` resolved THROUGH an alias entry, the
+    // resolved primary is a DIFFERENT jid than the one looked up — and the incoming `ctx.pushedName`
+    // is the ALIASED chat's own name (e.g. a /fork side-group's title), NOT the primary's. Applying
+    // it would re-slug + re-fs the primary conversation, flapping its folder between the two names.
+    // So on alias resolution we skip BOTH the pushedName refresh and the slug-rename below; the
+    // fixed-slug migration and the conversation_path backfill (keyed off the primary's own slug)
+    // still run, and are no-ops for an already-correct primary.
+    const viaAlias = resolved.primaryJid !== jid;
     let changed = false;
     let patch = cur;
     // A fixed-slug seat (shell 'main' → lobby) WINS over a stored slug: an entry persisted
@@ -1304,7 +1313,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       patch = { ...patch, slug: fixed };
       changed = true;
     }
-    if (ctx.pushedName && cur.pushedName !== ctx.pushedName) {
+    if (!viaAlias && ctx.pushedName && cur.pushedName !== ctx.pushedName) {
       patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
@@ -1331,7 +1340,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     let renamedFrom = null, renamedTo = null;
     const nameBase = sanitizeSlug(ctx.pushedName);
     const curBase = String(cur.slug ?? '').replace(/-\d{10}$/, '');
-    if (!fixed && nameBase && nameBase !== 'contact' && nameBase !== curBase) {
+    if (!viaAlias && !fixed && nameBase && nameBase !== 'contact' && nameBase !== curBase) {
       const suffix = String(cur.slug).match(/-(\d{10})$/)?.[1]
         || slugSuffix(cur.firstSeenAt ? new Date(cur.firstSeenAt) : new Date());
       const candidate = suffix ? `${nameBase}-${suffix}` : nameBase;
@@ -1424,6 +1433,38 @@ export function patchContact(state, surface, jidOrSlug, patch) {
     return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
   }
   return state;
+}
+
+// ── the WRITE side of the aliasOf read path (_resolveByJid) ──────────────────
+// patchContact RESOLVES through aliasOf to the primary, so it can neither CREATE nor CLEAR a
+// per-jid alias — both land on (or follow) the primary instead. These three operate on the RAW
+// jid key, which is what the /fork alias model needs: point a brand-new fork-group chatId at an
+// existing primary so both chat ids share ONE on-disk conversation, and drop that mapping on /end.
+// (operator 2026-10-01). The entry shape is exactly `{ aliasOf: <primaryJid> }` — nothing else —
+// so getContact/ensureContact/serialize treat it as the alias it is.
+
+// Point `jid` at `primaryJid` (the alias is created, or an existing jid is overwritten to an alias).
+export function aliasContact(state, surface, jid, primaryJid) {
+  assertPathSafeSurface(surface, 'aliasContact');
+  if (!jid || !primaryJid) return state;
+  const prevBucket = state.contacts?.[surface] ?? {};
+  const nextBucket = { ...prevBucket, [jid]: { aliasOf: primaryJid } };
+  return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+}
+
+// Remove a jid's OWN entry (used by /end to close the fork room). No-op when absent.
+export function dropContact(state, surface, jid) {
+  const prevBucket = state.contacts?.[surface];
+  if (!prevBucket || !(jid in prevBucket)) return state;
+  const nextBucket = { ...prevBucket };
+  delete nextBucket[jid];
+  return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+}
+
+// The primary a jid is an ALIAS OF, read RAW (not alias-resolved), or null when it is a primary
+// itself / unknown. Behind /send + /end's "is this a fork group, and what is its original?".
+export function aliasTargetOf(state, surface, jid) {
+  return state.contacts?.[surface]?.[jid]?.aliasOf ?? null;
 }
 
 // THE write side of _beingBlock — every per-being field write (mode, threadId, access_level,

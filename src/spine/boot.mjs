@@ -2997,16 +2997,18 @@ export async function boot({
     ...(session1 ? { launchChrome: (o) => launchChromeDirectFn({ ...o, onLog: (m) => log.line?.(`[chrome] ${m}`) }) } : {}),
     backlogOf: (ev) => spineLate?.backlogOf(ev) ?? [],   // /recap — the spine's wake backlog for this chat (spineLate, above)
     timeZone: transcriptTimeZone,                        // …read out on the transcript's own clock
-    // /fork + /end (operator 2026-10-01) — the beeper ops the two verbs need, ALL off earBridge (the
-    // account chat C lives on; resolveChatId/listChats above already come off it). createGroup +
-    // archiveChat are the two methods newly added to the beeper facade; the rest already existed.
-    // postReply is bridge.send with replyToMessageID (a NEW reply, which notifies). chatAccountId
-    // reads the chat's account off its raw record (for the group create); chatTitle its display name.
+    // /fork + /send + /end (operator 2026-10-01) — the beeper ops the three verbs need, ALL off the
+    // ear's PORT (the account chat C lives on; resolveChatId/listChats above already come off it).
+    // editMessage/createGroup/archiveChat/getChatName are forwarded by the port to the raw beeper
+    // bridge where they are defined (src/bridges/beeper-port.mjs) — the earlier wiring called them
+    // on the port before it forwarded them, which is why /fork threw `editMessage is not a function`
+    // on the live node. postReply is the port's own send (chat, text, { replyTo }), which signs it
+    // like every other outbound. chatAccountId reads the chat's account off its raw record (for the
+    // group create); chatTitle its display name.
     forkBridge: {
       editMessage:   (chatId, msgId, text)            => earBridge.editMessage(chatId, msgId, text),
       createGroup:   (opts)                           => earBridge.createGroup(opts),
-      postReply:     (chatId, text, replyToMessageID) => earBridge.send(text, { chatId, replyToMessageID }),
-      deleteMessage: (chatId, msgId)                  => earBridge.deleteMessage(chatId, msgId),
+      postReply:     (chatId, text, replyToMessageID) => earBridge.send(chatId, text, { replyTo: replyToMessageID }),
       archiveChat:   (chatId)                         => earBridge.archiveChat(chatId),
       chatAccountId: async (chatId) => { try { return (await earBridge.chatRaw(chatId))?.accountID ?? null; } catch { return null; } },
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),

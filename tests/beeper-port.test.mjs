@@ -446,6 +446,37 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(await withRaw.chatRaw('!room')).toEqual({ id: '!room' });
   });
 
+  // /fork + /end OPS (operator 2026-10-01) — REPRODUCE-FIRST for the live bug. The fork handler is
+  // wired off the ear's PORT; editMessage/createGroup/archiveChat/getChatName live on the RAW bridge
+  // and were NOT forwarded here, so `earBridge.editMessage` threw "is not a function" on the live
+  // node. They must forward (raw, no persona wrap), and answer false/null on a transport without them.
+  it('forwards editMessage / createGroup / archiveChat / getChatName to the raw bridge (raw, no persona)', async () => {
+    const calls = [];
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start: async () => ({
+      editMessage: async (...a) => { calls.push(['edit', ...a]); return true; },
+      createGroup: async (opts) => { calls.push(['create', opts]); return { success: true, chatID: '!new:beeper.com' }; },
+      archiveChat: async (...a) => { calls.push(['archive', ...a]); return true; },
+      getChatName: (id) => (id === '!room' ? 'Proyecto X' : null),
+      isAlive: () => true, stop() {},
+    }) });
+    expect(typeof port.editMessage).toBe('function');     // the method the live node was missing
+    expect(await port.editMessage('!room', 'm1', '🤖↔️🤔 ...')).toBe(true);
+    const created = await port.createGroup({ accountID: 'wa', participantIDs: ['+1'], type: 'group', title: 'T' });
+    expect(created).toEqual({ success: true, chatID: '!new:beeper.com' });
+    expect(await port.archiveChat('!room')).toBe(true);
+    expect(port.getChatName('!room')).toBe('Proyecto X');
+    // RAW: the /fork marker edit is NOT persona-wrapped (no bridge signature stapled on)
+    expect(calls[0]).toEqual(['edit', '!room', 'm1', '🤖↔️🤔 ...']);
+  });
+
+  it('editMessage / createGroup / archiveChat / getChatName answer false/null on a transport without them', async () => {
+    const port = await createBeeperBridgePort({}, { start: async () => ({ async send() { return { ok: true }; }, isAlive: () => true, stop() {} }) });
+    expect(await port.editMessage('!room', 'm1', 'x')).toBe(false);
+    expect(await port.createGroup({})).toBe(null);
+    expect(await port.archiveChat('!room')).toBe(false);
+    expect(port.getChatName('!room')).toBe(null);
+  });
+
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
     const { start, spy } = fakeStart();
     await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', transcriptionOpen: 'T_open', transcriptionClose: 'T_close' }, { start });

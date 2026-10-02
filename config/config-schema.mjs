@@ -2749,15 +2749,15 @@ export const CONFIG_SCHEMA = {
   `,
 
   fork: `
-    The /fork + /end operator commands (operator 2026-10-01). Reply /fork to a message to spin a
-    PRIVATE side-group (the operator + the secondary account) carrying a COPY of this chat's
-    E-thread; work the problem there, then reply /end to one message to send it back to the
-    original chat. The two accounts' phone numbers come from beeper.primary.phone /
-    beeper.secondary.phone; the USER-FACING TEXTS live HERE (operator: "all goes in config.yaml"):
-      header:      prepended to E's FIRST turn input in the fork group — NOT a posted message;
-                   {group} = the parent chat's title. Unset → no header (skipped silently).
-      placeholder: what the operator's /fork message is edited into while the fork is live
-                   (deleted by /end). Unset → a small built-in default.
+    The /fork + /send + /end operator commands (operator 2026-10-01). Reply /fork to a message to
+    spin a PRIVATE side-group (the operator + the secondary account) whose chatId is ALIASED to this
+    chat's conversation — one shared on-disk thread, two chat surfaces, nothing copied. Work the
+    problem there, reply /send to relay a chosen message back to the original chat, and reply /end to
+    archive the group and drop the alias. The two accounts' phone numbers come from
+    beeper.primary.phone / beeper.secondary.phone; the USER-FACING TEXTS live HERE (operator: "all
+    goes in config.yaml"):
+      placeholder: what the operator's /fork message is edited into (the "thinking with the robot"
+                   marker). Unset → a small built-in default.
       title:       the fork group's title, a {group} template ({group} = the parent chat's title).
                    Unset → a small built-in default.
   `,

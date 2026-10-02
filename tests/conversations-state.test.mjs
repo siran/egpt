@@ -45,6 +45,10 @@ import {
   fillCardPlaceholders,
   isPlaceholderSlug,
   patchContact,
+  aliasContact,
+  dropContact,
+  aliasTargetOf,
+  getContact,
   recordThread,
   getBeing,
   migrateJsonToYaml,
@@ -85,6 +89,55 @@ describe('emptyState / sanitizeSlug basics', () => {
     for (const s of ['morgan-2606101622', 'Tío Jesús Palma', '+1 (646) 821-7865', 'a b c d']) {
       expect(sanitizeSlug(s)).toBe(s);
     }
+  });
+});
+
+// ── the /fork ALIAS model (operator 2026-10-01): a second chatId pointing at ONE conversation ──
+describe('aliasContact / aliasTargetOf / dropContact + the ensureContact alias guard', () => {
+  const C = '!chatC';
+  const FORK = '!chatFork';
+  // C is a real conversation with E holding a thread; FORK is aliased to C (what /fork writes).
+  function seeded() {
+    let st = ensureContact(emptyState(), WA, C, { pushedName: 'Proyecto X' }).state;
+    st = recordThread(st, WA, C, 'thread-1', '2026-10-01T00:00:00Z', 'e');
+    const primaryJid = getContact(st, WA, C).jid;
+    st = aliasContact(st, WA, FORK, primaryJid);
+    return { st, primaryJid };
+  }
+
+  it('aliasContact writes a pure { aliasOf } entry; getContact + aliasTargetOf resolve it', () => {
+    const { st, primaryJid } = seeded();
+    expect(st.contacts[WA][FORK]).toEqual({ aliasOf: primaryJid });   // nothing but aliasOf
+    expect(aliasTargetOf(st, WA, FORK)).toBe(primaryJid);
+    expect(aliasTargetOf(st, WA, C)).toBe(null);                      // a primary is not an alias
+    // both chat ids resolve to the SAME canonical folder + the SAME being thread
+    expect(getContact(st, WA, FORK).slug).toBe(getContact(st, WA, C).slug);
+    expect(getBeing(st, WA, FORK, 'e').threadId).toBe('thread-1');
+  });
+
+  // REPRODUCE-FIRST: a message in the fork group carries the GROUP's own name. Without the guard,
+  // ensureContact would apply it to the aliased PRIMARY — renaming/re-slugging the original
+  // conversation's folder, flapping it between the two names. The alias must never rename its primary.
+  it('a fork-group message resolves to the ORIGINAL and NEVER renames the primary', () => {
+    const { st } = seeded();
+    const beforeSlug = getContact(st, WA, C).slug;
+    const beforeName = st.contacts[WA][getContact(st, WA, C).jid].pushedName;
+    // the fork group is seen with ITS OWN title (what the bridge stamps on the group)
+    const r = ensureContact(st, WA, FORK, { pushedName: 'egpt fork Proyecto X', slugHint: 'egpt fork Proyecto X' });
+    expect(r.renamedFrom).toBe(null);                                 // no rename side-effect
+    expect(r.renamedTo).toBe(null);
+    const primary = getContact(r.state, WA, C);
+    expect(primary.slug).toBe(beforeSlug);                            // folder unchanged
+    expect(r.state.contacts[WA][primary.jid].pushedName).toBe(beforeName);   // name unchanged
+    expect(r.slug).toBe(beforeSlug);                                  // the fork resolves TO the original
+  });
+
+  it('dropContact removes the fork alias (what /end does), leaving the primary intact', () => {
+    const { st } = seeded();
+    const after = dropContact(st, WA, FORK);
+    expect(after.contacts[WA][FORK]).toBeUndefined();
+    expect(aliasTargetOf(after, WA, FORK)).toBe(null);
+    expect(getContact(after, WA, C).slug).toBeTruthy();               // primary still there
   });
 });
 

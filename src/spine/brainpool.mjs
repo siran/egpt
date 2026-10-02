@@ -26,7 +26,7 @@
 // the brains registry, never frozen into readonly. Every one gets the kickoff feed for
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
-import { slugDir, getBeing, getContact, recordThread, patchBeing, patchContact, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
@@ -1013,16 +1013,10 @@ export function createBrainPool({
       // one resolver turn() and /agents share — is where the two are resolved and a bad value
       // refused. null = this conversation states none.
       configuration: b?.configuration ?? null,
-      // PER-CONVERSATION allowed_paths (operator 2026-10-01, /fork) — read from the scope's block
-      // like everything above, handed to resolveBeingDef (turn() below) as convAllowedPaths and
-      // merged over the def's own paths (withConvAllowedPaths). null = this conversation states none.
+      // PER-CONVERSATION allowed_paths (operator 2026-10-01) — read from the scope's block like
+      // everything above, handed to resolveBeingDef (turn() below) as convAllowedPaths and merged
+      // over the def's own paths (withConvAllowedPaths). null = this conversation states none.
       allowedPaths: b?.allowedPaths ?? null,
-      // FORK HEADER (operator 2026-10-01, /fork) — the one-shot flag + the parent group's name, read
-      // off the fork mapping commands.mjs /fork persisted on this conversation's ENTRY (not the being
-      // block). false/null for every non-fork conversation. turn() below prepends config.fork.header
-      // ({group}=forkGroupName) to E's FIRST turn input in the group, then clears the flag.
-      forkHeaderPending: (state ? getContact(state, scope.surface, scope.chatId)?.entry?.fork?.headerPending : null) === true,
-      forkGroupName: (state ? getContact(state, scope.surface, scope.chatId)?.entry?.fork?.originalTitle : null) ?? null,
     };
   }
 
@@ -1034,7 +1028,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, forkHeaderPending, forkGroupName, sources } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -1350,22 +1344,6 @@ export function createBrainPool({
       // A SCOPED turn's line is framed with where it came from (withOrigin, above); an unscoped
       // one is the bare dispatch line, byte-for-byte as it has always been.
       let line = scope.scoped ? withOrigin(ev) : (ev.line ?? ev.body);
-      // FORK HEADER (operator 2026-10-01, /fork): the FIRST message the operator sends into a fork
-      // group carries a one-shot header prepended to what E reads — config.fork.header, {group}
-      // filled with the parent group's name. NOT a posted message: it only augments this turn's
-      // input. headerPending (resolveConv, off the fork mapping) arms it; prepend + clear the flag
-      // once, and only when a header is actually configured (unset → skip silently, flag untouched).
-      if (forkHeaderPending) {
-        const tmpl = getConfig()?.fork?.header;
-        if (typeof tmpl === 'string' && tmpl.trim()) {
-          line = `${tmpl.replaceAll('{group}', String(forkGroupName ?? ''))}\n\n${line}`;
-          await mutateState(writeState, async () => {
-            const st = await loadState();
-            const fk = getContact(st, scope.surface, scope.chatId)?.entry?.fork;
-            if (fk) await writeState(patchContact(st, scope.surface, scope.chatId, { fork: { ...fk, headerPending: false } }));
-          });
-        }
-      }
       const wrapFresh = async () => {
         // EVERY agent gets its own feed. There is no persona/sibling split any
         // more -- the concept was evicted (operator 2026-08-28: "there are no

@@ -323,6 +323,26 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async chatRaw(chat) {
       return real.chatRaw ? await real.chatRaw(chat) : null;
     },
+
+    // /fork + /end OPS (operator 2026-10-01) — forwarded to the raw bridge where they are DEFINED
+    // (src/bridges/beeper.mjs), the same thin-forward shape as chatRaw/listChats/selfIdentities
+    // above. They were MISSING here, so wiring /fork off the ear's port threw
+    // `editMessage is not a function` (the live bug). These are RAW (no persona wrap): createGroup
+    // and archiveChat are not speech, and editMessage here edits the OPERATOR's own /fork message
+    // into a marker — not E speaking — so persona-wrapping it (editOwn/editStatus above) would be
+    // wrong. A transport that lacks one answers false/null rather than throwing.
+    async editMessage(chat, msgId, text) {
+      return real.editMessage ? await real.editMessage(chat, msgId, text) : false;
+    },
+    async createGroup(opts) {
+      return real.createGroup ? await real.createGroup(opts) : null;
+    },
+    async archiveChat(chat, opts) {
+      return real.archiveChat ? await real.archiveChat(chat, opts) : false;
+    },
+    getChatName(id) {
+      return real.getChatName ? real.getChatName(id) : null;
+    },
     // …and the RAW MESSAGES of one chat (operator 2026-09-07, the mouth link's reaction verb),
     // forwarded for exactly the reason the two rosters above are: a READ of this account's own
     // copies, never an outbound. The mouth is told WHICH message to react to by content hash
