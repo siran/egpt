@@ -2936,6 +2936,15 @@ export async function boot({
   // an id the group's own arrivals -- which come in on the EAR -- can never match. inboundOf is
   // the ear resolver this file already has; `?? bridge` keeps a node with no ear exactly as it was.
   const earBridge = bridgeByEndpoint.get(endpointKey(endpointFor(inboundOf(defaultKey)))) ?? bridge;
+  // /send's posting account (forkBridge.postReply's `via`): resolve a connection NAME to its
+  // already-dialled bridge, or the ear bridge when unset/unresolvable (today's path, and the single-
+  // account collapse). endpointFor is total (never endpoint-less), so the try/catch is belt-and-braces.
+  const postBridgeFor = (via) => {
+    if (via === 'primary' || via === 'secondary') {
+      try { const b = bridgeByEndpoint.get(endpointKey(endpointFor(via))); if (b) return b; } catch { /* fall through */ }
+    }
+    return earBridge;
+  };
   const commands = createCommands({
     getConfig,
     send: commandTranscript.send,
@@ -3008,7 +3017,13 @@ export async function boot({
     forkBridge: {
       editMessage:   (chatId, msgId, text)            => earBridge.editMessage(chatId, msgId, text),
       createGroup:   (opts)                           => earBridge.createGroup(opts),
-      postReply:     (chatId, text, replyToMessageID) => earBridge.send(chatId, text, { replyTo: replyToMessageID }),
+      // /send's post_back_from (operator 2026-10-03): 'primary' posts via the operator's OWN account,
+      // 'secondary' via the mouth. Resolve the NAMED connection to its already-dialled bridge (the
+      // SAME bridgeByEndpoint/endpointFor map every other outbound uses), falling back to the ear
+      // bridge when the name is unset/unresolvable (single-account nodes collapse to one bridge). No
+      // new bridge capability — `.send` exists on every connection; this only chooses which one.
+      postReply:     (chatId, text, replyToMessageID, { via = null } = {}) =>
+        postBridgeFor(via).send(chatId, text, { replyTo: replyToMessageID }),
       archiveChat:   (chatId)                         => earBridge.archiveChat(chatId),
       chatAccountId: async (chatId) => { try { return (await earBridge.chatRaw(chatId))?.accountID ?? null; } catch { return null; } },
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),

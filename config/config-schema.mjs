@@ -2748,20 +2748,50 @@ export const CONFIG_SCHEMA = {
     daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
   `,
 
-  fork: `
-    The /fork + /send + /end operator commands (operator 2026-10-01). Type /fork (a plain message, or
-    a reply) to spin a PRIVATE side-group (the operator + the secondary account) whose chatId is
-    ALIASED to this chat's conversation — one shared on-disk thread, two chat surfaces, nothing
-    copied. Work the problem there, reply /send to relay a chosen message back to the original chat,
-    and reply /end to archive the group and drop the alias. The two accounts' phone numbers come from
-    beeper.primary.phone / beeper.secondary.phone; the USER-FACING TEXTS live HERE (operator: "all
-    goes in config.yaml"):
-      placeholder: what the operator's /fork message is edited into (the "thinking with the robot"
+  node_role: `
+    The role THIS node plays in the /join + /split side-group commands (operator 2026-10-03): one of
+    'primary' | 'secondary', set PER NODE. Both nodes ingest the same primary Beeper account and the
+    being resides on each, so neither the message nor the being can pick which node creates the group.
+    This is the explicit tiebreak: the node whose role is 'primary' creates /join + /split groups by
+    default; every other node stands down SILENTLY. Overridden per command by naming a node
+    (/join <node> or /join=<node>). Replaces the old fork.lead_node.
+  `,
+
+  group_title: `
+    The title of the side-group /join or /split creates (operator 2026-10-03). A template:
+      {group}  the parent chat's title
+      {name}   the command's optional <name> arg (/join spoiler → {name}=spoiler; absent → the verb
+               word, "join" or "split")
+    Unset → a small built-in default. Replaces the old fork.title.
+  `,
+
+  join: `
+    /join — the SUPERPOSITION side-group (operator 2026-10-03). /join [<name>|<node>] creates a
+    private group (the operator + the secondary account) whose chatId is ALIASED to this chat's
+    conversation — one shared on-disk thread, two chat surfaces, nothing copied. It is a VIEW, not a
+    branch. Reply /send to relay a chosen message back to the original chat; reply /end to archive the
+    group and drop the alias. The two accounts' phones come from beeper.primary.phone /
+    beeper.secondary.phone; the group title is config.group_title; and the one text that lives here is:
+      placeholder: what the operator's /join message is edited into (the "thinking with the robot"
                    marker). Unset → a small built-in default.
-      title:       the fork group's title, a {group} template ({group} = the parent chat's title).
-                   Unset → a small built-in default.
-      lead_node:   which node creates the fork group; both nodes ingest the primary account so the
-                   being cannot pick one, so this is the explicit tiebreak; the other node stands down.
+  `,
+
+  split: `
+    /split — the REAL-FORK side-group (operator 2026-10-03). /split [<name>|<node>] creates a private
+    group backed by a NEW conversation (its own folder/entry, NOT an alias) whose resident beings'
+    threads are COPIED from this chat so it DIVERGES. Reply /send to relay a chosen message back to the
+    original chat; reply /end to archive the group and retire the split conversation's mapping. Group
+    title is config.group_title; the one text that lives here is:
+      placeholder: what the operator's /split message is edited into. Unset → a small built-in default.
+  `,
+
+  send: `
+    /send — relay a replied-to message from a /join or /split group back to the ORIGINAL chat
+    (operator 2026-10-03). Repeatable; posts nothing to the group and never closes it.
+      post_back_from: which account posts the relayed message to the original chat —
+                      'secondary' (the mouth; the default) makes it appear from the bot's secondary
+                      account; 'primary' posts via the operator's OWN account so it appears from the
+                      operator. Unset/invalid → secondary.
   `,
 
   aliases: `

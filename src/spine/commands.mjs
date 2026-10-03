@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, deleteBeing, getContact, getBeing, aliasContact, dropContact, aliasTargetOf, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, ensureContact, recordThread, findThreadJsonl, aliasContact, dropContact, aliasTargetOf, residentsOf, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -27,6 +27,7 @@ import { addressed, addressableTokens } from './router.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { join, basename } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -459,20 +460,56 @@ function parseNodeAddressable(text) {
 // has no transport at all, so no co-account peer can have heard it either.
 const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 
-// ── /fork + /send + /end (operator 2026-10-01) ──────────────────────────────────────────────────
-// The ALIAS model: /fork spins a private side-group (operator + Rodz) whose chatId is ALIASED to
-// this chat's on-disk conversation (conversations-state aliasOf), so the being keeps writing its ONE
-// thread and the group is just a second inbound/outbound surface. No thread copy, no folder, no
-// access grant — same folder. /send relays a chosen message from the group back to the original
-// chat; /end archives the group and drops the alias.
-// The fork path's user-facing TEXTS live in config.fork (operator 2026-10-01: "all goes in
-// config.yaml") — placeholder and title ({group} template). These are the small built-in FALLBACKS
-// so /fork never edits to an empty string or makes an untitled group when a key is unset; the real
-// text is set in config.yaml on each node. config.fork.placeholder replaces the operator's /fork
-// message (the "thinking with the robot" marker); config.fork.title ({group} = the parent chat's
-// name) is the group's title. Exported so tests assert the fallback without re-hardcoding the strings.
-export const FORK_PLACEHOLDER_DEFAULT = '🤖↔️🤔 ...';
-export const FORK_TITLE_DEFAULT = 'egpt fork {group}';
+// ── /join + /split + /send + /end (operator 2026-10-03) ─────────────────────────────────────────
+// A "fork" was always TWO things; they are split into two commands.
+//   /join  — SUPERPOSITION. Spin a private side-group (operator + Rodz) whose chatId is ALIASED to
+//            this chat's on-disk conversation (conversations-state aliasOf), so the being keeps
+//            writing its ONE thread and the group is just a second surface. No thread copy, no new
+//            folder — two chats, one conversation. This is a VIEW, not a branch.
+//   /split — REAL FORK. Spin a side-group backed by a NEW conversation (its own folder/entry, NOT an
+//            alias) whose resident beings' threads are COPIED from the original so it DIVERGES.
+//   /send  — relay a chosen (replied-to) message back to the ORIGINAL chat. Repeatable; works in a
+//            /join group (alias target) OR a /split group (its recorded parent_chat).
+//   /end   — archive the group (both kinds) and drop its mapping.
+// The user-facing TEXTS live in config (operator: "all goes in config.yaml") — config.join.placeholder
+// / config.split.placeholder (what the /join | /split message is edited into) and config.group_title
+// (the new group's name, a {group}+{name} template). These are the small built-in FALLBACKS so a
+// command never edits to an empty string or makes an untitled group when a key is unset; the real
+// text is set in config.yaml on each node. Exported so tests assert the fallback without
+// re-hardcoding the strings.
+export const JOIN_PLACEHOLDER_DEFAULT = '🤖↔️🤔 ...';
+export const SPLIT_PLACEHOLDER_DEFAULT = '🍴🤖 ...';
+export const GROUP_TITLE_DEFAULT = 'egpt {name} {group}';
+// /send's posting account when config.send.post_back_from is unset or invalid: the mouth (secondary).
+export const SEND_POST_BACK_FROM_DEFAULT = 'secondary';
+
+// claude's projects/<dir> naming rule — the FORWARD of conversations-state.reverseSanitizeCwd: a cwd
+// becomes a project-dir by replacing \ / : . _ with '-'. /split copies the forked jsonl into the dir
+// matching the SPLIT conversation's cwd so a cwd-scoped `--resume` finds it under the split's box store.
+const sanitizeCwdDir = (p) => String(p).replace(/[\\/:._]/g, '-');
+
+// THE SPLIT COPY IS A TRANSFORM, not a byte copy (coordinator 2026-10-01, verified against a real
+// boxed session file; resurrected from the pre-alias fork, commit 86daf94). Every claude-code jsonl
+// record carries `sessionId: "<the filename id>"`, and user records carry `cwd: "<that conversation's
+// folder>"`. A raw copy to `<newThreadId>.jsonl` would leave every record disclaiming its own id and
+// pointing at the ORIGINAL folder, so `--resume <newThreadId>` loads a session that denies it is that
+// session — the "silently blank fork". So rewrite, per line, `sessionId` → the new thread id and `cwd`
+// → the SPLIT conversation's own folder, on every record that has each field; leave every other field
+// (uuid/parentUuid/message/timestamp/type) untouched. A line that does not parse as JSON passes through
+// VERBATIM (never dropped). Exported so the rewrite is unit-testable with no fs; the caller does the
+// read/write through the injectable io seam.
+export function rewriteForkSessionJsonl(raw, { sessionId, cwd }) {
+  return String(raw).split('\n').map((line) => {
+    if (!line) return line;                 // blank line (incl. the trailing one) stays blank
+    let rec;
+    try { rec = JSON.parse(line); } catch { return line; }   // non-JSON → verbatim
+    if (rec && typeof rec === 'object' && !Array.isArray(rec)) {
+      if ('sessionId' in rec) rec.sessionId = sessionId;
+      if ('cwd' in rec) rec.cwd = cwd;
+    }
+    return JSON.stringify(rec);
+  }).join('\n');
+}
 
 // The one id form that addresses the SECONDARY account (Rodz) from the PRIMARY account's roster is
 // the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @dolly-egpt:beeper.com is the secondary's
@@ -630,20 +667,22 @@ export function createCommands({
   // message's line in transcript.md. Defaults: no backlog, UTC.
   backlogOf = () => [],
   timeZone = null,
-  // ── /fork + /send + /end seams (operator 2026-10-01) ─────────────────────────────────────
-  // A "fork" spins a private side-group (operator + Rodz) whose chatId is ALIASED to this chat's
-  // on-disk conversation; /send relays a chosen message from the group back to the original chat;
-  // /end archives the group. forkBridge groups the beeper facade methods the three verbs need — all
-  // off the SAME bridge the chat lives on (boot wires them off the ear's PORT, which forwards each
-  // of these to the raw beeper bridge where they are defined; resolveChatId/listChats already come
-  // off it). editMessage edits the operator's /fork message in place (raw, no persona — a marker,
-  // not E speaking). postReply posts text into a chat (bridge.send). chatAccountId/chatTitle resolve
-  // the original chat's account + display name for the group create. Safe no-op defaults so a
+  // ── /join + /split + /send + /end seams (operator 2026-10-03) ────────────────────────────
+  // /join aliases a new side-group to this chat's conversation; /split backs the group with a NEW
+  // conversation diverged from this one; /send relays a chosen message back to the original chat;
+  // /end archives the group. forkBridge groups the beeper facade methods the verbs need — all off
+  // the SAME bridge the chat lives on (boot wires them off the ear's PORT, which forwards each of
+  // these to the raw beeper bridge where they are defined; resolveChatId/listChats already come off
+  // it). editMessage edits the operator's /join|/split message in place (raw, no persona — a marker,
+  // not E speaking). postReply posts text into a chat; its 4th arg `{ via }` names the posting
+  // account ('primary' = the operator's own, 'secondary' = the mouth — config.send.post_back_from),
+  // which boot resolves to the matching connection's bridge. chatAccountId/chatTitle resolve the
+  // original chat's account + display name for the group create. Safe no-op defaults so a
   // standalone/test createCommands never touches a real bridge.
   forkBridge = {
     editMessage:   async () => false,   // (chatId, msgId, text) -> bool
     createGroup:   async () => null,    // ({accountID, participantIDs, type, title, messageText}) -> { success, chatID } | null
-    postReply:     async () => false,   // (chatId, text, replyToMessageID) -> truthy on success
+    postReply:     async () => false,   // (chatId, text, replyToMessageID, { via }) -> truthy on success
     archiveChat:   async () => false,   // (chatId) -> bool
     chatAccountId: async () => null,    // (chatId) -> the accountID the chat lives on
     chatTitle:     async () => null,    // (chatId) -> the chat's display title
@@ -1086,19 +1125,22 @@ export function createCommands({
     const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
     if (activateMatch) { await activate(ev, activateMatch[1]); return; }
 
-    // /fork — type /fork (a plain message OR a reply) to spin a private side-group ALIASED to this
-    // chat's conversation (one shared thread, two chats); /send — reply /send to a message in that
-    // group to relay it back to the original chat; /end — reply /end in that group to archive it and
-    // drop the alias (operator 2026-10-01). All take NO args (they act on the chat / reply target) and
-    // sit pre-catch-all like the rest. Operator-only automatically: isCommand gates every '/'-verb
-    // except /recap behind isOperator, so no handler re-checks it (same as chrome/radio). NOT in
-    // NODE_ADDRESSABLE: like /restart, they are local to the node the chat lives on, never
-    // `/fork=<node>`. Each handler STANDS DOWN SILENTLY on the node that is not the right one (not the
-    // config.fork.lead_node for /fork; no fork alias for /send+/end), so a shared Beeper account never
-    // double-answers. Written as `<name>Match = /^\/word…` so the /help drift guard
-    // (tests/spine-commands.test.mjs) sees them.
-    const forkMatch = /^\/fork\b[\s\S]*$/i.exec(line);
-    if (forkMatch) { await fork(ev); return; }
+    // /join — type /join [<name>|<node>] to spin a private side-group that is a VIEW (alias) of this
+    // chat's conversation (one shared thread, two chats); /split — /split [<name>|<node>] spins a
+    // side-group backed by a NEW, DIVERGING conversation (its beings' threads are copied); /send —
+    // reply /send to a message in either group to relay it back to the original chat; /end — reply
+    // /end in either group to archive it and drop its mapping (operator 2026-10-03). They sit
+    // pre-catch-all like the rest. Operator-only automatically: isCommand gates every '/'-verb except
+    // /recap behind isOperator, so no handler re-checks it (same as chrome/radio). NOT in
+    // NODE_ADDRESSABLE: a /join/split node override is parsed by the handler itself (`/join do` or
+    // `/join=do`). Each handler STANDS DOWN SILENTLY on the node that is not the right one (not the
+    // node_role=primary / addressed node for /join+/split; no alias-or-parent for /send+/end), so a
+    // shared Beeper account never double-answers. Written as `<name>Match = /^\/word…` so the /help
+    // drift guard (tests/spine-commands.test.mjs) sees them.
+    const joinMatch = /^\/join\b[\s\S]*$/i.exec(line);
+    if (joinMatch) { await joinGroup(ev); return; }
+    const splitMatch = /^\/split\b[\s\S]*$/i.exec(line);
+    if (splitMatch) { await splitGroup(ev); return; }
     const sendMatch = /^\/send\b[\s\S]*$/i.exec(line);
     if (sendMatch) { await sendToOriginal(ev); return; }
     const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
@@ -3074,118 +3116,221 @@ export function createCommands({
     await radio(ev, 'say', cleaned, null);
   }
 
-  // ── /fork + /send + /end (operator 2026-10-01) ──────────────────────────────────────────────
-  // THE ALIAS MODEL. /fork spins a private side-group (operator + Rodz) and ALIASES its chatId to
-  // THIS chat's on-disk conversation (conversations-state aliasOf). The being keeps writing its one
-  // thread; the group is just a second inbound/outbound surface, so there is no ACL (same folder)
-  // and no context split (same thread) to manage — and nothing is told to the model. /send relays a
-  // chosen message from the group back to the original chat; /end archives the group and drops the
-  // alias. The ensureContact guard (conversations-state) keeps a group message from renaming the
-  // primary it aliases, so both chats share ONE folder cleanly.
+  // ── /join + /split + /send + /end (operator 2026-10-03) ─────────────────────────────────────
+  // A "fork" was always TWO things; here they are two commands sharing one structure.
+  //   /join  — SUPERPOSITION. Create a side-group (operator + Rodz) and ALIAS its chatId to THIS
+  //            chat's on-disk conversation (aliasOf). The being keeps writing its ONE thread; the
+  //            group is just a second surface — no ACL (same folder), no context split (same thread),
+  //            nothing told to the model. A VIEW.
+  //   /split — REAL FORK. Create a side-group backed by a NEW conversation (its own slug/folder/entry,
+  //            NOT an alias) whose resident beings' threads are COPIED so it DIVERGES. The parent
+  //            chatId is recorded on the new entry (parent_chat) so /send+/end find the original.
+  //   /send  — relay a replied-to message back to the original chat (the alias target for /join, the
+  //            recorded parent_chat for /split). Repeatable; honours config.send.post_back_from.
+  //   /end   — archive the group (both kinds) and drop its mapping. Posts nothing.
   //
-  // THE GATE. /fork: the TIEBREAK — on a shared account BOTH nodes hear the command, and because
-  // both nodes ingest the SAME primary Beeper account (no owner_node on the accounts) AND the being
-  // resides on each (kg: egpt/codex; do: don/den), nothing about the message or the being can pick
-  // one node — a plain "any being resides here" check was true on both and BOTH forked (two groups).
-  // The deliberate tiebreak (operator 2026-10-03) is an explicit config LEAD NODE,
-  // config.fork.lead_node: the node whose own name matches it creates the group; every other node
-  // stands down silently, ending the double-create. /send+/end instead gate on the fork ALIAS
-  // existing on this node (only the node that forked wrote it, via the alias-only `aliasTargetOf`),
-  // so the other node is silent there too; residesHere below is their defensive gate AND fork()'s
-  // "is there a being here to carry the thread" check.
+  // THE NODE GATE (replaces the old config.fork.lead_node). On a shared primary account BOTH nodes
+  // hear the command and the being resides on each, so neither the message nor the being can pick one.
+  // DEFAULT: act only on the node whose own name plays the `primary` role — i.e. cfg().node_role ===
+  // 'primary'. OVERRIDE: `/join <node>` / `/join=<node>` names a node directly; a trailing token that
+  // matches a KNOWN node name (knownNodeNames) is the override, otherwise it is the `<name>` title
+  // arg. On an addressed node, act only if ownNodeNamesOf has it. Every non-selected node stands down
+  // SILENTLY. A being must still RESIDE here (residesHere), which is also the "is there a thread to
+  // carry/copy" check. /send+/end gate instead on the alias-or-parent existing on this node — only the
+  // node that created the group wrote it — so the co-account peer is silent there too.
   const residesHere = (state, surface, chatId) => {
     const agents = getContact(state, surface, chatId)?.entry?.agents ?? {};
     return Object.values(agents).some((b) => b && typeof b === 'object' && b.threadId != null);
   };
 
-  // /fork (the operator types /fork in chat C — a plain message OR a reply): create the side-group
-  // and alias it to C. EVERY precondition is resolved BEFORE any bridge/state mutation, so a group is
-  // never created with a wrong/missing member (an unresolvable Rodz STOPS, having created nothing).
-  async function fork(ev) {
-    const surface = surfaceOf(ev);
-    if (!loadState || !writeState) return;                 // state not wired → silent
-    const state0 = await loadState();
-    // THE TIEBREAK (operator 2026-10-03): both nodes ingest the SAME primary account, so neither the
-    // message nor the being can disambiguate which node should fork. config.fork.lead_node names the
-    // ONE node that creates the group; every other node stands down silently. Proceed ONLY if this
-    // node IS the lead AND a being resides in this chat here to carry the thread — both SILENT returns
-    // (a chat reply would double across the co-account nodes).
-    const lead = String(cfg().fork?.lead_node ?? '').trim().toLowerCase();
-    if (!lead || !ownNodeNamesOf(cfg()).has(lead)) return;   // not the lead node → silent
-    if (!residesHere(state0, surface, ev.chatId)) return;    // no being to carry here → silent
-    // RODZ — the one member the group must carry (the creating account is auto-added). WhatsApp's
-    // create REFUSES a `+phone` member (live: M_INVALID_PARAM "User ID +1646…"); the id it wants is
-    // Rodz's Beeper user id (@whatsapp_lid-…:beeper.local), which the bridge resolves from
-    // config.beeper.secondary.phone's digits by scanning this account's rosters. Unresolvable =>
-    // STOP, nothing created (log to the daemon only — NO chat reply, same silence as the gate).
-    const accountID = await forkBridge.chatAccountId(ev.chatId);
+  // Parse `/join`/`/split`'s optional trailing token into a { node, name }. A KNOWN node name is the
+  // `<node>` override (both the space form `/join do` and the `=do` form); anything else is the
+  // `<name>` arg that fills {name} in the group title. node lowercased or null; name the raw token (or
+  // null → the caller defaults it to the verb word).
+  const parseForkArgs = (body) => {
+    const m = /^\/(?:join|split)\b(?:=(\S+))?[ \t]*(.*)$/i.exec(String(body ?? '').trim());
+    if (!m) return { node: null, name: null };
+    const tok = (m[1] ?? m[2] ?? '').trim();
+    if (!tok) return { node: null, name: null };
+    const first = tok.split(/\s+/)[0].toLowerCase();
+    if (knownNodeNames(cfg()).has(first)) return { node: first, name: null };
+    return { node: null, name: tok };
+  };
+
+  // The shared node gate for /join + /split: true to PROCEED on this node, false to stand down
+  // silently. node == null → proceed only when this node plays the primary role; a named node →
+  // proceed only when it is one of ours.
+  const forkNodeSelected = (node) => node
+    ? ownNodeNamesOf(cfg()).has(node)
+    : String(cfg().node_role ?? '').trim().toLowerCase() === 'primary';
+
+  // config.join.placeholder / config.split.placeholder, with the built-in fallback so a command never
+  // edits to an empty string.
+  const placeholderOf = (block, dflt) => (block && typeof block.placeholder === 'string' && block.placeholder.trim()) ? block.placeholder : dflt;
+  // config.group_title ({group}=parent chat name, {name}=the <name> arg), with the built-in fallback.
+  const groupTitleOf = (groupName, name) =>
+    ((typeof cfg().group_title === 'string' && cfg().group_title.trim()) ? cfg().group_title : GROUP_TITLE_DEFAULT)
+      .replaceAll('{group}', String(groupName ?? '')).replaceAll('{name}', String(name ?? ''));
+  // RODZ's Beeper user id (@whatsapp_lid-…) — the one member the group must carry besides the creating
+  // account. WhatsApp's create REFUSES a `+phone` member; the bridge resolves the id from
+  // config.beeper.secondary.phone's digits. Null => STOP (log only, no chat reply). Shared by both verbs.
+  const resolveRodz = async (chatId, verb) => {
+    const accountID = await forkBridge.chatAccountId(chatId);
     const rodzDigits = phoneDigitsOf(cfg().beeper?.secondary?.phone);
     const rodzUserId = rodzDigits ? await forkBridge.resolveUserIdByPhone(rodzDigits, { accountID }) : null;
-    if (!rodzUserId) {
-      onLog('/fork: could not resolve Rodz\'s Beeper user id from config.beeper.secondary.phone — refusing, nothing created.');
-      return;
-    }
-    const participantIDs = [rodzUserId];
-    const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
-    // User-facing texts from config.fork (operator: "all goes in config.yaml"), falling back to the
-    // built-in defaults only so /fork never edits to an empty string / makes an untitled group.
-    const forkCfg = cfg().fork ?? {};
-    const placeholder = (typeof forkCfg.placeholder === 'string' && forkCfg.placeholder.trim()) ? forkCfg.placeholder : FORK_PLACEHOLDER_DEFAULT;
-    const title = ((typeof forkCfg.title === 'string' && forkCfg.title.trim()) ? forkCfg.title : FORK_TITLE_DEFAULT).replaceAll('{group}', String(cTitle ?? ''));
+    if (!rodzUserId) { onLog(`${verb}: could not resolve Rodz's Beeper user id from config.beeper.secondary.phone — refusing, nothing created.`); return null; }
+    return { accountID, rodzUserId };
+  };
 
-    // ── mutations begin (every precondition above has passed) ──
+  // /join (operator types /join [<name>|<node>] in chat C): create the side-group and ALIAS it to C.
+  // Every precondition resolves BEFORE any bridge/state mutation (an unresolvable Rodz STOPS, nothing
+  // created).
+  async function joinGroup(ev) {
+    const surface = surfaceOf(ev);
+    if (!loadState || !writeState) return;                   // state not wired → silent
+    const { node, name } = parseForkArgs(ev.body);
+    if (!forkNodeSelected(node)) return;                     // not the selected node → silent
+    const state0 = await loadState();
+    if (!residesHere(state0, surface, ev.chatId)) return;    // no being to carry here → silent
+    const rodz = await resolveRodz(ev.chatId, '/join');
+    if (!rodz) return;
+    const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
+    const placeholder = placeholderOf(cfg().join, JOIN_PLACEHOLDER_DEFAULT);
+    const title = groupTitleOf(cTitle, name ?? 'join');
+
+    // ── mutations begin ──
     // (a) CREATE the group: operator + Rodz, forced to a group. No opener — the group inherits C's
-    //     whole thread by the alias below; the model is never told it was forked.
-    const created = await forkBridge.createGroup({ accountID, participantIDs, type: 'group', title });
-    const forkChatId = created?.chatID ?? created?.chatId ?? null;
-    if (!forkChatId) {
-      onLog(`/fork: createGroup returned no chatID (${JSON.stringify(created)}) — aborted, placeholder NOT edited`);
+    //     whole thread by the alias below; the model is never told it was joined.
+    const created = await forkBridge.createGroup({ accountID: rodz.accountID, participantIDs: [rodz.rodzUserId], type: 'group', title });
+    const joinChatId = created?.chatID ?? created?.chatId ?? null;
+    if (!joinChatId) {
+      onLog(`/join: createGroup returned no chatID (${JSON.stringify(created)}) — aborted, placeholder NOT edited`);
       return;
     }
-    // (b) ALIAS the new group's chatId to C's canonical (primary) entry — both chat ids now resolve
-    //     to the SAME folder/agents/threads. Reload fresh before the write (createGroup is async).
+    // (b) ALIAS the new group's chatId to C's canonical (primary) entry — both ids now resolve to the
+    //     SAME folder/agents/threads. Reload fresh before the write (createGroup is async).
     const state = await loadState();
     const primaryJid = getContact(state, surface, ev.chatId)?.jid ?? ev.chatId;
-    await writeState(aliasContact(state, surface, forkChatId, primaryJid));
-    // (c) EDIT the operator's /fork message into the placeholder marker (raw, no persona — a UI mark
-    //     on the operator's own message, not E speaking).
+    await writeState(aliasContact(state, surface, joinChatId, primaryJid));
+    // (c) EDIT the operator's /join message into the placeholder marker (raw, no persona).
     await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
-    onLog(`/fork: ${cTitle} -> group ${forkChatId} aliased to ${primaryJid} (member ${rodzUserId})`);
+    onLog(`/join: ${cTitle} -> group ${joinChatId} aliased to ${primaryJid} (member ${rodz.rodzUserId})`);
   }
 
-  // /send (the operator REPLIES /send to a message M in a fork group): relay M's text into the
-  // ORIGINAL chat (the alias target). Repeatable — no placeholder edit, no close. Reads M's text out
-  // of the SHARED transcript the SAME way /read's quick-reply does: the quoted id -> its one entry's
-  // body, then strip the node/bridge/persona wrap.
+  // /split (operator types /split [<name>|<node>] in chat C): create a side-group backed by a NEW
+  // conversation that DIVERGES from C — each resident being's thread is COPIED under a new thread id.
+  // Same preconditions/gate as /join; the difference is a NEW entry + per-being thread copy instead of
+  // an alias.
+  async function splitGroup(ev) {
+    const surface = surfaceOf(ev);
+    if (!loadState || !writeState) return;                   // state not wired → silent
+    const { node, name } = parseForkArgs(ev.body);
+    if (!forkNodeSelected(node)) return;                     // not the selected node → silent
+    let state = await loadState();
+    if (!residesHere(state, surface, ev.chatId)) return;     // no being with a thread to copy → silent
+    const rodz = await resolveRodz(ev.chatId, '/split');
+    if (!rodz) return;
+    const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
+    const placeholder = placeholderOf(cfg().split, SPLIT_PLACEHOLDER_DEFAULT);
+    const title = groupTitleOf(cTitle, name ?? 'split');
+
+    // ── mutations begin ──
+    // (a) CREATE the group.
+    const created = await forkBridge.createGroup({ accountID: rodz.accountID, participantIDs: [rodz.rodzUserId], type: 'group', title });
+    const splitChatId = created?.chatID ?? created?.chatId ?? null;
+    if (!splitChatId) {
+      onLog(`/split: createGroup returned no chatID (${JSON.stringify(created)}) — aborted, placeholder NOT edited`);
+      return;
+    }
+    // (b) REGISTER the new group as its OWN conversation (ensureContact FIRST — recordThread/patch
+    //     below no-op on an unknown contact), and record the parent chat so /send+/end find the
+    //     original (a split group is NOT an alias).
+    state = await loadState();
+    const cSlug = getContact(state, surface, ev.chatId)?.slug ?? 'conv';
+    const ensured = ensureContact(state, surface, splitChatId, { pushedName: title, slugHint: `egpt-split-${cSlug}` });
+    state = ensured.state;
+    const splitConvDir = slugDir(surface, ensured.slug);
+    state = patchContact(state, surface, splitChatId, { parent_chat: ev.chatId });
+    // (c) COPY each resident being's thread into the split conversation as a NEW, DIVERGING thread.
+    //     The residents + their source thread ids come off the ORIGINAL entry (read fresh). For each:
+    //     mint a newThreadId, TRANSFORM-copy the source jsonl into the new thread's store at the
+    //     project dir matching the SPLIT conversation's cwd (sessionId→newThreadId, cwd→splitConvDir),
+    //     and record the new thread on the split entry's agents.<being> block. `flag:'wx'` never
+    //     clobbers an existing dest (EEXIST → refuse that one copy, log, still record the thread id).
+    const origEntry = getContact(state, surface, ev.chatId)?.entry;
+    const residents = residentsOf(origEntry)
+      .map((being) => [being, getBeing(state, surface, ev.chatId, being)?.threadId ?? null])
+      .filter(([, threadId]) => threadId);
+    const copied = [];
+    for (const [being, srcThreadId] of residents) {
+      const newThreadId = randomUUID();
+      const srcStore = jsonlStoreDirOf(srcThreadId, { jsonlStoreRoot });
+      const srcFound = (srcStore ? findThreadJsonl(srcThreadId, [], { projectsRoot: join(srcStore, 'projects') }) : null)
+        ?? findThreadJsonl(srcThreadId, []);
+      if (srcFound) {
+        const projDir = join(jsonlStoreDirOf(newThreadId, { jsonlStoreRoot }), 'projects', sanitizeCwdDir(splitConvDir));
+        const destJsonl = join(projDir, `${newThreadId}.jsonl`);
+        try {
+          await mkdir(projDir, { recursive: true });
+          const srcRaw = await readFile(srcFound.jsonlPath, 'utf8');
+          await writeFile(destJsonl, rewriteForkSessionJsonl(srcRaw, { sessionId: newThreadId, cwd: splitConvDir }), { flag: 'wx' });
+          copied.push(being);
+        } catch (e) {
+          onLog(`/split: thread copy for ${being} ${srcFound.jsonlPath} -> ${destJsonl} failed — ${e?.message ?? e}`);
+        }
+      } else {
+        onLog(`/split: can't find ${being}'s thread store for #${srcThreadId} — recording the new thread id without a copy`);
+      }
+      state = recordThread(state, surface, splitChatId, newThreadId, undefined, being);
+    }
+    await writeState(state);
+    // (d) EDIT the operator's /split message into the placeholder marker.
+    await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
+    onLog(`/split: ${cTitle} -> NEW conv ${splitChatId} (${ensured.slug}); copied threads for ${copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
+  }
+
+  // /send (the operator REPLIES /send to a message M in a join/split group): relay M's text into the
+  // ORIGINAL chat. Repeatable — no placeholder edit, no close. The original is the alias target (join)
+  // or the recorded parent_chat (split); silent when neither. Reads M's text out of the transcript the
+  // SAME way /radio say's quick-reply does, then strips the node/bridge/persona wrap. Posts via the
+  // account named by config.send.post_back_from ('secondary' = the mouth, today's path; 'primary' =
+  // the operator's own account) — boot routes { via } to that connection's bridge.
   async function sendToOriginal(ev) {
     const surface = surfaceOf(ev);
     if (!loadState) return;                                // state not wired → silent
     const state = await loadState();
-    const originalChatId = aliasTargetOf(state, surface, ev.chatId);
-    if (!originalChatId) return;                           // not a fork group → silent
-    if (!residesHere(state, surface, ev.chatId)) return;   // gate (defensive — an alias implies it)
+    const originalChatId = aliasTargetOf(state, surface, ev.chatId)
+      ?? getContact(state, surface, ev.chatId)?.entry?.parent_chat ?? null;
+    if (!originalChatId) return;                           // not a join/split group → silent
+    if (!residesHere(state, surface, ev.chatId)) return;   // gate (defensive — a group implies it)
     if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /send to send it to the original chat'); return; }
-    const room = await resolveConvRoom(surface, ev.chatId);   // follows the alias → the SHARED transcript
+    const room = await resolveConvRoom(surface, ev.chatId);   // join: follows alias → shared transcript; split: its own
     let text = null;
     if (room) { try { text = await readFile(room.transcriptPath, 'utf8'); } catch { text = null; } }
     const body = text ? bodyForMessageId(text, ev.replyToId) : null;
     const cleaned = body ? cleanQuotedBody(body) : null;
     if (!cleaned) { await send?.(ev.chatId, '/send: nothing to send — reply to a message that has text'); return; }
-    const posted = await forkBridge.postReply(originalChatId, cleaned, null);
+    const pbf = String(cfg().send?.post_back_from ?? '').trim().toLowerCase();
+    const via = (pbf === 'primary' || pbf === 'secondary') ? pbf : SEND_POST_BACK_FROM_DEFAULT;
+    const posted = await forkBridge.postReply(originalChatId, cleaned, null, { via });
     if (!posted) { await send?.(ev.chatId, '/send: could not post to the original chat'); return; }
-    onLog(`/send: ${ev.chatId} -> original ${originalChatId} (message ${ev.replyToId})`);
+    onLog(`/send: ${ev.chatId} -> original ${originalChatId} via ${via} (message ${ev.replyToId})`);
   }
 
-  // /end (the operator REPLIES /end in a fork group): archive the group and drop its alias so the
-  // room is closed. Posts NOTHING. Silent outside a fork group (no alias on this node).
+  // /end (the operator REPLIES /end in a join/split group): archive the group and drop its mapping so
+  // it is closed. For /join that is the alias; for /split it is the group's OWN conversation entry (its
+  // parent_chat marks it) — dropContact retires the mapping (the diverged folder/jsonl stay on disk).
+  // Posts NOTHING. Silent outside a join/split group (no alias and no parent on this node).
   async function end(ev) {
     const surface = surfaceOf(ev);
     if (!loadState || !writeState) return;                 // state not wired → silent
-    const originalChatId = aliasTargetOf(await loadState(), surface, ev.chatId);
-    if (!originalChatId) return;                           // not a fork group → silent
+    const state = await loadState();
+    const aliasTarget = aliasTargetOf(state, surface, ev.chatId);
+    const parent = getContact(state, surface, ev.chatId)?.entry?.parent_chat ?? null;
+    if (!aliasTarget && !parent) return;                   // not a join/split group → silent
     await forkBridge.archiveChat(ev.chatId);
     await writeState(dropContact(await loadState(), surface, ev.chatId));
-    onLog(`/end: fork group ${ev.chatId} archived + alias to ${originalChatId} dropped`);
+    onLog(`/end: ${aliasTarget ? 'join' : 'split'} group ${ev.chatId} archived + ${aliasTarget ? `alias to ${aliasTarget}` : `split conv mapping (parent ${parent})`} dropped`);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),
