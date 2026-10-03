@@ -52,6 +52,11 @@ async function startFakeBeeper() {
   // still transcribe the note; that is the whole 'best-effort, never fatal' clause.
   const reactOpts = { postStatus: 0, deleteStatus: 0 };
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
+  const createChats = []; // POSTs to /v1/chats (group create — operator's /join & /split)
+  // Group create is ASYNCHRONOUS live: the POST 404s {code:"NOT_FOUND", message:"Chat not found:
+  // <id>"} with the new chat's real id even on success, then a GET of it 200s once synced.
+  // createChatOpts lets a test force that 404 (or a plain 500); status 0 ⇒ a normal 2xx create.
+  const createChatOpts = { status: 0, body: '', chatID: '!created:beeper.local' };
   const chats = new Map();   // chatID -> chat info served by GET
   const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
   const accounts = [];        // GET /v1/accounts fixture — tests push {accountID, user:{fullName}} before startBridge()
@@ -101,6 +106,13 @@ async function startFakeBeeper() {
       if (req.method === 'POST' && req.url === '/v1/assets/upload') {
         uploads.push({ bytes: body.length });   // multipart body — we don't parse it, just confirm the call
         res.end(JSON.stringify({ uploadID: `up-${uploads.length}`, mimeType: 'image/png', fileName: 'blob.png', srcURL: 'file:///tmp/x' }));
+        return;
+      }
+      // GROUP CREATE: POST /v1/chats (distinct from the message POST below — no /messages suffix).
+      if (req.method === 'POST' && req.url === '/v1/chats') {
+        createChats.push(JSON.parse(body || '{}'));
+        if (createChatOpts.status) { res.statusCode = createChatOpts.status; res.end(createChatOpts.body || '{}'); return; }
+        res.end(JSON.stringify({ success: true, chatID: createChatOpts.chatID }));
         return;
       }
       const post = req.url.match(/^\/v1\/chats\/([^/]+)\/messages$/);
@@ -213,7 +225,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, deletes, reactions, unreactions, reactOpts, uploads, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
+    port, posts, edits, deletes, reactions, unreactions, reactOpts, uploads, createChats, createChatOpts, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
@@ -4341,5 +4353,55 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
       await waitFor(() => node.turns.some((m) => m.includes('¿se cortó?')));
       expect(node.resumes()).toEqual([]);
     } finally { node.app.stop(); }
+  });
+});
+
+// createGroup — the ASYNC-CREATE catch. Beeper's group create-chat 404s {code:"NOT_FOUND",
+// message:"Chat not found: <id>"} with the real new chat's id EVEN ON SUCCESS; a GET of that id
+// 200s once the group has synced. createGroup must hand the caller the id across both shapes, poll
+// the single-chat GET until it resolves, and still return null on a genuine failure. The `sleep`
+// seam is a no-op here so the poll runs instantly.
+describe('createGroup (Beeper async group-create)', () => {
+  const OPTS = { accountID: 'whatsapp', participantIDs: ['@whatsapp_lid-123'], type: 'group', title: 'Fork of C' };
+
+  it('2xx with a chatID → returns the create response verbatim (carries chatID)', async () => {
+    const { bridge } = await startBridge();
+    fake.createChatOpts.chatID = '!made:beeper.local';
+    const r = await bridge.createGroup(OPTS);
+    expect(r?.chatID).toBe('!made:beeper.local');
+    // the call shape is forwarded unchanged
+    expect(fake.createChats.at(-1)).toMatchObject({ accountID: 'whatsapp', participantIDs: ['@whatsapp_lid-123'], type: 'group', title: 'Fork of C' });
+  });
+
+  it('404 NOT_FOUND then the chat GET 200s → returns { chatID } (the group WAS created)', async () => {
+    const { bridge } = await startBridge({ sleep: async () => {} });
+    fake.createChatOpts.status = 404;
+    fake.createChatOpts.body = JSON.stringify({ message: 'Chat not found: !async:beeper.local', code: 'NOT_FOUND' });
+    let gets = 0;   // the group hasn't synced on the first GET; it has on the second
+    fake.chats.set('!async:beeper.local', () => { gets += 1; if (gets < 2) throw new Error('not synced yet'); return { id: '!async:beeper.local', title: 'Fork of C', type: 'group', accountID: 'whatsapp' }; });
+    const r = await bridge.createGroup(OPTS);
+    expect(r?.chatID).toBe('!async:beeper.local');
+    expect(gets).toBeGreaterThanOrEqual(2);   // it polled past the first miss
+  });
+
+  it('404 NOT_FOUND but the chat GET never resolves → null after the retries', async () => {
+    const { bridge } = await startBridge({ sleep: async () => {} });
+    fake.createChatOpts.status = 404;
+    fake.createChatOpts.body = JSON.stringify({ message: 'Chat not found: !ghost:beeper.local', code: 'NOT_FOUND' });
+    let gets = 0;
+    fake.chats.set('!ghost:beeper.local', () => { gets += 1; throw new Error('never syncs'); });
+    const r = await bridge.createGroup(OPTS);
+    expect(r).toBeNull();
+    expect(gets).toBe(5);   // CREATE_GROUP_POLL_ATTEMPTS
+  });
+
+  it('a 500 / other error → null (no async-create recovery)', async () => {
+    const { bridge } = await startBridge({ sleep: async () => {} });
+    fake.createChatOpts.status = 500;
+    fake.createChatOpts.body = JSON.stringify({ errcode: 'M_INVALID_PARAM' });   // the +phone rejection
+    const before = fake.chatGets.length;
+    const r = await bridge.createGroup(OPTS);
+    expect(r).toBeNull();
+    expect(fake.chatGets.length).toBe(before);   // it never polled a chat GET
   });
 });

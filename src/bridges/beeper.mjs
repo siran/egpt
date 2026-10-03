@@ -87,6 +87,15 @@ const RECONNECT_MAX_MS = 60_000;
 // (_awaitSends). Comfortably above resolveSentMessageId's own bound (6 polls × 500ms
 // + the GETs); it only ever bites when a REST call is wedged.
 const SEND_GATE_MAX_MS = 15_000;
+// createGroup's ASYNC-CREATE recovery (operator 2026-10-03, verified live): Beeper's group
+// create-chat is asynchronous — POST /v1/chats answers HTTP 404 {code:"NOT_FOUND", message:"Chat
+// not found: <id>"} EVEN ON SUCCESS (the just-made group's real id is right there in the message),
+// and a GET of that id 200s a moment later once the group has synced. So on that 404 createGroup
+// extracts <id> and polls the single-chat GET up to this many times, this far apart, before
+// conceding null. (A live run: POST 404 "Chat not found: !hCJbnVCBvzUAcGYyv7MQ:beeper.local",
+// then GET of that id → 200 with the created group.)
+const CREATE_GROUP_POLL_ATTEMPTS = 5;
+const CREATE_GROUP_POLL_MS = 500;
 // THE WAKE WINDOW (operator 2026-09-27) — how far BEFORE a resume the backlog cutoff lands. Two
 // rulings meet here. ROADMAP "L-1 PROVEN on DOLLY" (2026-07-07): wake duty is dormant → wake → hear
 // → ANSWER, a message sent while the node slept is answered on the wake, and kg's egpt-wake-duty
@@ -606,6 +615,10 @@ export async function startBeeperBridge(opts = {}) {
     // Timer seam for the 👂 debounce + promotion (forwarded to incoming-media). undefined → real
     // setTimeout; tests inject a fake clock so no real wait is needed.
     scheduler = undefined,
+    // Poll-delay seam for createGroup's async-create recovery (see CREATE_GROUP_POLL_* above):
+    // the wait between single-chat GETs while the just-created group syncs. Defaults to a real
+    // timer; tests inject a no-op so the poll runs instantly.
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
     // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar 1:1 incident; renamed from
     // transcribe_ack_max_age_ms): a Beeper resync can re-deliver ancient backlog voice notes;
     // the 👂 is a live-conversation courtesy, not an archaeology announcement, so it only posts
@@ -1475,12 +1488,44 @@ export async function startBeeperBridge(opts = {}) {
   // makes a two-person (operator + Rodz) group rather than a 1:1 DM. The parsed response carries
   // `{ success, chatID }` (the id, e.g. "!…:beeper.com") — returned VERBATIM so the caller reads
   // chatID. NOT exercisable from here: a real POST creates a real WhatsApp group, so the only live
-  // run is the operator typing /fork (out of scope for the build — every test injects a fake). Same
-  // guard → try/catch → return shape as editMessage/deleteMessage, but returns the response (not a
-  // bool) because the caller needs the new chatID.
+  // run is the operator typing /fork (out of scope for the build — every test injects a fake).
+  //
+  // THE ASYNC-CREATE CATCH (operator 2026-10-03, found by a live create-path proof): creating a
+  // GROUP is asynchronous. The POST returns HTTP 404 {code:"NOT_FOUND", message:"Chat not found:
+  // <id>"} EVEN WHEN THE GROUP WAS CREATED — <id> is the real new chat, and a GET of it 200s once
+  // the group has synced. So the POST is issued through a direct fetch (same baseUrl/token/JSON
+  // headers api() uses — api() would collapse the 404 into a thrown Error and we need the body's
+  // structured code+message) and both success shapes return the id the caller reads as chatID:
+  //   • 2xx with a body → returned VERBATIM (carries chatID), exactly as before.
+  //   • 404 NOT_FOUND "Chat not found: <id>" → extract <id>, poll the single-chat GET (chatInfo)
+  //     up to CREATE_GROUP_POLL_ATTEMPTS times CREATE_GROUP_POLL_MS apart until it resolves, then
+  //     return { success, chatID:<id> }; never resolves → null.
+  // Any OTHER non-2xx (e.g. the +phone 500 M_INVALID_PARAM) and any transport failure → null +
+  // onLog, unchanged.
   async function createGroup({ accountID, participantIDs, type = 'group', title, messageText } = {}) {
     if (!accountID || !Array.isArray(participantIDs) || !participantIDs.length) return null;
-    try { return await api('POST', '/v1/chats', { accountID, participantIDs, type, title, messageText }); }
+    try {
+      const res = await fetch(baseUrl + '/v1/chats', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountID, participantIDs, type, title, messageText }),
+      });
+      const text = await res.text();
+      if (res.ok) return text ? JSON.parse(text) : null;   // 2xx — body carries chatID (returned verbatim)
+      let parsed = null; try { parsed = text ? JSON.parse(text) : null; } catch { /* non-JSON error body */ }
+      const asyncId = (res.status === 404 && parsed?.code === 'NOT_FOUND')
+        ? (/Chat not found:\s*(\S+)/.exec(String(parsed.message ?? ''))?.[1] ?? null)
+        : null;
+      if (!asyncId) { onLog(`beeper: createGroup failed [${accountID}] — ${res.status} ${text.slice(0, 200)}`); return null; }
+      // The group IS created; wait for it to sync, then hand the caller the real id.
+      for (let i = 1; i <= CREATE_GROUP_POLL_ATTEMPTS; i++) {
+        const info = await chatInfo(asyncId, { refresh: true });   // raw non-null ⇒ the GET 200'd
+        if (info?.raw) { onLog(`beeper: createGroup async-created [${accountID}] — ${asyncId} synced after ${i} GET(s)`); return { success: true, chatID: asyncId }; }
+        if (i < CREATE_GROUP_POLL_ATTEMPTS) await sleep(CREATE_GROUP_POLL_MS);
+      }
+      onLog(`beeper: createGroup [${accountID}] — POST 404 NOT_FOUND ${asyncId} but it never synced after ${CREATE_GROUP_POLL_ATTEMPTS} GETs`);
+      return null;
+    }
     catch (e) { onLog(`beeper: createGroup failed [${accountID}] — ${e?.message ?? e}`); return null; }
   }
   // ARCHIVE: POST /v1/chats/{id}/archive { archived } — the documented archive operation
