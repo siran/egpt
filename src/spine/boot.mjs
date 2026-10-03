@@ -3012,10 +3012,11 @@ export async function boot({
       archiveChat:   (chatId)                         => earBridge.archiveChat(chatId),
       chatAccountId: async (chatId) => { try { return (await earBridge.chatRaw(chatId))?.accountID ?? null; } catch { return null; } },
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),
+      // RODZ'S BEEPER USER ID (operator 2026-10-03) — the create needs `@whatsapp_lid-…`, not a
+      // +phone (the API rejects it). Resolved from config.beeper.secondary.phone by scanning this
+      // account's rosters (phoneNumber+id ride together on every participant).
+      resolveUserIdByPhone: (phoneDigits, opts) => earBridge.resolveUserIdByPhone(phoneDigits, opts),
     },
-    // WHO this install answers as — the self side of Rodz resolution (resolveForkPartner is left to
-    // its default: the pure config rule resolveSecondaryParticipantId over config + these).
-    selfIds: async () => { try { return await earBridge.selfIdentities(); } catch { return []; } },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);

@@ -36,6 +36,10 @@ const SRC_THREAD = '11111111-1111-1111-1111-111111111111';
 // AN's primary + Rodz's secondary phones, named by config.beeper.{primary,secondary}.phone.
 const AN = '+16468217865';
 const RODZ = '+13472576794';
+const RODZ_DIGITS = '13472576794';
+// Rodz's BEEPER USER ID — what the WhatsApp create actually wants (a `+phone` is rejected,
+// M_INVALID_PARAM). The bridge resolves it from RODZ_DIGITS by scanning this account's rosters.
+const RODZ_USER_ID = '@whatsapp_lid-69433129173200:beeper.local';
 const beeperCfg = (primary, secondary) => ({ beeper: { primary: { phone: primary }, secondary: { phone: secondary } } });
 
 class TmpRoom extends Room {
@@ -47,12 +51,16 @@ let base;
 beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'egpt-fork-')); });
 afterEach(() => { rmSync(base, { recursive: true, force: true }); });
 
-// C's contact with E holding an active thread — so a being RESIDES here (the /fork gate).
-function seedState() {
+// C's contact with <being> holding an active thread — so THAT being RESIDES here (the /fork
+// tiebreak gate keys on the replied-to being specifically, not "any being").
+function seedStateBeing(...beings) {
   let st = ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'Proyecto X' }).state;
-  st = recordThread(st, 'whatsapp', C_CHAT, SRC_THREAD, '2026-10-01T00:00:00Z', 'e');
+  let n = 0;
+  for (const b of beings) st = recordThread(st, 'whatsapp', C_CHAT, `${SRC_THREAD.slice(0, -1)}${n++}`, '2026-10-01T00:00:00Z', b);
   return st;
 }
+// The default: E (key 'e') resides — so a reply to E's message forks here.
+function seedState() { return seedStateBeing('e'); }
 // C as above, PLUS the fork group aliased to it — the state /fork leaves behind (for /send + /end).
 function stateWithFork() {
   const st = seedState();
@@ -60,11 +68,11 @@ function stateWithFork() {
   return aliasContact(st, 'whatsapp', FORK_CHAT, primaryJid);
 }
 
-function harness({ config = {}, selfIds = [AN], state, resolveForkPartner, rooms = new Map() } = {}) {
+function harness({ config = {}, state, rooms = new Map(), rodzUserId = RODZ_USER_ID } = {}) {
   let st = state ?? seedState();
   const sent = [];
   const logs = [];
-  const calls = { edit: [], create: [], post: [], archive: [] };
+  const calls = { edit: [], create: [], post: [], archive: [], resolve: [] };
   const forkBridge = {
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
     createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: FORK_CHAT }; },
@@ -72,6 +80,9 @@ function harness({ config = {}, selfIds = [AN], state, resolveForkPartner, rooms
     archiveChat: async (chatId) => { calls.archive.push({ chatId }); return true; },
     chatAccountId: async () => 'whatsapp',
     chatTitle: async () => null,
+    // Rodz's phone → his Beeper user id: records the call and answers rodzUserId for Rodz's digits,
+    // null otherwise (so a test can force the unresolvable path with rodzUserId:null).
+    resolveUserIdByPhone: async (digits, opts) => { calls.resolve.push({ digits, opts }); return digits === RODZ_DIGITS ? rodzUserId : null; },
   };
   const cmds = createCommands({
     getConfig: () => config,
@@ -81,8 +92,6 @@ function harness({ config = {}, selfIds = [AN], state, resolveForkPartner, rooms
     resolveConvRoom: async (_surface, chatId) => rooms.get(chatId) ?? null,
     defaultKey: 'e',
     forkBridge,
-    selfIds: async () => selfIds,
-    ...(resolveForkPartner ? { resolveForkPartner } : {}),
     onLog: (m) => logs.push(m),
   });
   return { cmds, sent, logs, calls, forkBridge, getState: () => st };
@@ -104,9 +113,11 @@ const FORK_PLACEHOLDER_CFG = '🔀 forking, un momento…';
 const FORK_TITLE_CFG = 'egpt bifurcación de {group}';
 describe('/fork — happy path (alias model, fake bridge, in-memory state)', () => {
   const CFG = { ...beeperCfg(AN, RODZ), fork: { placeholder: FORK_PLACEHOLDER_CFG, title: FORK_TITLE_CFG } };
-  const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' };
+  // The operator replied /fork to E's message (replyToBeing: 'e') — E resides here (seedState), so
+  // the tiebreak gate proceeds on THIS node.
+  const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', replyToBeing: 'e', chatName: 'Proyecto X', body: '/fork' };
 
-  it('creates a type:"group" titled from config.fork.title ({group} filled), participants incl. Rodz, NO opener', async () => {
+  it('creates a type:"group" titled from config.fork.title ({group} filled), ONLY Rodz\'s user id, NO opener', async () => {
     const { cmds, calls } = harness({ config: CFG });
     await cmds.run({ ...EV });
     expect(calls.create).toHaveLength(1);
@@ -114,8 +125,7 @@ describe('/fork — happy path (alias model, fake bridge, in-memory state)', () 
     expect(c.type).toBe('group');
     expect(c.title).toBe('egpt bifurcación de Proyecto X');
     expect('messageText' in c).toBe(false);          // NO opener — the group inherits C's thread by the alias
-    expect(c.participantIDs).toContain(RODZ);
-    expect(c.participantIDs).toContain(AN);
+    expect(c.participantIDs).toEqual([RODZ_USER_ID]); // Rodz's Beeper user id ALONE — NO self, NO +phone
     expect(c.accountID).toBe('whatsapp');
   });
 
@@ -149,19 +159,7 @@ describe('/fork — happy path (alias model, fake bridge, in-memory state)', () 
 describe('/fork — refusals + silent stand-down create nothing', () => {
   const CFG = { ...beeperCfg(AN, RODZ), fork: { placeholder: FORK_PLACEHOLDER_CFG, title: FORK_TITLE_CFG } };
 
-  it('SILENT stand-down when no being resides on this node — sends NOTHING, creates nothing', async () => {
-    // C exists as a contact but has NO resident being (no thread) — the node that lacks the being.
-    const noBeing = ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'Proyecto X' }).state;
-    const { cmds, sent, logs, calls, getState } = harness({ config: CFG, state: noBeing });
-    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' });
-    expect(sent).toHaveLength(0);                                   // NO chat reply
-    expect(logs.some((l) => /\/fork/.test(l))).toBe(false);        // the gate emits no fork log either
-    expect(calls.create).toHaveLength(0);
-    expect(calls.edit).toHaveLength(0);
-    expect(aliasTargetOf(getState(), 'whatsapp', FORK_CHAT)).toBe(null);
-  });
-
-  it('no reply target → an error, and NOTHING is created (gate passed first, so only this node answers)', async () => {
+  it('no reply target → an error, and NOTHING is created', async () => {
     const { cmds, sent, calls } = harness({ config: CFG });
     await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: null, chatName: 'Proyecto X', body: '/fork' });
     expect(sent[0].text).toMatch(/reply to a message with \/fork/);
@@ -170,20 +168,77 @@ describe('/fork — refusals + silent stand-down create nothing', () => {
   });
 
   it('Rodz unresolvable → logs to the daemon ONLY (no chat reply), creates nothing', async () => {
-    const { cmds, sent, logs, calls, getState } = harness({ config: {} });   // no beeper phones ⇒ null
-    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' });
+    // Gate passes (replied to E, who resides) but config has no secondary.phone ⇒ nothing to resolve.
+    const { cmds, sent, logs, calls, getState } = harness({ config: {} });
+    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', replyToBeing: 'e', chatName: 'Proyecto X', body: '/fork' });
     expect(sent).toHaveLength(0);                 // silent to the chat
-    expect(logs.some((l) => /could not resolve the secondary \(Rodz\)/i.test(l))).toBe(true);
+    expect(logs.some((l) => /could not resolve Rodz/i.test(l))).toBe(true);
     expect(calls.create).toHaveLength(0);
     expect(calls.edit).toHaveLength(0);
     expect(aliasTargetOf(getState(), 'whatsapp', FORK_CHAT)).toBe(null);
   });
 
-  it('an injected resolver returning null also refuses (the STOP seam is honored)', async () => {
-    const { cmds, sent, calls } = harness({ config: {}, resolveForkPartner: async () => null });
-    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork' });
+  it('the bridge resolver returning null also refuses (no chat reply, nothing created)', async () => {
+    // secondary.phone IS set (so resolveUserIdByPhone is called with Rodz's digits) but the bridge
+    // finds Rodz in no roster → null → STOP.
+    const { cmds, sent, logs, calls } = harness({ config: CFG, rodzUserId: null });
+    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', replyToBeing: 'e', chatName: 'Proyecto X', body: '/fork' });
     expect(sent).toHaveLength(0);
+    expect(logs.some((l) => /could not resolve Rodz/i.test(l))).toBe(true);
     expect(calls.create).toHaveLength(0);
+    expect(calls.edit).toHaveLength(0);
+  });
+});
+
+// ── BUG 1: the participant is Rodz's BEEPER USER ID, not his +phone ───────────────────────────────
+// Live: createGroup POST /v1/chats → 500 M_INVALID_PARAM "User ID +1646…". WhatsApp wants the
+// `@whatsapp_lid-…` id; the bridge resolves it from config.beeper.secondary.phone's digits.
+describe('/fork — participant is Rodz\'s resolved Beeper user id (NOT +phone / self)', () => {
+  const CFG = { ...beeperCfg(AN, RODZ), fork: { placeholder: FORK_PLACEHOLDER_CFG, title: FORK_TITLE_CFG } };
+  const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', replyToBeing: 'e', chatName: 'Proyecto X', body: '/fork' };
+
+  it('resolves secondary.phone digits → user id and creates the group with ONLY that id', async () => {
+    const { cmds, calls } = harness({ config: CFG });
+    await cmds.run({ ...EV });
+    // the resolver was asked for Rodz's digits, scoped to the chat's account
+    expect(calls.resolve).toEqual([{ digits: RODZ_DIGITS, opts: { accountID: 'whatsapp' } }]);
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID]);   // the user id alone — no self, no +phone
+  });
+
+  it('resolver returns null → NO createGroup, NO chat message', async () => {
+    const { cmds, sent, calls } = harness({ config: CFG, rodzUserId: null });
+    await cmds.run({ ...EV });
+    expect(calls.create).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+});
+
+// ── BUG 2: the tiebreak — only the node where the REPLIED-TO being resides forks ───────────────────
+// A being on BOTH nodes (kg: egpt/codex; do: don/den) made BOTH nodes fork (two groups). The gate
+// now keys on ev.replyToBeing: fork only where that being has a thread.
+describe('/fork — tiebreak on the replied-to being (ends the double-create)', () => {
+  const CFG = { ...beeperCfg(AN, RODZ), fork: { placeholder: FORK_PLACEHOLDER_CFG, title: FORK_TITLE_CFG } };
+  const ev = (over) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', replyToId: 'M0', chatName: 'Proyecto X', body: '/fork', ...over });
+
+  it('PROCEEDS on the node where the replied-to being (egpt) resides', async () => {
+    const { cmds, calls } = harness({ config: CFG, state: seedStateBeing('egpt') });
+    await cmds.run(ev({ replyToBeing: 'egpt' }));
+    expect(calls.create).toHaveLength(1);
+  });
+
+  it('SILENT on the node where the replied-to being does NOT reside (only don/den here)', async () => {
+    const { cmds, sent, calls } = harness({ config: CFG, state: seedStateBeing('don', 'den') });
+    await cmds.run(ev({ replyToBeing: 'egpt' }));
+    expect(calls.create).toHaveLength(0);     // this node stands down → no second group
+    expect(sent).toHaveLength(0);             // and says nothing
+  });
+
+  it('SILENT when the reply target is NOT a being message (replyToBeing unset)', async () => {
+    const { cmds, sent, calls } = harness({ config: CFG, state: seedStateBeing('egpt') });
+    await cmds.run(ev({ replyToBeing: null }));   // replied to a human/plain message
+    expect(calls.create).toHaveLength(0);
+    expect(sent).toHaveLength(0);                 // no hint — a hint would double across nodes
   });
 });
 

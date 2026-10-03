@@ -647,15 +647,8 @@ export function createCommands({
     archiveChat:   async () => false,   // (chatId) -> bool
     chatAccountId: async () => null,    // (chatId) -> the accountID the chat lives on
     chatTitle:     async () => null,    // (chatId) -> the chat's display title
+    resolveUserIdByPhone: async () => null,   // (phoneDigits, { accountID }) -> "@whatsapp_lid-…:beeper.local" | null
   },
-  // Every identifier THIS install answers to (boot: earBridge.selfIdentities) — the self side of
-  // Rodz resolution: Rodz is the config.beeper phone (primary/secondary) that is NOT one of these.
-  selfIds = async () => [],
-  // Resolve the SECONDARY account's (Rodz's) participant id for /fork. null => the handler STOPs
-  // and creates nothing. Default (null here) = the pure config rule resolveSecondaryParticipantId
-  // over cfg() + selfIds(); boot may inject its own. A tripped/unresolvable resolver is the lock
-  // that a group is never created with a wrong/missing member.
-  resolveForkPartner = null,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -3090,19 +3083,18 @@ export function createCommands({
   // alias. The ensureContact guard (conversations-state) keeps a group message from renaming the
   // primary it aliases, so both chats share ONE folder cleanly.
   //
-  // THE GATE (all three): act ONLY if a being RESIDES in this conversation ON THIS NODE — the
-  // canonical (alias-resolved) entry's agents map has at least one being with a threadId. If none
-  // reside here, STAND DOWN SILENTLY (no chat reply, no log-to-chat) — the operator's ruling that
-  // ends the "don has no thread" double-answer from the node that lacks the being. For /send+/end
-  // the fork ALIAS existing on this node is the equivalent per-node lock (only the node that forked
-  // wrote it), so the other node is silent there too.
+  // THE GATE. /fork: the TIEBREAK — on a shared account BOTH nodes hear the command and, when the
+  // being lives on BOTH (kg: egpt/codex; do: don/den), a plain "any being resides here" check was
+  // true on both and BOTH forked (two groups). The operator's rule: /fork runs only on the node
+  // where the being the operator REPLIED TO resides (ev.replyToBeing, read off the quoted post's
+  // invisible frame by the bridge). The other node — where that being has no thread — stands down
+  // silently, which ends the double-create. /send+/end instead gate on the fork ALIAS existing on
+  // this node (only the node that forked wrote it, via the alias-only `aliasTargetOf`), so the other
+  // node is silent there too; residesHere below is their defensive gate.
   const residesHere = (state, surface, chatId) => {
     const agents = getContact(state, surface, chatId)?.entry?.agents ?? {};
     return Object.values(agents).some((b) => b && typeof b === 'object' && b.threadId != null);
   };
-  const forkPartnerOf = async () => (resolveForkPartner
-    ? await resolveForkPartner(cfg())
-    : resolveSecondaryParticipantId(cfg(), await selfIds()));
 
   // /fork (the operator REPLIES /fork to a message in chat C): create the side-group and alias it to
   // C. EVERY precondition is resolved BEFORE any bridge/state mutation, so a group is never created
@@ -3111,22 +3103,28 @@ export function createCommands({
     const surface = surfaceOf(ev);
     if (!loadState || !writeState) return;                 // state not wired → silent
     const state0 = await loadState();
-    // GATE: a being must reside here on THIS node, else stand down silently.
-    if (!residesHere(state0, surface, ev.chatId)) return;
     // A reply target is required — /fork is replied to the message the operator wants to fork around.
     if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /fork'); return; }
-    // RODZ — the one member the group must carry besides the operator. Unresolvable => STOP,
-    // nothing created (log to the daemon only — NO chat reply, same silence as the gate).
-    const partner = await forkPartnerOf();
-    if (!partner) {
-      onLog('/fork: could not resolve the secondary (Rodz) participant id from config — refusing, nothing created. Expected config.beeper.primary.phone and config.beeper.secondary.phone.');
+    // TIEBREAK GATE: proceed ONLY if the being the operator replied to RESIDES on THIS node (has a
+    // threadId in this conversation's agents). Otherwise stand down SILENTLY — which is BOTH the
+    // other node's stand-down (the replied-to being is on the one node, not here) AND the reply-to-
+    // a-non-being-message case (ev.replyToBeing is null, so the lookup misses). The latter is
+    // DELIBERATELY silent, never a hint: on a shared account a hint would double across nodes.
+    // (Operator may later refine what a reply to a non-being message should do.)
+    if (getContact(state0, surface, ev.chatId)?.entry?.agents?.[ev.replyToBeing]?.threadId == null) return;
+    // RODZ — the one member the group must carry (the creating account is auto-added). WhatsApp's
+    // create REFUSES a `+phone` member (live: M_INVALID_PARAM "User ID +1646…"); the id it wants is
+    // Rodz's Beeper user id (@whatsapp_lid-…:beeper.local), which the bridge resolves from
+    // config.beeper.secondary.phone's digits by scanning this account's rosters. Unresolvable =>
+    // STOP, nothing created (log to the daemon only — NO chat reply, same silence as the gate).
+    const accountID = await forkBridge.chatAccountId(ev.chatId);
+    const rodzDigits = phoneDigitsOf(cfg().beeper?.secondary?.phone);
+    const rodzUserId = rodzDigits ? await forkBridge.resolveUserIdByPhone(rodzDigits, { accountID }) : null;
+    if (!rodzUserId) {
+      onLog('/fork: could not resolve Rodz\'s Beeper user id from config.beeper.secondary.phone — refusing, nothing created.');
       return;
     }
-    // The operator's OWN phone (optional) rides as the first participant so the group is operator +
-    // Rodz literally; absent, type:"group" still forces a group around Rodz + the creating account.
-    const selfPhone = ((await selfIds()) || []).map((v) => { const d = phoneDigitsOf(v); return d ? `+${d}` : null; }).find(Boolean) ?? null;
-    const participantIDs = [...new Set([selfPhone, partner].filter(Boolean))];
-    const accountID = await forkBridge.chatAccountId(ev.chatId);
+    const participantIDs = [rodzUserId];
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     // User-facing texts from config.fork (operator: "all goes in config.yaml"), falling back to the
     // built-in defaults only so /fork never edits to an empty string / makes an untitled group.
@@ -3151,7 +3149,7 @@ export function createCommands({
     // (c) EDIT the operator's /fork message into the placeholder marker (raw, no persona — a UI mark
     //     on the operator's own message, not E speaking).
     await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
-    onLog(`/fork: ${cTitle} -> group ${forkChatId} aliased to ${primaryJid} (member ${partner})`);
+    onLog(`/fork: ${cTitle} -> group ${forkChatId} aliased to ${primaryJid} (member ${rodzUserId})`);
   }
 
   // /send (the operator REPLIES /send to a message M in a fork group): relay M's text into the

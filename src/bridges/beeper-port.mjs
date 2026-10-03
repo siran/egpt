@@ -337,6 +337,12 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async createGroup(opts) {
       return real.createGroup ? await real.createGroup(opts) : null;
     },
+    // PHONE → BEEPER USER ID (operator 2026-10-03) — a READ of this account's own rosters (like
+    // chatRaw/listChatsRaw), forwarded so /fork can resolve Rodz's `@whatsapp_lid-…` id for the
+    // create. A transport that lacks it answers null, which the handler reads as "unresolvable → STOP".
+    async resolveUserIdByPhone(phoneDigits, opts) {
+      return real.resolveUserIdByPhone ? await real.resolveUserIdByPhone(phoneDigits, opts) : null;
+    },
     async archiveChat(chat, opts) {
       return real.archiveChat ? await real.archiveChat(chat, opts) : false;
     },

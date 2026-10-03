@@ -1077,6 +1077,29 @@ export async function startBeeperBridge(opts = {}) {
     return _chatRawList;
   }
 
+  // ── PHONE → BEEPER USER ID (operator 2026-10-03, the /fork group create) ────────────────────
+  // WhatsApp's `POST /v1/chats` REFUSES a `+phone` participant — live: `M_INVALID_PARAM … User ID
+  // "+1646…"`. The member it wants is the person's BEEPER USER ID (e.g. `@whatsapp_lid-<num>:
+  // beeper.local`), and the two identifiers ride TOGETHER on every roster entry
+  // (`participants.items[] = { id, phoneNumber }`, the SAME shape participantKeys / crossAccountChatKey
+  // read). So the phone the config names resolves to the id the create needs by scanning the chats
+  // this account already lists — NO new fetch and NO new cache: listChatsRaw above is the walk
+  // chatRaw/listChats share. `accountID` scopes the scan to the account the group is created on
+  // (each account sees a person under its OWN namespaced id); absent, the first match across all
+  // listed chats wins. null = that phone is in none of this account's rosters → the caller STOPS,
+  // creating nothing, rather than posting a +phone the API rejects.
+  async function resolveUserIdByPhone(phoneDigits, { accountID = null } = {}) {
+    const want = String(phoneDigits ?? '').replace(/\D/g, '');
+    if (!want) return null;
+    for (const c of await listChatsRaw({ full: true })) {
+      if (accountID && String(c?.accountID ?? '') !== String(accountID)) continue;
+      for (const p of participantItems(c) ?? []) {
+        if (p?.id && String(p.phoneNumber ?? '').replace(/\D/g, '') === want) return p.id;
+      }
+    }
+    return null;
+  }
+
   // All chats from the Desktop API, normalized + briefly cached (60s) —
   // powers /channels-style listings and name→chatID resolution.
   // `full` is part of the cache identity: a cached FIRST PAGE must never satisfy a
@@ -2520,6 +2543,9 @@ export async function startBeeperBridge(opts = {}) {
     // caches; see listChatsRaw / chatRaw for the cost bound.
     listChatsRaw,
     chatRaw: (chatId) => chatRaw(chatId),
+    // PHONE → BEEPER USER ID (operator 2026-10-03) — the /fork create needs Rodz's `@whatsapp_lid-…`
+    // id, not his +phone (the API rejects the latter). Reads the SAME rosters chatRaw/listChatsRaw do.
+    resolveUserIdByPhone: (phoneDigits, opts) => resolveUserIdByPhone(phoneDigits, opts),
     // THE RECENT MESSAGES OF ONE CHAT, raw (operator 2026-09-07, the mouth link's reaction verb).
     // The co-account node names a message by CONTENT (crossAccountMsgKey) because no id crosses
     // the link, so this end has to look at its own copies to find which one it means. Same GET the

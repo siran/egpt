@@ -450,31 +450,36 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
   // wired off the ear's PORT; editMessage/createGroup/archiveChat/getChatName live on the RAW bridge
   // and were NOT forwarded here, so `earBridge.editMessage` threw "is not a function" on the live
   // node. They must forward (raw, no persona wrap), and answer false/null on a transport without them.
-  it('forwards editMessage / createGroup / archiveChat / getChatName to the raw bridge (raw, no persona)', async () => {
+  it('forwards editMessage / createGroup / archiveChat / getChatName / resolveUserIdByPhone to the raw bridge (raw, no persona)', async () => {
     const calls = [];
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start: async () => ({
       editMessage: async (...a) => { calls.push(['edit', ...a]); return true; },
       createGroup: async (opts) => { calls.push(['create', opts]); return { success: true, chatID: '!new:beeper.com' }; },
       archiveChat: async (...a) => { calls.push(['archive', ...a]); return true; },
       getChatName: (id) => (id === '!room' ? 'Proyecto X' : null),
+      resolveUserIdByPhone: async (digits, opts) => { calls.push(['resolve', digits, opts]); return '@whatsapp_lid-99:beeper.local'; },
       isAlive: () => true, stop() {},
     }) });
     expect(typeof port.editMessage).toBe('function');     // the method the live node was missing
     expect(await port.editMessage('!room', 'm1', '🤖↔️🤔 ...')).toBe(true);
-    const created = await port.createGroup({ accountID: 'wa', participantIDs: ['+1'], type: 'group', title: 'T' });
+    const created = await port.createGroup({ accountID: 'wa', participantIDs: ['@whatsapp_lid-99:beeper.local'], type: 'group', title: 'T' });
     expect(created).toEqual({ success: true, chatID: '!new:beeper.com' });
     expect(await port.archiveChat('!room')).toBe(true);
     expect(port.getChatName('!room')).toBe('Proyecto X');
+    // the create's participant is resolved from a phone → the person's Beeper user id
+    expect(await port.resolveUserIdByPhone('13472576794', { accountID: 'wa' })).toBe('@whatsapp_lid-99:beeper.local');
     // RAW: the /fork marker edit is NOT persona-wrapped (no bridge signature stapled on)
     expect(calls[0]).toEqual(['edit', '!room', 'm1', '🤖↔️🤔 ...']);
+    expect(calls).toContainEqual(['resolve', '13472576794', { accountID: 'wa' }]);
   });
 
-  it('editMessage / createGroup / archiveChat / getChatName answer false/null on a transport without them', async () => {
+  it('editMessage / createGroup / archiveChat / getChatName / resolveUserIdByPhone answer false/null on a transport without them', async () => {
     const port = await createBeeperBridgePort({}, { start: async () => ({ async send() { return { ok: true }; }, isAlive: () => true, stop() {} }) });
     expect(await port.editMessage('!room', 'm1', 'x')).toBe(false);
     expect(await port.createGroup({})).toBe(null);
     expect(await port.archiveChat('!room')).toBe(false);
     expect(port.getChatName('!room')).toBe(null);
+    expect(await port.resolveUserIdByPhone('1347', {})).toBe(null);
   });
 
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
