@@ -2749,17 +2749,19 @@ export const CONFIG_SCHEMA = {
   `,
 
   fork: `
-    The /fork + /send + /end operator commands (operator 2026-10-01). Reply /fork to a message to
-    spin a PRIVATE side-group (the operator + the secondary account) whose chatId is ALIASED to this
-    chat's conversation — one shared on-disk thread, two chat surfaces, nothing copied. Work the
-    problem there, reply /send to relay a chosen message back to the original chat, and reply /end to
-    archive the group and drop the alias. The two accounts' phone numbers come from
+    The /fork + /send + /end operator commands (operator 2026-10-01). Type /fork (a plain message, or
+    a reply) to spin a PRIVATE side-group (the operator + the secondary account) whose chatId is
+    ALIASED to this chat's conversation — one shared on-disk thread, two chat surfaces, nothing
+    copied. Work the problem there, reply /send to relay a chosen message back to the original chat,
+    and reply /end to archive the group and drop the alias. The two accounts' phone numbers come from
     beeper.primary.phone / beeper.secondary.phone; the USER-FACING TEXTS live HERE (operator: "all
     goes in config.yaml"):
       placeholder: what the operator's /fork message is edited into (the "thinking with the robot"
                    marker). Unset → a small built-in default.
       title:       the fork group's title, a {group} template ({group} = the parent chat's title).
                    Unset → a small built-in default.
+      lead_node:   which node creates the fork group; both nodes ingest the primary account so the
+                   being cannot pick one, so this is the explicit tiebreak; the other node stands down.
   `,
 
   aliases: `

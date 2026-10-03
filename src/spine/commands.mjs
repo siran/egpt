@@ -1086,15 +1086,15 @@ export function createCommands({
     const activateMatch = /^\/activate\s+(\S+)\s*$/i.exec(line);
     if (activateMatch) { await activate(ev, activateMatch[1]); return; }
 
-    // /fork — reply /fork to a message to spin a private side-group ALIASED to this chat's
-    // conversation (one shared thread, two chats); /send — reply /send to a message in that group
-    // to relay it back to the original chat; /end — reply /end in that group to archive it and drop
-    // the alias (operator 2026-10-01). All take NO args (they act on the chat / reply target) and
+    // /fork — type /fork (a plain message OR a reply) to spin a private side-group ALIASED to this
+    // chat's conversation (one shared thread, two chats); /send — reply /send to a message in that
+    // group to relay it back to the original chat; /end — reply /end in that group to archive it and
+    // drop the alias (operator 2026-10-01). All take NO args (they act on the chat / reply target) and
     // sit pre-catch-all like the rest. Operator-only automatically: isCommand gates every '/'-verb
     // except /recap behind isOperator, so no handler re-checks it (same as chrome/radio). NOT in
     // NODE_ADDRESSABLE: like /restart, they are local to the node the chat lives on, never
-    // `/fork=<node>`. Each handler STANDS DOWN SILENTLY on the node that is not the right one (no
-    // resident being for /fork; no fork alias for /send+/end), so a shared Beeper account never
+    // `/fork=<node>`. Each handler STANDS DOWN SILENTLY on the node that is not the right one (not the
+    // config.fork.lead_node for /fork; no fork alias for /send+/end), so a shared Beeper account never
     // double-answers. Written as `<name>Match = /^\/word…` so the /help drift guard
     // (tests/spine-commands.test.mjs) sees them.
     const forkMatch = /^\/fork\b[\s\S]*$/i.exec(line);
@@ -3083,35 +3083,36 @@ export function createCommands({
   // alias. The ensureContact guard (conversations-state) keeps a group message from renaming the
   // primary it aliases, so both chats share ONE folder cleanly.
   //
-  // THE GATE. /fork: the TIEBREAK — on a shared account BOTH nodes hear the command and, when the
-  // being lives on BOTH (kg: egpt/codex; do: don/den), a plain "any being resides here" check was
-  // true on both and BOTH forked (two groups). The operator's rule: /fork runs only on the node
-  // where the being the operator REPLIED TO resides (ev.replyToBeing, read off the quoted post's
-  // invisible frame by the bridge). The other node — where that being has no thread — stands down
-  // silently, which ends the double-create. /send+/end instead gate on the fork ALIAS existing on
-  // this node (only the node that forked wrote it, via the alias-only `aliasTargetOf`), so the other
-  // node is silent there too; residesHere below is their defensive gate.
+  // THE GATE. /fork: the TIEBREAK — on a shared account BOTH nodes hear the command, and because
+  // both nodes ingest the SAME primary Beeper account (no owner_node on the accounts) AND the being
+  // resides on each (kg: egpt/codex; do: don/den), nothing about the message or the being can pick
+  // one node — a plain "any being resides here" check was true on both and BOTH forked (two groups).
+  // The deliberate tiebreak (operator 2026-10-03) is an explicit config LEAD NODE,
+  // config.fork.lead_node: the node whose own name matches it creates the group; every other node
+  // stands down silently, ending the double-create. /send+/end instead gate on the fork ALIAS
+  // existing on this node (only the node that forked wrote it, via the alias-only `aliasTargetOf`),
+  // so the other node is silent there too; residesHere below is their defensive gate AND fork()'s
+  // "is there a being here to carry the thread" check.
   const residesHere = (state, surface, chatId) => {
     const agents = getContact(state, surface, chatId)?.entry?.agents ?? {};
     return Object.values(agents).some((b) => b && typeof b === 'object' && b.threadId != null);
   };
 
-  // /fork (the operator REPLIES /fork to a message in chat C): create the side-group and alias it to
-  // C. EVERY precondition is resolved BEFORE any bridge/state mutation, so a group is never created
-  // with a wrong/missing member (an unresolvable Rodz STOPS, having created nothing).
+  // /fork (the operator types /fork in chat C — a plain message OR a reply): create the side-group
+  // and alias it to C. EVERY precondition is resolved BEFORE any bridge/state mutation, so a group is
+  // never created with a wrong/missing member (an unresolvable Rodz STOPS, having created nothing).
   async function fork(ev) {
     const surface = surfaceOf(ev);
     if (!loadState || !writeState) return;                 // state not wired → silent
     const state0 = await loadState();
-    // A reply target is required — /fork is replied to the message the operator wants to fork around.
-    if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /fork'); return; }
-    // TIEBREAK GATE: proceed ONLY if the being the operator replied to RESIDES on THIS node (has a
-    // threadId in this conversation's agents). Otherwise stand down SILENTLY — which is BOTH the
-    // other node's stand-down (the replied-to being is on the one node, not here) AND the reply-to-
-    // a-non-being-message case (ev.replyToBeing is null, so the lookup misses). The latter is
-    // DELIBERATELY silent, never a hint: on a shared account a hint would double across nodes.
-    // (Operator may later refine what a reply to a non-being message should do.)
-    if (getContact(state0, surface, ev.chatId)?.entry?.agents?.[ev.replyToBeing]?.threadId == null) return;
+    // THE TIEBREAK (operator 2026-10-03): both nodes ingest the SAME primary account, so neither the
+    // message nor the being can disambiguate which node should fork. config.fork.lead_node names the
+    // ONE node that creates the group; every other node stands down silently. Proceed ONLY if this
+    // node IS the lead AND a being resides in this chat here to carry the thread — both SILENT returns
+    // (a chat reply would double across the co-account nodes).
+    const lead = String(cfg().fork?.lead_node ?? '').trim().toLowerCase();
+    if (!lead || !ownNodeNamesOf(cfg()).has(lead)) return;   // not the lead node → silent
+    if (!residesHere(state0, surface, ev.chatId)) return;    // no being to carry here → silent
     // RODZ — the one member the group must carry (the creating account is auto-added). WhatsApp's
     // create REFUSES a `+phone` member (live: M_INVALID_PARAM "User ID +1646…"); the id it wants is
     // Rodz's Beeper user id (@whatsapp_lid-…:beeper.local), which the bridge resolves from
