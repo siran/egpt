@@ -183,3 +183,43 @@ describe('conversations.yaml agents.<being>.configuration — one resolver, per 
     expect(poolLogs.some((l) => /evicted .*model sonnet→opus/.test(l))).toBe(true);
   });
 });
+
+// verbose_thinking PER CHAT for a SCOPED being (operator 2026-10-03, Reencuentro CRC: "apaga el
+// verbose thinking para todos los agentes del chat; incluye una opción en conversations.yaml para
+// que tú mismo, wren, apague el verbose thinking en este grupo"). wren is ONE thread across every
+// chat (scope agent/wren), so its block in the chat was never read — only the scope's. Like `mode`,
+// verbose_thinking is about what THIS chat sees, so the origin chat's block is read first.
+describe('conversations.yaml agents.<being>.verbose_thinking — a scoped being honours the chat it is answering in', () => {
+  const resolveScope = async (_being, surface, chatId) => (surface === 'whatsapp' && chatId === GROUP ? { surface: 'room', chatId: ROOM } : null);
+
+  it('THE ASK: the group says verbose_thinking:false, the scope says true -> a turn from the group runs quiet', async () => {
+    const { brain, pool } = await harness({
+      resolveScope,
+      beings: {
+        [`room/${ROOM}`]: { egpt: { verbose_thinking: true } },
+        [`whatsapp/${GROUP}`]: { egpt: { verbose_thinking: false } },
+      },
+    });
+    await brain.turn('egpt', groupEv);
+    expect(pool.calls[0].key).toBe(`egpt:ccode:room:${ROOM}`);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(false);
+  });
+
+  it('LOCK: a group with no verbose_thinking of its own still gets the scope\'s value', async () => {
+    const { brain, pool } = await harness({
+      resolveScope,
+      beings: { [`room/${ROOM}`]: { egpt: { verbose_thinking: true } }, [`whatsapp/${GROUP}`]: { egpt: { mode: 'on' } } },
+    });
+    await brain.turn('egpt', groupEv);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+
+  it('LOCK: a turn IN the scope itself reads the scope\'s own value, untouched by the group\'s', async () => {
+    const { brain, pool } = await harness({
+      resolveScope,
+      beings: { [`room/${ROOM}`]: { egpt: { verbose_thinking: true } }, [`whatsapp/${GROUP}`]: { egpt: { verbose_thinking: false } } },
+    });
+    await brain.turn('egpt', roomEv);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(true);
+  });
+});

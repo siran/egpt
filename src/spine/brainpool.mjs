@@ -875,7 +875,7 @@ export function createBrainPool({
       sources: {
         accessLevel: tierOf(b?.accessLevel, cd.access_level),
         allowedUsers: tierOf(b?.allowedUsers, cd.allowed_users),
-        verboseThinking: tierOf(b?.verboseThinking, cd.verbose_thinking),
+        verboseThinking: tierOf(b0?.verboseThinking ?? b?.verboseThinking, cd.verbose_thinking),
         compaction: tierOf(b?.compaction, cd.compaction),
         outboxTo: tierOf(b?.outboxTo, cd.outbox_to),
       },
@@ -963,7 +963,12 @@ export function createBrainPool({
       // would short-circuit `??` and silently regress wren's live egpt-xhigh.yaml, which declares
       // it on the type file and nowhere else. null = "neither config.yaml tier stated anything —
       // go ask the type file".
-      verboseThinking: b?.verboseThinking ?? getConfig()?.agents?.[being]?.conversation_defaults?.verbose_thinking ?? null,
+      //
+      // AND, LIKE `mode`, THE ORIGIN CHAT SPEAKS FIRST (operator 2026-10-03: "una opción en
+      // conversations.yaml para que tú mismo, wren, apague el verbose thinking en este grupo"). It
+      // is what THIS chat gets to watch, so a scoped being (wren: one thread, every chat) reads the
+      // block of the chat it is answering in before its scope's. Unscoped, b0 IS b.
+      verboseThinking: b0?.verboseThinking ?? b?.verboseThinking ?? getConfig()?.agents?.[being]?.conversation_defaults?.verbose_thinking ?? null,
       // ALLOW_NEW_INPUT, same two-tier resolution as accessLevel/allowedUsers/sandboxed
       // above (operator 2026-08-30). Unlike verbose_thinking there is NO third tier: this
       // is a property of a CONVERSATION (who is talking to whom, right now), never of an
