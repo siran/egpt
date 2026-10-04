@@ -2772,6 +2772,8 @@ export const CONFIG_SCHEMA = {
     branch. Reply /send to relay a chosen message back to the original chat; reply /end to archive the
     group and drop the alias. The two accounts' phones come from beeper.primary.phone /
     beeper.secondary.phone; the group title is config.group_title; and the texts that live here are:
+      default_name: the {name} used in the group title when /join carries NO <name> arg. Unset → the
+                   built-in "egpt super". (A nameless /join no longer titles the group "…-join".)
       placeholder: what the operator's /join message is edited into (the "thinking with the robot"
                    marker). Unset → a small built-in default.
       opener:      the one message posted from Rodz into the new group right after it is created, so
@@ -2792,6 +2794,8 @@ export const CONFIG_SCHEMA = {
     threads are COPIED from this chat so it DIVERGES. Reply /send to relay a chosen message back to the
     original chat; reply /end to archive the group and retire the split conversation's mapping. Group
     title is config.group_title; the texts that live here are:
+      default_name: the {name} used in the group title when /split carries NO <name> arg. Unset → the
+                   built-in "egpt split".
       placeholder: what the operator's /split message is edited into. Unset → a small built-in default.
       opener:      the one message posted from Rodz into the new group right after it is created, so
                    the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).

@@ -3213,6 +3213,10 @@ export function createCommands({
   const openerOf = (block, dflt, groupName) =>
     ((block && typeof block.opener === 'string' && block.opener.trim()) ? block.opener : dflt)
       .replaceAll('{group}', String(groupName ?? ''));
+  // config.join.default_name / config.split.default_name — the {name} used when /join|/split carries NO
+  // <name> (was the hard-coded verb word "join"/"split", which made every nameless /join on one chat an
+  // IDENTICAL title; see uniqueTitle below), with the built-in fallback. Same shape as placeholderOf.
+  const defaultNameOf = (block, dflt) => (block && typeof block.default_name === 'string' && block.default_name.trim()) ? block.default_name : dflt;
   // RODZ's Beeper user id (@whatsapp_lid-…) — the one member the group must carry besides the creating
   // account. WhatsApp's create REFUSES a `+phone` member; the bridge resolves the id from
   // config.beeper.secondary.phone's digits. Null => STOP (log only, no chat reply). Shared by both verbs.
@@ -3222,6 +3226,31 @@ export function createCommands({
     const rodzUserId = rodzDigits ? await forkBridge.resolveUserIdByPhone(rodzDigits, { accountID }) : null;
     if (!rodzUserId) { onLog(`${verb}: could not resolve Rodz's Beeper user id from config.beeper.secondary.phone — refusing, nothing created.`); return null; }
     return { accountID, rodzUserId };
+  };
+
+  // HHMM-MMDDYYYY from a LOCAL Date (10:48 on 2026-10-04 → "1048-10042026") — the minute-granular suffix
+  // that makes a colliding side-room title unique (uniqueTitle below). Pure; the clock is the injected
+  // `now` seam, so a test pins the suffix deterministically.
+  const forkTimestamp = (d) => {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getHours())}${p(d.getMinutes())}-${p(d.getMonth() + 1)}${p(d.getDate())}${d.getFullYear()}`;
+  };
+  // GUARANTEE A UNIQUE side-room title before the group is created. postOpener finds Rodz's room for the
+  // new group BY TITLE (resolveSecondaryChatIdByTitle), so two side-rooms that share a title make that
+  // lookup land in a STALE group while the fresh one stays empty (the 2026-10-04 nameless-/join bug). If a
+  // group by this EXACT title already exists on the PRIMARY account, append " HHMM-MMDDYYYY" (local,
+  // minute-granular — effectively unique, no loop). Covers the defaulted AND the explicitly-named case.
+  // A probe that is unavailable (standalone/tests) returns the title untouched; a probe that THROWS is
+  // treated as "does not exist" and logged — creation is NEVER blocked on a probe. Shared by /join + /split.
+  const uniqueTitle = async (verb, title, accountID) => {
+    if (typeof forkBridge.resolvePrimaryChatIdByTitle !== 'function') return title;
+    let exists = false;
+    try { exists = !!(await forkBridge.resolvePrimaryChatIdByTitle(title, { accountID })); }
+    catch (e) { onLog(`${verb}: title-collision probe failed for "${title}" — ${e?.message ?? e} (treating as unique)`); return title; }
+    if (!exists) return title;
+    const unique = `${title} ${forkTimestamp(new Date(now()))}`;
+    onLog(`${verb}: "${title}" already exists on the primary — using "${unique}" so the side-room title is unique`);
+    return unique;
   };
 
   // POST THE OPENER into the freshly-created side-group so it SURFACES in Beeper (Beeper hides a chat
@@ -3268,7 +3297,10 @@ export function createCommands({
     const placeholder = placeholderOf(cfg().join, JOIN_PLACEHOLDER_DEFAULT);
     // DISCREET (a phrase trigger): a RANDOM group name instead of the parsed <name>, and the
     // operator's message is left UNEDITED below — so nothing in the chat shows a command ran.
-    const title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? 'join'));
+    let title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? defaultNameOf(cfg().join, 'egpt super')));
+    // …then make it unique (suffix the title if the primary already has a group by that exact name, so the
+    // opener's by-title lookup lands in THIS group, not a stale same-named one — the 2026-10-04 bug).
+    title = await uniqueTitle('/join', title, rodz.accountID);
 
     // ── mutations begin ──
     // (a) CREATE the group: operator + Rodz, forced to a group. No opener — the group inherits C's
@@ -3318,7 +3350,9 @@ export function createCommands({
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     const placeholder = placeholderOf(cfg().split, SPLIT_PLACEHOLDER_DEFAULT);
     // DISCREET (a phrase trigger): random group name + message left unedited (same as /join above).
-    const title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? 'split'));
+    let title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? defaultNameOf(cfg().split, 'egpt split')));
+    // …then make it unique (same reason as /join — see uniqueTitle); rodz.accountID resolved just above.
+    title = await uniqueTitle('/split', title, rodz.accountID);
 
     // ── mutations begin ──
     // (a) CREATE the group.

@@ -3042,6 +3042,12 @@ export async function boot({
       // (postBridgeFor('secondary') — the SAME map /send's postReply routes through; single-account
       // nodes collapse it to the ear bridge) by TITLE so the opener can be posted FROM RODZ.
       resolveSecondaryChatIdByTitle: (title, opts) => postBridgeFor('secondary').resolveChatIdByTitle(title, opts),
+      // THE PRIMARY ACCOUNT'S OWN ROOM ID for a title (operator 2026-10-04, the TITLE-COLLISION check) —
+      // /join + /split probe it BEFORE creating the group: a group already titled this on the primary means
+      // a duplicate, and a duplicate title makes the opener's by-title lookup land in a STALE group, so the
+      // verb suffixes the title to keep it unique. Mirrors the secondary resolver, on postBridgeFor('primary')
+      // (the SAME map; single-account nodes collapse it to the ear bridge), scoped by accountID at the call.
+      resolvePrimaryChatIdByTitle: (title, opts) => postBridgeFor('primary').resolveChatIdByTitle(title, opts),
     },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });

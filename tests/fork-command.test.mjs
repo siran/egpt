@@ -131,11 +131,11 @@ function cfg({ node_name = 'kg', node_role = 'primary', texts = true, send, peer
   };
 }
 
-function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, resolveSecondaryChatIdByTitle = defaultSecondaryResolver, throwOnPost = false } = {}) {
+function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, resolveSecondaryChatIdByTitle = defaultSecondaryResolver, resolvePrimaryChatIdByTitle = null, now = null, throwOnPost = false } = {}) {
   let st = state ?? seedState();
   const sent = [];
   const logs = [];
-  const calls = { edit: [], create: [], post: [], archive: [], resolve: [], resolveTitle: [] };
+  const calls = { edit: [], create: [], post: [], archive: [], resolve: [], resolveTitle: [], resolvePrimaryTitle: [] };
   const forkBridge = {
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
     createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: opts.title?.includes('split') ? SPLIT_CHAT_FULL : JOIN_CHAT_FULL }; },
@@ -147,6 +147,10 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     resolveUserIdByPhone: async (digits, opts) => { calls.resolve.push({ digits, opts }); return digits === RODZ_DIGITS ? rodzUserId : null; },
     // the SECONDARY's own room id for the new group, resolved BY TITLE (the opener posts FROM RODZ there).
     resolveSecondaryChatIdByTitle: async (title, opts) => { calls.resolveTitle.push({ title, opts }); return resolveSecondaryChatIdByTitle(title, opts); },
+    // the PRIMARY account's own room for a TITLE — the title-collision probe. Opt-in: added only when a
+    // test supplies a resolver, so every existing test keeps a forkBridge WITHOUT it (uniqueTitle then
+    // short-circuits → no suffix, byte-identical to before this fix).
+    ...(resolvePrimaryChatIdByTitle ? { resolvePrimaryChatIdByTitle: async (title, opts) => { calls.resolvePrimaryTitle.push({ title, opts }); return resolvePrimaryChatIdByTitle(title, opts); } } : {}),
   };
   const cmds = createCommands({
     getConfig: () => config,
@@ -158,6 +162,7 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     defaultKey: 'e',
     forkBridge,
     sleep: async () => {},   // instant opener poll — the injected seam, so no test waits real time
+    ...(now ? { now } : {}),  // injected clock so the title-collision suffix is deterministic
     onLog: (m) => logs.push(m),
   });
   return { cmds, sent, logs, calls, forkBridge, getState: () => st };
@@ -183,7 +188,7 @@ describe('/join — alias model, node_role gate', () => {
     expect(calls.create).toHaveLength(1);
     const c = calls.create[0];
     expect(c.type).toBe('group');
-    expect(c.title).toBe('egpt join de Proyecto X');   // group_title with {name}=join (default) + {group}
+    expect(c.title).toBe('egpt egpt super de Proyecto X');   // group_title with {name}=the default name ("egpt super") + {group}
     expect('messageText' in c).toBe(false);
     expect(c.participantIDs).toEqual([RODZ_USER_ID]);
     expect(c.accountID).toBe('whatsapp');
@@ -196,7 +201,7 @@ describe('/join — alias model, node_role gate', () => {
     const primaryJid = getContact(st, 'whatsapp', C_CHAT).jid;
     // transcript = the side-room's sanitized title, stored so its per-surface log (transcript-<title>.md)
     // is resolvable from chatId + state without a live ev.chatName (operator 2026-10-04).
-    expect(st.contacts.whatsapp[JOIN_CHAT]).toEqual({ aliasOf: primaryJid, transcript: 'egpt join de Proyecto X' });
+    expect(st.contacts.whatsapp[JOIN_CHAT]).toEqual({ aliasOf: primaryJid, transcript: 'egpt egpt super de Proyecto X' });
     expect(aliasTargetOf(st, 'whatsapp', JOIN_CHAT)).toBe(primaryJid);
     expect(getContact(st, 'whatsapp', JOIN_CHAT).slug).toBe(getContact(st, 'whatsapp', C_CHAT).slug);  // same folder
     expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_JOIN }]);
@@ -212,7 +217,7 @@ describe('/join — alias model, node_role gate', () => {
     const { cmds, calls } = harness({ config: cfg({ texts: false }) });
     await cmds.run({ ...EV });
     expect(calls.edit[0].text).toBe(JOIN_PLACEHOLDER_DEFAULT);
-    expect(calls.create[0].title).toBe(GROUP_TITLE_DEFAULT.replace('{name}', 'join').replace('{group}', 'Proyecto X'));
+    expect(calls.create[0].title).toBe(GROUP_TITLE_DEFAULT.replace('{name}', 'egpt super').replace('{group}', 'Proyecto X'));
   });
 
   it('SILENT on a non-primary-role node (no override)', async () => {
@@ -234,7 +239,7 @@ describe('/join — alias model, node_role gate', () => {
     const { cmds, calls } = harness({ config: cfg({ node_name: 'do', node_role: 'secondary' }) });
     await cmds.run({ ...EV, body: '/join do' });
     expect(calls.create).toHaveLength(1);            // the override selected this node
-    expect(calls.create[0].title).toBe('egpt join de Proyecto X');   // 'do' was the <node>, NOT the <name>
+    expect(calls.create[0].title).toBe('egpt egpt super de Proyecto X');   // 'do' was the <node>, NOT the <name> → the default name
   });
 
   it('`/join do` on the primary node kg stands down — it addressed do, not kg (both forms: space + =)', async () => {
@@ -272,7 +277,7 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     const { cmds, calls, getState } = harness({ config: cfg() });
     await cmds.run({ ...EV });
     const st = getState();
-    expect(calls.create[0].title).toBe('egpt split de Proyecto X');
+    expect(calls.create[0].title).toBe('egpt egpt split de Proyecto X');
     // NOT an alias: SPLIT_CHAT is its own primary entry with its own slug
     expect(aliasTargetOf(st, 'whatsapp', SPLIT_CHAT)).toBe(null);
     const splitSlug = getContact(st, 'whatsapp', SPLIT_CHAT).slug;
@@ -361,7 +366,7 @@ describe('opener — posted into the new group FROM RODZ (secondary) so it surfa
     const { cmds, calls } = harness({ config: cfg() });
     await cmds.run({ ...JOIN_EV });
     // resolved the SECONDARY's own room for the NEW group BY TITLE, scoped to the chat account
-    expect(calls.resolveTitle).toEqual([{ title: 'egpt join de Proyecto X', opts: { accountID: 'whatsapp' } }]);
+    expect(calls.resolveTitle).toEqual([{ title: 'egpt egpt super de Proyecto X', opts: { accountID: 'whatsapp' } }]);
     // opener posted to the SECONDARY room (NOT JOIN_CHAT, the primary's), FROM the secondary, {group} filled
     expect(calls.post).toEqual([{ chatId: SEC_JOIN_ROOM, text: '🔗 sala espejo de Proyecto X', replyToMessageID: null, via: 'secondary' }]);
   });
@@ -370,7 +375,7 @@ describe('opener — posted into the new group FROM RODZ (secondary) so it surfa
     seedSourceThreads('e');
     const { cmds, calls } = harness({ config: cfg() });
     await cmds.run({ ...SPLIT_EV });
-    expect(calls.resolveTitle).toEqual([{ title: 'egpt split de Proyecto X', opts: { accountID: 'whatsapp' } }]);
+    expect(calls.resolveTitle).toEqual([{ title: 'egpt egpt split de Proyecto X', opts: { accountID: 'whatsapp' } }]);
     expect(calls.post).toEqual([{ chatId: SEC_SPLIT_ROOM, text: '🍴 bifurcación de Proyecto X', replyToMessageID: null, via: 'secondary' }]);
   });
 
@@ -409,6 +414,92 @@ describe('opener — posted into the new group FROM RODZ (secondary) so it surfa
     const s = harness({ config: cfg({ texts: false }) });
     await s.cmds.run({ ...SPLIT_EV });
     expect(s.calls.post).toEqual([{ chatId: SEC_SPLIT_ROOM, text: SPLIT_OPENER_DEFAULT.replace('{group}', 'Proyecto X'), replyToMessageID: null, via: 'secondary' }]);
+  });
+});
+
+// ── unique side-room title (title-collision suffix, operator 2026-10-04) ──────────────────────────────
+// The LIVE BUG: a nameless /join defaults {name} to the verb word, so every nameless /join on ONE parent
+// chat makes an IDENTICAL title. postOpener resolves Rodz's room BY TITLE, so the SECOND /join's opener
+// lands in the FIRST (stale) group and the fresh one stays empty. Fix: if the primary already has a group
+// by that exact title, suffix the title (HHMM-MMDDYYYY, local) so each side-room's title is unique.
+describe('unique side-room title — a colliding title gets a HHMM-MMDDYYYY suffix so the opener lands in the right group', () => {
+  const JOIN_EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/join' };
+  const SPLIT_EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/split' };
+  const FIXED = () => new Date(2026, 9, 4, 10, 48, 0).getTime();   // 10:48 local on 2026-10-04 → "1048-10042026"
+  const BASE_JOIN = 'egpt egpt super de Proyecto X';               // group_title with the default {name}
+
+  it('two nameless /join in one chat: 1st title plain (default name), 2nd gets the suffix; both alias the SAME primary jid (SHORT key); each opener targets its OWN group by its unique title', async () => {
+    let n = 0;
+    // the primary reports the title does NOT exist on the 1st /join, then DOES on the 2nd (the collision)
+    const resolvePrimaryChatIdByTitle = () => (++n >= 2 ? '!existingStaleGroup' : null);
+    const { cmds, calls, getState } = harness({ config: cfg(), resolvePrimaryChatIdByTitle, now: FIXED });
+    await cmds.run({ ...JOIN_EV });                                 // 1st — title free → no suffix
+    await cmds.run({ ...JOIN_EV });                                 // 2nd — title taken → suffix
+    // group created with the PLAIN default-name title first, the UNIQUE (suffixed) title second
+    expect(calls.create.map((c) => c.title)).toEqual([BASE_JOIN, `${BASE_JOIN} 1048-10042026`]);
+    expect(calls.create[0].title).not.toMatch(/\d{4}-\d{8}$/);     // 1st carries NO timestamp
+    // each opener resolved Rodz's room BY the group's OWN unique title (not a shared one → not stale)
+    expect(calls.resolveTitle.map((c) => c.title)).toEqual([BASE_JOIN, `${BASE_JOIN} 1048-10042026`]);
+    // the collision probe ran per verb, scoped to the chat account, against the PLAIN title (before suffix)
+    expect(calls.resolvePrimaryTitle).toEqual([
+      { title: BASE_JOIN, opts: { accountID: 'whatsapp' } },
+      { title: BASE_JOIN, opts: { accountID: 'whatsapp' } },
+    ]);
+    // both /join still ALIAS the side-room (SHORT key JOIN_CHAT) to the SAME primary jid
+    const st = getState();
+    expect(st.contacts.whatsapp[JOIN_CHAT].aliasOf).toBe(getContact(st, 'whatsapp', C_CHAT).jid);
+  });
+
+  it('a NAMED /join whose title already exists on the primary ALSO gets the suffix (collision logic is not limited to the default name)', async () => {
+    const { cmds, calls } = harness({ config: cfg(), resolvePrimaryChatIdByTitle: () => '!exists', now: FIXED });
+    await cmds.run({ ...JOIN_EV, body: '/join foo' });
+    expect(calls.create[0].title).toBe('egpt foo de Proyecto X 1048-10042026');
+  });
+
+  it('/split: a colliding title gets the suffix too (shared uniqueTitle helper)', async () => {
+    seedSourceThreads('e');
+    const { cmds, calls } = harness({ config: cfg(), resolvePrimaryChatIdByTitle: () => '!exists', now: FIXED });
+    await cmds.run({ ...SPLIT_EV });
+    expect(calls.create[0].title).toBe('egpt egpt split de Proyecto X 1048-10042026');
+  });
+
+  it('join.default_name / split.default_name from config override the fallback; unset → "egpt super" / "egpt split"', async () => {
+    const jc = cfg(); jc.join = { ...jc.join, default_name: 'super dupe' };
+    const j = harness({ config: jc });
+    await j.cmds.run({ ...JOIN_EV });
+    expect(j.calls.create[0].title).toBe('egpt super dupe de Proyecto X');
+
+    seedSourceThreads('e');
+    const sc = cfg(); sc.split = { ...sc.split, default_name: 'splitty' };
+    const s = harness({ config: sc });
+    await s.cmds.run({ ...SPLIT_EV });
+    expect(s.calls.create[0].title).toBe('egpt splitty de Proyecto X');
+
+    const jf = harness({ config: cfg() });           // join unset → fallback "egpt super"
+    await jf.cmds.run({ ...JOIN_EV });
+    expect(jf.calls.create[0].title).toBe('egpt egpt super de Proyecto X');
+
+    seedSourceThreads('e');
+    const sf = harness({ config: cfg() });            // split unset → fallback "egpt split"
+    await sf.cmds.run({ ...SPLIT_EV });
+    expect(sf.calls.create[0].title).toBe('egpt egpt split de Proyecto X');
+  });
+
+  it('REGRESSION: a first-time named /join (title NOT on the primary) is UNCHANGED — no suffix, alias keyed SHORT, placeholder edited', async () => {
+    const { cmds, calls, getState } = harness({ config: cfg(), resolvePrimaryChatIdByTitle: () => null });
+    await cmds.run({ ...JOIN_EV, body: '/join foo' });
+    expect(calls.create[0].title).toBe('egpt foo de Proyecto X');     // probed, not found → no suffix
+    expect(calls.resolvePrimaryTitle).toEqual([{ title: 'egpt foo de Proyecto X', opts: { accountID: 'whatsapp' } }]);
+    const st = getState();
+    expect(st.contacts.whatsapp[JOIN_CHAT].aliasOf).toBe(getContact(st, 'whatsapp', C_CHAT).jid);
+    expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_JOIN }]);
+  });
+
+  it('a probe that THROWS never blocks creation — the group is created with the plain title and it is logged', async () => {
+    const { cmds, calls, logs } = harness({ config: cfg(), resolvePrimaryChatIdByTitle: () => { throw new Error('beeper down'); } });
+    await cmds.run({ ...JOIN_EV });
+    expect(calls.create[0].title).toBe(BASE_JOIN);                    // plain title, no suffix
+    expect(logs.some((l) => /title-collision probe failed/i.test(l))).toBe(true);
   });
 });
 
