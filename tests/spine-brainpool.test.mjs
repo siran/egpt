@@ -458,6 +458,45 @@ describe('brainpool.turn', () => {
     expect(rolled.filter(([, to]) => !to.endsWith('config.readonly.yaml'))).toEqual([]);
   });
 
+  // ── THE COMPACTION WELCOME (operator 2026-10-04) ─────────────────────────────────────────────
+  // Graceful compaction step ③: the compaction service arms the re-feed WITH a welcome payload
+  // (brainpool's armIdentityRefresh stores it as `compactionWelcome` beside the null
+  // identityInjectedAt). wrapFresh appends it AFTER the re-fed identity on the first post-compact
+  // turn, then the stamp consumes it. It is a COMPACTION-only field: `/agents refresh` writes the
+  // null gesture alone and carries none, so a plain refresh is untouched.
+  it('COMPACTION WELCOME: an armed compactionWelcome is appended AFTER the identity on the re-feed turn, then consumed', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid' }, { text: 'ok2', sessionId: 'sid' }], {
+      seedSession: 'sid',
+      seedAgents: { e: { identityInjectedAt: null, compactionWelcome: 'WELCOME: read handoffs/e.handoff.md' } },   // what a compaction arming writes
+      loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    const msg = pool.calls[0].message;
+    expect(pool.calls[0].brainOptions.sessionId).toBe('sid');                      // SAME session, no new thread
+    expect(msg).toContain('I am eGPT.');                                           // identity re-fed
+    expect(msg).toContain('WELCOME: read handoffs/e.handoff.md');                  // welcome present
+    expect(msg.indexOf('I am eGPT.')).toBeLessThan(msg.indexOf('WELCOME:'));       // AFTER the identity
+    expect(msg.endsWith(ev.line)).toBe(true);                                      // …and still ends with the live line
+
+    // CONSUMED: the stamp wrote identityInjectedAt AND cleared the welcome, so the next turn is ordinary.
+    const b = getContact(getState(), ev.surface, ev.chatId).entry.agents.e;
+    expect(b.identityInjectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(b.compactionWelcome).toBe(null);
+    await brain.turn('e', ev);
+    expect(pool.calls[1].message).toBe(ev.line);
+  });
+
+  it('COMPACTION WELCOME: a plain /agents refresh (no compactionWelcome) appends NO welcome — byte-identical to before', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }], {
+      seedSession: 'sid',
+      seedAgents: { e: { identityInjectedAt: null } },   // plain refresh — no welcome field
+      loadFeed: async () => 'I am eGPT.',
+    });
+    await brain.turn('e', ev);
+    // the exact pre-welcome refresh output: feed + separator + live line, nothing appended
+    expect(pool.calls[0].message).toBe(`I am eGPT.\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${ev.line}`);
+  });
+
   // THE dj-son OVERFLOW (2026-08-28): `@pd` on a local 16k model died with
   // "request (25322 tokens) exceeds the available context size (16384)". Its pi
   // session held 32 copies of the identity feed — 2018 chars each, ~75% of the

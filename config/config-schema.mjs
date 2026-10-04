@@ -2875,5 +2875,27 @@ export const CONFIG_SCHEMA = {
       context_window
         Override the per-model window token count.
         DEFAULT: windowForModel(model)
+      handoff_prompt
+        GRACEFUL COMPACTION, step ① (operator 2026-10-04). An instruction given to
+        the being on its OWN warm session BEFORE the /compact, while it still holds
+        its full pre-compact context, so it can write its working state to
+        handoffs/{agent}.handoff.md in its conversation folder and resume from there
+        afterwards. {agent} is replaced with the being's handle. The handoff turn is
+        NON-FATAL: a failed one logs a line and the compaction proceeds (losing a
+        handoff never blocks the compact), and its output is not posted to chat.
+        DEFAULT: unset — no handoff turn (today's behaviour). The reference text is:
+        "You are about to be compacted. Write a concise handoff of your current
+        working state - what you are doing, the key context, and your next steps -
+        to handoffs/{agent}.handoff.md, so you can pick up seamlessly after
+        compaction."
+      welcome
+        GRACEFUL COMPACTION, step ③ (operator 2026-10-04). Appended AFTER the re-fed
+        identity on the FIRST post-compact turn (the identity re-feeds on compaction
+        as it does at start/refresh/rethread), pointing the being at the handoff it
+        wrote. {agent} is replaced with the being's handle. It rides ONLY a
+        compaction-triggered re-feed, never a plain /agents refresh.
+        DEFAULT: unset — re-feed with no welcome (today's behaviour). The reference
+        text is: "hi, you have just been compacted. please read your handoff at
+        handoffs/{agent}.handoff.md and continue where you left off."
   `,
 };

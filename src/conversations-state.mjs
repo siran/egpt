@@ -962,6 +962,13 @@ export function getBeing(state, surface, jid, being) {
     // re-fed a fixture thread nobody had asked to refresh. Only an EXPLICIT null is a
     // deliberate arming, and only the refresh command writes one.
     identityRefreshArmed: !!b && Object.hasOwn(b, 'identityInjectedAt') && b.identityInjectedAt == null,
+    // THE WELCOME armed ALONGSIDE a COMPACTION re-feed (operator 2026-10-04): the resolved welcome
+    // text the compaction service handed to brainpool's armIdentityRefresh, stored on this block
+    // beside the null identityInjectedAt. A string → brainpool's wrapFresh appends it after the
+    // re-fed identity on the first post-compact turn; null/absent → nothing appended. `/agents
+    // refresh` writes the null gesture WITHOUT this field, so a plain refresh reads null here and
+    // is unaffected — the whole gate between a compaction re-feed and a plain one.
+    compactionWelcome: b?.compactionWelcome ?? null,
     // /agents access_level all|regular <handle>|all (operator 2026-08-14, was /e access
     // all|regular): points this being at a
     // config/permissions/<level>.md file, read fresh every turn by

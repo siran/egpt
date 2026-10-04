@@ -123,3 +123,80 @@ describe('compaction: arming the identity re-feed', () => {
     expect(pool.runs).toHaveLength(1);
   });
 });
+
+// ── GRACEFUL COMPACTION: ① THE HANDOFF + ③ THE WELCOME PAYLOAD (operator 2026-10-04) ──────────
+// Before the native /compact, if a handoff_prompt is configured the being — still holding its
+// full pre-compact context — gets ONE turn on the SAME warm session to write its working state to
+// handoffs/{agent}.handoff.md. After the compact, the configured welcome rides the identity
+// re-feed as armIdentityRefresh's payload. Both OPTIONAL; unset is today's behaviour, byte-for-byte.
+// {agent} resolves to the being handle, which is the first segment of the warm key.
+describe('compaction service: graceful compaction (handoff + welcome)', () => {
+  it('① runs a handoff turn with the {agent}-resolved prompt BEFORE /compact when handoff_prompt is set', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction: { handoff_prompt: 'HANDOFF {agent}: write handoffs/{agent}.handoff.md now' } }),
+      scheduler: sched,
+      dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }),
+    });
+    c.afterTurn(TARGET);                                       // TARGET.key = 'e:ccode:whatsapp:hfm-1' → being 'e'
+    await sched.fire();
+    expect(pool.runs).toHaveLength(2);
+    expect(pool.runs[0].msg).toBe('HANDOFF e: write handoffs/e.handoff.md now');   // {agent} → 'e'
+    expect(pool.runs[0].key).toBe(TARGET.key);                                     // SAME warm session
+    expect(pool.runs[0].opts.brainOptions).toMatchObject({ sessionId: 'sid-1', cwd: '/c' });
+    expect(pool.runs[1].msg).toBe('/compact');                                     // the compact runs AFTER the handoff
+  });
+
+  it('① with handoff_prompt unset, NO handoff turn — exactly one /compact (today\'s behavior, locked)', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn(TARGET);
+    await sched.fire();
+    expect(pool.runs).toHaveLength(1);
+    expect(pool.runs[0].msg).toBe('/compact');
+  });
+
+  it('① a THROWING handoff turn is NON-FATAL: /compact still runs and the identity re-feed still arms', async () => {
+    const sched = makeScheduler();
+    const runs = [], logs = [];
+    let armed = 0;
+    const pool = { run: async (_key, msg) => { runs.push(msg); if (msg !== '/compact') throw new Error('handoff blew up'); return { text: '' }; } };
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction: { handoff_prompt: 'write handoffs/{agent}.handoff.md' } }),
+      scheduler: sched,
+      dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }),
+      onLog: (m) => logs.push(m),
+    });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async () => { armed++; } });
+    await sched.fire();
+    expect(runs).toEqual(['write handoffs/e.handoff.md', '/compact']);   // handoff attempted, compact still ran
+    expect(armed).toBe(1);                                               // and the re-feed still armed
+    expect(logs.join('\n')).toMatch(/handoff turn failed/i);
+    expect(logs.join('\n')).toMatch(/handoff blew up/);
+  });
+
+  it('③ hands the {agent}-resolved welcome to armIdentityRefresh (the re-feed payload)', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let welcomeArg;
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction: { welcome: 'hi {agent}, read handoffs/{agent}.handoff.md' } }),
+      scheduler: sched,
+      dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }),
+    });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async (w) => { welcomeArg = w; } });
+    await sched.fire();
+    expect(welcomeArg).toBe('hi e, read handoffs/e.handoff.md');
+  });
+
+  it('③ with welcome unset, armIdentityRefresh is armed WITHOUT a welcome (empty payload) — today\'s behavior', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let welcomeArg = 'UNSET';
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn({ ...TARGET, armIdentityRefresh: async (w) => { welcomeArg = w; } });
+    await sched.fire();
+    expect(welcomeArg).toBe('');
+  });
+});

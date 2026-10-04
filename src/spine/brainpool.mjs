@@ -886,6 +886,10 @@ export function createBrainPool({
       // refreshed once is refreshed on the one thread it answers under, which is the thread
       // the feed would go into anyway.
       identityRefreshArmed: b?.identityRefreshArmed === true,
+      // THE WELCOME armed alongside a COMPACTION re-feed (operator 2026-10-04), read from the same
+      // scope-addressed block the arming wrote (getBeing above). null for a plain `/agents refresh`
+      // and every un-compacted thread, so wrapFresh appends nothing there.
+      compactionWelcome: b?.compactionWelcome ?? null,
       // The conversation's stored E mode — 'auto' arms the operator-role kickoff layer
       // (read raw, not gating-resolved: auto is an explicit per-conversation opt-in).
       mode: b0?.mode ?? null,
@@ -1033,7 +1037,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
+      const { scope, slug, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
       // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
@@ -1368,8 +1372,15 @@ export function createBrainPool({
           const auto = (await loadAutoLayer()) || '';
           if (auto.trim()) feed = `${feed.trim() ? `${feed.trim()}\n\n` : ''}${auto.trim()}`;
         }
-        if (!feed.trim()) return line;   // no identity configured → raw line
-        return `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${line}`;
+        // ③ THE COMPACTION WELCOME (operator 2026-10-04) rides the re-feed as the identity's TAIL:
+        // appended AFTER the identity, BEFORE the live-message separator, so the first post-compact
+        // turn reads who it is and then "you were just compacted, read your handoff". ONLY on a
+        // compaction-armed refresh — `compactionWelcome` is null for a plain `/agents refresh`, a
+        // fresh thread and an overflow retry — so with it empty this block is byte-identical to before.
+        const welcome = (identityRefresh && typeof compactionWelcome === 'string' && compactionWelcome.trim()) ? compactionWelcome.trim() : '';
+        const preamble = [feed.trim(), welcome].filter(Boolean).join('\n\n');
+        if (!preamble) return line;   // no identity configured and no welcome → raw line
+        return `${preamble}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${line}`;
       };
       // A RESUMED thread that flipped to auto after it was already running: prepend the
       // operator-role layer ONCE (first turn after the flip) as a plain preamble — the
@@ -1467,8 +1478,14 @@ export function createBrainPool({
         // ONLY ON A TURN THAT GOT HERE. A turn that threw never reaches this line, so the
         // refresh stays armed and the feed is retried next time — which is correct and is the
         // honest outcome: an undelivered feed must not be recorded as delivered.
+        // A compaction welcome is CONSUMED here, exactly once: cleared alongside the stamp so the
+        // NEXT plain refresh cannot re-show a stale one. Written only when one was armed, so a plain
+        // refresh (no welcome) still writes exactly `identityInjectedAt` as before — byte-identical.
         await mutateState(writeState, async () => {
-          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, { identityInjectedAt: nowIsoString() }));
+          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, {
+            identityInjectedAt: nowIsoString(),
+            ...(compactionWelcome != null ? { compactionWelcome: null } : {}),
+          }));
         });
       }
       // ARMING THE IDENTITY FEED ON COMPACTION (operator 2026-09-10). The ruling is that the
@@ -1488,9 +1505,19 @@ export function createBrainPool({
       // the session is over ratio); only this module owns conversations.yaml. So the state write
       // travels to the decision instead of teaching the compaction service about being blocks.
       // Same scope/being addressing as the REFRESH STAMP just above, for the same reason.
-      const armIdentityRefresh = async () => {
+      // THE WELCOME PAYLOAD (operator 2026-10-04): the compaction service passes the resolved
+      // welcome text (or '' when none) so it can be re-fed WITH the identity on the first post-
+      // compact turn. Stored as `compactionWelcome` beside the null identityInjectedAt — a field
+      // ONLY this compaction gesture ever writes (the `/agents refresh` command writes the null
+      // alone, carrying no welcome), which is what GATES the welcome to the compaction case. A
+      // blank/absent welcome writes exactly the null gesture as before — byte-identical.
+      const armIdentityRefresh = async (welcome = null) => {
+        const w = (typeof welcome === 'string' && welcome.trim()) ? welcome : null;
         await mutateState(writeState, async () => {
-          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, { identityInjectedAt: null }));
+          await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, {
+            identityInjectedAt: null,
+            ...(w ? { compactionWelcome: w } : {}),
+          }));
         });
       };
       // Auto-compaction hook: after a cooling period the service /compacts this

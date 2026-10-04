@@ -61,6 +61,10 @@ export function createCompaction({
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig()?.compaction ?? {};
+  // {agent} → the being's HANDLE in the configurable handoff_prompt / welcome strings (operator
+  // 2026-10-04). A non-string (the key unset) yields '' so the caller SKIPS the gesture — today's
+  // behaviour, byte-for-byte. A blank/whitespace string is treated as unset for the same reason.
+  const resolveAgent = (tpl, agent) => (typeof tpl === 'string' && tpl.trim()) ? tpl.replaceAll('{agent}', agent) : '';
   const pending = new Map();          // warm key -> timer handle
   const ratio = () => compactionRatio(getConfig());
   const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
@@ -114,6 +118,25 @@ export function createCompaction({
       const { due, tokens, threshold } = dueFor(target, { ratio: target.ratio ?? ratio() });
       if (!due) return;
       onLog(`compacting ${key} (${tokens} tok >= ${threshold})`);
+      // THE BEING'S HANDLE for {agent}: the first segment of the warm key
+      // (`<being>:<engine>:<surface>:<slug>`, brainpool.mjs). The being about to be compacted is
+      // the one that writes the handoff and gets the welcome.
+      const agent = String(key).split(':')[0];
+      // ① GRACEFUL COMPACTION — THE HANDOFF (operator 2026-10-04). BEFORE the /compact, if a
+      // handoff_prompt is configured, give the being ONE turn on the SAME warm session — still
+      // holding its full pre-compact context — to write its working state to
+      // handoffs/{agent}.handoff.md in its own cwd (it has write access to its conversation
+      // folder), so it can pick up seamlessly once the compact summarises that context away.
+      //
+      // NON-FATAL, and the compaction PROCEEDS regardless: losing a handoff must never block the
+      // compaction this service exists to perform. Its OWN try/catch, one log line. The output is
+      // NOT posted to chat (the no-op onText, like /compact's). Unset handoff_prompt → '' → the
+      // turn is skipped, which is today's behaviour exactly.
+      const handoffPrompt = resolveAgent(cfg().handoff_prompt, agent);
+      if (handoffPrompt) {
+        try { await pool.run(key, handoffPrompt, () => {}, { brainOptions: target.brainOptions, klass: 'conversation' }); }
+        catch (e) { onLog(`compact ${key}: handoff turn failed (compacting anyway): ${e?.message ?? e}`); }
+      }
       // native /compact through the SAME warm session (in place, same id). brainOptions
       // match the turn's so a live entry is reused (never a second session on the jsonl).
       await pool.run(key, '/compact', () => {}, { brainOptions: target.brainOptions, klass: 'conversation' });
@@ -130,7 +153,14 @@ export function createCompaction({
       //
       // ITS OWN catch, so the two failures stay distinguishable in the log rather than both
       // reading as a failed compact — here the compact SUCCEEDED and only the arming was lost.
-      try { await target.armIdentityRefresh?.(); }
+      // ③ THE WELCOME rides the re-feed arming as its PAYLOAD (operator 2026-10-04): a configured
+      // welcome, {agent}-resolved, is handed to armIdentityRefresh, which stores it beside the null
+      // identityInjectedAt so brainpool's wrapFresh appends it AFTER the re-fed identity on the
+      // first post-compact turn — pointing the being at the handoff it just wrote. Unset → '' →
+      // armed without it, today's behaviour. GATED TO COMPACTION by construction: this service is
+      // the only caller of armIdentityRefresh; `/agents refresh` writes the null gesture itself and
+      // carries no welcome, so a plain refresh is unaffected.
+      try { await target.armIdentityRefresh?.(resolveAgent(cfg().welcome, agent)); }
       catch (e) { onLog(`compact ${key}: compacted, but arming the identity re-feed failed: ${e?.message ?? e}`); }
       // …AND THE ADMIN CHANNEL IS TOLD (operator 2026-09-24: "can the bridge emit notice of this
       // when it happens?", then "make it's posted on admin channel, eGPT Admin"). brainpool's
