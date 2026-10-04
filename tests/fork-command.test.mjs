@@ -28,7 +28,7 @@ const TEST_HOME = vi.hoisted(() => {
   process.env.EGPT_HOME = dir;
   return dir;
 });
-import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, JOIN_PLACEHOLDER_DEFAULT, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT } from '../src/spine/commands.mjs';
+import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, JOIN_PLACEHOLDER_DEFAULT, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT, JOIN_OPENER_DEFAULT, SPLIT_OPENER_DEFAULT } from '../src/spine/commands.mjs';
 import { resolveBeingDef, sandboxSharePathsFor } from '../src/spine/brainpool.mjs';
 import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContact, aliasTargetOf, patchContact, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -36,6 +36,12 @@ import { Room } from '../src/room-core.mjs';
 const C_CHAT = '!chatC';
 const JOIN_CHAT = '!chatJoin';
 const SPLIT_CHAT = '!chatSplit';
+// The SECONDARY (Rodz) account's OWN room ids for the new groups — DIFFERENT from the primary's
+// JOIN_CHAT/SPLIT_CHAT (a group is a different Matrix room per account). The opener posts here.
+const SEC_JOIN_ROOM = '!secJoin';
+const SEC_SPLIT_ROOM = '!secSplit';
+// Default fake: the secondary lists the new group by its TITLE under its own id (split vs join).
+const defaultSecondaryResolver = (title) => (String(title).includes('split') ? SEC_SPLIT_ROOM : SEC_JOIN_ROOM);
 const SRC_E = '11111111-1111-1111-1111-11111111111e';
 const SRC_W = '22222222-2222-2222-2222-22222222222w';
 
@@ -106,30 +112,34 @@ function stateWithSplit() {
 // node_role=primary with node_name kg; + Rodz phones + fork texts. CFG(role, nodeName, extra).
 const PLACEHOLDER_JOIN = '🔀 uniendo…';
 const PLACEHOLDER_SPLIT = '🍴 bifurcando…';
+const OPENER_JOIN = '🔗 sala espejo de {group}';
+const OPENER_SPLIT = '🍴 bifurcación de {group}';
 const GROUP_TITLE = 'egpt {name} de {group}';
 function cfg({ node_name = 'kg', node_role = 'primary', texts = true, send, peer_nodes } = {}) {
   return {
     ...beeperCfg(AN, RODZ), node_name, node_role,
     ...(peer_nodes ? { peer_nodes } : {}),
-    ...(texts ? { group_title: GROUP_TITLE, join: { placeholder: PLACEHOLDER_JOIN }, split: { placeholder: PLACEHOLDER_SPLIT } } : {}),
+    ...(texts ? { group_title: GROUP_TITLE, join: { placeholder: PLACEHOLDER_JOIN, opener: OPENER_JOIN }, split: { placeholder: PLACEHOLDER_SPLIT, opener: OPENER_SPLIT } } : {}),
     ...(send ? { send } : {}),
   };
 }
 
-function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID } = {}) {
+function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, resolveSecondaryChatIdByTitle = defaultSecondaryResolver, throwOnPost = false } = {}) {
   let st = state ?? seedState();
   const sent = [];
   const logs = [];
-  const calls = { edit: [], create: [], post: [], archive: [], resolve: [] };
+  const calls = { edit: [], create: [], post: [], archive: [], resolve: [], resolveTitle: [] };
   const forkBridge = {
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
     createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: opts.title?.includes('split') ? SPLIT_CHAT : JOIN_CHAT }; },
-    // records the via account /send chose (4th arg) so a test can assert which connection posts.
-    postReply: async (chatId, text, replyToMessageID, opts = {}) => { calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null }); return { ok: true }; },
+    // records the via account /send + the opener chose (4th arg) so a test can assert which connection posts.
+    postReply: async (chatId, text, replyToMessageID, opts = {}) => { calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null }); if (throwOnPost) throw new Error('beeper down'); return { ok: true }; },
     archiveChat: async (chatId) => { calls.archive.push({ chatId }); return true; },
     chatAccountId: async () => 'whatsapp',
     chatTitle: async () => null,
     resolveUserIdByPhone: async (digits, opts) => { calls.resolve.push({ digits, opts }); return digits === RODZ_DIGITS ? rodzUserId : null; },
+    // the SECONDARY's own room id for the new group, resolved BY TITLE (the opener posts FROM RODZ there).
+    resolveSecondaryChatIdByTitle: async (title, opts) => { calls.resolveTitle.push({ title, opts }); return resolveSecondaryChatIdByTitle(title, opts); },
   };
   const cmds = createCommands({
     getConfig: () => config,
@@ -140,6 +150,7 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID }
     jsonlStoreRoot: STORE,
     defaultKey: 'e',
     forkBridge,
+    sleep: async () => {},   // instant opener poll — the injected seam, so no test waits real time
     onLog: (m) => logs.push(m),
   });
   return { cmds, sent, logs, calls, forkBridge, getState: () => st };
@@ -159,7 +170,7 @@ function roomWith(chatId, bodyLine = 'An@[egpt Proyecto X].wa (14:35) #M1: la re
 describe('/join — alias model, node_role gate', () => {
   const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/join' };
 
-  it('on the primary-role node with a resident being: creates a type:"group" titled from group_title, ONLY Rodz, NO opener', async () => {
+  it('on the primary-role node with a resident being: creates a type:"group" titled from group_title, ONLY Rodz, NO inline messageText (the opener is a separate post)', async () => {
     const { cmds, calls } = harness({ config: cfg() });
     await cmds.run({ ...EV });
     expect(calls.create).toHaveLength(1);
@@ -304,12 +315,13 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
       postReply: async () => ({ ok: true }), archiveChat: async () => true,
       chatAccountId: async () => 'whatsapp', chatTitle: async () => null,
       resolveUserIdByPhone: async () => RODZ_USER_ID,
+      resolveSecondaryChatIdByTitle: async () => SEC_SPLIT_ROOM,
     };
     const logs = [];
     const cmds = createCommands({
       getConfig: () => cfg(), send: async () => {},
       loadState: async () => st, writeState: async (s) => { st = s; },
-      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, defaultKey: 'e', forkBridge, io, onLog: (m) => logs.push(m),
+      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, defaultKey: 'e', forkBridge, io, sleep: async () => {}, onLog: (m) => logs.push(m),
     });
     await cmds.run({ ...EV });
     expect(logs.some((l) => /thread copy for e.*failed/i.test(l))).toBe(true);
@@ -328,6 +340,66 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     const override = harness({ config: cfg({ node_name: 'do', node_role: 'secondary' }) });
     await override.cmds.run({ ...EV, body: '/split do' });
     expect(override.calls.create).toHaveLength(1);
+  });
+});
+
+// ── the OPENER (posted FROM RODZ so the empty group surfaces in Beeper) ───────────────────────────────
+describe('opener — posted into the new group FROM RODZ (secondary) so it surfaces in Beeper', () => {
+  const JOIN_EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/join' };
+  const SPLIT_EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/split' };
+
+  it('/join posts config.join.opener ({group}=parent title) to the SECONDARY room once it lists the group by title', async () => {
+    const { cmds, calls } = harness({ config: cfg() });
+    await cmds.run({ ...JOIN_EV });
+    // resolved the SECONDARY's own room for the NEW group BY TITLE, scoped to the chat account
+    expect(calls.resolveTitle).toEqual([{ title: 'egpt join de Proyecto X', opts: { accountID: 'whatsapp' } }]);
+    // opener posted to the SECONDARY room (NOT JOIN_CHAT, the primary's), FROM the secondary, {group} filled
+    expect(calls.post).toEqual([{ chatId: SEC_JOIN_ROOM, text: '🔗 sala espejo de Proyecto X', replyToMessageID: null, via: 'secondary' }]);
+  });
+
+  it('/split posts config.split.opener to the SECONDARY split room FROM the secondary', async () => {
+    seedSourceThreads('e');
+    const { cmds, calls } = harness({ config: cfg() });
+    await cmds.run({ ...SPLIT_EV });
+    expect(calls.resolveTitle).toEqual([{ title: 'egpt split de Proyecto X', opts: { accountID: 'whatsapp' } }]);
+    expect(calls.post).toEqual([{ chatId: SEC_SPLIT_ROOM, text: '🍴 bifurcación de Proyecto X', replyToMessageID: null, via: 'secondary' }]);
+  });
+
+  it('POLLS the secondary room past a first MISS — empty list, then the group — then posts once', async () => {
+    let n = 0;
+    const resolveSecondaryChatIdByTitle = () => (++n >= 2 ? SEC_JOIN_ROOM : null);   // first miss, then hit
+    const { cmds, calls } = harness({ config: cfg(), resolveSecondaryChatIdByTitle });
+    await cmds.run({ ...JOIN_EV });
+    expect(n).toBeGreaterThanOrEqual(2);                                              // it tried again after the miss
+    expect(calls.post).toEqual([{ chatId: SEC_JOIN_ROOM, text: '🔗 sala espejo de Proyecto X', replyToMessageID: null, via: 'secondary' }]);
+  });
+
+  it('FALLBACK: the secondary NEVER surfaces the group → the opener posts via the PRIMARY to the new chatId', async () => {
+    const { cmds, calls, logs } = harness({ config: cfg(), resolveSecondaryChatIdByTitle: () => null });
+    await cmds.run({ ...JOIN_EV });
+    expect(calls.resolveTitle.length).toBeGreaterThan(1);                             // it polled, not a single try
+    expect(calls.post).toEqual([{ chatId: JOIN_CHAT, text: '🔗 sala espejo de Proyecto X', replyToMessageID: null, via: 'primary' }]);
+    expect(logs.some((l) => /never surfaced.*PRIMARY/i.test(l))).toBe(true);
+  });
+
+  it('a FAILING opener post does NOT abort /join — the alias is written and the placeholder edited', async () => {
+    const { cmds, calls, getState } = harness({ config: cfg(), throwOnPost: true });
+    await cmds.run({ ...JOIN_EV });
+    const st = getState();
+    expect(aliasTargetOf(st, 'whatsapp', JOIN_CHAT)).toBe(getContact(st, 'whatsapp', C_CHAT).jid);   // alias intact
+    expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_JOIN }]);          // placeholder intact
+    expect(calls.post).toHaveLength(1);                                                               // it tried and threw — swallowed, no re-throw
+  });
+
+  it('opener falls back to the built-in DEFAULTS when config unset ({group} still filled) — /join and /split', async () => {
+    const j = harness({ config: cfg({ texts: false }) });
+    await j.cmds.run({ ...JOIN_EV });
+    expect(j.calls.post).toEqual([{ chatId: SEC_JOIN_ROOM, text: JOIN_OPENER_DEFAULT.replace('{group}', 'Proyecto X'), replyToMessageID: null, via: 'secondary' }]);
+
+    seedSourceThreads('e');
+    const s = harness({ config: cfg({ texts: false }) });
+    await s.cmds.run({ ...SPLIT_EV });
+    expect(s.calls.post).toEqual([{ chatId: SEC_SPLIT_ROOM, text: SPLIT_OPENER_DEFAULT.replace('{group}', 'Proyecto X'), replyToMessageID: null, via: 'secondary' }]);
   });
 });
 

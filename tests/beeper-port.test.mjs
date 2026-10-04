@@ -458,6 +458,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
       archiveChat: async (...a) => { calls.push(['archive', ...a]); return true; },
       getChatName: (id) => (id === '!room' ? 'Proyecto X' : null),
       resolveUserIdByPhone: async (digits, opts) => { calls.push(['resolve', digits, opts]); return '@whatsapp_lid-99:beeper.local'; },
+      resolveChatIdByTitle: async (title, opts) => { calls.push(['resolveTitle', title, opts]); return title === 'egpt join de X' ? '!secRoom' : null; },
       isAlive: () => true, stop() {},
     }) });
     expect(typeof port.editMessage).toBe('function');     // the method the live node was missing
@@ -468,9 +469,12 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(port.getChatName('!room')).toBe('Proyecto X');
     // the create's participant is resolved from a phone → the person's Beeper user id
     expect(await port.resolveUserIdByPhone('13472576794', { accountID: 'wa' })).toBe('@whatsapp_lid-99:beeper.local');
+    // the OPENER resolves the SECONDARY's own room id for the new group BY TITLE (so it posts FROM RODZ)
+    expect(await port.resolveChatIdByTitle('egpt join de X', { accountID: 'wa' })).toBe('!secRoom');
     // RAW: the /fork marker edit is NOT persona-wrapped (no bridge signature stapled on)
     expect(calls[0]).toEqual(['edit', '!room', 'm1', '🤖↔️🤔 ...']);
     expect(calls).toContainEqual(['resolve', '13472576794', { accountID: 'wa' }]);
+    expect(calls).toContainEqual(['resolveTitle', 'egpt join de X', { accountID: 'wa' }]);
   });
 
   it('editMessage / createGroup / archiveChat / getChatName / resolveUserIdByPhone answer false/null on a transport without them', async () => {
@@ -480,6 +484,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(await port.archiveChat('!room')).toBe(false);
     expect(port.getChatName('!room')).toBe(null);
     expect(await port.resolveUserIdByPhone('1347', {})).toBe(null);
+    expect(await port.resolveChatIdByTitle('T', {})).toBe(null);
   });
 
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {

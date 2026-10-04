@@ -343,6 +343,13 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async resolveUserIdByPhone(phoneDigits, opts) {
       return real.resolveUserIdByPhone ? await real.resolveUserIdByPhone(phoneDigits, opts) : null;
     },
+    // TITLE → this account's own room id (operator 2026-10-03) — a READ of this account's chat list,
+    // forwarded so the /join+/split opener can find the SECONDARY's OWN room id for the new group
+    // (created async under the same title) and post the opener FROM RODZ. A transport that lacks it
+    // answers null, which the handler reads as "not surfaced yet → poll, then fall back to primary".
+    async resolveChatIdByTitle(title, opts) {
+      return real.resolveChatIdByTitle ? await real.resolveChatIdByTitle(title, opts) : null;
+    },
     async archiveChat(chat, opts) {
       return real.archiveChat ? await real.archiveChat(chat, opts) : false;
     },

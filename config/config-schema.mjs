@@ -2771,9 +2771,13 @@ export const CONFIG_SCHEMA = {
     conversation — one shared on-disk thread, two chat surfaces, nothing copied. It is a VIEW, not a
     branch. Reply /send to relay a chosen message back to the original chat; reply /end to archive the
     group and drop the alias. The two accounts' phones come from beeper.primary.phone /
-    beeper.secondary.phone; the group title is config.group_title; and the one text that lives here is:
+    beeper.secondary.phone; the group title is config.group_title; and the texts that live here are:
       placeholder: what the operator's /join message is edited into (the "thinking with the robot"
                    marker). Unset → a small built-in default.
+      opener:      the one message posted from Rodz into the new group right after it is created, so
+                   the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
+                   A {group} template ({group} = the parent chat's title). Unset → a small built-in
+                   default.
   `,
 
   split: `
@@ -2781,8 +2785,12 @@ export const CONFIG_SCHEMA = {
     group backed by a NEW conversation (its own folder/entry, NOT an alias) whose resident beings'
     threads are COPIED from this chat so it DIVERGES. Reply /send to relay a chosen message back to the
     original chat; reply /end to archive the group and retire the split conversation's mapping. Group
-    title is config.group_title; the one text that lives here is:
+    title is config.group_title; the texts that live here are:
       placeholder: what the operator's /split message is edited into. Unset → a small built-in default.
+      opener:      the one message posted from Rodz into the new group right after it is created, so
+                   the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
+                   A {group} template ({group} = the parent chat's title). Unset → a small built-in
+                   default.
   `,
 
   send: `

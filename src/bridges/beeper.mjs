@@ -1113,6 +1113,24 @@ export async function startBeeperBridge(opts = {}) {
     return null;
   }
 
+  // TITLE → this account's own chatID (operator 2026-10-03, the /join+/split OPENER). A group created
+  // on the PRIMARY account is created on the SECONDARY too, ASYNCHRONOUSLY, under the SAME title but
+  // the secondary's OWN room id — so the opener, which must come FROM RODZ (the secondary) for the
+  // empty group to surface in Beeper, needs that id. Scans this account's OWN chat list — the SAME
+  // cached walk resolveUserIdByPhone/chatRaw share, NO new fetch — and returns the SHORT id of the
+  // chat whose title === `title` (exact; the title is our own group_title render, byte-for-byte).
+  // `accountID` scopes the scan to the network the group lives on (absent → first match across all).
+  // null = no chat by that title on this account YET (the caller polls, then falls back to the primary).
+  async function resolveChatIdByTitle(title, { accountID = null } = {}) {
+    const want = String(title ?? '');
+    if (!want) return null;
+    for (const c of await listChatsRaw({ full: true })) {
+      if (accountID && String(c?.accountID ?? '') !== String(accountID)) continue;
+      if (String(c?.title ?? '') === want) return shortChatId(c.id);
+    }
+    return null;
+  }
+
   // All chats from the Desktop API, normalized + briefly cached (60s) —
   // powers /channels-style listings and name→chatID resolution.
   // `full` is part of the cache identity: a cached FIRST PAGE must never satisfy a
@@ -2591,6 +2609,10 @@ export async function startBeeperBridge(opts = {}) {
     // PHONE → BEEPER USER ID (operator 2026-10-03) — the /fork create needs Rodz's `@whatsapp_lid-…`
     // id, not his +phone (the API rejects the latter). Reads the SAME rosters chatRaw/listChatsRaw do.
     resolveUserIdByPhone: (phoneDigits, opts) => resolveUserIdByPhone(phoneDigits, opts),
+    // TITLE → this account's chatID (operator 2026-10-03) — the /join+/split OPENER resolves the
+    // SECONDARY's OWN room id for the new group (created async under the same title) so the opener can
+    // be posted FROM RODZ. Reads the SAME chat list listChats/resolveUserIdByPhone do.
+    resolveChatIdByTitle: (title, opts) => resolveChatIdByTitle(title, opts),
     // THE RECENT MESSAGES OF ONE CHAT, raw (operator 2026-09-07, the mouth link's reaction verb).
     // The co-account node names a message by CONTENT (crossAccountMsgKey) because no id crosses
     // the link, so this end has to look at its own copies to find which one it means. Same GET the

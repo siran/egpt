@@ -1617,6 +1617,21 @@ describe('beeper bridge', () => {
     expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
   });
 
+  it('resolveChatIdByTitle — the /join+/split opener finder: exact title, accountID-scoped, SHORT id, null when absent', async () => {
+    // A group has a DIFFERENT room per account; the secondary surfaces the new group under the SAME
+    // title but its own id. The opener resolves that id by title (scoped to the group's network).
+    fake.chats.set(CHAT('room9'), { title: 'egpt join de Proyecto X', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-tg'), { title: 'egpt join de Proyecto X', type: 'group', isMuted: false, accountID: 'telegram' });
+    const { bridge } = await startBridge();
+    // exact title, scoped to the account the group lives on → that account's SHORT room id
+    expect(await bridge.resolveChatIdByTitle('egpt join de Proyecto X', { accountID: 'whatsapp' })).toBe('room9');
+    // the SAME title on another account is not matched when the scan is scoped
+    expect(await bridge.resolveChatIdByTitle('egpt join de Proyecto X', { accountID: 'telegram' })).toBe('room-tg');
+    // no chat by that title yet → null (the handler polls, then falls back to the primary)
+    expect(await bridge.resolveChatIdByTitle('nope not here', { accountID: 'whatsapp' })).toBe(null);
+    expect(await bridge.resolveChatIdByTitle('', { accountID: 'whatsapp' })).toBe(null);
+  });
+
   it('default verdict never surfaces: no resolver wired → transcribes but no 👂', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [voiceAtt()] })] });

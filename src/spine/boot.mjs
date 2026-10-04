@@ -3031,6 +3031,12 @@ export async function boot({
       // +phone (the API rejects it). Resolved from config.beeper.secondary.phone by scanning this
       // account's rosters (phoneNumber+id ride together on every participant).
       resolveUserIdByPhone: (phoneDigits, opts) => earBridge.resolveUserIdByPhone(phoneDigits, opts),
+      // THE SECONDARY'S OWN ROOM ID for the new side-group (operator 2026-10-03, the OPENER) — the
+      // group is created on the primary, but Beeper gives the SECONDARY (Rodz) its own room id for the
+      // same group, surfaced async, under the SAME title. Resolved on the SECONDARY bridge
+      // (postBridgeFor('secondary') — the SAME map /send's postReply routes through; single-account
+      // nodes collapse it to the ear bridge) by TITLE so the opener can be posted FROM RODZ.
+      resolveSecondaryChatIdByTitle: (title, opts) => postBridgeFor('secondary').resolveChatIdByTitle(title, opts),
     },
     onLog: (m) => log.line?.(`[command] ${m}`),
   });

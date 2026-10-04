@@ -482,6 +482,17 @@ export const SPLIT_PLACEHOLDER_DEFAULT = '🍴🤖 ...';
 export const GROUP_TITLE_DEFAULT = 'egpt {name} {group}';
 // /send's posting account when config.send.post_back_from is unset or invalid: the mouth (secondary).
 export const SEND_POST_BACK_FROM_DEFAULT = 'secondary';
+// config.join.opener / config.split.opener (a {group}=parent-chat-title template) — the one message
+// posted into the freshly-created side-group FROM RODZ so the otherwise-empty group SURFACES in Beeper
+// (Beeper hides a chat with no messages — verified live). These are the small built-in fallbacks when
+// the key is unset; the real text is set in config.yaml. Exported so tests assert the fallback.
+export const JOIN_OPENER_DEFAULT = '🔗 Side-room of {group} — same agents, same conversation. Reply /send to a message to copy it back to the original chat; /end to close.';
+export const SPLIT_OPENER_DEFAULT = '🍴 Fork of {group} — a diverging copy: same agents, its own thread from here. Reply /send to a message to copy it back to the original chat; /end to close.';
+// The side-group opener poll (operator 2026-10-03): Beeper creates the group on the SECONDARY account
+// ASYNCHRONOUSLY, so its own room id for the new group may take a moment to list. Poll a few times,
+// short delay, through the injectable sleep seam — the same shape createGroup's async-create wait uses.
+const OPENER_POLL_ATTEMPTS = 5;
+const OPENER_POLL_MS = 500;
 
 // claude's projects/<dir> naming rule — the FORWARD of conversations-state.reverseSanitizeCwd: a cwd
 // becomes a project-dir by replacing \ / : . _ with '-'. /split copies the forked jsonl into the dir
@@ -687,6 +698,7 @@ export function createCommands({
     chatAccountId: async () => null,    // (chatId) -> the accountID the chat lives on
     chatTitle:     async () => null,    // (chatId) -> the chat's display title
     resolveUserIdByPhone: async () => null,   // (phoneDigits, { accountID }) -> "@whatsapp_lid-…:beeper.local" | null
+    resolveSecondaryChatIdByTitle: async () => null,   // (title, { accountID }) -> the SECONDARY account's own room id for the group titled `title` | null
   },
   onLog = () => {},
 } = {}) {
@@ -3171,6 +3183,11 @@ export function createCommands({
   const groupTitleOf = (groupName, name) =>
     ((typeof cfg().group_title === 'string' && cfg().group_title.trim()) ? cfg().group_title : GROUP_TITLE_DEFAULT)
       .replaceAll('{group}', String(groupName ?? '')).replaceAll('{name}', String(name ?? ''));
+  // config.join.opener / config.split.opener ({group}=parent chat title), with the built-in fallback —
+  // the message posted into the new side-group so it surfaces in Beeper (see postOpener below).
+  const openerOf = (block, dflt, groupName) =>
+    ((block && typeof block.opener === 'string' && block.opener.trim()) ? block.opener : dflt)
+      .replaceAll('{group}', String(groupName ?? ''));
   // RODZ's Beeper user id (@whatsapp_lid-…) — the one member the group must carry besides the creating
   // account. WhatsApp's create REFUSES a `+phone` member; the bridge resolves the id from
   // config.beeper.secondary.phone's digits. Null => STOP (log only, no chat reply). Shared by both verbs.
@@ -3180,6 +3197,34 @@ export function createCommands({
     const rodzUserId = rodzDigits ? await forkBridge.resolveUserIdByPhone(rodzDigits, { accountID }) : null;
     if (!rodzUserId) { onLog(`${verb}: could not resolve Rodz's Beeper user id from config.beeper.secondary.phone — refusing, nothing created.`); return null; }
     return { accountID, rodzUserId };
+  };
+
+  // POST THE OPENER into the freshly-created side-group so it SURFACES in Beeper (Beeper hides a chat
+  // with no messages — verified live), shared by /join + /split. The group is created on the PRIMARY
+  // account, but the opener must come FROM RODZ (the secondary): the secondary is a member and sees the
+  // SAME group under its OWN room id, which Beeper surfaces ASYNCHRONOUSLY — so resolve that id BY TITLE
+  // and POLL past the first misses (createGroup's async-create wait, through the injected sleep seam).
+  // FALLBACK — the opener must ALWAYS appear: if the secondary never surfaces the group (or the post
+  // there fails), post from the PRIMARY account to the new chatId. A failed opener NEVER fails the
+  // command (the group + alias/copy already succeeded): log the path used and move on.
+  const postOpener = async ({ verb, newChatId, title, openerText, accountID }) => {
+    try {
+      let secondaryRoomId = null;
+      for (let i = 1; i <= OPENER_POLL_ATTEMPTS; i++) {
+        secondaryRoomId = await forkBridge.resolveSecondaryChatIdByTitle(title, { accountID });
+        if (secondaryRoomId) break;
+        if (i < OPENER_POLL_ATTEMPTS) await sleep(OPENER_POLL_MS);
+      }
+      if (secondaryRoomId && await forkBridge.postReply(secondaryRoomId, openerText, null, { via: 'secondary' })) {
+        onLog(`${verb}: opener posted FROM RODZ into ${secondaryRoomId} (secondary's room for "${title}")`);
+        return;
+      }
+      const why = secondaryRoomId ? 'secondary post failed' : `secondary never surfaced "${title}" after ${OPENER_POLL_ATTEMPTS} polls`;
+      await forkBridge.postReply(newChatId, openerText, null, { via: 'primary' });
+      onLog(`${verb}: ${why} — opener posted via the PRIMARY into ${newChatId}`);
+    } catch (e) {
+      onLog(`${verb}: opener post failed — ${e?.message ?? e} (group + alias/copy already succeeded; moving on)`);
+    }
   };
 
   // /join (operator types /join [<name>|<node>] in chat C): create the side-group and ALIAS it to C.
@@ -3215,6 +3260,9 @@ export function createCommands({
     // (c) EDIT the operator's /join message into the placeholder marker (raw, no persona).
     await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
     onLog(`/join: ${cTitle} -> group ${joinChatId} aliased to ${primaryJid} (member ${rodz.rodzUserId})`);
+    // (d) POST THE OPENER so the new (otherwise-empty) group surfaces in Beeper — added step AFTER the
+    //     success path; a failure here never undoes the alias/placeholder above.
+    await postOpener({ verb: '/join', newChatId: joinChatId, title, openerText: openerOf(cfg().join, JOIN_OPENER_DEFAULT, cTitle), accountID: rodz.accountID });
   }
 
   // /split (operator types /split [<name>|<node>] in chat C): create a side-group backed by a NEW
@@ -3287,6 +3335,9 @@ export function createCommands({
     // (d) EDIT the operator's /split message into the placeholder marker.
     await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
     onLog(`/split: ${cTitle} -> NEW conv ${splitChatId} (${ensured.slug}); copied threads for ${copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
+    // (e) POST THE OPENER so the new group surfaces in Beeper — added step AFTER the copy + placeholder;
+    //     a failure here never undoes the conversation/threads already written.
+    await postOpener({ verb: '/split', newChatId: splitChatId, title, openerText: openerOf(cfg().split, SPLIT_OPENER_DEFAULT, cTitle), accountID: rodz.accountID });
   }
 
   // /send (the operator REPLIES /send to a message M in a join/split group): relay M's text into the
