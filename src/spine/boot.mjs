@@ -3027,8 +3027,11 @@ export async function boot({
       // SAME bridgeByEndpoint/endpointFor map every other outbound uses), falling back to the ear
       // bridge when the name is unset/unresolvable (single-account nodes collapse to one bridge). No
       // new bridge capability — `.send` exists on every connection; this only chooses which one.
-      postReply:     (chatId, text, replyToMessageID, { via = null } = {}) =>
-        postBridgeFor(via).send(chatId, text, { replyTo: replyToMessageID }),
+      // `unsigned` (operator 2026-10-04, /send) threads straight into the SAME send as skipSignature:
+      // the relay posts back AS THE OPERATOR with no node signature (no visible 🏰, no invisible tag),
+      // while still flowing through .send so its sent id is tracked for echo-dedup like any other post.
+      postReply:     (chatId, text, replyToMessageID, { via = null, unsigned = false } = {}) =>
+        postBridgeFor(via).send(chatId, text, { replyTo: replyToMessageID, skipSignature: unsigned }),
       archiveChat:   (chatId)                         => earBridge.archiveChat(chatId),
       chatAccountId: async (chatId) => { try { return (await earBridge.chatRaw(chatId))?.accountID ?? null; } catch { return null; } },
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),

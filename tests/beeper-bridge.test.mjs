@@ -2289,6 +2289,17 @@ describe('beeper bridge — E limbs + reply-to-E notification', () => {
     expect(bridge.wasSentByUs(CHAT('chat-1'), 'someone-elses-id')).toBe(false);
   });
 
+  // DEDUP IS ID-BASED, NEVER THE SIGNATURE (operator 2026-10-04, the /send relay). /send posts back
+  // AS THE OPERATOR with NO node signature (wrapPersona skipSignature, one layer up in beeper-port),
+  // but it still flows through THIS send path — so its CONFIRMED id is rememberSent exactly like any
+  // signed send, and this node will not re-ingest the relay. The _sentIds key is chat|id (msgKeyOf);
+  // the signature is no part of it, so an unsigned body is recognised as ours identically to a signed one.
+  it('an UNSIGNED send (what /send relays) still records its confirmed id → wasSentByUs true (echo-dedup holds)', async () => {
+    const { bridge } = await startBridge();
+    await sendSettled(bridge, 'la respuesta elegida', { chatId: CHAT('chat-1') });   // no 🏰, no node tag
+    expect(bridge.wasSentByUs(CHAT('chat-1'), fake.posts[0].confirmedID)).toBe(true);
+  });
+
   it('an inbound reply to a message WE sent → replyToBot true + ↩#id ref (operator: "reply to E isn\'t notified")', async () => {
     const { bridge, incoming } = await startBridge();
     await sendSettled(bridge, 'egpt here', { chatId: CHAT('chat-1') });

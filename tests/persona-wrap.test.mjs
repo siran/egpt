@@ -4,6 +4,7 @@
 // shared module must behave identically to the code beeper-port carried before the move.
 import { describe, it, expect } from 'vitest';
 import { personaStamp, makeWrapPersona } from '../src/bridges/persona-wrap.mjs';
+import { hasNodeSignature } from '../src/node-signature.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 describe('personaStamp — the bridge-enforced persona identifier', () => {
@@ -90,6 +91,44 @@ describe('makeWrapPersona — concentric [bridge, agent] wrap around the stamped
   it('a 👂 echo core (no persona header) renders through the SHARED wrap: bridge outside, transcription inside', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: 'BO', bridgeSignatureClose: 'BC' });
     expect(wrap({ agentSigOpen: 'TO', agentSigClose: 'TC' }, '👂 hola')).toBe('BO TO 👂 hola TC BC');
+  });
+});
+
+// skipSignature (operator 2026-10-04, the /send relay) — ONE send posts back AS THE OPERATOR and
+// carries NO node signature: no visible bridge_signature_close (🏰) AND no invisible node tag. The
+// persona STAMP (if any) still applies — only the SIGNATURE is skipped — and a stray tag already in
+// the body is stripped, so the output is guaranteed clean. Echo-dedup is id-based (beeper.mjs
+// _sentIds, keyed chat|id), NEVER the signature, so an unsigned send still dedups exactly like a
+// signed one; this flag changes only what the SURFACE shows, never how the node recognises its echo.
+describe('makeWrapPersona — skipSignature posts unsigned (the /send relay back to the operator)', () => {
+  it('REPRODUCE-FIRST: skipSignature:true → no visible 🏰 AND no invisible node tag; a bare body comes out verbatim', () => {
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🏰', nodeName: 'kg' });
+    const out = wrap({ skipSignature: true }, 'la respuesta elegida');
+    expect(out).toBe('la respuesta elegida');          // no 🌉kg open, no 🏰 close
+    expect(out).not.toMatch(/🏰/);
+    expect(hasNodeSignature(out)).toBe(false);          // …and no invisible node-tag chars either
+  });
+
+  it('a persona-stamped body keeps its stamp but loses the signature under skipSignature', () => {
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🏰', nodeName: 'kg' });
+    const out = wrap({ bodyEmoji: '🐶', label: 'egpt', skipSignature: true }, 'hola');
+    expect(out).toBe('🐶 egpt: hola');                  // stamp stays, signature gone
+    expect(hasNodeSignature(out)).toBe(false);
+  });
+
+  it('a body that ALREADY carries an invisible tag is stripped clean under skipSignature (no stray tag survives)', () => {
+    const alreadySigned = makeWrapPersona({ nodeName: 'kg' })({}, 'relayed line');   // carries the kg tag
+    expect(hasNodeSignature(alreadySigned)).toBe(true);
+    const out = makeWrapPersona({ bridgeSignatureClose: '🏰', nodeName: 'kg' })({ skipSignature: true }, alreadySigned);
+    expect(out).toBe('relayed line');
+    expect(hasNodeSignature(out)).toBe(false);
+  });
+
+  it('CONTRAST: the SAME wrap WITHOUT skipSignature still signs — visible 🏰 close AND invisible node tag', () => {
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🏰', nodeName: 'kg' });
+    const out = wrap({}, 'la respuesta elegida');
+    expect(out).toMatch(/🏰/);
+    expect(hasNodeSignature(out)).toBe(true);
   });
 });
 

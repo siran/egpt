@@ -79,6 +79,13 @@ export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose
     if (!String(text ?? '').trim()) return text;
     const core = personaStamp(o.bodyEmoji, o.label, text);
     if (isMeshEnvelope(core)) return core;        // transport, not a surface send → never signed
+    // skipSignature (operator 2026-10-04, the /send relay) — post back AS THE OPERATOR with NO node
+    // signature: no visible bridge_signature_close AND no invisible node tag. The persona STAMP still
+    // applies (it is in `core`); only the SIGNATURE is skipped. stripNodeSignature so a body that
+    // already carried a tag (a relayed, pre-signed line) comes out clean. Echo-dedup is id-based
+    // (beeper.mjs _sentIds, keyed chat|id), never the signature, so an unsigned send still dedups
+    // exactly like a signed one — this changes only what the surface shows.
+    if (o.skipSignature) return stripNodeSignature(core);
     const wrapped = applyLayers(core, [
       { open: bridgeSignatureOpen, close: bridgeSignatureClose },
       { open: o.agentSigOpen ?? '', close: o.agentSigClose ?? '' },

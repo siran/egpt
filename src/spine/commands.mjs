@@ -3482,7 +3482,10 @@ export function createCommands({
       if (secRoom) targetChatId = secRoom;
       else via = 'primary';
     }
-    const posted = await forkBridge.postReply(targetChatId, cleaned, null, { via });
+    // UNSIGNED (operator 2026-10-04): /send posts back AS THE OPERATOR — no node signature (no visible
+    // 🏰 bridge close, no invisible node tag). Routed into the SAME .send via skipSignature, so the
+    // relay's sent id is still tracked for echo-dedup (beeper.mjs _sentIds) and this node won't re-ingest it.
+    const posted = await forkBridge.postReply(targetChatId, cleaned, null, { via, unsigned: true });
     if (!posted) { await send?.(ev.chatId, '/send: could not post to the original chat'); return; }
     onLog(`/send: ${ev.chatId} -> original ${originalChatId} via ${via}${targetChatId !== originalChatId ? ` (Rodz's room ${targetChatId})` : ''} (message ${ev.replyToId})`);
   }

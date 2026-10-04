@@ -140,7 +140,9 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
     createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: opts.title?.includes('split') ? SPLIT_CHAT_FULL : JOIN_CHAT_FULL }; },
     // records the via account /send + the opener chose (4th arg) so a test can assert which connection posts.
-    postReply: async (chatId, text, replyToMessageID, opts = {}) => { calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null }); if (throwOnPost) throw new Error('beeper down'); return { ok: true }; },
+    // `unsigned` is recorded ONLY when the caller passes it (the /send relay does; the opener does not), so
+    // the opener's exact-shape toEqual assertions stay 4-key and the /send tests can assert the flag.
+    postReply: async (chatId, text, replyToMessageID, opts = {}) => { calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null, ...(opts.unsigned !== undefined ? { unsigned: opts.unsigned } : {}) }); if (throwOnPost) throw new Error('beeper down'); return { ok: true }; },
     archiveChat: async (chatId) => { calls.archive.push({ chatId }); return true; },
     chatAccountId: async () => 'whatsapp',
     chatTitle: async () => null,
@@ -514,6 +516,13 @@ describe('/send — relays the replied-to message back to the original (alias OR
     expect(calls.post[0].text).toBe('la respuesta elegida');
     expect(calls.archive).toHaveLength(0);
     expect(aliasTargetOf(getState(), 'whatsapp', JOIN_CHAT)).toBe(getContact(getState(), 'whatsapp', C_CHAT).jid);
+  });
+
+  it('REPRODUCE-FIRST: the relay requests an UNSIGNED post (unsigned:true) so it lands as the operator, with no node signature', async () => {
+    const { cmds, calls } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg({ send: { post_back_from: 'primary' } }) });
+    await cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send' });
+    expect(calls.post).toHaveLength(1);
+    expect(calls.post[0].unsigned).toBe(true);   // routed INTO the existing send path with the unsigned flag
   });
 
   it('in a /split group: posts to the recorded parent_chat (primary = directly)', async () => {

@@ -4,6 +4,7 @@
 // LIVE echo (the Phase 2 verify gate) is tests-manual/phase2-echo.mjs.
 import { describe, it, expect } from 'vitest';
 import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
+import { hasNodeSignature } from '../src/node-signature.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 // A fake real-bridge that captures the host callbacks it was constructed with,
@@ -485,6 +486,21 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(port.getChatName('!room')).toBe(null);
     expect(await port.resolveUserIdByPhone('1347', {})).toBe(null);
     expect(await port.resolveChatIdByTitle('T', {})).toBe(null);
+  });
+
+  // skipSignature (operator 2026-10-04, the /send relay) — the ONE outbound that posts back AS THE
+  // OPERATOR and carries NO node signature. It threads straight through wrapPersona's skipSignature,
+  // so the UNSIGNED bytes still reach real.send (and therefore beeper.mjs's id-tracking / echo-dedup)
+  // exactly like any other send — only without the visible 🏰 close or the invisible node tag.
+  it('REPRODUCE-FIRST: send({ skipSignature:true }) posts UNSIGNED bytes to real.send (no 🏰, no node tag) — while a normal send signs', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🏰', nodeName: 'kg' }, { start });
+    await port.send('!room', 'la respuesta elegida', { skipSignature: true });
+    await port.send('!room', 'la respuesta elegida', {});   // SAME text, normal send → signed
+    expect(spy.sent[0].text).toBe('la respuesta elegida');  // unsigned: raw bytes reached real.send
+    expect(hasNodeSignature(spy.sent[0].text)).toBe(false); // …and no invisible node-tag chars
+    expect(spy.sent[1].text).toMatch(/🏰/);                 // the normal send still carries the visible close
+    expect(hasNodeSignature(spy.sent[1].text)).toBe(true);  // …and the invisible node tag
   });
 
   it('forwards bridge_* + transcription_* through to startBeeperBridge (the 👂 echo layers are applied there)', async () => {
