@@ -130,9 +130,58 @@ describe('read-only grants — NATIVE deny rules (Claude permissions, not a hook
     expect(valsOf(a, '--setting-sources')).toEqual(['']);        // no ~/.claude inherit
     expect(a).toContain('--settings');                          // RO deny still applied
   });
-  it('absent/empty readOnlyDirs → no --settings, no throw', () => {
+  it('absent/empty readOnlyDirs → no permissions deny in --settings, no throw', () => {
     expect(() => buildClaudeArgs({})).not.toThrow();
-    expect(buildClaudeArgs({ readOnlyDirs: [] })).not.toContain('--settings');
+    // --settings is now ALWAYS present (cleanupPeriodDays, see the retention block), but with no
+    // RO dir it carries NO `permissions` key — i.e. no deny rules.
+    const s = JSON.parse(valsOf(buildClaudeArgs({ readOnlyDirs: [] }), '--settings')[0]);
+    expect(s.permissions).toBeUndefined();
+  });
+});
+
+// ── SESSION RETENTION: the CLI thread store (<threadId>.jsonl that --resume needs) must NEVER be
+//    auto-reaped, so a being's thread stays resumable no matter how long it has been idle
+//    (operator ruling 2026-10-04: "threads should NOT be lost in the first place"). Claude Code
+//    defaults cleanupPeriodDays to 30 and prunes older session transcripts at CLI startup; eGPT
+//    overrides it to effectively-never on EVERY turn. The CLI schema is int().positive() (no
+//    0/-1/null sentinel — its own guidance is "use a large value for long retention"), so the
+//    never-value is a large positive day count, not a sentinel. It rides the SAME --settings
+//    overlay as the read-only deny rules; --settings is an additional/overriding source, so the
+//    two share ONE object without clobbering each other or the user's other settings. ──
+describe('session retention — cleanupPeriodDays effectively-never on EVERY turn (operator 2026-10-04)', () => {
+  const NEVER_DAYS = 3650000;   // ~10000 years; CLI schema is int().positive(), so NOT a 0/-1/null sentinel
+  const settingsOf = (args) => JSON.parse(valsOf(args, '--settings')[0]);
+
+  it('plain turn: --settings ALWAYS present, cleanupPeriodDays = never, NO permissions key', () => {
+    const a = buildClaudeArgs({});
+    expect(has(a, '--settings')).toBe(true);
+    const s = settingsOf(a);
+    expect(s.cleanupPeriodDays).toBe(NEVER_DAYS);
+    expect(s.permissions).toBeUndefined();   // no RO dir → retention only
+  });
+
+  it('osConfined (boxed) turn: cleanupPeriodDays present, NO permissions (retention is not a CLI gate)', () => {
+    const a = buildClaudeArgs({ readOnlyDirs: ['/c/ro'], addDirs: ['/c/work'], osConfined: true });
+    const s = settingsOf(a);
+    expect(s.cleanupPeriodDays).toBe(NEVER_DAYS);
+    expect(s.permissions).toBeUndefined();   // deny rules still omitted for the boxed tier
+  });
+
+  it('readOnlyDirs + !osConfined: ONE --settings with BOTH cleanupPeriodDays AND the UNCHANGED deny rules', () => {
+    const a = buildClaudeArgs({ readOnlyDirs: ['/ro'] });
+    expect(valsOf(a, '--settings')).toHaveLength(1);   // a single --settings, not a second one / parallel path
+    const s = settingsOf(a);
+    expect(s.cleanupPeriodDays).toBe(NEVER_DAYS);
+    // byte-identical to the pre-change rules: same readOnlyDenyRules, only ADDING cleanupPeriodDays
+    expect(s.permissions.deny).toEqual(readOnlyDenyRules(['/ro']));
+    expect(s.permissions.deny).toContain('Write(/ro/**)');
+  });
+
+  it('confineToDirs (no OS box) + readOnlyDirs: retention AND deny rules both ride the overlay', () => {
+    const a = buildClaudeArgs({ readOnlyDirs: ['/c/ro'], confineToDirs: ['/c/conv'], allowedTools: ['Read'] });
+    const s = settingsOf(a);
+    expect(s.cleanupPeriodDays).toBe(NEVER_DAYS);
+    expect(s.permissions.deny).toEqual(readOnlyDenyRules(['/c/ro']));
   });
 });
 
@@ -191,8 +240,10 @@ describe('the three permission tiers (2026-09-23)', () => {
     // locations under the operator's profile, and naming them is what put the operator's
     // username into every sandboxed being's argv.
     expect(addDirs(a)).toEqual([]);
-    // ...and no deny rules and no settings isolation: a CLI gate this tier does not have.
-    expect(has(a, '--settings')).toBe(false);
+    // ...retention rides on --settings now (cleanupPeriodDays, EVERY turn — see the dedicated
+    // block below), but still NO deny rules and NO settings isolation: a CLI gate this tier does
+    // not have. So --settings is present yet carries no `permissions` key.
+    expect(JSON.parse(valsOf(a, '--settings')[0]).permissions).toBeUndefined();
     expect(has(a, '--setting-sources')).toBe(false);
   });
 

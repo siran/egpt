@@ -258,18 +258,34 @@ export function buildClaudeArgs(options = {}) {
     for (const d of dirs) args.push('--add-dir', d);
   }
 
+  // ── Session retention — the CLI thread store (<threadId>.jsonl that --resume
+  // reads) must NEVER be auto-reaped, so a thread stays resumable no matter how
+  // long it has sat idle (operator ruling 2026-10-04: "threads should NOT be lost
+  // in the first place"). Claude Code defaults `cleanupPeriodDays` to 30 and prunes
+  // older session transcripts at CLI startup; eGPT overrides it to effectively-never
+  // on EVERY turn — boxed or not, confined or not. The CLI schema is int().positive()
+  // (no 0/-1/null sentinel; its own guidance is "use a large value for long
+  // retention"), so this is a large day count (~10000 years), not a sentinel.
+  // It rides the SAME --settings overlay as the read-only deny rules below:
+  // --settings is an ADDITIONAL, overriding source that overrides only the keys it
+  // names and loads even with --setting-sources '', so it clobbers neither the
+  // user's other settings nor the deny rules — the two just share one object.
+  const settings = { cleanupPeriodDays: 3650000 };
+
   // Read-only grants — NATIVE deny rules (operator 2026-06-12: use Claude's CLI
   // options, NOT a hand-rolled hook). `permissions.deny` blocks the write-class
-  // tools under each RO dir; passed via --settings, which loads even with
-  // --setting-sources '' (explicit additional settings), so the grant holds
+  // tools under each RO dir; merged into the --settings overlay, which loads even
+  // with --setting-sources '' (explicit additional settings), so the grant holds
   // inside the sandbox — equivalent to the SDK's programmatic PreToolUse hook.
   // ...and they go with the roots for an OS-sandboxed turn, for the same reason and in the same
-  // ruling: a deny rule is a CLI gate, and that tier has none. It also subtracts nothing there —
-  // a read-only `allowed_paths` entry is granted ReadAndExecute at the kernel, so the write the
-  // rule would have refused fails at the syscall whether Claude Code asks about it or not.
+  // ruling: a deny rule is a CLI gate, and that tier has none (retention rides along regardless —
+  // it gates nothing). It also subtracts nothing there — a read-only `allowed_paths` entry is
+  // granted ReadAndExecute at the kernel, so the write the rule would have refused fails at the
+  // syscall whether Claude Code asks about it or not.
   if (readOnlyDirs.length && !osConfined) {
-    args.push('--settings', JSON.stringify({ permissions: { deny: readOnlyDenyRules(readOnlyDirs) } }));
+    settings.permissions = { deny: readOnlyDenyRules(readOnlyDirs) };
   }
+  args.push('--settings', JSON.stringify(settings));
 
   if (options.sessionId) args.push('--resume', String(options.sessionId));
   // ...ELSE THE THREAD ID THE CALLER MINTED ITSELF (operator ruling 2026-09-11). `--resume`

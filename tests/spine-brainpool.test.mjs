@@ -951,7 +951,11 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     const opts = pool.calls[0].brainOptions;
     expect(opts.readOnlyDirs).toBeUndefined();                            // no CLI list at all...
     expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // ...and still ACE'd
-    expect(argVals(buildClaudeArgs(opts), '--settings')).toEqual([]);     // ...and silent in argv
+    // --settings now ALWAYS rides along for session retention (cleanupPeriodDays — threads must
+    // stay --resume-able, operator 2026-10-04), but it carries NO `permissions` key in the box:
+    // still no deny rules, still silent on gating.
+    const settings = JSON.parse(argVals(buildClaudeArgs(opts), '--settings')[0]);
+    expect(settings.permissions).toBeUndefined();
   });
 
   it('THE CLI GATE IS GONE ENTIRELY: bypassPermissions, the whole tool list, no --setting-sources', async () => {
