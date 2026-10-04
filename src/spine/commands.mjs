@@ -3397,10 +3397,23 @@ export function createCommands({
     const cleaned = body ? cleanQuotedBody(body) : null;
     if (!cleaned) { await send?.(ev.chatId, '/send: nothing to send — reply to a message that has text'); return; }
     const pbf = String(cfg().send?.post_back_from ?? '').trim().toLowerCase();
-    const via = (pbf === 'primary' || pbf === 'secondary') ? pbf : SEND_POST_BACK_FROM_DEFAULT;
-    const posted = await forkBridge.postReply(originalChatId, cleaned, null, { via });
+    let via = (pbf === 'primary' || pbf === 'secondary') ? pbf : SEND_POST_BACK_FROM_DEFAULT;
+    // Rodz (the secondary) has its OWN room id for the ORIGINAL chat — a group is a different Matrix
+    // room per account — so posting the original's PRIMARY id on the secondary bridge FAILS ("could
+    // not post", the 2026-10-04 bug). When posting FROM RODZ, resolve the secondary's room for the
+    // original by title first (like the opener); if it can't be found, fall back to posting from the
+    // PRIMARY (the operator's own account), which always has the original's room and lands.
+    let targetChatId = originalChatId;
+    if (via === 'secondary') {
+      const origTitle = (await forkBridge.chatTitle(originalChatId)) || getContact(state, surface, originalChatId)?.slug || null;
+      const accountID = await forkBridge.chatAccountId(originalChatId);
+      const secRoom = origTitle ? await forkBridge.resolveSecondaryChatIdByTitle(origTitle, { accountID }) : null;
+      if (secRoom) targetChatId = secRoom;
+      else via = 'primary';
+    }
+    const posted = await forkBridge.postReply(targetChatId, cleaned, null, { via });
     if (!posted) { await send?.(ev.chatId, '/send: could not post to the original chat'); return; }
-    onLog(`/send: ${ev.chatId} -> original ${originalChatId} via ${via} (message ${ev.replyToId})`);
+    onLog(`/send: ${ev.chatId} -> original ${originalChatId} via ${via}${targetChatId !== originalChatId ? ` (Rodz's room ${targetChatId})` : ''} (message ${ev.replyToId})`);
   }
 
   // /end (the operator REPLIES /end in a join/split group): archive the group and drop its mapping so

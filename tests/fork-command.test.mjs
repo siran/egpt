@@ -414,22 +414,38 @@ describe('opener — posted into the new group FROM RODZ (secondary) so it surfa
 
 // ── /send (works in both; post_back_from routes the posting account) ────────────────────────────────
 describe('/send — relays the replied-to message back to the original (alias OR recorded parent)', () => {
-  it('in a /join group: posts to the alias target; repeatable, no close', async () => {
-    const { cmds, calls, getState } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg() });
+  it('in a /join group: posts to the alias target (primary = the original chat directly); repeatable, no close', async () => {
+    const { cmds, calls, getState } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg({ send: { post_back_from: 'primary' } }) });
     await cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send' });
     expect(calls.post).toHaveLength(1);
     expect(calls.post[0].chatId).toBe(C_CHAT);
+    expect(calls.post[0].via).toBe('primary');
     expect(calls.post[0].text).toBe('la respuesta elegida');
     expect(calls.archive).toHaveLength(0);
     expect(aliasTargetOf(getState(), 'whatsapp', JOIN_CHAT)).toBe(getContact(getState(), 'whatsapp', C_CHAT).jid);
   });
 
-  it('in a /split group: posts to the recorded parent_chat', async () => {
-    const { cmds, calls } = harness({ state: stateWithSplit(), rooms: roomWith(SPLIT_CHAT), config: cfg() });
+  it('in a /split group: posts to the recorded parent_chat (primary = directly)', async () => {
+    const { cmds, calls } = harness({ state: stateWithSplit(), rooms: roomWith(SPLIT_CHAT), config: cfg({ send: { post_back_from: 'primary' } }) });
     await cmds.run({ chatId: SPLIT_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send' });
     expect(calls.post).toHaveLength(1);
     expect(calls.post[0].chatId).toBe(C_CHAT);
     expect(calls.post[0].text).toBe('la respuesta elegida');
+  });
+
+  it('post_back_from secondary: resolves the ORIGINAL\'s secondary room by title and posts THERE (Rodz), not the primary id', async () => {
+    const { cmds, calls } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg({ send: { post_back_from: 'secondary' } }) });
+    await cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send' });
+    expect(calls.post[0].via).toBe('secondary');
+    expect(calls.post[0].chatId).toBe(SEC_JOIN_ROOM);   // Rodz's OWN room for the original — NOT C_CHAT (the primary id)
+    expect(calls.post[0].chatId).not.toBe(C_CHAT);
+  });
+
+  it('post_back_from secondary but the secondary room is unresolvable → falls back to the primary, into the original', async () => {
+    const { cmds, calls } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg({ send: { post_back_from: 'secondary' } }), resolveSecondaryChatIdByTitle: () => null });
+    await cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send' });
+    expect(calls.post[0].via).toBe('primary');
+    expect(calls.post[0].chatId).toBe(C_CHAT);
   });
 
   it('post_back_from: secondary (default) routes via the mouth; primary routes via the operator', async () => {
