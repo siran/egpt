@@ -790,6 +790,50 @@ describe('spine — advice answer hook', () => {
   });
 });
 
+// PHRASE TRIGGERS (operator 2026-10-04): a non-slash operator message whose whole text equals a
+// configured config.<cmd>.triggers phrase is CONSUMED by classify — the command runs (discreetly)
+// and NO being turn is dispatched. The matcher/runner live in commands.mjs (commands.phraseCommand /
+// commands.runPhrase, covered by fork-command.test.mjs); this locks the DISPATCH half: consume vs.
+// fall through, and that the consumed message is still recorded like any ordinary inbound.
+describe('spine — phrase-trigger dispatch (classify consumes, no being turn)', () => {
+  function buildPhrase(phraseCommand) {
+    const bridge = fakeBridge();
+    const brain = fakeBrain();
+    const transcript = fakeTranscript();
+    const ran = [];
+    const commands = {
+      isCommand: () => false,                       // not a '/'-command — a natural phrase
+      phraseCommand,
+      runPhrase: async (ev, cmd) => { ran.push({ body: ev.body, cmd }); },
+    };
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(), commands,
+      clock: { now: () => 1000 },
+    });
+    spine.start();
+    return { bridge, brain, transcript, ran };
+  }
+
+  it('a matching operator phrase RUNS the command and dispatches NO being turn — but IS logged', async () => {
+    const { bridge, brain, transcript, ran } = buildPhrase((ev) => (ev.body === 'dame un segundo' ? 'join' : null));
+    await bridge.emit({ ...MSG, authorized: true, body: 'dame un segundo' });
+    expect(ran).toEqual([{ body: 'dame un segundo', cmd: 'join' }]);   // the command ran
+    expect(brain.calls).toHaveLength(0);                               // no being turn dispatched (consumed)
+    expect(bridge.sent).toHaveLength(0);                               // nothing surfaced in the chat
+    expect(transcript.entries).toHaveLength(1);                        // but recorded like any ordinary message
+  });
+
+  it('a non-matching message is ordinary — phraseCommand returns null and the brain runs normally', async () => {
+    const { bridge, brain, ran } = buildPhrase(() => null);
+    await bridge.emit({ ...MSG, authorized: true, body: 'hola' });
+    expect(ran).toHaveLength(0);
+    expect(brain.calls).toHaveLength(1);                               // flowed through to the being
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola' }]);
+  });
+});
+
 // LIVE BUG (operator 2026-07-15): /reply must be handled BEFORE anything is posted.
 // The operator watched the literal token `/reply #<id> …` render in the chat, then the
 // message get deleted and reposted as a native quote. Three causes, locked here:

@@ -2778,6 +2778,12 @@ export const CONFIG_SCHEMA = {
                    the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
                    A {group} template ({group} = the parent chat's title). Unset → a small built-in
                    default.
+      triggers:    OPTIONAL list of extra phrases that invoke /join; the '/'-word is always a trigger.
+                   A message that EQUALS one of these (trimmed, case-insensitive) runs /join DISCREETLY
+                   — a RANDOM group name, the message left UNEDITED — so it reads as ordinary
+                   conversation, not an obvious command. Operator-only (a non-operator saying the phrase
+                   is an ordinary message), EXACT whole-message match only (never prefix/contains). Pick
+                   phrases you won't say by accident. Unset → only the '/'-word triggers.
   `,
 
   split: `
@@ -2791,15 +2797,33 @@ export const CONFIG_SCHEMA = {
                    the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
                    A {group} template ({group} = the parent chat's title). Unset → a small built-in
                    default.
+      triggers:    OPTIONAL list of extra phrases that invoke /split; the '/'-word is always a trigger.
+                   A message that EQUALS one of these (trimmed, case-insensitive) runs /split DISCREETLY
+                   — a RANDOM group name, the message left UNEDITED — so it reads as ordinary
+                   conversation. Operator-only, EXACT whole-message match only (never prefix/contains).
+                   Pick phrases you won't say by accident. Unset → only the '/'-word triggers.
   `,
 
   send: `
     /send — relay a replied-to message from a /join or /split group back to the ORIGINAL chat
     (operator 2026-10-03). Repeatable; posts nothing to the group and never closes it.
       post_back_from: which account posts the relayed message to the original chat —
-                      'secondary' (the mouth; the default) makes it appear from the bot's secondary
-                      account; 'primary' posts via the operator's OWN account so it appears from the
-                      operator. Unset/invalid → secondary.
+                      'primary' (the operator's OWN account; the DEFAULT) posts so it appears from the
+                      operator; 'secondary' (the mouth) makes it appear from the bot's secondary
+                      account. Unset/invalid → primary.
+      triggers:       OPTIONAL list of extra phrases that invoke /send; the '/'-word is always a
+                      trigger. A message that EQUALS one of these (trimmed, case-insensitive) runs
+                      /send. Operator-only, EXACT whole-message match only (never prefix/contains).
+                      Pick phrases you won't say by accident. Unset → only the '/'-word triggers.
+  `,
+
+  end: `
+    /end — archive a /join or /split group (both kinds) and drop its mapping, closing it (operator
+    2026-10-03). Posts nothing; silent outside a join/split group.
+      triggers:       OPTIONAL list of extra phrases that invoke /end; the '/'-word is always a
+                      trigger. A message that EQUALS one of these (trimmed, case-insensitive) runs
+                      /end. Operator-only, EXACT whole-message match only (never prefix/contains).
+                      Pick phrases you won't say by accident. Unset → only the '/'-word triggers.
   `,
 
   aliases: `

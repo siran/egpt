@@ -28,7 +28,7 @@ const TEST_HOME = vi.hoisted(() => {
   process.env.EGPT_HOME = dir;
   return dir;
 });
-import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, JOIN_PLACEHOLDER_DEFAULT, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT, JOIN_OPENER_DEFAULT, SPLIT_OPENER_DEFAULT } from '../src/spine/commands.mjs';
+import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, JOIN_PLACEHOLDER_DEFAULT, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT, JOIN_OPENER_DEFAULT, SPLIT_OPENER_DEFAULT, SEND_POST_BACK_FROM_DEFAULT } from '../src/spine/commands.mjs';
 import { resolveBeingDef, sandboxSharePathsFor } from '../src/spine/brainpool.mjs';
 import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContact, aliasTargetOf, patchContact, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
 import { shortChatId } from '../src/bridges/chat-id.mjs';
@@ -448,10 +448,11 @@ describe('/send — relays the replied-to message back to the original (alias OR
     expect(calls.post[0].chatId).toBe(C_CHAT);
   });
 
-  it('post_back_from: secondary (default) routes via the mouth; primary routes via the operator', async () => {
-    const def = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg() });              // unset → secondary
+  it('post_back_from: primary (default, operator 2026-10-04) routes via the operator; secondary routes via the mouth', async () => {
+    const def = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg() });              // unset → primary
     await def.cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 's', replyToId: 'M1', body: '/send' });
-    expect(def.calls.post[0].via).toBe('secondary');
+    expect(def.calls.post[0].via).toBe('primary');
+    expect(def.calls.post[0].chatId).toBe(C_CHAT);                                                            // primary posts into the original directly
 
     const sec = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT), config: cfg({ send: { post_back_from: 'secondary' } }) });
     await sec.cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 's', replyToId: 'M1', body: '/send' });
@@ -502,6 +503,70 @@ describe('/end — archives the group and drops its mapping, posting nothing', (
     await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'end1', body: '/end' });
     expect(sent).toHaveLength(0);
     expect(calls.archive).toHaveLength(0);
+  });
+});
+
+// ── phrase triggers (operator 2026-10-04): config.<cmd>.triggers invoke a command DISCREETLY ──────────
+describe('phrase triggers — config.<cmd>.triggers run a command discreetly (operator-only, exact match)', () => {
+  const PHRASE = 'dame un segundo';
+  // triggerCfg = the normal config PLUS config.join.triggers = [PHRASE].
+  const triggerCfg = () => { const c = cfg(); return { ...c, join: { ...c.join, triggers: [PHRASE] } }; };
+  // An OPERATOR message (authorized) whose whole text is `body`.
+  const opEv = (body) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', authorized: true, body });
+
+  it('phraseCommand: an operator message EQUAL to a configured join.triggers phrase → "join" (trim + case-insensitive)', () => {
+    const { cmds } = harness({ config: triggerCfg() });
+    expect(cmds.phraseCommand(opEv(PHRASE))).toBe('join');
+    expect(cmds.phraseCommand(opEv('  Dame UN Segundo  '))).toBe('join');   // trimmed + lower-cased
+  });
+
+  it('phraseCommand: a NON-exact message does NOT trigger (never prefix/contains)', () => {
+    const { cmds } = harness({ config: triggerCfg() });
+    expect(cmds.phraseCommand(opEv('dame un segundo por favor'))).toBe(null);
+    expect(cmds.phraseCommand(opEv('ya, dame un segundo'))).toBe(null);
+  });
+
+  it('phraseCommand: a NON-operator saying the exact phrase does NOT trigger (ordinary message)', () => {
+    const { cmds } = harness({ config: triggerCfg() });
+    expect(cmds.phraseCommand({ ...opEv(PHRASE), authorized: false })).toBe(null);
+  });
+
+  it('phraseCommand: unset triggers → only the "/"-word triggers (null for any phrase)', () => {
+    const { cmds } = harness({ config: cfg() });                                 // no triggers configured
+    expect(cmds.phraseCommand(opEv(PHRASE))).toBe(null);
+  });
+
+  it('runPhrase join: creates a group with a RANDOM name and does NOT edit the operator\'s message', async () => {
+    const { cmds, calls } = harness({ config: triggerCfg() });
+    await cmds.runPhrase(opEv(PHRASE), 'join');
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0].title).toMatch(/^egpt [0-9a-f]{5} de Proyecto X$/);   // random token, not the verb word
+    expect(calls.create[0].title).not.toBe('egpt join de Proyecto X');
+    expect(calls.edit).toHaveLength(0);                                          // message left untouched in the chat
+  });
+
+  it('runPhrase join: the alias is still written (same handler, same residesHere + node_role gate)', async () => {
+    const { cmds, getState } = harness({ config: triggerCfg() });
+    await cmds.runPhrase(opEv(PHRASE), 'join');
+    const st = getState();
+    expect(aliasTargetOf(st, 'whatsapp', JOIN_CHAT)).toBe(getContact(st, 'whatsapp', C_CHAT).jid);
+  });
+
+  it('runPhrase join: stands down SILENTLY on a non-primary node (the node gate is unchanged by discreet)', async () => {
+    const { cmds, calls } = harness({ config: { ...triggerCfg(), node_name: 'do', node_role: 'secondary' } });
+    await cmds.runPhrase(opEv(PHRASE), 'join');
+    expect(calls.create).toHaveLength(0);
+  });
+
+  it('/join parachat (the explicit "/"-form) is UNCHANGED: name "parachat", placeholder edited (NOT discreet)', async () => {
+    const { cmds, calls } = harness({ config: cfg() });
+    await cmds.run({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', body: '/join parachat' });
+    expect(calls.create[0].title).toBe('egpt parachat de Proyecto X');           // <name> = parachat
+    expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_JOIN }]);   // placeholder edited
+  });
+
+  it('SEND_POST_BACK_FROM_DEFAULT is primary (PART A)', () => {
+    expect(SEND_POST_BACK_FROM_DEFAULT).toBe('primary');
   });
 });
 

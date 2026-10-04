@@ -818,7 +818,10 @@ export function createSpine({
   // in an auto chat. A context turn (send_to_egpt: always) runs a being but answers nobody, so it
   // does not count: a chat of chatter under a mention gate hears nothing about its backlog.
   async function wouldReachABeing(ev) {
-    if (commands?.isCommand?.(ev) || isEnvelope(ev) || isTransit(ev) || advice?.isAnswer?.(ev)) return false;
+    // A phrase trigger (commands.phraseCommand) is command-like too — it runs a command, reaches no
+    // being — so it is excluded here exactly as the '/'-commands are, or a backlogged operator phrase
+    // would inflate the wake-notice count.
+    if (commands?.isCommand?.(ev) || commands?.phraseCommand?.(ev) || isEnvelope(ev) || isTransit(ev) || advice?.isAnswer?.(ev)) return false;
     const { d } = await gateOf((await targetsOf(ev))[0], ev);
     return d.receives && d.mayReply && !(d.mode === 'auto' && ev.isSender);
   }
@@ -936,6 +939,19 @@ export function createSpine({
       if (remote && mesh?.forwardCommand) return async () => { await mesh.forwardCommand(ev, remote); };
       return async () => { await commands.run(ev); };
     }
+
+    // PHRASE TRIGGER (operator 2026-10-04): a natural phrase does NOT start with '/', so it never
+    // reaches the isCommand dispatch above — a second, separate check. commands.phraseCommand consumes
+    // the message ONLY when the OPERATOR's whole message EQUALS a configured config.<cmd>.triggers phrase
+    // (it reuses the SAME isOperator gate the '/'-commands sit behind, and matches EXACTLY — a
+    // non-operator, or any non-exact message, returns null and flows on as ordinary chat). When it does,
+    // the command runs DISCREETLY and NO being turn is dispatched (we return the command's own thunk).
+    // The message is still RECORDED like any ordinary inbound (the ingestion point below records every
+    // non-'off' message — a phrase is a real message that doesn't start with '/'); only the being turn
+    // is suppressed. Checked AFTER the '/'-command block so a '/'-word always wins, and like it, before
+    // the relay/transit branches (an operator phrase is command-like, not chatter in a pipe).
+    const phraseCmd = commands?.phraseCommand?.(ev);
+    if (phraseCmd) return async () => { await commands.runPhrase(ev, phraseCmd); };
 
     // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,
     // not chat — decode + act on it (a request at the responder, a reply/mirror-update

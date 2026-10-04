@@ -480,8 +480,10 @@ const NODE_LOCAL_SURFACES = new Set([SHELL_SURFACE]);
 export const JOIN_PLACEHOLDER_DEFAULT = '🤖↔️🤔 ...';
 export const SPLIT_PLACEHOLDER_DEFAULT = '🍴🤖 ...';
 export const GROUP_TITLE_DEFAULT = 'egpt {name} {group}';
-// /send's posting account when config.send.post_back_from is unset or invalid: the mouth (secondary).
-export const SEND_POST_BACK_FROM_DEFAULT = 'secondary';
+// /send's posting account when config.send.post_back_from is unset or invalid: the operator's OWN
+// account (primary) — /send relays as the operator, who typed it (operator 2026-10-04). The config
+// override config.send.post_back_from='secondary' still routes via the mouth when set.
+export const SEND_POST_BACK_FROM_DEFAULT = 'primary';
 // config.join.opener / config.split.opener (a {group}=parent-chat-title template) — the one message
 // posted into the freshly-created side-group FROM RODZ so the otherwise-empty group SURFACES in Beeper
 // (Beeper hides a chat with no messages — verified live). These are the small built-in fallbacks when
@@ -3194,6 +3196,11 @@ export function createCommands({
     ? ownNodeNamesOf(cfg()).has(node)
     : String(cfg().node_role ?? '').trim().toLowerCase() === 'primary';
 
+  // A short, unguessable token for a DISCREET group's name (a phrase-triggered /join|/split carries no
+  // <name>, and a predictable one — "join"/"split" — would advertise that a command ran). 5 hex chars
+  // off randomUUID (already imported): enough to disambiguate, short enough to read in a title.
+  const randomGroupToken = () => randomUUID().replace(/-/g, '').slice(0, 5);
+
   // config.join.placeholder / config.split.placeholder, with the built-in fallback so a command never
   // edits to an empty string.
   const placeholderOf = (block, dflt) => (block && typeof block.placeholder === 'string' && block.placeholder.trim()) ? block.placeholder : dflt;
@@ -3248,7 +3255,7 @@ export function createCommands({
   // /join (operator types /join [<name>|<node>] in chat C): create the side-group and ALIAS it to C.
   // Every precondition resolves BEFORE any bridge/state mutation (an unresolvable Rodz STOPS, nothing
   // created).
-  async function joinGroup(ev) {
+  async function joinGroup(ev, { discreet = false } = {}) {
     const surface = surfaceOf(ev);
     if (!loadState || !writeState) return;                   // state not wired → silent
     const { node, name } = parseForkArgs(ev.body);
@@ -3259,7 +3266,9 @@ export function createCommands({
     if (!rodz) return;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     const placeholder = placeholderOf(cfg().join, JOIN_PLACEHOLDER_DEFAULT);
-    const title = groupTitleOf(cTitle, name ?? 'join');
+    // DISCREET (a phrase trigger): a RANDOM group name instead of the parsed <name>, and the
+    // operator's message is left UNEDITED below — so nothing in the chat shows a command ran.
+    const title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? 'join'));
 
     // ── mutations begin ──
     // (a) CREATE the group: operator + Rodz, forced to a group. No opener — the group inherits C's
@@ -3284,9 +3293,10 @@ export function createCommands({
     // resolvable from chatId + state at every write/read site (contacts.transcriptTarget) — not from a
     // live ev.chatName. The folder/agents/thread stay shared via aliasOf.
     await writeState(aliasContact(state, surface, joinChatId, primaryJid, { transcript: sanitizeSlug(title) }));
-    // (c) EDIT the operator's /join message into the placeholder marker (raw, no persona).
-    await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
-    onLog(`/join: ${cTitle} -> group ${joinChatId} aliased to ${primaryJid} (member ${rodz.rodzUserId})`);
+    // (c) EDIT the operator's /join message into the placeholder marker (raw, no persona) — SKIPPED
+    //     when discreet, so a phrase-triggered /join leaves the operator's natural words in the chat.
+    if (!discreet) await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
+    onLog(`/join${discreet ? ' (discreet)' : ''}: ${cTitle} -> group ${joinChatId} aliased to ${primaryJid} (member ${rodz.rodzUserId})`);
     // (d) POST THE OPENER so the new (otherwise-empty) group surfaces in Beeper — added step AFTER the
     //     success path; a failure here never undoes the alias/placeholder above.
     await postOpener({ verb: '/join', newChatId: joinChatId, title, openerText: openerOf(cfg().join, JOIN_OPENER_DEFAULT, cTitle), accountID: rodz.accountID });
@@ -3296,7 +3306,7 @@ export function createCommands({
   // conversation that DIVERGES from C — each resident being's thread is COPIED under a new thread id.
   // Same preconditions/gate as /join; the difference is a NEW entry + per-being thread copy instead of
   // an alias.
-  async function splitGroup(ev) {
+  async function splitGroup(ev, { discreet = false } = {}) {
     const surface = surfaceOf(ev);
     if (!loadState || !writeState) return;                   // state not wired → silent
     const { node, name } = parseForkArgs(ev.body);
@@ -3307,7 +3317,8 @@ export function createCommands({
     if (!rodz) return;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     const placeholder = placeholderOf(cfg().split, SPLIT_PLACEHOLDER_DEFAULT);
-    const title = groupTitleOf(cTitle, name ?? 'split');
+    // DISCREET (a phrase trigger): random group name + message left unedited (same as /join above).
+    const title = groupTitleOf(cTitle, discreet ? randomGroupToken() : (name ?? 'split'));
 
     // ── mutations begin ──
     // (a) CREATE the group.
@@ -3362,9 +3373,10 @@ export function createCommands({
       state = recordThread(state, surface, splitChatId, newThreadId, undefined, being);
     }
     await writeState(state);
-    // (d) EDIT the operator's /split message into the placeholder marker.
-    await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
-    onLog(`/split: ${cTitle} -> NEW conv ${splitChatId} (${ensured.slug}); copied threads for ${copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
+    // (d) EDIT the operator's /split message into the placeholder marker — SKIPPED when discreet
+    //     (a phrase-triggered /split leaves the operator's natural words in the chat).
+    if (!discreet) await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
+    onLog(`/split${discreet ? ' (discreet)' : ''}: ${cTitle} -> NEW conv ${splitChatId} (${ensured.slug}); copied threads for ${copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
     // (e) POST THE OPENER so the new group surfaces in Beeper — added step AFTER the copy + placeholder;
     //     a failure here never undoes the conversation/threads already written.
     await postOpener({ verb: '/split', newChatId: splitChatId, title, openerText: openerOf(cfg().split, SPLIT_OPENER_DEFAULT, cTitle), accountID: rodz.accountID });
@@ -3374,8 +3386,8 @@ export function createCommands({
   // ORIGINAL chat. Repeatable — no placeholder edit, no close. The original is the alias target (join)
   // or the recorded parent_chat (split); silent when neither. Reads M's text out of the transcript the
   // SAME way /radio say's quick-reply does, then strips the node/bridge/persona wrap. Posts via the
-  // account named by config.send.post_back_from ('secondary' = the mouth, today's path; 'primary' =
-  // the operator's own account) — boot routes { via } to that connection's bridge.
+  // account named by config.send.post_back_from ('primary' = the operator's own account, the DEFAULT;
+  // 'secondary' = the mouth) — boot routes { via } to that connection's bridge.
   async function sendToOriginal(ev) {
     const surface = surfaceOf(ev);
     if (!loadState) return;                                // state not wired → silent
@@ -3430,6 +3442,42 @@ export function createCommands({
     await forkBridge.archiveChat(ev.chatId);
     await writeState(dropContact(await loadState(), surface, ev.chatId));
     onLog(`/end: ${aliasTarget ? 'join' : 'split'} group ${ev.chatId} archived + ${aliasTarget ? `alias to ${aliasTarget}` : `split conv mapping (parent ${parent})`} dropped`);
+  }
+
+  // ── PHRASE TRIGGERS for the fork commands (operator 2026-10-04) ──────────────────────────────────
+  // Each of /join /split /send /end may be invoked by extra natural phrases set in config.<cmd>.triggers
+  // (a list of strings), so a command can run WITHOUT typing its '/'-word — and, for /join + /split,
+  // DISCREETLY: a random group name and the operator's message left unedited, so the chat reads as
+  // ordinary conversation. The '/'-word path is UNCHANGED; this is a second, separate entry point the
+  // inbound dispatcher (spine.mjs classify) consults for a NON-slash message.
+  //
+  // SECURITY. phraseCommand is the ONLY new entry point and it is gated on the SAME isOperator the
+  // '/'-commands sit behind (isCommand → isOperator) — no new auth path. A non-operator saying the exact
+  // phrase is NOT a trigger (it falls through to an ordinary message), and matching is EXACT ONLY — the
+  // WHOLE trimmed, lower-cased message must EQUAL a configured phrase; never prefix/contains — so an
+  // everyday sentence can never fire one. Returns the command name to run (join|split|send|end), or null.
+  const PHRASE_TRIGGER_CMDS = ['join', 'split', 'send', 'end'];
+  function phraseCommand(ev) {
+    if (!isOperator(ev)) return null;                        // same gate the '/'-commands sit behind
+    const body = String(ev?.body ?? '').trim().toLowerCase();
+    if (!body) return null;
+    for (const cmd of PHRASE_TRIGGER_CMDS) {
+      const triggers = cfg()?.[cmd]?.triggers;
+      if (!Array.isArray(triggers)) continue;
+      if (triggers.some((t) => String(t ?? '').trim().toLowerCase() === body)) return cmd;   // EXACT only
+    }
+    return null;
+  }
+
+  // Run a fork command from a PHRASE trigger. /join + /split run DISCREETLY (random name, no edit); the
+  // same residesHere/node_role gates inside the handler still apply — a phrase can only run what its
+  // '/'-word would run on this node. /send + /end take no name and edit nothing, so a phrase just runs
+  // them (they are typed in the private side-room anyway).
+  async function runPhrase(ev, cmd) {
+    if (cmd === 'join') return joinGroup(ev, { discreet: true });
+    if (cmd === 'split') return splitGroup(ev, { discreet: true });
+    if (cmd === 'send') return sendToOriginal(ev);
+    if (cmd === 'end') return end(ev);
   }
 
   // /config [<key>[=<value>]] — the `=` idiom the node binding already uses (`/config=kg`),
@@ -3944,5 +3992,5 @@ export function createCommands({
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 
-  return { isCommand, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf, startBrowser };
+  return { isCommand, phraseCommand, runPhrase, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf, startBrowser };
 }
