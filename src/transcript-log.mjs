@@ -261,6 +261,7 @@ export function promptWithRecentContext(line, { blocks = [], truncated = false }
 // line stays a continuation.)
 const _ENTRY_HEAD = new RegExp(String.raw`^(?:\[\s*)?@?[^@\n]+@\[[^\]]*\]\.\S+\s+${_TS}|^\[@\S+\s+${_TS}\]:`);
 const _ID_AFTER_TS = new RegExp(`${_TS}\\s+#([^\\s:]+)`);   // the message-id tag directly after the time
+const _TS_RE = new RegExp(_TS);                            // the `(HH:MM)` alone — used to find a stage-direction's `: ` separator, which carries no `#<id>` after the time (edit-awareness below)
 // The `[re #<id>] ` prefix formatDispatchLine puts at the FRONT OF THE BODY since 2026-09-01
 // (the legibility move: the reference used to sit bare between the id and the `:`). It is a HEAD
 // field wearing a body's clothes — it names what the message ANSWERS, not what it SAYS — so it
@@ -285,25 +286,57 @@ export function bodyForMessageId(text, msgId) {
   if (!text || msgId == null) return null;
   const want = String(msgId);
   const lines = stripFrontMatter(String(text)).split('\n');
+  // THE CURRENT TEXT, NOT THE FIRST RECORDING. A being's reply is delivered by EDITING a
+  // "⏳ Thinking…" placeholder in place, and a co-account peer observing that reply records the
+  // placeholder as the `#<id>:` entry and each settled text as a SEPARATE `edited #<id>`
+  // stage-direction (dispatch-line.editAction, wrapped by formatDispatchLine). Returning the
+  // entry body alone would hand back the stale placeholder (the live /send bug, 2026-10-04). So
+  // we track BOTH in one pass and PREFER the latest edit: `entryBody` is the `#<id>:` entry's own
+  // body (today's behaviour, byte-for-byte for a message that was never edited); `editBody` is the
+  // NEW (`+`) side of the LAST `edited #<id>` block, which is the message's current text.
+  let entryBody = null;
+  let editBody = null;
   for (let i = 0; i < lines.length; i++) {
     const head = lines[i];
     if (!_ENTRY_HEAD.test(head)) continue;                            // only a real entry header
     const idm = head.match(_ID_AFTER_TS);
-    if (!idm || idm[1] !== want) continue;                            // …for THIS id
-    const colon = head.indexOf(':', idm.index + idm[0].length);       // the separator after `#<id>` (or, on pre-2026-09-01 lines, after `#<id> re #<rid>`)
-    if (colon < 0) return null;
-    const parts = [head.slice(colon + 1).replace(_REPLY_REF, '')];   // see _REPLY_REF: the reply reference is head, not body
-    // …up to the next entry OR the next DAY BOUNDARY (operator 2026-09-01). The walk collects
-    // every headerless line as body, and a boundary is deliberately headerless — so without
-    // this the marker (and the blank line before it) would be appended to the body of the last
-    // entry of the previous day, and every caller asking this module for "the recorded body"
-    // would get it: promptWithQuotedMessage would quote it back to the model, and
-    // beeper.transcriptionForNoteId would hand the 👂 echo a transcription with `[ 2026-09-01 ]`
-    // stuck on the end. The marker terminates a body; it is never part of one.
-    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]) && !isDayBoundary(lines[j]); j++) parts.push(lines[j]);
-    return parts.join('\n').trim() || null;
+    if (idm && idm[1] === want && entryBody === null) {               // the entry whose OWN id is msgId
+      const colon = head.indexOf(':', idm.index + idm[0].length);     // the separator after `#<id>` (or, on pre-2026-09-01 lines, after `#<id> re #<rid>`)
+      if (colon >= 0) {
+        const parts = [head.slice(colon + 1).replace(_REPLY_REF, '')];   // see _REPLY_REF: the reply reference is head, not body
+        // …up to the next entry OR the next DAY BOUNDARY (operator 2026-09-01). The walk collects
+        // every headerless line as body, and a boundary is deliberately headerless — so without
+        // this the marker (and the blank line before it) would be appended to the body of the last
+        // entry of the previous day, and every caller asking this module for "the recorded body"
+        // would get it: promptWithQuotedMessage would quote it back to the model, and
+        // beeper.transcriptionForNoteId would hand the 👂 echo a transcription with `[ 2026-09-01 ]`
+        // stuck on the end. The marker terminates a body; it is never part of one.
+        for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]) && !isDayBoundary(lines[j]); j++) parts.push(lines[j]);
+        entryBody = parts.join('\n').trim() || null;
+      }
+      continue;
+    }
+    // An `edited #<id>` stage-direction for the SAME id. Its head body (after the `: ` separator,
+    // which carries NO `#<id>` tag — hence _TS_RE, not _ID_AFTER_TS — with `_REPLY_REF` stripped)
+    // is EXACTLY `edited #<id>`, and the new text is the `    + ` line that follows, with the
+    // leading `    + ` removed and the trailing ` ]` (formatDispatchLine's stage-direction wrapper
+    // close) removed. The constant `^edited #(\S+)$` match string-compares the captured id, so no
+    // caller-supplied id is ever spliced into a regex. LAST edit wins (a message edited twice).
+    const tsm = _TS_RE.exec(head);
+    const sep = tsm ? head.indexOf(':', tsm.index + tsm[0].length) : -1;
+    if (sep < 0) continue;
+    const em = /^edited #(\S+)$/.exec(head.slice(sep + 1).replace(_REPLY_REF, '').trim());
+    if (!em || em[1] !== want) continue;
+    let plus = null;
+    for (let j = i + 1; j < lines.length && !_ENTRY_HEAD.test(lines[j]) && !isDayBoundary(lines[j]); j++) {
+      if (lines[j].startsWith('    + ')) plus = lines[j];             // the one `+` line of this block
+    }
+    if (plus != null) {
+      const v = plus.slice('    + '.length).replace(/\s*\]\s*$/, '').trim();
+      if (v) editBody = v;
+    }
   }
-  return null;
+  return editBody ?? entryBody;
 }
 
 /**

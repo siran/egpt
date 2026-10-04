@@ -569,6 +569,84 @@ describe('/send — relays the replied-to message back to the original (alias OR
   });
 });
 
+// ── /send relays the CURRENT text of an EDITED message, cleaned (operator 2026-10-04 live bug) ────────
+// A being's reply is delivered by EDITING a "⏳ Thinking…" placeholder in place; a co-account peer
+// records the placeholder as the `#<id>:` entry and the settled text as a SEPARATE `edited #<id>`
+// stage-direction. The live bug: /send relayed the stale placeholder (bodyForMessageId returned the
+// entry body, blind to the edit) AND, had it found the right body, it was the round-tripped
+// "🐶 E: <text> 🏰<kg>" form whose INLINE persona stamp cleanQuotedBody did not strip. Both are fixed:
+// bodyForMessageId is edit-aware (transcript-log.mjs) and stripPersonaStampHeader strips a leading
+// inline "<stamp>: " (commands.mjs). The transcript carries config.agents' stamp + bridge close.
+describe('/send — edited-placeholder + inline-stamp cleaning (the end-to-end fix)', () => {
+  // cfg + the two keys the cleaning reads: the agent stamp set (body_emoji + name) and the bridge close.
+  const sendCfg = () => ({ ...cfg({ send: { post_back_from: 'primary' } }), agents: { egpt: { body_emoji: '🐶', name: 'E' } }, bridge_signature_close: '🏰' });
+  const EV = { chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', body: '/send' };
+  // The EXACT live shape: a placeholder entry #21005 then its settled poem as an `edited #21005` block
+  // (its `+` side round-trips the persona stamp + signature + the stage-direction's trailing ` ]`).
+  const EDITED_TRANSCRIPT = [
+    'Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46) #21005: 🐶 E: ⏳ Thinking… 🏰<kg>', '',
+    '[ Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46): edited #21005',
+    '    - 🐶 E: ⏳ Thinking… 🏰<kg>',
+    '    + 🐶 E: Carolina, tu nombre es un verano, porque a tu lado hasta la luz se asombra. 🏰<kg> ]', '',
+  ].join('\n');
+
+  it('REPRODUCE-FIRST: relays the FINAL poem (edit-aware), stamp + signature + inline bridge close all stripped — NOT the "⏳ Thinking…" placeholder', async () => {
+    const { cmds, calls } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, EDITED_TRANSCRIPT), config: sendCfg() });
+    await cmds.run({ ...EV, replyToId: '21005' });
+    expect(calls.post).toHaveLength(1);
+    expect(calls.post[0].text).not.toContain('Thinking');     // not the placeholder (edit-awareness)
+    expect(calls.post[0].text.startsWith('🐶 E')).toBe(false); // inline persona stamp stripped
+    // "no body emoji, no SIGNATURE" (operator): the stamp, the rendered <kg>, AND the inline
+    // bridge_signature_close 🏰 are all gone — exactly the reply, nothing else.
+    expect(calls.post[0].text).toBe('Carolina, tu nombre es un verano, porque a tu lado hasta la luz se asombra.');
+    expect(calls.post[0].text).not.toMatch(/🏰/);
+    expect(calls.post[0].text).not.toMatch(/<kg>/);
+  });
+
+  it('a one-line reply with an inline stamp and NO signature cleans to exactly the reply', async () => {
+    const t = 'Rodz@[x].wa (12:00) #M2: 🐶 E: hola mundo\n\n';
+    const { cmds, calls } = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, t), config: sendCfg() });
+    await cmds.run({ ...EV, replyToId: 'M2' });
+    expect(calls.post[0].text).toBe('hola mundo');
+  });
+
+  it('REGRESSION (stripBridgeClose): own-line close still stripped; no close untouched; an UNRELATED trailing emoji is left', async () => {
+    // a close on its OWN line (the legacy multi-line shape) is still removed by the whole-line match
+    const ownLine = 'Rodz@[x].wa (12:20) #M5: hola de la sala\n🏰\n\n';
+    const a = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, ownLine), config: sendCfg() });
+    await a.cmds.run({ ...EV, replyToId: 'M5' });
+    expect(a.calls.post[0].text).toBe('hola de la sala');
+
+    // a body with NO close token is untouched
+    const noClose = 'Rodz@[x].wa (12:25) #M6: just text, no close\n\n';
+    const b = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, noClose), config: sendCfg() });
+    await b.cmds.run({ ...EV, replyToId: 'M6' });
+    expect(b.calls.post[0].text).toBe('just text, no close');
+
+    // a trailing emoji that is NOT the configured close (✅ vs 🏰) is left verbatim — only the exact
+    // configured close token is stripped off the tail, never a guess at "any trailing emoji"
+    const otherEmoji = 'Rodz@[x].wa (12:30) #M7: listo ✅\n\n';
+    const c = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, otherEmoji), config: sendCfg() });
+    await c.cmds.run({ ...EV, replyToId: 'M7' });
+    expect(c.calls.post[0].text).toBe('listo ✅');
+  });
+
+  it('REGRESSION: a non-configured emoji prefix is untouched; a standalone stamp LINE is still removed', async () => {
+    // "🐶 Carol:" is NOT a configured stamp (the agent name is "E"), so it is left verbatim — only an
+    // EXACT configured stamp is stripped, never a pattern-guess at emoji+word+colon.
+    const notAStamp = 'Rodz@[x].wa (12:05) #M3: 🐶 Carol: hey there\n\n';
+    const a = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, notAStamp), config: sendCfg() });
+    await a.cmds.run({ ...EV, replyToId: 'M3' });
+    expect(a.calls.post[0].text).toBe('🐶 Carol: hey there');
+
+    // a whole-LINE stamp (the standalone-header form) is still removed as before
+    const standalone = 'Rodz@[x].wa (12:10) #M4: 🐶 E\nhola de nuevo\n\n';
+    const b = harness({ state: stateWithJoin(), rooms: roomWith(JOIN_CHAT, standalone), config: sendCfg() });
+    await b.cmds.run({ ...EV, replyToId: 'M4' });
+    expect(b.calls.post[0].text).toBe('hola de nuevo');
+  });
+});
+
 // ── /end (both kinds; posts nothing) ────────────────────────────────────────────────────────────────
 describe('/end — archives the group and drops its mapping, posting nothing', () => {
   it('a /join group: archives, drops the alias, sends NOTHING; a second /end is inert', async () => {

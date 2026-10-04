@@ -3097,13 +3097,34 @@ export function createCommands({
     const lines = String(text).split('\n');
     let i = lines.length, j = closeLines.length;
     while (i > 0 && j > 0 && lines[i - 1].trim() === closeLines[j - 1]) { i--; j--; }
-    return j === 0 ? lines.slice(0, i).join('\n') : text;
+    if (j === 0) return lines.slice(0, i).join('\n');
+    // A SINGLE-LINE close that round-tripped INLINE on the tail: applyLayers space-joins the close
+    // onto a one-line reply (src/bridges/signature-layers.mjs), and dispatch-line.editAction collapses
+    // a multi-line reply to one line before it round-trips, so the close ends up ON the last line and
+    // the whole-line match above never sees it. Strip the EXACT configured close token off the end of
+    // the last line — only when real content precedes it (a line that is JUST the close is the
+    // whole-line case already handled above), never a guess at "any trailing emoji".
+    if (closeLines.length === 1) {
+      const tok = closeLines[0];
+      const last = lines[lines.length - 1].replace(/\s+$/, '');
+      if (last.length > tok.length && last.endsWith(tok)) {
+        lines[lines.length - 1] = last.slice(0, -tok.length).replace(/\s+$/, '');
+        return lines.join('\n');
+      }
+    }
+    return text;
   }
 
-  // Remove the persona stamp header line personaStamp (src/bridges/persona-wrap.mjs) prepends —
-  // "<body_emoji> <label>" as its OWN line — by checking against every agent's ACTUAL configured
-  // emoji+label rather than pattern-guessing at "some emoji on the first line". Matches any line
-  // exactly equal to a configured stamp, wherever the earlier strips left it.
+  // Remove the persona stamp personaStamp (src/bridges/persona-wrap.mjs) prepends, checking against
+  // every agent's ACTUAL configured emoji+label rather than pattern-guessing at "some emoji on the
+  // first line". The stamp lands in TWO shapes and both come off here:
+  //   - a whole LINE exactly equal to a stamp ("<body_emoji> <label>"), wherever the earlier strips
+  //     left it;
+  //   - a LEADING INLINE "<stamp>: " prefix — personaStamp's one-line form is "🐶 E: <reply>"
+  //     (body + reply on ONE line), so a single-line reply (or a reply collapsed to one line by
+  //     dispatch-line.editAction before it round-tripped through the transcript) carries the stamp
+  //     inline and the whole-line filter never sees it. ONLY an EXACT configured stamp followed by
+  //     ": " is removed — never a guess at "emoji + word + colon".
   function stripPersonaStampHeader(text) {
     const stamps = new Set();
     for (const [name, agent] of Object.entries(cfg().agents ?? {})) {
@@ -3111,7 +3132,11 @@ export function createCommands({
       stamps.add(`${agent.body_emoji || '🐶'} ${agent.name || name}`);
     }
     if (!stamps.size) return text;
-    return String(text).split('\n').filter((l) => !stamps.has(l)).join('\n');
+    let out = String(text).split('\n').filter((l) => !stamps.has(l)).join('\n');
+    for (const s of stamps) {
+      if (out.startsWith(`${s}: `)) { out = out.slice(s.length + 2); break; }   // +2 for the ": "
+    }
+    return out;
   }
 
   // A quoted message may be the operator's/a human's own words, or it may instead be another

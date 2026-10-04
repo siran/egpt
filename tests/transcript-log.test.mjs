@@ -177,6 +177,67 @@ describe('OLDER-shape reply lines already on disk stay readable', () => {
   });
 });
 
+// ── EDIT-AWARE bodyForMessageId (operator 2026-10-04, the /send-relayed-the-placeholder bug) ──
+// A being's reply is delivered by EDITING a "⏳ Thinking…" placeholder in place. A co-account peer
+// observing that reply records the placeholder as the `#<id>:` entry and the settled text as a
+// SEPARATE `edited #<id>` stage-direction (dispatch-line.editAction + formatDispatchLine). Reading
+// the entry body alone therefore returned the STALE placeholder — /send relayed "⏳ Thinking…"
+// instead of the real reply. bodyForMessageId must return the message's CURRENT text: the NEW (`+`)
+// side of the LAST edit block when one exists, else the entry body exactly as before.
+describe('bodyForMessageId — edit-aware: returns the CURRENT text of an edited message', () => {
+  const REC = (...lines) => ['---', 'name: SPOILER', 'surface: wa', '---', '', ...lines, ''].join('\n');
+  // The EXACT live shapes (continuity transcript 2026-10-04). The entry is the placeholder; the edit
+  // block is the settled poem, its `+` side carrying the round-tripped persona stamp + signature and
+  // the stage-direction's trailing ` ]`.
+  const PLACEHOLDER = 'Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46) #21005: 🐶 E: ⏳ Thinking… 🏰<kg>';
+  const POEM = '🐶 E: Carolina, tu nombre es un verano que llega sin pedir permiso al día, porque a tu lado hasta la luz se asombra. 🏰<kg>';
+  const editBlock = (newBody) => [
+    'Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46): edited #21005',
+    '    - 🐶 E: ⏳ Thinking… 🏰<kg>',
+    `    + ${newBody} ]`,
+  ];
+  // The stage-direction header is `[ `-wrapped by formatDispatchLine; the live file writes the open
+  // bracket on the head line. Build it the way the file does.
+  const bracket = (lines) => { const [h, ...rest] = lines; return [`[ ${h}`, ...rest]; };
+
+  it('REPRODUCE-FIRST: an edited placeholder resolves to the POEM, never the "⏳ Thinking…" placeholder', () => {
+    const doc = REC(PLACEHOLDER, '', ...bracket(editBlock(POEM)), '',
+      'An@[SPOILER ALERT: chat de EyAy-caro].wa (11:48) #21008: [re #21005] /send');
+    expect(bodyForMessageId(doc, '21005')).toBe(POEM);                 // the current text
+    expect(bodyForMessageId(doc, '21005')).not.toContain('Thinking');  // NOT the placeholder
+  });
+
+  it('the trailing ` ]` stage-direction wrapper is stripped from the returned body', () => {
+    const doc = REC(PLACEHOLDER, '', ...bracket(editBlock(POEM)));
+    const body = bodyForMessageId(doc, '21005');
+    expect(body.endsWith(' ]')).toBe(false);
+    expect(body.endsWith('🏰<kg>')).toBe(true);   // the real tail, intact (cleaning happens in cleanQuotedBody, not here)
+  });
+
+  it('a message with NO edit block is unchanged — the entry body, exactly as before', () => {
+    const doc = REC('An@[SPOILER ALERT: chat de EyAy-caro].wa (11:40) #21005: just a normal message\ncont line');
+    expect(bodyForMessageId(doc, '21005')).toBe('just a normal message\ncont line');
+  });
+
+  it('edited TWICE: the LAST `+` wins', () => {
+    const doc = REC(PLACEHOLDER, '',
+      ...bracket(editBlock('🐶 E: first draft 🏰<kg>')), '',
+      ...bracket(editBlock('🐶 E: final version 🏰<kg>')));
+    expect(bodyForMessageId(doc, '21005')).toBe('🐶 E: final version 🏰<kg>');
+  });
+
+  it('an edit block for a DIFFERENT id does not leak into this id', () => {
+    const doc = REC(
+      'Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46) #21005: 🐶 E: kept as-is 🏰<kg>', '',
+      ...bracket([
+        'Rodz@[SPOILER ALERT: chat de EyAy-caro].wa (11:46): edited #99999',
+        '    - 🐶 E: other old 🏰<kg>',
+        '    + 🐶 E: other new 🏰<kg> ]',
+      ]));
+    expect(bodyForMessageId(doc, '21005')).toBe('🐶 E: kept as-is 🏰<kg>');   // its own entry, not the #99999 edit
+  });
+});
+
 // End-to-end on a temp transcript: a received Telegram message MUST appear in
 // the file. If the logging path stops writing (re-regression of C1.2), the
 // assertion that the message is in the transcript fails.
