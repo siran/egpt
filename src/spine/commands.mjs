@@ -3247,7 +3247,12 @@ export function createCommands({
     // (a) CREATE the group: operator + Rodz, forced to a group. No opener — the group inherits C's
     //     whole thread by the alias below; the model is never told it was joined.
     const created = await forkBridge.createGroup({ accountID: rodz.accountID, participantIDs: [rodz.rodzUserId], type: 'group', title });
-    const joinChatId = created?.chatID ?? created?.chatId ?? null;
+    // createGroup returns the FULL matrix id (`!x:beeper.local`); the spine keys every conversation
+    // by the SHORT id (shortChatId, = ev.chatId's form). The alias MUST be written under the short
+    // form or an incoming message (short) never finds it and spawns a separate folder+thread (the
+    // 2026-10-04 "side-room has no context" bug). Normalize here so every downstream use is short.
+    const rawJoinId = created?.chatID ?? created?.chatId ?? null;
+    const joinChatId = rawJoinId ? shortChatId(rawJoinId) : null;
     if (!joinChatId) {
       onLog(`/join: createGroup returned no chatID (${JSON.stringify(created)}) — aborted, placeholder NOT edited`);
       return;
@@ -3285,7 +3290,10 @@ export function createCommands({
     // ── mutations begin ──
     // (a) CREATE the group.
     const created = await forkBridge.createGroup({ accountID: rodz.accountID, participantIDs: [rodz.rodzUserId], type: 'group', title });
-    const splitChatId = created?.chatID ?? created?.chatId ?? null;
+    // SHORT id, same reason as /join above: the new entry + parent_chat must key by the form the
+    // spine resolves incoming messages under, or a short-form arrival spawns a second entry.
+    const rawSplitId = created?.chatID ?? created?.chatId ?? null;
+    const splitChatId = rawSplitId ? shortChatId(rawSplitId) : null;
     if (!splitChatId) {
       onLog(`/split: createGroup returned no chatID (${JSON.stringify(created)}) — aborted, placeholder NOT edited`);
       return;

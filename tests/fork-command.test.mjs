@@ -31,11 +31,18 @@ const TEST_HOME = vi.hoisted(() => {
 import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, JOIN_PLACEHOLDER_DEFAULT, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT, JOIN_OPENER_DEFAULT, SPLIT_OPENER_DEFAULT } from '../src/spine/commands.mjs';
 import { resolveBeingDef, sandboxSharePathsFor } from '../src/spine/brainpool.mjs';
 import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContact, aliasTargetOf, patchContact, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
+import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { Room } from '../src/room-core.mjs';
 
 const C_CHAT = '!chatC';
-const JOIN_CHAT = '!chatJoin';
-const SPLIT_CHAT = '!chatSplit';
+// createGroup returns the FULL matrix id; the spine keys every conversation by the SHORT id
+// (shortChatId). The alias/entry MUST be keyed short or a short-form incoming misses it and spawns a
+// separate folder+thread (the 2026-10-04 "side-room has no context" bug). The fakes below return the
+// _FULL ids; everything else (alias key, incoming ev.chatId, seeded state) uses the SHORT ids.
+const JOIN_CHAT_FULL = '!chatJoin:beeper.local';
+const SPLIT_CHAT_FULL = '!chatSplit:beeper.local';
+const JOIN_CHAT = shortChatId(JOIN_CHAT_FULL);
+const SPLIT_CHAT = shortChatId(SPLIT_CHAT_FULL);
 // The SECONDARY (Rodz) account's OWN room ids for the new groups — DIFFERENT from the primary's
 // JOIN_CHAT/SPLIT_CHAT (a group is a different Matrix room per account). The opener posts here.
 const SEC_JOIN_ROOM = '!secJoin';
@@ -131,7 +138,7 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
   const calls = { edit: [], create: [], post: [], archive: [], resolve: [], resolveTitle: [] };
   const forkBridge = {
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
-    createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: opts.title?.includes('split') ? SPLIT_CHAT : JOIN_CHAT }; },
+    createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: opts.title?.includes('split') ? SPLIT_CHAT_FULL : JOIN_CHAT_FULL }; },
     // records the via account /send + the opener chose (4th arg) so a test can assert which connection posts.
     postReply: async (chatId, text, replyToMessageID, opts = {}) => { calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null }); if (throwOnPost) throw new Error('beeper down'); return { ok: true }; },
     archiveChat: async (chatId) => { calls.archive.push({ chatId }); return true; },
@@ -311,7 +318,7 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     let st = seedState();
     const forkBridge = {
       editMessage: async () => true,
-      createGroup: async () => ({ success: true, chatID: SPLIT_CHAT }),
+      createGroup: async () => ({ success: true, chatID: SPLIT_CHAT_FULL }),
       postReply: async () => ({ ok: true }), archiveChat: async () => true,
       chatAccountId: async () => 'whatsapp', chatTitle: async () => null,
       resolveUserIdByPhone: async () => RODZ_USER_ID,
