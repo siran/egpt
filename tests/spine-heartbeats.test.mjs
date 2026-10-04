@@ -60,3 +60,67 @@ describe('createHeartbeats', () => {
     expect(hb.list()).toEqual([{ name: 'alive', everyMs: 60_000, lastRun: 60_000 }]);
   });
 });
+
+// A hot reload (one per inbound message) does clear() + re-register() the whole set — exactly
+// what createHeartbeatLoader.reload() does onto this registry. A recurring beat's clock must
+// survive that, keyed by name + cadence, or a long-cadence beat re-arms to lastRun 0 on every
+// reload and fires ~every message. (The live bug: an acim-room `frequency: 1h` beat fired on
+// roughly every conversation turn — 15:35, 15:38, 15:40, 15:43 … — because each turn reloaded.)
+describe('createHeartbeats — a recurring schedule survives a reload (clear + re-register)', () => {
+  const HOUR = 3_600_000;
+  const T0 = 1_000_000_000_000;   // epoch-ish, as production `now` is
+  const reload = (hb, name, everyMs, fn) => { hb.clear(); hb.register(name, everyMs, fn); };
+
+  it('REPRODUCE-FIRST: a reload 3 min after a fire does NOT re-fire a 1h beat before the hour is up', () => {
+    const hb = createHeartbeats();
+    const fires = [];
+    hb.register('acim-lote', HOUR, (n) => fires.push(n));
+
+    hb.runDue(T0);                               // boot tick: lastRun 0 → the first, legitimate fire
+    expect(fires).toEqual([T0]);
+
+    reload(hb, 'acim-lote', HOUR, (n) => fires.push(n));   // an inbound message reloads the beat
+    hb.runDue(T0 + 3 * 60_000);                  // 3 minutes later — far short of the hour
+    expect(fires).toEqual([T0]);                 // pre-fix: re-register reset lastRun→0 so it fired AGAIN here
+  });
+
+  it('LOCK: the next fire is one full cadence after the last REAL fire, across reloads in between', () => {
+    const hb = createHeartbeats();
+    const fires = [];
+    hb.register('acim-lote', HOUR, (n) => fires.push(n));
+    hb.runDue(T0);                               // fire #1
+    for (let m = 3; m < 60; m += 3) {            // a reload every 3 min for the rest of the hour
+      reload(hb, 'acim-lote', HOUR, (n) => fires.push(n));
+      hb.runDue(T0 + m * 60_000);
+    }
+    expect(fires).toEqual([T0]);                 // nothing between t0 and t0+1h, reloads notwithstanding
+
+    hb.runDue(T0 + HOUR);                         // the hour elapses
+    expect(fires).toEqual([T0, T0 + HOUR]);       // fire #2 at t0+1h, not sooner
+
+    reload(hb, 'acim-lote', HOUR, (n) => fires.push(n));
+    hb.runDue(T0 + HOUR + 3 * 60_000);            // 3 min after fire #2 + a reload
+    expect(fires).toEqual([T0, T0 + HOUR]);       // still anchored to the real fire
+    hb.runDue(T0 + 2 * HOUR);
+    expect(fires).toEqual([T0, T0 + HOUR, T0 + 2 * HOUR]);
+  });
+
+  it('REGRESSION: a cadence CHANGED in config re-arms (fires on the next runDue), not carries the old clock', () => {
+    const hb = createHeartbeats();
+    const fires = [];
+    hb.register('x', HOUR, (n) => fires.push(['1h', n]));
+    hb.runDue(T0);                               // fires under the 1h cadence
+    reload(hb, 'x', 300_000, (n) => fires.push(['5m', n]));   // operator edits 1h → 5m
+    hb.runDue(T0 + 60_000);                       // 1 min later: a changed cadence is a fresh clock → fires
+    expect(fires).toEqual([['1h', T0], ['5m', T0 + 60_000]]);
+  });
+
+  it('REGRESSION: a beat that has not fired yet still fires on its first runDue after a reload (alive first-fire contract)', () => {
+    const hb = createHeartbeats();
+    const fires = [];
+    hb.register('alive', 60_000, (n) => fires.push(n));   // registered, no tick yet
+    reload(hb, 'alive', 60_000, (n) => fires.push(n));    // a reload lands before the first tick
+    hb.runDue(T0);
+    expect(fires).toEqual([T0]);                          // lastRun carried = 0 → still fires immediately
+  });
+});

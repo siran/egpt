@@ -17,10 +17,22 @@
 export function createHeartbeats({ onLog = () => {} } = {}) {
   const beats = [];   // { name, everyMs, fn, lastRun }
 
+  // A hot reload (one per inbound message) clear()s then re-register()s the WHOLE set.
+  // A recurring beat's clock (lastRun) must SURVIVE that, keyed by name + cadence — else a
+  // long-cadence beat (e.g. frequency: 1h) re-arms to lastRun 0 on every reload and fires
+  // ~every message instead of once per cadence. clear() snapshots each beat's schedule by
+  // name; register() carries it forward when the SAME name returns at the SAME cadence.
+  let prior = new Map();   // name → { everyMs, lastRun }, snapshotted at the last clear()
+
   // lastRun 0 → a freshly-registered heartbeat fires on the FIRST runDue (in
-  // production `now` is epoch ms, so now - 0 always clears everyMs).
+  // production `now` is epoch ms, so now - 0 always clears everyMs). A re-registered beat
+  // (same name + cadence) keeps the lastRun it had before the clear(), so a reload never
+  // resets its clock (no early/extra fire); a NEW beat, or one whose cadence CHANGED in
+  // config, gets lastRun 0 and fires on the next runDue, as a freshly-declared beat does.
   function register(name, everyMs, fn) {
-    beats.push({ name, everyMs, fn, lastRun: 0 });
+    const carried = prior.get(name);
+    const lastRun = carried && carried.everyMs === everyMs ? carried.lastRun : 0;
+    beats.push({ name, everyMs, fn, lastRun });
   }
 
   function runDue(now) {
@@ -42,8 +54,11 @@ export function createHeartbeats({ onLog = () => {} } = {}) {
 
   // Drop every registered beat so the loader can replace the whole set on a hot
   // reload (the fresh collect() rebuilds it). Stays dumb: no scheduling, just
-  // array surgery.
+  // array surgery — but first snapshot each beat's schedule by name so a re-register
+  // after this clear() can carry its lastRun forward (see register), and a reload
+  // does not reset a recurring beat's clock.
   function clear() {
+    prior = new Map(beats.map((b) => [b.name, { everyMs: b.everyMs, lastRun: b.lastRun }]));
     beats.length = 0;
   }
 

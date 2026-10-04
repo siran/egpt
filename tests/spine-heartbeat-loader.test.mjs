@@ -495,7 +495,8 @@ describe('createHeartbeatLoader — when: one-shots', () => {
 
 // ── daily: a wall-clock time EVERY day, in a named zone (operator 2026-09-16: "being E runs a
 //    script and tells us the prime of the day … post it at 11:00 Tenerife time") ─────────────
-// frequency: has no wall-clock anchor (it fires at registration — every boot, every reload) and
+// frequency: has no wall-clock anchor (it fires at registration — at boot, then once per cadence,
+// its clock surviving reloads) and
 // when: is one-shot, so neither can say "11:00 Atlantic/Canary, every day". daily: is the third
 // trigger. It mirrors when: on purpose — same grace window, same "stale is skipped" — and keeps a
 // durable per-beat ledger (state/heartbeats-daily.json) so a restart or a reload inside the window
@@ -555,10 +556,11 @@ describe('createHeartbeatLoader — daily: every day at HH:MM in a zone', () => 
     };
   }
 
-  // WHY THIS EXISTS: a 24h cadence is anchored to REGISTRATION, not to the clock. It fires the
-  // moment the node boots (15:00 here) and again at every reload — and this node restarts and
-  // reloads several times a day. Passes on the current code, and must keep passing.
-  it('frequency: 24h fires the moment it is registered — at boot AND again at every reload (why daily: exists)', async () => {
+  // A frequency: cadence is anchored to REGISTRATION (no wall-clock anchor — still why daily:
+  // exists), and since 2026-10-04 its clock SURVIVES a reload: it fires at boot and then once
+  // per cadence, NOT again on every inbound message. (Before the fix a reload re-registered the
+  // beat with a reset clock, so a 1h beat fired ~every turn; see tests/spine-heartbeats.test.mjs.)
+  it('frequency: 24h fires at boot (registration) and its schedule SURVIVES a reload — no re-fire until the cadence elapses', async () => {
     const { spawn, calls } = makeSpawn();
     const registry = createHeartbeats();
     const t0 = Date.UTC(2026, 8, 16, 14, 0);   // 15:00 in Tenerife — nowhere near the 11:00 anyone meant
@@ -571,14 +573,14 @@ describe('createHeartbeatLoader — daily: every day at HH:MM in a zone', () => 
     await loader.activate({ stats: () => ({}) });
 
     registry.runDue(t0);
-    expect(calls).toHaveLength(1);             // fired at registration
+    expect(calls).toHaveLength(1);             // fired at registration (boot)
     calls[0].child.emit('exit', 0);
     registry.runDue(t0 + 3_600_000);
     expect(calls).toHaveLength(1);             // 1h later: the cadence has not elapsed
 
     await loader.reload();                     // any inbound message triggers this
     registry.runDue(t0 + 3_600_000);
-    expect(calls).toHaveLength(2);             // …and it fires AGAIN: the anchor moved to the reload
+    expect(calls).toHaveLength(1);             // the reload carries the clock forward — no extra fire (was 2 pre-fix)
   });
 
   it('daily: "11:00" + time_zone: Atlantic/Canary fires at 11:00 Canary (10:00Z in WEST) and not at 10:59', async () => {

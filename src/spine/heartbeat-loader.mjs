@@ -38,8 +38,9 @@
 //
 // `daily: "HH:MM"` (operator 2026-09-16: "being E runs a script and tells us the prime of
 // the day … post it at 11:00 Tenerife time"). frequency: cannot say this — the registry
-// anchors a cadence to REGISTRATION, so `frequency: 24h` fires at every boot and every
-// reload — and when: is one-shot. daily: fires EVERY day at that 24-hour wall-clock time in
+// anchors a cadence to REGISTRATION, not a wall clock, so `frequency: 24h` fires at boot and
+// every 24h after (at no chosen time of day; its clock survives reloads since 2026-10-04) — and
+// when: is one-shot. daily: fires EVERY day at that 24-hour wall-clock time in
 // `time_zone:` (IANA name or an alias, through resolveTimeZone; absent → default_time_zone,
 // as for when:; INVALID → the entry is skipped + logged, never silently local). It mirrors
 // when: on purpose: at most once per calendar day in that zone, at/after HH:MM, within the
