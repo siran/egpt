@@ -189,12 +189,14 @@ describe('/join — alias model, node_role gate', () => {
     expect(c.accountID).toBe('whatsapp');
   });
 
-  it('writes a pure { aliasOf: <original> } entry and edits the /join message to config.join.placeholder', async () => {
+  it('writes an { aliasOf: <original>, transcript: <sanitized title> } entry and edits the /join message to config.join.placeholder', async () => {
     const { cmds, calls, getState } = harness({ config: cfg() });
     await cmds.run({ ...EV });
     const st = getState();
     const primaryJid = getContact(st, 'whatsapp', C_CHAT).jid;
-    expect(st.contacts.whatsapp[JOIN_CHAT]).toEqual({ aliasOf: primaryJid });
+    // transcript = the side-room's sanitized title, stored so its per-surface log (transcript-<title>.md)
+    // is resolvable from chatId + state without a live ev.chatName (operator 2026-10-04).
+    expect(st.contacts.whatsapp[JOIN_CHAT]).toEqual({ aliasOf: primaryJid, transcript: 'egpt join de Proyecto X' });
     expect(aliasTargetOf(st, 'whatsapp', JOIN_CHAT)).toBe(primaryJid);
     expect(getContact(st, 'whatsapp', JOIN_CHAT).slug).toBe(getContact(st, 'whatsapp', C_CHAT).slug);  // same folder
     expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_JOIN }]);

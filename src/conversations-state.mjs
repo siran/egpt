@@ -1444,11 +1444,16 @@ export function patchContact(state, surface, jidOrSlug, patch) {
 // so getContact/ensureContact/serialize treat it as the alias it is.
 
 // Point `jid` at `primaryJid` (the alias is created, or an existing jid is overwritten to an alias).
-export function aliasContact(state, surface, jid, primaryJid) {
+// `extra` carries any fields stored BESIDE `aliasOf` — today just `transcript`, the side-room's
+// sanitized title (operator 2026-10-04), so its per-surface transcript file (transcript-<title>.md)
+// is resolvable from chatId + state at every write and read site WITHOUT a live ev.chatName. The
+// entry stays otherwise opaque: every registry reader skips `entry.aliasOf`, so the extra string
+// field never leaks into config/resident resolution.
+export function aliasContact(state, surface, jid, primaryJid, extra = {}) {
   assertPathSafeSurface(surface, 'aliasContact');
   if (!jid || !primaryJid) return state;
   const prevBucket = state.contacts?.[surface] ?? {};
-  const nextBucket = { ...prevBucket, [jid]: { aliasOf: primaryJid } };
+  const nextBucket = { ...prevBucket, [jid]: { aliasOf: primaryJid, ...extra } };
   return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
 }
 
@@ -1465,6 +1470,15 @@ export function dropContact(state, surface, jid) {
 // itself / unknown. Behind /send + /end's "is this a fork group, and what is its original?".
 export function aliasTargetOf(state, surface, jid) {
   return state.contacts?.[surface]?.[jid]?.aliasOf ?? null;
+}
+
+// The per-surface transcript KEY stored on an alias entry (the side-room's sanitized title, written
+// by /join), read RAW like aliasTargetOf — or null when the jid is not an alias or carries none (a
+// side-room made before this field existed). The per-surface file is transcript-<key>.md; absent, the
+// caller falls back to the short chatId. (operator 2026-10-04)
+export function aliasTranscriptKeyOf(state, surface, jid) {
+  const entry = state.contacts?.[surface]?.[jid];
+  return (entry && entry.aliasOf) ? (entry.transcript ?? null) : null;
 }
 
 // THE write side of _beingBlock — every per-being field write (mode, threadId, access_level,

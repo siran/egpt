@@ -134,6 +134,21 @@ export class Room {
   // First-class (I3). NOT a rolling window — nothing truncates or ages it out. It rotates with
   // the THREAD: a reset archives it to transcripts/<old-thread-id>.md (2026-07-26).
   get transcriptPath() { return join(this.baseDir(), 'transcript.md'); }
+  // The PER-SURFACE transcript file inside this (shared) folder (operator 2026-10-03, /join
+  // side-rooms). A `/join` side-room's chatId is an `aliasOf` the original, so it resolves to the
+  // SAME canonical slug and therefore the SAME baseDir() — but the operator wants each surface's
+  // LOG kept apart: transcript.md for the original chat, transcript-<key>.md for each side-room,
+  // side by side in the ONE folder. `sideRoomKey` is the side-room's stored key — its sanitized
+  // TITLE (operator 2026-10-04), decided once by /join and read off state by chatId, so it is
+  // identical on the write path and every read path. (Sanitized again here — idempotent — so a
+  // raw-title key is still filesystem-safe.) Null (the canonical chat) → transcript.md,
+  // byte-identical to transcriptPath. baseDir()/media/thread are untouched: ONLY the filename is
+  // per-surface.
+  transcriptPathFor(sideRoomKey = null) {
+    return sideRoomKey
+      ? join(this.baseDir(), `transcript-${sanitizeSlug(sideRoomKey)}.md`)
+      : this.transcriptPath;
+  }
   get mediaDir()       { return join(this.baseDir(), 'media'); }           // per-room downloads (C2)
   get filesDir()       { return join(this.baseDir(), 'files'); }           // operator /inject — the shared shelf
   // The SHARED directive layers (NN-*.md: actions, pointers, rules) copied here for local

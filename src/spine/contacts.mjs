@@ -9,7 +9,9 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState } from '../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf } from '../conversations-state.mjs';
+import { Room } from '../room-core.mjs';
+import { shortChatId } from '../bridges/chat-id.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -20,16 +22,15 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
   const rename = io.rename ?? fsRename;
   const appendFile = io.appendFile ?? fsAppendFile;
 
-  return {
-    /**
-     * Resolve (and self-heal) the slug for a chat. ALWAYS calls ensureContact —
-     * for new AND known contacts — which is what re-arms the pushedName refresh,
-     * the conversation_path backfill, and the name-tracking rename. ensureContact
-     * only reports `changed` when a field actually differs, so a steady-state
-     * re-sight (same title, nothing to backfill) does no write.
-     * @returns {Promise<string|null>} the slug, or null when unresolvable (caller treats null as skip)
-     */
-    async resolve(surface, chatId, { chatName } = {}) {
+  /**
+   * Resolve (and self-heal) the slug for a chat. ALWAYS calls ensureContact —
+   * for new AND known contacts — which is what re-arms the pushedName refresh,
+   * the conversation_path backfill, and the name-tracking rename. ensureContact
+   * only reports `changed` when a field actually differs, so a steady-state
+   * re-sight (same title, nothing to backfill) does no write.
+   * @returns {Promise<string|null>} the slug, or null when unresolvable (caller treats null as skip)
+   */
+  async function resolve(surface, chatId, { chatName } = {}) {
       // Serialize the whole load→mutate→write against the shared registry so two
       // DIFFERENT conversations' first-seen registrations (now concurrent, per the
       // per-conversation turn FIFO) can't interleave and lose one contact.
@@ -68,6 +69,35 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         return ens.slug ?? null;
       } catch (e) { onLog(`resolve ${surface}/${chatId}: ${e?.message ?? e}`); return null; }
       });
-    },
-  };
+  }
+
+  /**
+   * WHERE a chat's transcript is filed — BOTH the shared folder AND the per-surface FILE, the ONE
+   * helper the write path (src/spine/transcript.mjs) and the read paths (boot.readTranscript for
+   * mode:accum + the voice-note reuse, commands.mjs /send + /read quoted-lookup) all go through, so
+   * a side-room's log can never land in one file on write and be read back from another.
+   *
+   * The FOLDER is canonical/shared, exactly as resolve() follows the `aliasOf` today — a `/join`
+   * side-room shares the original's slug, folder, media and being thread. ONLY the transcript
+   * FILENAME is per-surface: transcript.md for the original chat (not an alias), transcript-<key>.md
+   * for a side-room, where <key> is the side-room's STORED key — its sanitized title, which /join
+   * wrote onto the alias entry at creation (aliasTranscriptKeyOf). It is read off state keyed by
+   * chatId, so it is identical at every write and read site and never depends on a live ev.chatName;
+   * a side-room made before the key was stored falls back to its short chatId. aliasTargetOf is the
+   * RAW read of the alias map — what distinguishes "this chatId IS a side-room" from "the primary".
+   * @returns {Promise<{slug:string, room:Room, path:string}|null>} null when unresolvable
+   */
+  async function transcriptTarget(surface, chatId, { chatName } = {}) {
+    const slug = await resolve(surface, chatId, { chatName });
+    if (!slug) return null;
+    const room = Room.forChat(surface, slug);
+    const state = await loadState();
+    // aliasTargetOf non-null ⇒ a side-room ⇒ transcript-<key>.md, key = its stored title (else the
+    // short chatId); a primary/standalone chat ⇒ null ⇒ transcript.md.
+    const aliased = aliasTargetOf(state, surface, chatId);
+    const key = aliased ? (aliasTranscriptKeyOf(state, surface, chatId) ?? shortChatId(chatId)) : null;
+    return { slug, room, path: room.transcriptPathFor(key) };
+  }
+
+  return { resolve, transcriptTarget };
 }

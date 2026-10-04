@@ -1997,17 +1997,21 @@ export async function boot({
   //     arrival transcription (unbounded lookback, ZERO re-transcription);
   //   - the spine: `mode: accum` prompts a turn with everything said since the being's own
   //     last reply (src/transcript-log.mjs contextSinceLastTurn).
-  // Neither can resolve chatID → transcript.md itself, and BOTH must land on the same file, so
-  // this goes through the SAME resolveConvDir the reply-actions / transcript writer use — never
-  // a duplicated/guessed path, which could pull a DIFFERENT chat's file. resolveConvDir is
-  // declared below but only read at message-dispatch time (long post-boot), and neither consumer
-  // invokes this during setup — so the forward reference is call-time safe (no TDZ).
+  // Neither can resolve chatID → its transcript file itself, and BOTH must land on the SAME file
+  // the writer did, so this goes through contacts.transcriptTarget — the ONE helper the transcript
+  // writer (src/spine/transcript.mjs) files through — never a duplicated/guessed path, which could
+  // pull a DIFFERENT chat's file (and, for a /join side-room, the shared transcript.md instead of
+  // the side-room's own transcript-<key>.md).
   // io.readFile ?? readFile keeps it on the same fs seam as the transcript writer (tests
   // intercept via memIo).
   const readTranscript = async (chatID, { chatName, network } = {}) => {
-    const dir = await resolveConvDir({ surface: surfaceOf(network), chatId: chatID, chatName });
-    if (!dir) return null;
-    return await (io.readFile ?? readFile)(join(dir, 'transcript.md'), 'utf8').catch(() => null);
+    // PER-SURFACE (operator 2026-10-03): a /join side-room reads its OWN transcript-<key>.md, not the
+    // shared transcript.md — so mode:accum gap-fill and the voice-note reuse see the side-room's log,
+    // never the original's lines. contacts.transcriptTarget is the SAME write==read helper the
+    // transcript writer files through, so reader and writer can never land on different files.
+    const t = await contacts.transcriptTarget(surfaceOf(network), chatID, { chatName });
+    if (!t) return null;
+    return await (io.readFile ?? readFile)(t.path, 'utf8').catch(() => null);
   };
 
   // Bridge construction — one instance per DISTINCT RESOLVED TOKEN, not per connection NAME
@@ -2959,6 +2963,7 @@ export async function boot({
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
     logTranscript: (ev, reply) => services.transcript.log(ev, reply),   // THE reply writer — the same service commandTranscript wraps above; /agents rethread's accum boundary rides it instead of assembling a line of its own
     resolveConvRoom,                                  // (surface, chatId) → the conversation's Room — the SAME resolver the phase-4 relay reads members from, so /members writes where the relay reads (bug fix 2026-07-23)
+    transcriptTarget: contacts.transcriptTarget,      // (surface, chatId) → { slug, room, path } — the per-surface transcript FILE helper; /send + /read read the side-room's own transcript-<key>.md, the SAME file the writer files through
     // `/members add group <chat name>` — THE bridge's name→id resolver, the same one
     // mesh.mjs's canonRoute takes off this bridge (`bridge.resolveChatId`), so a chat NAME
     // resolves to the id the relay actually delivers under. LIVE since c84deac, which forwards

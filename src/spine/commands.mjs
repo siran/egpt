@@ -41,7 +41,7 @@ import { Room, ROOMS_ROOT } from '../room-core.mjs';
 import { SHELL_SURFACE } from './identity.mjs';
 // The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
 // see roomOnDisk. NOT for the /rooms verbs: they pass the operator's raw string through.
-import { sanitizeName } from '../sanitize.mjs';
+import { sanitizeName, sanitizeSlug } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf } from '../tools/compact-being.mjs';
@@ -595,6 +595,13 @@ export function createCommands({
     try { const slug = getContact(await loadState(), surface, chatId)?.slug; return slug ? Room.forChat(surface, slug) : null; }
     catch { return null; }
   },
+  // (surface, chatId) → { slug, room, path } — the per-surface transcript FILE helper
+  // (contacts.transcriptTarget, boot-injected), the SAME write==read resolver the transcript
+  // service files through. The quoted-message readers (/send + /read) key on its `.path` so a
+  // message quoted inside a /join side-room resolves against the side-room's own transcript-<key>.md,
+  // never the shared transcript.md. Absent (standalone/tests) → the readers fall back to
+  // room.transcriptPath, byte-identical to before.
+  transcriptTarget = null,
   // Chat NAME → canonical chat id, for `/members add group <name>` (operator 2026-08-29: the
   // operator types the chat's NAME, not the id they'd have to go dig up). THE bridge's own
   // resolver (src/bridges/beeper.mjs resolveChatId — name-or-slug match, cached, walks EVERY
@@ -758,11 +765,15 @@ export function createCommands({
   // No room joined → currentRoomOf returns null → falls through to today's behavior
   // (surfaceOf(ev), ev.chatId) byte-for-byte, unchanged. This is the ONE choke point every
   // room-scoped command funnels through, so fixing it here fixes all of them at once.
-  const convRoomOf = (ev) => {
-    if (ev?.mesh) return resolveConvRoom(SHELL_SURFACE, LOBBY_SLUG);
+  // The (surface, chatId) a room-scoped command is acting in — extracted so the Room (convRoomOf)
+  // and the per-surface transcript FILE (radioQuickReply) resolve from ONE selector and can never
+  // disagree about which conversation a command targets.
+  const convScopeOf = (ev) => {
+    if (ev?.mesh) return { surface: SHELL_SURFACE, chatId: LOBBY_SLUG };
     const joined = currentRoomOf(surfaceOf(ev));
-    return resolveConvRoom(joined ? 'room' : surfaceOf(ev), joined ?? ev.chatId);
+    return { surface: joined ? 'room' : surfaceOf(ev), chatId: joined ?? ev.chatId };
   };
+  const convRoomOf = (ev) => { const s = convScopeOf(ev); return resolveConvRoom(s.surface, s.chatId); };
 
   // The web-brain adapter list, loaded once (dynamic import of config/brains/*-cdp.mjs)
   // and memoized. adapterFor() resolves a tab URL → its adapter, or null (→ can't add).
@@ -3117,11 +3128,18 @@ export function createCommands({
   }
 
   async function radioQuickReply(ev) {
-    const room = await convRoomOf(ev);
+    const scope = convScopeOf(ev);
+    const room = await resolveConvRoom(scope.surface, scope.chatId);
     const nothingToRead = async () => { if (room && await radioCanActIn(room)) await send?.(ev.chatId, RS_NOTHING_TO_READ); };
     if (ev.replyToId == null) { await nothingToRead(); return; }
     let text = null;
-    if (room) { try { text = await readFile(room.transcriptPath, 'utf8'); } catch { text = null; } }
+    if (room) {
+      // The quoted message was logged on THIS surface — read the per-surface file (a /join
+      // side-room's transcript-<key>.md, else transcript.md), via the SAME write==read helper the
+      // transcript writer files through; absent (tests) → room.transcriptPath.
+      const path = (transcriptTarget && (await transcriptTarget(scope.surface, scope.chatId, { chatName: ev.chatName }))?.path) || room.transcriptPath;
+      try { text = await readFile(path, 'utf8'); } catch { text = null; }
+    }
     const body = text ? bodyForMessageId(text, ev.replyToId) : null;
     const cleaned = body ? cleanQuotedBody(body) : null;
     if (!cleaned) { await nothingToRead(); return; }
@@ -3261,7 +3279,11 @@ export function createCommands({
     //     SAME folder/agents/threads. Reload fresh before the write (createGroup is async).
     const state = await loadState();
     const primaryJid = getContact(state, surface, ev.chatId)?.jid ?? ev.chatId;
-    await writeState(aliasContact(state, surface, joinChatId, primaryJid));
+    // Store the side-room's sanitized TITLE on the alias entry as its per-surface transcript key
+    // (operator 2026-10-04): its log is kept apart in transcript-<title>.md within the shared folder,
+    // resolvable from chatId + state at every write/read site (contacts.transcriptTarget) — not from a
+    // live ev.chatName. The folder/agents/thread stay shared via aliasOf.
+    await writeState(aliasContact(state, surface, joinChatId, primaryJid, { transcript: sanitizeSlug(title) }));
     // (c) EDIT the operator's /join message into the placeholder marker (raw, no persona).
     await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
     onLog(`/join: ${cTitle} -> group ${joinChatId} aliased to ${primaryJid} (member ${rodz.rodzUserId})`);
@@ -3363,9 +3385,14 @@ export function createCommands({
     if (!originalChatId) return;                           // not a join/split group → silent
     if (!residesHere(state, surface, ev.chatId)) return;   // gate (defensive — a group implies it)
     if (ev.replyToId == null) { await send?.(ev.chatId, 'reply to a message with /send to send it to the original chat'); return; }
-    const room = await resolveConvRoom(surface, ev.chatId);   // join: follows alias → shared transcript; split: its own
+    // The quoted message was logged on THIS surface, so read it from THIS surface's own transcript:
+    // for a /join side-room that is transcript-<its id>.md beside the shared transcript.md (same
+    // folder), for a /split its own conversation's transcript.md. transcriptTarget is the SAME
+    // write==read helper the transcript writer files through; absent (tests) → room.transcriptPath.
+    const tt = transcriptTarget ? await transcriptTarget(surface, ev.chatId, { chatName: ev.chatName }) : null;
+    const path = tt?.path ?? (await resolveConvRoom(surface, ev.chatId))?.transcriptPath ?? null;
     let text = null;
-    if (room) { try { text = await readFile(room.transcriptPath, 'utf8'); } catch { text = null; } }
+    if (path) { try { text = await readFile(path, 'utf8'); } catch { text = null; } }
     const body = text ? bodyForMessageId(text, ev.replyToId) : null;
     const cleaned = body ? cleanQuotedBody(body) : null;
     if (!cleaned) { await send?.(ev.chatId, '/send: nothing to send — reply to a message that has text'); return; }

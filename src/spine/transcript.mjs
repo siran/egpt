@@ -98,9 +98,21 @@ export function createTranscript({
     const redirected = joinedRoom && joinedRoom !== LOBBY_SLUG && (ev.surface !== 'room' || ev.chatId === LOBBY_SLUG);
     const surface = redirected ? 'room' : ev.surface;
     const chatId = redirected ? joinedRoom : ev.chatId;
+    // The resolver owns BOTH halves of where this write is filed: the shared folder (the canonical
+    // slug, via the `aliasOf` exactly as today) AND the per-surface transcript FILE inside it —
+    // transcript.md for the canonical chat, transcript-<side-room>.md for a /join side-room (an
+    // aliased chatId), side by side in the ONE folder. contacts.transcriptTarget is the ONE
+    // write==read helper (src/spine/contacts.mjs). A resolver without it (a unit fake) degrades to
+    // resolve()+transcript.md, byte-identical to before — the same default-seam convention as
+    // currentRoomOf above.
+    if (contacts.transcriptTarget) {
+      const t = await contacts.transcriptTarget(surface, chatId, { chatName: ev.chatName });
+      return t ? { surface, chatId, slug: t.slug, room: t.room, transcriptPath: t.path } : null;
+    }
     const slug = await contacts.resolve(surface, chatId, { chatName: ev.chatName });
     if (!slug) return null;
-    return { surface, chatId, slug, room: Room.forChat(surface, slug) };
+    const room = Room.forChat(surface, slug);
+    return { surface, chatId, slug, room, transcriptPath: room.transcriptPath };
   }
 
   // Stream appends are SERIALIZED through one chain. "In order" is the whole ruling, and
@@ -169,7 +181,7 @@ export function createTranscript({
       const t = await target(ev);
       if (!t) return false;
       await mkdir(t.room.baseDir(), { recursive: true });
-      const fpath = t.room.transcriptPath;
+      const fpath = t.transcriptPath;
       let head = '';
       if (!openBlocks.has(fpath)) {
         // Same front-matter rule transcriptAppend applies, for the case where a stream is the
@@ -255,7 +267,7 @@ export function createTranscript({
         const t = await target(ev);
         if (!t) return false;
         await mkdir(t.room.baseDir(), { recursive: true });
-        const fpath = t.room.transcriptPath;
+        const fpath = t.transcriptPath;
         await chain;
         await closeBlock(fpath);
         const line = formatDispatchLine({ senderName: labelOf(being), ...lineContext(ev), timeZone, ts: now(), body, stageDirection: true });
@@ -315,7 +327,7 @@ export function createTranscript({
         if (!t) return false;
         const { surface: targetSurface, chatId: targetChatId, slug, room } = t;
         await mkdir(room.baseDir(), { recursive: true });
-        const fpath = room.transcriptPath;
+        const fpath = t.transcriptPath;
         // An ordinary entry lands UNDER the train, never inside it: drain whatever bytes are
         // still queued, then terminate the open block. Append-only — closing writes the blank
         // line that separates two blocks and touches nothing already written.

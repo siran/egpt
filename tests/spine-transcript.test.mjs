@@ -3,9 +3,12 @@
 // even when the collector's io read/write blows up. Same createTranscript harness shape as
 // spine-v1.test.mjs (fake contacts resolver + fake io).
 import { describe, it, expect, vi } from 'vitest';
+import { dirname } from 'node:path';
 import { createTranscript } from '../src/spine/transcript.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { editAction } from '../src/dispatch-line.mjs';
+import { bodyForMessageId, contextSinceLastTurn } from '../src/transcript-log.mjs';
 import { Room } from '../src/room-core.mjs';
 
 // The collector is fire-and-forget (not awaited by log()); give its async read-merge-write
@@ -435,5 +438,146 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
     const otherText = [...files.entries()].find(([p]) => norm(p).includes('/rooms/other-room/') && p.endsWith('transcript.md'))?.[1] ?? '';
     expect(ownText).toContain('hola');     // lands in the room the caller actually named
     expect(otherText).toBe('');            // never redirected onto the unrelated joined room
+  });
+});
+
+// PER-SURFACE TRANSCRIPT FOR A /join SIDE-ROOM (operator 2026-10-03). A /join side-room's chatId is
+// an `aliasOf` the original chat: same folder, same being THREAD, same per-node agents. Before this
+// change every surface's messages all landed in the ONE shared transcript.md, distinguishable only
+// by the @[<chatName>] tag. The operator wants each surface's LOG kept apart — transcript.md for the
+// original, transcript-<side-room>.md for each side-room, side by side in the SAME folder — while the
+// folder, media and thread stay shared. The ONLY change is which FILENAME a message reads/writes;
+// baseDir() is untouched. Exercised with the REAL createContacts over an in-memory alias registry, so
+// the write path and the reader path (contacts.transcriptTarget) are the SAME helper end to end.
+describe('transcript.log — a /join side-room gets a PER-SURFACE transcript in the SHARED folder', () => {
+  const PRIMARY = 'primaryroom';          // the original chat's (short) id
+  const SIDE = 'sideroom99';              // the /join side-room's (short) id — aliasOf PRIMARY
+  const PRIMARY_SLUG = 'fam-2605200133';
+  // The side-room's STORED transcript key — its sanitized title, written by /join onto the alias
+  // entry. NOT the chatId, and deliberately ≠ the live ev.chatName below, so the tests prove the
+  // filename follows the stored TITLE and never a live name. (sanitizeSlug removed the ':'.)
+  const SIDE_KEY = 'SPOILER EyAy-join';
+  const SIDE_CHATNAME = 'Live Fork Name';  // what arrives on ev.chatName — must NOT drive the file
+
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+
+  // Real resolver over an in-memory registry: PRIMARY is a normal contact, SIDE is an alias of it.
+  // withKey=true models a /join side-room that stored its title; false models an OLD side-room with
+  // only { aliasOf } (the short-chatId fallback).
+  const mkContacts = ({ withKey = true } = {}) => {
+    let state = {
+      contacts: {
+        whatsapp: {
+          [PRIMARY]: { slug: PRIMARY_SLUG, agents: { egpt: { threadId: 't1' } } },
+          [SIDE]: withKey ? { aliasOf: PRIMARY, transcript: SIDE_KEY } : { aliasOf: PRIMARY },
+        },
+      },
+    };
+    const loadState = async () => state;
+    const writeState = async (s) => { state = s; };
+    return createContacts({ loadState, writeState, io: { rename: async () => {}, appendFile: async () => {} } });
+  };
+
+  const evOn = (chatId, chatName, id, body) => ({
+    surface: 'whatsapp', node: 'wa', chatId, chatName,
+    senderId: '@wa_1:beeper.local', ts: Date.UTC(2026, 6, 3, 14, 22),
+    line: `An@[${chatName}].wa (14:22) #${id}: ${body}`, body,
+  });
+
+  const base = Room.forChat('whatsapp', PRIMARY_SLUG).baseDir();
+  const canonPath = Room.forChat('whatsapp', PRIMARY_SLUG).transcriptPath;
+  const sidePath = Room.forChat('whatsapp', PRIMARY_SLUG).transcriptPathFor(SIDE_KEY);   // named from the TITLE
+
+  it('a side-room message lands in transcript-<title>.md (NOT the chatId, NOT the live chatName); the canonical chatId in transcript.md — SAME folder', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: mkContacts(), io: mkIo(files) });
+
+    expect(await t.log(evOn(PRIMARY, 'fam', 'c1', 'canonical hello'))).toBe(true);
+    expect(await t.log(evOn(SIDE, SIDE_CHATNAME, 's1', 'side hello'))).toBe(true);
+
+    // the per-surface file is named from the stored TITLE, not the chatId and not the live chatName
+    expect(sidePath).toContain('transcript-SPOILER EyAy-join.md');
+    expect(sidePath).not.toContain(SIDE);                 // not the chatId
+    expect(sidePath).not.toContain('Live Fork Name');     // not the live ev.chatName
+    // two files, ONE folder (baseDir unchanged)
+    expect(sidePath).not.toBe(canonPath);
+    expect(dirname(sidePath)).toBe(base);
+    expect(dirname(canonPath)).toBe(base);
+    // each surface's log is its own, no cross-contamination
+    expect(files.get(canonPath)).toContain('canonical hello');
+    expect(files.get(canonPath)).not.toContain('side hello');
+    expect(files.get(sidePath)).toContain('side hello');
+    expect(files.get(sidePath)).not.toContain('canonical hello');
+    // the tagged-line format is intact on the per-surface file
+    expect(files.get(sidePath)).toContain(`An@[${SIDE_CHATNAME}].wa (14:22) #s1: side hello`);
+  });
+
+  it('the readers (/send + /read quote-lookup, gap-fill) resolve the per-surface file WITHOUT depending on ev.chatName', async () => {
+    const files = new Map();
+    const contacts = mkContacts();
+    const t = createTranscript({ contacts, io: mkIo(files) });
+
+    await t.log(evOn(PRIMARY, 'fam', 'c1', 'canon only'));
+    await t.log(evOn(SIDE, SIDE_CHATNAME, 's1', 'side only'));
+
+    // transcriptTarget is the ONE helper readers call — alias → the stored-title file, canonical →
+    // transcript.md. Called with NO chatName (the read sites may lack it), it still lands on the title.
+    const sideT = await contacts.transcriptTarget('whatsapp', SIDE);
+    const canonT = await contacts.transcriptTarget('whatsapp', PRIMARY);
+    expect(sideT.path).toBe(sidePath);
+    expect(canonT.path).toBe(canonPath);
+    expect(sideT.path).not.toBe(canonT.path);
+    expect(dirname(sideT.path)).toBe(dirname(canonT.path));   // shared folder
+
+    const sideText = files.get(sideT.path) ?? '';
+    const canonText = files.get(canonT.path) ?? '';
+    // bodyForMessageId (the /send + /read quote-lookup) resolves the side message on the side file,
+    // and does NOT resolve the original's message from it (the original's lines are not here).
+    expect(bodyForMessageId(sideText, 's1')).toBe('side only');
+    expect(bodyForMessageId(sideText, 'c1')).toBe(null);
+    expect(bodyForMessageId(canonText, 'c1')).toBe('canon only');
+  });
+
+  it('gap-fill (contextSinceLastTurn) over the aliased surface reads its own gap, never the original\'s lines', async () => {
+    const files = new Map();
+    const contacts = mkContacts();
+    // now pinned to ev.ts's day so reply lines and inbound lines share one day (no day-boundary blocks).
+    const t = createTranscript({ contacts, io: mkIo(files), defaultKey: 'egpt', labelOf: (b) => b, now: () => new Date(Date.UTC(2026, 6, 3, 14, 30)) });
+
+    // original chat accrues its own history — it must stay invisible to the side-room's gap
+    await t.log(evOn(PRIMARY, 'fam', 'c1', 'original-only line'));
+    // side-room: a human line, then THIS being's reply (the accum boundary), then the gap, then the trigger
+    await t.log(evOn(SIDE, SIDE_CHATNAME, 's0', 'before the boundary'));
+    await t.log(evOn(SIDE, SIDE_CHATNAME, 's0', 'before the boundary'), { text: 'egpt side reply', being: 'egpt' });
+    await t.log(evOn(SIDE, SIDE_CHATNAME, 's2', 'gap message after the reply'));
+    const trigger = evOn(SIDE, SIDE_CHATNAME, 's3', 'the new trigger');
+    await t.log(trigger);
+
+    const sideText = files.get((await contacts.transcriptTarget('whatsapp', SIDE)).path) ?? '';
+    const got = contextSinceLastTurn(sideText, { being: ['egpt'], exclude: trigger.line });
+    const joined = got.blocks.join('\n');
+    expect(joined).toContain('gap message after the reply');   // the side-room's own gap since its reply
+    expect(joined).not.toContain('original-only line');        // never the original chat's lines
+    expect(joined).not.toContain('before the boundary');       // and not what precedes the being's reply
+  });
+
+  it('a side-room with NO stored key (old /join) falls back to transcript-<shortChatId>.md', async () => {
+    const files = new Map();
+    const contacts = mkContacts({ withKey: false });
+    const t = createTranscript({ contacts, io: mkIo(files) });
+
+    expect(await t.log(evOn(SIDE, SIDE_CHATNAME, 's1', 'legacy side hello'))).toBe(true);
+    const fallbackPath = Room.forChat('whatsapp', PRIMARY_SLUG).transcriptPathFor(SIDE);  // shortChatId(SIDE) === SIDE
+    expect(fallbackPath).toContain('transcript-sideroom99.md');
+    expect(files.get(fallbackPath)).toContain('legacy side hello');
+    // the reader resolves the SAME fallback file
+    expect((await contacts.transcriptTarget('whatsapp', SIDE)).path).toBe(fallbackPath);
   });
 });
