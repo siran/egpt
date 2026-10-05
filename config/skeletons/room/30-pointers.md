@@ -6,6 +6,10 @@
   ./media/          files from this chat
   ./files/          the operator's shelf — what he put here for me
   ./desktop/        mine — what I'm working on right now
+  ./.ssh/           my ssh keys — PERSISTENT and backup-excluded, unlike my
+                    pool home's ~/.ssh (wiped each sandbox lease); keep and
+                    generate keys here, and use
+                    `ssh -i .ssh/<key> -o StrictModes=no`
   ./heartbeats/     my schedule — one <name>.yaml per beat, three kinds:
                     structural  when:/daily: + command:, run as me in my box;
                                 post: "{stdout}" says its output in this chat

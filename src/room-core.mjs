@@ -196,6 +196,13 @@ export class Room {
   // BOXED or not at all — a command in the conversation's box, a turn only into a boxed being
   // (src/spine/heartbeat-loader.mjs, operator 2026-09-28).
   get heartbeatsDir()  { return join(this.baseDir(), HEARTBEATS_DIR); }    // one <name>.yaml per beat — a being's own, run boxed or not at all
+  // THE BEING'S OWN SSH KEYS (operator 2026-10-04). The analog of desktop/ for ~/.ssh: a home-like
+  // folder that belongs in the conversation tree, not the scratch pool profile. A sandboxed turn runs
+  // as a leased pool account whose ~/.ssh is WIPED on every lease (sandbox-logon-launcher.ps1), so a
+  // key kept there vanishes between turns. Kept HERE it is PERSISTENT — the conversation folder
+  // survives lease rotation and is re-ACL'd to each lessee — and backup-excluded (the FFS Drive backup
+  // now skips *\.ssh\), so keys and known_hosts live where the being works and never leak into backup.
+  get sshDir()         { return join(this.baseDir(), '.ssh'); }            // the being's own ssh keys — persistent and backup-excluded, unlike the pool home's ~/.ssh
 
   // ── the tree, ENSURED (ONE owner) ─────────────────────────────────────────
   // The list used to be written out twice — /rooms create's mkdir loop (spine/commands.mjs)
@@ -233,8 +240,12 @@ export class Room {
   //
   // heartbeats/ JOINED on 2026-09-25 for the pointers card's sake: a being told it has a
   // schedule folder must find one there.
+  //
+  // .ssh/ JOINED on 2026-10-04 on exactly desktop/'s and heartbeats/' reasoning: a sandboxed being's
+  // pool home ~/.ssh is wiped each lease, so the ssh keys the pointers card names must live in a folder
+  // that is really here and persists — created eagerly for every room and every conversation.
   treeDirs() {
-    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir, this.outboxDir, this.heartbeatsDir];
+    return [this.baseDir(), this.mediaDir, this.filesDir, this.directivesDir, this.scriptsDir, this.transcriptsDir, this.desktopDir, this.outboxDir, this.heartbeatsDir, this.sshDir];
   }
 
   // Create the tree. Idempotent (mkdir -p on every call). `io.mkdir` is the seam both

@@ -83,6 +83,17 @@ describe('the pointers card (config/skeletons/room/30-pointers.md)', () => {
     expect(CONV.treeDirs().map((d) => basename(d))).toContain('desktop');
   });
 
+  // 2026-10-04: where the being keeps its ssh keys. A sandboxed being's pool home ~/.ssh is wiped on
+  // every lease, so a key left there vanishes between turns; the conversation folder's .ssh/ persists
+  // and is backup-excluded, so the card names it (and how to use a key from it) — a being never told is
+  // one that keeps keys where they disappear.
+  it('names ./.ssh/ — the being\'s own ssh keys, and a real folder the Room tree creates', () => {
+    expect(CARD).toMatch(/\.\/\.ssh\/ .*my ssh keys/);
+    expect(CARD).toMatch(/PERSISTENT and backup-excluded/);
+    expect(CARD).toMatch(/ssh -i \.ssh\/<key> -o StrictModes=no/);
+    expect(CONV.treeDirs().map((d) => basename(d))).toContain('.ssh');
+  });
+
   // 2026-09-25: a being asked for a reminder had nowhere a heartbeat could live. The card tells
   // it where, and what may go there — one file per beat. Since 2026-09-28 (operator: "there are
   // different types of yaml heartbeats") that is three kinds: a structural command run in the

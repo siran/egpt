@@ -42,7 +42,9 @@ const CONV = join(HOME, 'conversations', SURFACE, SLUG);
 // files/ joined the CARD on 2026-09-20 (it was always in Room.treeDirs, just never named):
 // the operator's shelf, written by /inject, invisible to every being until the card said so.
 // heartbeats/ joined both on 2026-09-25: the being's own schedule, one <name>.yaml per beat.
-const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts', 'desktop', 'files', 'heartbeats'];
+// .ssh/ joined both on 2026-10-04: the being's own ssh keys — part of Room.treeDirs, so the card may
+// name it, persistent and backup-excluded unlike the pool home's ~/.ssh (wiped each lease).
+const SEEDED_NOW = ['directives', 'scripts', 'media', 'transcripts', 'desktop', 'files', 'heartbeats', '.ssh'];
 const ON_DEMAND = [];
 
 let seeded;

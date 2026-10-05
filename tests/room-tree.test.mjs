@@ -98,7 +98,9 @@ describe('ONE owner of the Room tree — both creation paths make the SAME tree'
     // one folder the feature is addressed at.
     // heartbeats/ joined on 2026-09-25 — the being's own schedule, one <name>.yaml per beat, named
     // on the pointers card, so it must be really there.
-    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', 'desktop', 'directives', 'files', 'heartbeats', 'media', 'outbox', 'scripts', 'transcripts']);
+    // .ssh/ joined on 2026-10-04 — the being's own ssh keys, named on the pointers card, persistent
+    // and backup-excluded unlike the pool home's ~/.ssh (wiped each lease), so it must be really there.
+    expect(treeOf(named.mkdirs, ROOM())).toEqual(['', '.ssh', 'desktop', 'directives', 'files', 'heartbeats', 'media', 'outbox', 'scripts', 'transcripts']);
   });
 
   // (The pointers card naming these folders is guarded in tests/pointers.test.mjs, which
