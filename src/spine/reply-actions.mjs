@@ -254,7 +254,18 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
   const settle = (r, raw) => {
     if (r.ok) run.push(r.action);
     else {
-      if (r.demote != null) proseLines.push(r.demote);
+      // ECHO DEDUPE (live 2026-10-06, being P — the `pi` engine on an abliterated gemma). A weak
+      // model misuses the limbs grammar: it emits its reply as PLAIN PROSE and then a REDUNDANT
+      // `/reply #<already-quoted-id> <the SAME text>`. The guard above correctly DEMOTES that text
+      // (so no second post, no rogue twin), but the being already said it as prose, so appending
+      // the demote verbatim rendered the text TWICE in one message. Demote still rescues content
+      // that is NEW or stands ALONE (prose so far holds no copy → still pushed, nothing lost); it
+      // just never re-adds a line the prose already carries. This stays a guard at the one append
+      // site — it does not touch the redundancy guard, the demote field, or any other path.
+      if (r.demote != null) {
+        const d = String(r.demote).trim();
+        if (d && !proseLines.join('\n').includes(d)) proseLines.push(r.demote);
+      }
       if (r.reason) stripped.push({ raw, reason: r.reason });
     }
   };

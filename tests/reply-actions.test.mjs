@@ -92,6 +92,44 @@ describe('parseReplyActions — the pure split', () => {
     expect(parseReplyActions('/reply hola', ev, { quotedId: '159710' }).stripped).toHaveLength(1);
   });
 
+  // ECHO DEDUPE (live 2026-10-06, being P — the `pi` engine on an abliterated gemma). A weak model
+  // misuses the limbs grammar: it emits its reply as PLAIN PROSE and then a REDUNDANT
+  // `/reply #<already-quoted-id> <the SAME text>`. The redundancy guard demotes that text (right —
+  // no second post), but the being ALREADY said it as prose, so appending the demote rendered the
+  // text TWICE in one message. Demote must still rescue content that is NEW or stands ALONE; it
+  // just never re-adds a line the prose already carries. (This neutralizes the DOUBLE only — it
+  // does not stop P emitting the redundant /reply, a weak-model habit strong models like E lack.)
+  it('reply: a redundant /reply echoing text the being ALREADY said does NOT double it (live 2026-10-06, being P)', () => {
+    const ev = { ...EV, msgId: '22525' };
+    const txt = '¡Hola! Muchas gracias por la bienvenida.';
+    const { prose, run, stripped } = parseReplyActions(`${txt}\n/reply #22525 ${txt}`, ev, { quotedId: '22525' });
+    expect(run).toEqual([]);          // redundant target → no second post, no rogue twin
+    expect(stripped).toEqual([]);     // redundant is not malformed
+    expect(prose).toBe(txt);          // …and the text appears ONCE, not twice
+  });
+
+  it('reply: a /reply-ONLY redundant line still demotes — nothing lost when it is the whole reply', () => {
+    const ev = { ...EV, msgId: '22525' };
+    const { prose, run } = parseReplyActions('/reply #22525 solo esto', ev, { quotedId: '22525' });
+    expect(run).toEqual([]);
+    expect(prose).toBe('solo esto');   // no prior prose → the demote is the only content, kept
+  });
+
+  it('reply: a redundant /reply whose text is NEW (not already said) is still demoted in full', () => {
+    const ev = { ...EV, msgId: '22525' };
+    const { prose, run } = parseReplyActions('prefacio\n/reply #22525 texto distinto', ev, { quotedId: '22525' });
+    expect(run).toEqual([]);
+    expect(prose).toBe('prefacio\ntexto distinto');   // genuinely new demoted content survives
+  });
+
+  it('reply: a /reply at a DIFFERENT (non-quoted) id still fires — the dedupe never touches a real limb', () => {
+    const ev = { ...EV, msgId: '22525' };
+    const { prose, run, stripped } = parseReplyActions('¡Hola!\n/reply #99999 ¡Hola!', ev, { quotedId: '22525' });
+    expect(stripped).toEqual([]);
+    expect(prose).toBe('¡Hola!');   // the plain prose, once
+    expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '99999', text: '¡Hola!' }]);   // the /reply still posts
+  });
+
   // …BUT ITS WORDS ARE NOT LOST WITH IT (operator 2026-09-14; live on both nodes). /reply is the
   // only limb whose malformed form CARRIES the model's own answer, and the whole reply is often
   // that one line — run=0 with no prose is neither actionOnly nor deliverable, so the placeholder
