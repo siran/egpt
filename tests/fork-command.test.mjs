@@ -229,12 +229,41 @@ describe('/join — alias model, node_role gate', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('SILENT on the primary node when NO being resides here', async () => {
+  // REPRODUCE-FIRST (operator 2026-10-06): a chat whose contact is KNOWN but where NO being has ever
+  // taken a turn (no agents block / no threadId) used to make /join silently no-op. /join only
+  // ALIASES, so a resident thread is NOT required — the group must still be created + aliased, so a
+  // fresh E invocation in the group starts the first thread with this chat's context. FAILS on the
+  // pre-fix code (residesHere false → silent return → createGroup never called).
+  it('on the primary node, a KNOWN contact with NO being thread: PROCEEDS — creates the group and writes the alias', async () => {
     const stateNoBeing = ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'Proyecto X' }).state;
-    const { cmds, sent, calls } = harness({ config: cfg(), state: stateNoBeing });
+    const { cmds, sent, calls, getState } = harness({ config: cfg(), state: stateNoBeing });
+    await cmds.run({ ...EV, body: '/join spoiler' });
+    expect(calls.create).toHaveLength(1);                                   // no resident being no longer blocks
+    const st = getState();
+    const primaryJid = getContact(st, 'whatsapp', C_CHAT).jid;
+    expect(aliasTargetOf(st, 'whatsapp', JOIN_CHAT)).toBe(primaryJid);      // alias written under the SHORT group id
+    expect(sent).toHaveLength(0);                                           // known contact → no refusal reply
+  });
+
+  // REGRESSION LOCK: the relaxed contact guard must sit AFTER the node gate, so a non-selected node
+  // still stands down SILENTLY even in the newly-allowed no-being case.
+  it('REGRESSION: a non-selected node stays SILENT even with the relaxed guard (no being) — no createGroup, no reply', async () => {
+    const stateNoBeing = ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'Proyecto X' }).state;
+    const { cmds, sent, calls } = harness({ config: cfg({ node_name: 'do', node_role: 'secondary' }), state: stateNoBeing });
     await cmds.run({ ...EV });
     expect(calls.create).toHaveLength(0);
     expect(sent).toHaveLength(0);
+  });
+
+  // The ONLY case the relaxed guard still refuses: a genuinely-unknown conversation (nothing to alias).
+  // Prefer a one-line operator reply over a silent return (operator 2026-10-06).
+  it('an UNKNOWN conversation (nothing to alias): refuses with a one-line reply, creates nothing', async () => {
+    const { cmds, sent, calls, logs } = harness({ config: cfg(), state: { contacts: {} } });
+    await cmds.run({ ...EV });
+    expect(calls.create).toHaveLength(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({ chatId: C_CHAT, text: expect.stringMatching(/don't know this conversation/i) });
+    expect(logs.some((l) => /not a known conversation/i.test(l))).toBe(true);
   });
 
   it('`/join do` override acts on node do (a secondary-role node that would otherwise stand down)', async () => {

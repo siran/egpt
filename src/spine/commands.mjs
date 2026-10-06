@@ -3315,7 +3315,18 @@ export function createCommands({
     const { node, name } = parseForkArgs(ev.body);
     if (!forkNodeSelected(node)) return;                     // not the selected node → silent
     const state0 = await loadState();
-    if (!residesHere(state0, surface, ev.chatId)) return;    // no being to carry here → silent
+    // /join only ALIASES this chat's conversation onto the new side-group, so it needs a KNOWN
+    // conversation to alias — NOT an existing being thread. A chat the being never answered in (an
+    // ingested 1:1 transcript, no agents block) is still joinable: a fresh E invocation in the
+    // group starts the first thread there, letting the operator work with this chat's context
+    // without polluting the 1:1 (operator 2026-10-06). NB /split keeps residesHere — it COPIES
+    // resident threads, so a thread-less split is meaningless. The chat where /join was typed is
+    // always a known contact; this guard only trips on a genuinely-unknown chat.
+    if (!getContact(state0, surface, ev.chatId)) {
+      onLog(`/join: ${ev.chatId} is not a known conversation — nothing to alias, refusing.`);
+      await send?.(ev.chatId, '/join: I don\'t know this conversation yet — send a message here first, then /join.');
+      return;
+    }
     const rodz = await resolveRodz(ev.chatId, '/join');
     if (!rodz) return;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
