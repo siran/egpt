@@ -414,6 +414,19 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         tail = t;
         return shown();
       };
+      // RESTATEMENT vs DIVERGENCE (operator 2026-10-06, the live double: E's answer posted, then
+      // the seam, then the SAME answer reworded). warm-cli streams the WHOLE train (acc = ALL the
+      // assistant messages) but settles ccode with `ev.result` — only the LAST message, which on a
+      // multi-message turn is a byte-SUFFIX of the train, never its prefix. absorb() tests only a
+      // PREFIX, so it reads that final as a divergence, seals it behind the seam and the answer
+      // shows twice. The distinction the fix needs is cleanly decidable from the two values: when
+      // the settled body is ALREADY in what was read, the stream is the fuller rendering — settle
+      // on it (no seam, no re-append). When it is NOT (a genuinely new final the human never saw —
+      // the 2026-08-28 "never erase read text" case the seam exists for), absorb keeps both.
+      // Whitespace-normalized so the '\n' message boundary and trimming never defeat the match;
+      // never fuzzy, so a final carrying new content can never be silently dropped.
+      const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+      const alreadyRead = (s) => { const n = norm(s); return n !== '' && norm(shown()).includes(n); };
       // THE PLACEHOLDER, opened once. With NO peer this runs on the next line, at the exact moment
       // it always has, with `shown()` still empty — so the call is byte-identical to the one that
       // used to sit here. With a peer it waits for the route and then opens on whichever account
@@ -530,8 +543,11 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           }
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
-          // not silently deleted / left stuck).
-          const body = absorb(t.trim() ? t : noReplyMark());
+          // not silently deleted / left stuck). A settled reply already present in what was
+          // read is a RESTATEMENT, not a divergence (see alreadyRead): settle on the stream so
+          // the answer is not doubled; anything new still absorbs (seam, both kept).
+          const settled = t.trim() ? t : noReplyMark();
+          const body = alreadyRead(settled) ? shown() : absorb(settled);
           // AND THAT IS THE WHOLE MOUTH DECISION, spent. A peer stream settles the message the peer
           // has been editing; a local one settles this account's. Either way `delivered` says
           // whether it was said, and the §7 line below — unchanged, and the only fallback in this

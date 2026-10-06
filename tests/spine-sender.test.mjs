@@ -163,6 +163,43 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     expect(bridge.streams[0].deleted).toBe(false);
   });
 
+  // THE LIVE DOUBLE (operator 2026-10-06): E posted its reply, then the seam, then the SAME
+  // answer again, reworded. warm-cli streams the WHOLE train (acc = intro + ANSWER — ALL the
+  // assistant messages) and settles ccode with `ev.result` — only the LAST message, which is a
+  // byte-SUFFIX of the train, NOT a prefix. absorb() tests only a prefix, so it sealed the final
+  // behind the seam and showed the answer TWICE. Distinguished from the case above by one fact
+  // that is cleanly testable: here the settled answer is ALREADY in what was read (a restatement),
+  // there it was genuinely new. When the settled body is already shown, the stream is the fuller
+  // rendering → settle on it, no seam, no re-append. (RED before the fix: this sealed + doubled.)
+  it('a RESTATEMENT settle (ev.result = the LAST message, already the tail of the streamed train) shows the answer ONCE', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e', replyTo: 'm1' });
+    const INTRO = 'Busco la respuesta de Jaime en tu Gmail.';
+    const ANSWER = 'Sí, ya lo leí: usa MariaDB y Gotenberg. ¿Aplico ya?';
+    // the streamed train = intro + ANSWER (the real ccode multi-message shape, acc joins with \n)
+    out.update(INTRO);
+    out.update(`${INTRO}\n${ANSWER}`);
+    // ev.result = the LAST assistant message only — a SUFFIX of the train, not a prefix
+    await out.finish({ text: ANSWER });
+
+    const final = bridge.streams[0].finals[0];
+    expect(final).toBe(`${INTRO}\n${ANSWER}`);          // the full train, settled as-is
+    expect(final).not.toContain(RETAINED_SEAM);         // no seam fired
+    expect(final.split(ANSWER)).toHaveLength(2);         // the answer appears exactly ONCE
+    monotone(stable(bridge.streams[0]));
+  });
+
+  // The A/B pair, explicit: the SAME intro-then-final shape, but the final carries content that
+  // was NEVER streamed (not contained in what was read) → the erase-protection seam still fires
+  // and both are kept (the 2026-08-28 "never erase read text" ruling the seam exists for).
+  it('a GENUINELY-NEW final (not in the streamed train) still keeps BOTH across the seam', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e', replyTo: 'm1' });
+    out.update('Reviso el calendario…');
+    await out.finish({ text: 'Tienes 3 citas el martes.' });    // new content, never streamed
+    expect(bridge.streams[0].finals[0]).toBe(`Reviso el calendario…${RETAINED_SEAM}Tienes 3 citas el martes.`);
+  });
+
   it('a MID-STREAM divergence seals once — the tail keeps growing under the SAME seam, never duplicated', async () => {
     // codex assigns `currentTurn.text = item.text` wholesale on item/completed and then keeps
     // streaming the next item's deltas onto it, so a turn can diverge mid-flight and continue.
