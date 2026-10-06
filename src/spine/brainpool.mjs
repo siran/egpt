@@ -1550,7 +1550,9 @@ export function createBrainPool({
         }), being)
         : null;
       try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted }); } catch { /* non-fatal */ }
-      return { text, sessionId: newSession ?? sessionId ?? null, being };
+      // `verbose` (the one reading of verbose_thinking resolved above) rides out on the reply so the
+      // spine can gate the limb-only commandMark on it without a second config read (src/spine/sender.mjs).
+      return { text, sessionId: newSession ?? sessionId ?? null, being, verbose };
     },
 
     // WHERE THIS BEING'S INSTANCE LIVES for this event — the conversation itself, or the room a

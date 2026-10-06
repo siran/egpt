@@ -876,7 +876,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // `partials` are fed to the brain's onPartial in order — the CUMULATIVE raw text the CLI
   // has emitted so far, exactly as brainpool hands it up (a plain string, and it may end
   // MID-LINE).
-  function buildStreaming({ replyText, partials = [] }) {
+  function buildStreaming({ replyText, partials = [], verbose = false }) {
     const bridge = streamingBridge();
     const transcript = fakeTranscript();
     const brain = {
@@ -884,7 +884,9 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
       async turn(being, ev, onPartial) {
         this.calls.push({ being, ev });
         for (const p of partials) onPartial?.(p);
-        return { text: replyText, sessionId: 's1' };
+        // verbose rides out on the reply exactly as brainpool.mjs carries it, so the spine threads
+        // it into finish() (gates the limb-only commandMark; operator 2026-10-06).
+        return { text: replyText, sessionId: 's1', verbose };
       },
     };
     const actions = createReplyActions({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', resolveConvDir: async () => null, onLog: () => {} });
@@ -945,11 +947,11 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // limb and must still fire (delete+repost is unavoidable — Beeper's edit carries no reply
   // target, so an existing message cannot be retargeted).
   it('/reply at a DIFFERENT message is still honored (posts quoting that other message)', async () => {
-    const { bridge } = buildStreaming({ replyText: '/reply #157204 sounds good' });
+    const { bridge } = buildStreaming({ replyText: '/reply #157204 sounds good', verbose: true });
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].deleted).toBe(false);                    // nothing is ever deleted
-    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/reply)']);           // limb-only → the bridge names what it is doing (2026-09-01), never a silence it did not receive
+    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/reply)']);           // verbose ON → the bridge names what it is doing (2026-09-01), never a silence it did not receive
     expect(bridge.sent).toHaveLength(1);
     expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: 'sounds good', opts: { replyTo: '157204' } });
   });
@@ -999,13 +1001,31 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // whole turn. That is not a stuck placeholder — the turn still RESOLVES it at finish (here:
   // the react IS the response, so the placeholder is deleted — the legit-silence path,
   // UNCHANGED by the demote). Pinned so the "held, then resolved" end state stays honest.
-  it('an action-only reply streams NOTHING (placeholder holds ⏳ Thinking…) but still RESOLVES at finish', async () => {
-    const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'] });
+  it('an action-only reply streams NOTHING (placeholder holds ⏳ Thinking…) but still RESOLVES at finish (verbose ON)', async () => {
+    const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'], verbose: true });
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].init).toBe('⏳ Thinking…');
     expect(bridge.streams[0].frames).toEqual([]);      // no half-typed token ever rendered
-    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/react)']);   // resolved to what the bridge is DOING, never deleted — the limb IS the response
+    expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/react)']);   // verbose ON: resolved to what the bridge is DOING, never deleted — the limb IS the response
+    expect(bridge.sent).toHaveLength(0);
+  });
+
+  // THE LIVE BUG (operator 2026-10-06, with E/opus): same action-only /react, but verbose_thinking
+  // OFF (the system default). "verbose thinking is off, and yet [the] reaction also appear as a
+  // thinking process." The reaction still lands on its target; the placeholder must NOT carry the
+  // "⚙️ processing command" debug line. End-to-end through the real spine + sender: it resolves to
+  // the quiet mark, never commandMark, never a silence it did not receive, never deleted.
+  it('verbose OFF: an action-only reply resolves QUIETLY — no "processing command" line in the chat', async () => {
+    const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'], verbose: false });
+    await bridge.emit(MSG);
+
+    expect(bridge.streams[0].init).toBe('⏳ Thinking…');
+    expect(bridge.streams[0].frames).toEqual([]);                 // still never renders the half-typed token
+    expect(bridge.streams[0].finals).toEqual(['✓']);             // quiet — the ⏳ comes off, no debug line
+    expect(bridge.streams[0].finals[0]).not.toContain('processing command');   // the operator's exact complaint
+    expect(bridge.streams[0].finals[0]).not.toContain('received silence');     // a limb turn is not silence
+    expect(bridge.streams[0].deleted).toBe(false);               // resolved, never destructively deleted
     expect(bridge.sent).toHaveLength(0);
   });
 
@@ -1050,6 +1070,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     const { bridge, transcript } = buildStreaming({
       replyText: '/react #563 🤝',                                     // the CLI's `result`: the LAST assistant message
       partials: [prose, prose + '/', prose + '/react #563', prose + '/react #563 🤝'],   // …the ACCUMULATED train, welded
+      verbose: true,                                                   // verbose ON → the commandMark record lands under the seam
     });
     await bridge.emit(MSG);
 

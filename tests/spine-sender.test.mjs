@@ -219,19 +219,73 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
 
   // A LIMB-ONLY turn is not silence either — the model spoke, in commands (operator 2026-09-01:
   // "then bridge can say 'processing command' (/react is a command), something like that, so
-  // that there is legible record of what happened").
-  it('a LIMB-ONLY turn says it is PROCESSING the command — never the silence mark', async () => {
+  // that there is legible record of what happened"). But that legible record is the VERBOSE view:
+  // with verbose_thinking ON it says it is PROCESSING the command (operator 2026-10-06).
+  it('verbose ON: a LIMB-ONLY turn says it is PROCESSING the command — never the silence mark', async () => {
     const bridge = fakeBridge();
     const sender = createSender({ bridge });
     const out = sender.open('!c', { being: 'e' });
-    await out.finish({ text: '' }, { surface: false, commands: ['react'] });
+    await out.finish({ text: '' }, { surface: false, commands: ['react'], verbose: true });
     expect(bridge.streams[0].finals).toEqual(['⚙️ processing command (/react)']);
 
     const out2 = sender.open('!c', { being: 'e' });
     out2.update('lo estoy mirando');
-    await out2.finish({ text: '' }, { surface: false, commands: ['react', 'reply'] });
+    await out2.finish({ text: '' }, { surface: false, commands: ['react', 'reply'], verbose: true });
     // append-only: what was read stays, the marker lands under the seam
     expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚙️ processing commands (/react /reply)`]);
+  });
+
+  // VERBOSE OFF (operator 2026-10-06, live with E/opus: "verbose thinking is off, and yet [the]
+  // reaction also appear as a thinking process"). commandMark is the debug/record view; with
+  // verbose OFF the chat must show just the reaction and no "⚙️ processing command" line. The
+  // reaction already landed on its target; the ⏳-only placeholder holds no model content and
+  // cannot be cleanly blanked (the real handle's finish('') leaves the "Thinking…" text in place),
+  // so it resolves to the minimal neutral quietLimbMark — NOT commandMark, NOT the silence mark.
+  it('verbose OFF: a LIMB-ONLY turn with nothing shown resolves QUIETLY (just the reaction) — no "processing command" line', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const out = sender.open('!c', { being: 'e' });
+    await out.finish({ text: '' }, { surface: false, commands: ['react'], verbose: false });
+    expect(bridge.streams[0].finals).toEqual(['✓']);                         // quiet mark — the ⏳ comes off, no debug line
+    expect(bridge.streams[0].finals[0]).not.toContain('processing command'); // the operator's exact complaint
+    expect(bridge.streams[0].deleted).toBe(false);                           // placeholder resolved, never destructively deleted
+  });
+
+  // …and the DEFAULT when no `verbose` is passed is quiet (matching the system default of
+  // verbose_thinking = off, and the operator's intent). Locks the absent-case so a caller that
+  // forgets the flag fails quiet, never leaks the debug line.
+  it('verbose ABSENT: a LIMB-ONLY turn defaults to the quiet resolution (off)', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const out = sender.open('!c', { being: 'e' });
+    await out.finish({ text: '' }, { surface: false, commands: ['react'] });   // no `verbose` key
+    expect(bridge.streams[0].finals).toEqual(['✓']);
+  });
+
+  // VERBOSE OFF with something ALREADY READ: the narration stays, the ⏳ comes off, and NOTHING is
+  // appended — the quietest honest resolution (the mirror of "the silence mark never lands beside
+  // prose"). No commandMark, no seam.
+  it('verbose OFF: a LIMB-ONLY turn keeps what was already read and appends nothing', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const out = sender.open('!c', { being: 'e' });
+    out.update('lo estoy mirando');
+    await out.finish({ text: '' }, { surface: false, commands: ['react', 'reply'], verbose: false });
+    expect(bridge.streams[0].finals).toEqual(['lo estoy mirando']);          // narration kept, no seam, no commandMark
+    expect(bridge.streams[0].finals[0]).not.toContain('processing');
+  });
+
+  // A turn WITH prose (surfaced, not limb-only) never reaches the commandMark path, so the verbose
+  // flag does not touch it either way — the prose is delivered regardless.
+  it('verbose flag does NOT affect a surfaced prose turn — the reply is delivered either way', async () => {
+    const bridge = fakeBridge();
+    const sender = createSender({ bridge });
+    const outOff = sender.open('!c', { being: 'e' });
+    await outOff.finish({ text: 'Hola mundo' }, { surface: true, verbose: false });
+    expect(bridge.streams[0].finals).toEqual(['Hola mundo']);
+    const outOn = sender.open('!c', { being: 'e' });
+    await outOn.finish({ text: 'Hola mundo' }, { surface: true, verbose: true });
+    expect(bridge.streams[1].finals).toEqual(['Hola mundo']);
   });
 
   it('a send failure ends the message with ❌ WITHOUT eating a divergent narration', async () => {

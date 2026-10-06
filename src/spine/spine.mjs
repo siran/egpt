@@ -1609,6 +1609,10 @@ export function createSpine({
       await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, {
         surface: actionOnly ? false : surfaced,
         commands: actionOnly ? parsed.run.map((a) => a.type) : null,
+        // verbose_thinking, resolved once by brainpool's resolveConv and carried out on the reply
+        // (brainpool.mjs `verbose`). Gates the limb-only commandMark in the sender: ON → the legible
+        // "processing (/react)" record; OFF (the system default) → the quiet reaction-only resolution.
+        verbose: reply?.verbose === true,
       });
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
       // original delete-the-text-and-post-audio-only shape looked broken: a live-streamed

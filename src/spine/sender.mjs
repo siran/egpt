@@ -44,6 +44,21 @@ const BRIDGE_SILENCE = '<received silence (error?)>';
 // literally true at that instant; whether each limb LANDED is what the transcript's
 // stage-direction records afterwards — dispatch-line.limbAction).
 const commandMark = (verbs = []) => `⚙️ processing ${verbs.length > 1 ? 'commands' : 'command'} (${verbs.map((v) => `/${v}`).join(' ')})`;
+// …BUT ONLY WHEN verbose_thinking IS ON (operator 2026-10-06: "verbose thinking is off, and yet
+// [the] reaction also appear as a thinking process"). commandMark is the DEBUG/record view — the
+// legible "a limb ran" line the note above keeps for the verbose reader. With verbose OFF the chat
+// should show JUST the reaction (which already landed on its target, visibly). The ⏳-only
+// placeholder a limb-only turn opened holds no model content, so losing it loses nothing — but it
+// CANNOT be cleanly blanked/removed: the stream surface exposes no delete (only the test fake does),
+// and the real handle's finish('') leaves the placeholder text in place (beeper.mjs: `if (t) latest
+// = t` skips an empty settle), which would strand the "Thinking…" clock forever. So verbose OFF
+// resolves it the QUIETEST HONEST way instead: keep whatever was already read and append nothing
+// (the mirror of "the silence mark never lands beside prose", below), and when nothing was read,
+// settle the placeholder on this minimal neutral mark. NOT commandMark (the record), NOT
+// BRIDGE_SILENCE (a limb turn is not silence/error), NOT a faked '…' (the model's own word). The
+// legible record of WHAT ran is the transcript stage-direction (dispatch-line.limbAction), written
+// regardless of verbose — so suppressing this chat line drops no record.
+const quietLimbMark = () => '✓';
 const THINKING = `${LIVE_FRAME_MARK} Thinking…`;   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -465,7 +480,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         // answer was action commands, so there is no prose to deliver but plenty happened. Null
         // for every other turn, which is why a reply with no action and a genuinely empty reply
         // both resolve byte-identically to before.
-        async finish(reply, { surface = true, commands = null } = {}) {
+        async finish(reply, { surface = true, commands = null, verbose = false } = {}) {
           // Settle the mouth decision before anything is written anywhere. With no peer this is
           // null and costs nothing; with one, the `route.then` above has already opened the stream
           // by the time this resolves (microtask order), so every branch below sees the same
@@ -486,8 +501,15 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
             // stream is normally already open by now, and this only matters when the turn was
             // withheld before the route settled.
             openStream(peerChat);
-            // A LIMB-ONLY turn says what it is DOING, never that it heard nothing (commandMark).
-            if (commands?.length) { if (stream) await stream.finish?.(absorb(commandMark(commands))); return; }
+            // A LIMB-ONLY turn says what it is DOING, never that it heard nothing. With verbose ON
+            // that is the legible commandMark record; with verbose OFF the chat shows just the
+            // reaction — keep what was already read (append nothing), else the minimal quietLimbMark
+            // (see commandMark/quietLimbMark notes for why the ⏳-only placeholder can't be blanked).
+            if (commands?.length) {
+              const settled = verbose ? commandMark(commands) : (shown() ? '' : quietLimbMark());
+              if (stream) await stream.finish?.(absorb(settled));
+              return;
+            }
             // The model's own words if it produced any (its '…' is ITS silence);
             // otherwise the bridge says, in its own voice, that nothing arrived.
             // Absorbed like any other value: a silence that ARRIVES after the model
