@@ -134,10 +134,20 @@ export function slugTranscriptPath(surface, slug) {
 // matter, so a rename-only roll would leave transcript.md un-stamped forever and unable to roll
 // again. thread_id is dropped, not carried, so the guard above holds until stampThreadId lands
 // the new one.
+//
+// SIDE-ROOM LOGS RIDE ALONG (operator 2026-10-03, /join side-rooms): a /join side-room keeps its
+// OWN per-surface log transcript-<key>.md beside transcript.md in this one shared folder (see
+// Room.transcriptPathFor). Those alias logs share the conversation's ONE thread, so a changed
+// thread retires them too — each is archived beside the main file as <thread_id>--<key>.md (same
+// never-clobber -N suffix) and reset the same way, keyed off the MAIN file's thread_id (the alias
+// logs may carry no front matter of their own). The alias roll is WALLED OFF in its own try/catch:
+// the main roll and this function's return (the main dest, or null) are byte-identical to before
+// for every caller — a side-room that can't be filed is left behind, never failing the main roll.
 export async function rollTranscript(surface, slug, { io = {} } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const renameFn = io.rename ?? rename;
+  const readdirFn = io.readdir ?? readdir;
   const room = Room.forChat(surface, slug);
   const src = room.transcriptPath;   // the Room's own getter — same file slugTranscriptPath names
   try {
@@ -147,12 +157,37 @@ export async function rollTranscript(surface, slug, { io = {} } = {}) {
     const id = sanitizeSlug(head.thread_id ?? '');
     if (!id) return null;                                                  // un-stamped → the guard
     const taken = async (p) => { try { return (await readFileFn(p, 'utf8')) != null; } catch { return false; } };
-    let dest = join(room.transcriptsDir, `${id}.md`);
-    for (let n = 2; n <= 99 && await taken(dest); n++) dest = join(room.transcriptsDir, `${id}-${n}.md`);
-    if (await taken(dest)) return null;                                    // 99 archives of one id: leave it alone
+    // Pick a never-clobbering archive path for `<base>.md`: a taken name takes the next `-N`
+    // suffix; 99 archives of one base → null (leave it alone). ONE picker, so the main file and
+    // every side-room alias file below disambiguate identically.
+    const archiveDest = async (base) => {
+      let dest = join(room.transcriptsDir, `${base}.md`);
+      for (let n = 2; n <= 99 && await taken(dest); n++) dest = join(room.transcriptsDir, `${base}-${n}.md`);
+      return (await taken(dest)) ? null : dest;
+    };
+    const dest = await archiveDest(id);
+    if (!dest) return null;                                                // 99 archives of one id: leave it alone
     await room.ensureTree({ io: { mkdir: io.mkdir ?? mkdir } });
     await renameFn(src, dest);
     await writeFileFn(src, renderFrontMatter({ ...head, thread_id: null }), 'utf8');
+    // ALSO roll every side-room alias log (transcript-<key>.md) in this folder, keyed off the SAME
+    // thread_id. Walled off so it can never change `dest` (already final) or the return value.
+    try {
+      let names = [];
+      try { names = await readdirFn(room.baseDir()); } catch { names = []; }
+      for (const name of names) {
+        const m = /^transcript-(.+)\.md$/.exec(name);
+        if (!m) continue;                                                  // transcript.md / transcripts/ never match
+        const key = m[1];
+        const aliasSrc = room.transcriptPathFor(key);                      // the Room's own getter — the file readdir named
+        let aliasText = '';
+        try { aliasText = (await readFileFn(aliasSrc, 'utf8')) ?? ''; } catch { continue; }   // vanished mid-roll → skip
+        const aliasDest = await archiveDest(`${id}--${key}`);
+        if (!aliasDest) continue;                                          // 99 archives of this alias → leave it
+        await renameFn(aliasSrc, aliasDest);
+        await writeFileFn(aliasSrc, renderFrontMatter({ ...parseFrontMatter(aliasText), thread_id: null }), 'utf8');
+      }
+    } catch (e) { console.error(`!! rollTranscript aliases(${surface}/${slug}): ${e?.message ?? e}`); }
     return dest;
   } catch (e) { console.error(`!! rollTranscript(${surface}/${slug}): ${e?.message ?? e}`); return null; }
 }

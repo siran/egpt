@@ -2000,7 +2000,7 @@ export function createCommands({
       for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { threadId: null });
       await writeState(next);
       // THE ROLL, through the shared mover. Reported by its result, never assumed.
-      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir } });
+      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir, readdir } });
       // …AND THE CLI STORE GOES BESIDE IT (operator 2026-09-11) — <threadId>.cli/ next to the
       // <threadId>.md the roll just filed. AFTER the roll, so the transcript half is already done
       // and transcripts/ already exists (rollTranscript's ensureTree made it), and so a store that

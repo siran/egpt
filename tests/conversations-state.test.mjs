@@ -1312,11 +1312,20 @@ describe('rollTranscript — a changed thread starts a new transcript', () => {
     'thread_id: THREAD-A', 'persona: egpt', 'notes:', '---', '', 'hola', '', '[@e (14:05)]: hey', '', ''].join('\n');
 
   // path → text. rename MOVES the entry, so "byte-identical" is observable, not assumed.
+  // readdir returns the IMMEDIATE children of a dir (keys one level below it) so rollTranscript's
+  // side-room-alias enumeration stays fully in-memory; separators normalized so it holds on both OSes.
   const fakeFs = (files) => ({ files, io: {
     mkdir: async () => {},
     readFile: async (p) => { if (!(p in files)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files[p]; },
     writeFile: async (p, d) => { files[p] = d; },
     rename: async (a, b) => { files[b] = files[a]; delete files[a]; },
+    readdir: async (dir) => {
+      const nd = (p) => p.replace(/\\/g, '/');
+      const prefix = nd(dir).replace(/\/$/, '') + '/';
+      const out = new Set();
+      for (const k of Object.keys(files)) { const nk = nd(k); if (nk.startsWith(prefix)) { const rest = nk.slice(prefix.length); if (rest && !rest.includes('/')) out.add(rest); } }
+      return [...out];
+    },
   } });
 
   it('moves transcript.md to transcripts/<thread_id>.md byte-identical, leaving a fresh one in its place', async () => {
@@ -1362,6 +1371,50 @@ describe('rollTranscript — a changed thread starts a new transcript', () => {
   it('is non-fatal: an fs failure returns null instead of throwing (a turn must not die for an archive)', async () => {
     const io = { mkdir: async () => {}, readFile: async () => TEXT, rename: async () => { throw new Error('EPERM'); } };
     expect(await rollTranscript(SURFACE, SLUG, { io })).toBe(null);
+  });
+
+  // REPRODUCE-FIRST (operator 2026-10-03, /join side-rooms): a /join side-room keeps its OWN
+  // per-surface log transcript-<key>.md beside transcript.md in the SAME shared folder
+  // (Room.transcriptPathFor). Those alias logs share the conversation's ONE thread, so a changed
+  // thread must retire them too — before this change they were left behind. Each is archived beside
+  // the main file as <thread_id>--<key>.md and reset the same way, keyed off the MAIN file's
+  // thread_id (the alias logs here carry no front matter of their own). FAILS on the pre-change
+  // mover (the alias archives never appear and the sources are untouched).
+  it('ALSO rolls every side-room transcript-<key>.md alias log, keyed off the SAME thread_id', async () => {
+    const room = Room.forChat(SURFACE, SLUG);
+    const aliasA = room.transcriptPathFor('side-room-x');        // baseDir/transcript-side-room-x.md
+    const aliasB = room.transcriptPathFor('otra-sala');          // baseDir/transcript-otra-sala.md
+    const A_TEXT = ['[@e (10:00)]: side room hello', '', ''].join('\n');   // no front matter of its own
+    const B_TEXT = ['[@e (11:00)]: hola otra sala', '', ''].join('\n');
+    const fs = fakeFs({ [src]: TEXT, [aliasA]: A_TEXT, [aliasB]: B_TEXT });
+
+    // the MAIN roll is byte-identical to today — same dest, same return value, same reset in place.
+    expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A'));
+    expect(fs.files[archive('THREAD-A')]).toBe(TEXT);
+    expect(fs.files[src]).toBe(['---', 'name: Roll', 'chat_id: !room:beeper.com', 'surface: whatsapp',
+      'slug: roll-fixture', 'persona: egpt', 'notes:', '---', '', ''].join('\n'));
+
+    // EVERY alias log is archived beside the main file as <thread_id>--<key>.md, byte-identical,
+    // and its source reset in place (old body gone), the same stamped shape the main reset uses.
+    const aliasArchive = (key) => join(slugDir(SURFACE, SLUG), 'transcripts', `THREAD-A--${key}.md`);
+    const RESET = ['---', 'notes:', '---', '', ''].join('\n');   // renderFrontMatter({ thread_id: null })
+    expect(fs.files[aliasArchive('side-room-x')]).toBe(A_TEXT);
+    expect(fs.files[aliasArchive('otra-sala')]).toBe(B_TEXT);
+    expect(fs.files[aliasA]).toBe(RESET);
+    expect(fs.files[aliasB]).toBe(RESET);
+    expect(fs.files[aliasA]).not.toContain('side room hello');
+    expect(fs.files[aliasB]).not.toContain('hola otra sala');
+  });
+
+  // REGRESSION: with NO alias logs present, rollTranscript is exactly what it was — same dest,
+  // same return value, the main reset in place, and NOTHING else created in the folder.
+  it('with no alias logs present, behaves exactly as today — nothing extra touched', async () => {
+    const fs = fakeFs({ [src]: TEXT });
+    expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A'));
+    expect(fs.files[archive('THREAD-A')]).toBe(TEXT);
+    expect(fs.files[src]).toBe(['---', 'name: Roll', 'chat_id: !room:beeper.com', 'surface: whatsapp',
+      'slug: roll-fixture', 'persona: egpt', 'notes:', '---', '', ''].join('\n'));
+    expect(Object.keys(fs.files).sort()).toEqual([archive('THREAD-A'), src].sort());   // no stray files
   });
 });
 
