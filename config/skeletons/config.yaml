@@ -82,6 +82,20 @@ wake_up:
   enabled: true
   frequency_minutes: 30   # egpt wakes up from sleep to check around: heartbeats, pending interactions
 
+# --- Super channel (opt-in) ---------------------------------------------------
+# A per-conversation SIDE CHANNEL where the bot speaks so its replies stop
+# polluting the main chat. Like /join it is an ALIAS of the original conversation
+# (one shared thread/transcript, two chat surfaces), NOT a diverging /split copy.
+# Summoned by an inbound "…" / "..." (a whole-message deliberate-silence) from ANY
+# participant - so a counterparty can read the reply there; close it with /end.
+# Off unless enabled. Created only by the node_role: primary node (like /join).
+# NOTE: QUOTE mode - bare on/off are YAML booleans, not the auto-mode strings.
+# super:
+#   enabled: true
+#   suffix: "-super"            # channel title = <this chat's title> + suffix
+#   mode: "on"                  # MUST be quoted ("on"/"off" are YAML booleans)
+#   opener: "🌟 Super channel of {chat} - same agents, same conversation. Reply /send to a message to copy it back; /end to close."
+
 # peer_nodes - node identities sharing THIS Beeper account (include self).
 # Nodes on DIFFERENT accounts appear as distinct room members and need no listing;
 # co-account nodes collapse to one member, so list them here to complete the HRW

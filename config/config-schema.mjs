@@ -2870,6 +2870,37 @@ export const CONFIG_SCHEMA = {
                       Pick phrases you won't say by accident. Unset → only the '/'-word triggers.
   `,
 
+  super: `
+    The SUPER CHANNEL (operator 2026-10-08) — a per-conversation side channel where the bot speaks so
+    its replies stop polluting the main chat. Like /join it is an ALIAS of the original conversation
+    (one shared on-disk thread/transcript, two chat surfaces), NOT a diverging /split copy. Summoned by
+    an inbound "…" / "..." (a whole-message deliberate-silence) from ANY participant — NOT operator-only,
+    because the point is a counterparty summoning it so they can read the reply there. Close it with
+    /end (a super channel is an alias, so /end already archives it + drops the mapping). The two
+    accounts come from beeper.primary.phone / beeper.secondary.phone, as for /join.
+
+    KEYS:
+      enabled
+        DEFAULT: false (unset ⇒ off). The master switch. Off ⇒ an inbound "…" does NOTHING special
+        (it falls through exactly as today). On ⇒ an inbound "…" summons / reuses this chat's super
+        channel. Created only by the node whose node_role is 'primary' (like a nameless /join).
+      suffix
+        DEFAULT: "-super". The channel's title is <this chat's title> + suffix.
+      mode
+        DEFAULT: "on". The auto-mode set on the channel (conversations-state, via the SAME per-being
+        writer /agents mode uses). Because the channel is an ALIAS, the mode lands on the SHARED
+        conversation entry — channel and origin share it (there is no per-alias mode slot). Must be
+        one of the auto-mode tokens.
+        ⚠ QUOTE IT. Bare on/off are YAML BOOLEANS (on → true, off → false), not the strings this wants.
+        A boolean that slips through is COERCED here (true → "on", false → "off"); an unrecognized
+        value falls back to the default and is logged.
+      opener
+        The bridge-voice intro posted once (FROM the secondary) when the channel is created, so the
+        otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages). A {chat}/{group}
+        template (both = this chat's title); it should name /send and /end. Unset → a small built-in
+        default.
+  `,
+
   aliases: `
     Display-name overrides for the /status member counters:
       { <sender-id>: <alias> }
