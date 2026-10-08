@@ -83,3 +83,42 @@ describe('gating dispatch: — send_to_egpt global default (canonical) with what
     expect(d.sendToEgpt).toBe('always');   // bv.send_to_egpt override, not the dispatch 'mode' global
   });
 });
+
+// surfaces() POST-brain (operator 2026-10-08, the stray "🐶 E: ..."): the model's DELIBERATE '…'
+// silence SURFACES as a normal reply in mention / mention-direct / accum, and is HIDDEN only in
+// 'on' and its operator twin 'auto' (where its placeholder is edited to the quiet limb mark '✓'
+// downstream in the sender — never deleted). This is the ORIGINAL on/auto-only drop; the prior
+// "drop in every mode" fix was ruled wrong. An EMPTY/failed turn keeps its mode-specific handling:
+// surfaced in mention (visible no-reply marker), unsurfaced in on/auto (BRIDGE_SILENCE path).
+describe('gating surfaces: — the model\'s "…" silence is HIDDEN only in on/auto, SURFACES elsewhere', () => {
+  const g = mkGating({});
+  const dec = (mode, mayReply = true) => ({ mode, mayReply });
+
+  it("a '…' / '...' reply SURFACES in mention/mention-direct/accum (delivered as a normal reply)", () => {
+    for (const mode of ['mention', 'mention-direct', 'accum']) {
+      expect(g.surfaces(dec(mode), '…')).toBe(true);
+      expect(g.surfaces(dec(mode), '...')).toBe(true);
+    }
+  });
+
+  it("a '…' reply is HIDDEN in on/auto (recorded, not surfaced)", () => {
+    expect(g.surfaces(dec('on'), '…')).toBe(false);
+    expect(g.surfaces(dec('auto'), '...')).toBe(false);
+  });
+
+  it('PRESERVE: an EMPTY reply still SURFACES in mention → resolves to the visible no-reply marker', () => {
+    expect(g.surfaces(dec('mention'), '')).toBe(true);
+    expect(g.surfaces(dec('accum'), '   ')).toBe(true);
+  });
+
+  it('PRESERVE: an EMPTY reply in on/auto stays unsurfaced (BRIDGE_SILENCE path), and real prose always surfaces', () => {
+    expect(g.surfaces(dec('on'), '')).toBe(false);
+    expect(g.surfaces(dec('mention'), 'hola')).toBe(true);
+    expect(g.surfaces(dec('on'), 'hola')).toBe(true);
+  });
+
+  it('PRESERVE: a non-replying decision never surfaces, silence or not', () => {
+    expect(g.surfaces(dec('mention', false), 'hola')).toBe(false);
+    expect(g.surfaces(dec('on', false), '…')).toBe(false);
+  });
+});

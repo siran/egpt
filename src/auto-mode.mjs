@@ -393,6 +393,17 @@ export function mayEmitChat({ paused = false, mode, replyAllowed = undefined, is
   return mayEmit(mode, { replyAllowed, isReaction });
 }
 
+// The MODEL's DELIBERATE silence word — a NON-EMPTY run of ellipsis (ASCII '...' or
+// unicode '…'), config/skeletons/room/40-rules.md's "polite silence is '...' or '…'".
+// DISTINCT from an empty reply: here the model CHOSE to say nothing. HIDDEN in on/auto, its
+// eager placeholder is EDITED to the quiet limb mark '✓' downstream (src/spine/sender.mjs —
+// posts nothing new, NEVER deleted); in mention/mention-direct/accum it SURFACES as a normal
+// reply. A FAILED/empty turn is different — it resolves VISIBLY with the no-reply marker. The
+// one definition of the ellipsis shape — isSilenceReply reuses it below, no second regex to drift.
+export function isDeliberateSilence(reply) {
+  return /^(\.{3,}|…+)$/.test(String(reply ?? '').trim());
+}
+
 // A reply that is ONLY ellipsis (ASCII '...' or unicode '…') or empty. This is
 // the ONE place a reply's BODY is consulted, and ONLY for the 'on'-mode cosmetic
 // below — E declining to add noise to a chat it's free to post in. It is NEVER
@@ -401,7 +412,7 @@ export function mayEmitChat({ paused = false, mode, replyAllowed = undefined, is
 // fan out"). See [[egpt-emit-gate-bridge-controlled]].
 export function isSilenceReply(reply) {
   const t = String(reply ?? '').trim();
-  return t === '' || /^(\.{3,}|…+)$/.test(t);
+  return t === '' || isDeliberateSilence(t);
 }
 
 // THE single fan-out + record decision for a resident/persona reply. The reply

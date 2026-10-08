@@ -337,15 +337,16 @@ describe('peer configured and the peer account IS in the chat — the peer speak
   });
 
   it('a WITHHELD turn resolves the placeholder it actually opened — which is the PEER\'s', async () => {
-    // The gate withheld the reply, so there is nothing new to say; what is left is a placeholder
-    // that must not be left stuck (operator 2026-08-24, "nothing is ever deleted"). That rule
-    // follows the MESSAGE, not the account — and on a peer route the message is the peer's, so
-    // that is where the silence mark lands. Nothing is posted here.
+    // The gate withheld the reply (on/auto '…' silence), so there is nothing new to say; what is
+    // left is a placeholder that must not be left stuck (operator 2026-08-24, "nothing is ever
+    // deleted"). A hidden '…' is EDITED to the quiet limb mark '✓' (operator 2026-10-08, never '…',
+    // never deleted). That rule follows the MESSAGE, not the account — and on a peer route the
+    // message is the peer's, so that is where the mark lands. Nothing is posted here.
     const { calls, mouth } = fakeMouth();
     const { bridge, sender } = senderWith(mouth);
     await sender.open(CHAT_ID, { being: 'e' }).finish({ text: '...' }, { surface: false });
     expect(calls.streams).toHaveLength(1);
-    expect(calls.streams[0].finals).toEqual(['...']);
+    expect(calls.streams[0].finals).toEqual(['✓']);
     expect(bridge.streams).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
   });

@@ -3,7 +3,8 @@
 // ack AND the streaming target in one. FIXED placeholder text so the bridge resolves
 // its id before any edit (and during spin-up → smooth edits, no stutter). Once tokens
 // arrive it edits in place into the answer. A send failure ends it with
-// "… ❌ Sending failed."; an 'on'-mode '...' silence deletes it (posts nothing).
+// "… ❌ Sending failed."; an 'on'/'auto'-mode '...' silence resolves it to the quiet limb mark
+// '✓' (posts nothing new, never deleted) — in mention/mention-direct/accum the '...' surfaces.
 //
 // No SEPARATE knee-jerk message: a per-turn "📨 Sending to E..." piled up and
 // cross-deleted in busy chats (its id-resolution races the next turn's). The reply's
@@ -20,6 +21,10 @@
 import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
 // A target is named to the mouth by the SAME two functions the bridge mints ev.msgHash/msgTs with (makeOutbound `keyOf`).
 import { crossAccountMsgKey, _msgTimestampMs } from '../bridges/beeper.mjs';
+// The model's own silence word (config 40-rules.md). isDeliberateSilence = a NON-EMPTY '…'/'...'
+// run — a HIDDEN one (on/auto) resolves the placeholder to the quiet limb mark '✓' below, never a
+// delete, never left as '…' (operator 2026-10-08). Owned by auto-mode.mjs.
+import { isDeliberateSilence } from '../auto-mode.mjs';
 
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 // A turn that was MEANT to surface but produced no deliverable text (brainpool
@@ -523,21 +528,23 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
               if (stream) await stream.finish?.(absorb(settled));
               return;
             }
-            // The model's own words if it produced any (its '…' is ITS silence);
-            // otherwise the bridge says, in its own voice, that nothing arrived.
-            // Absorbed like any other value: a silence that ARRIVES after the model
-            // narrated does not erase the narration — it lands under the seam.
+            // A DELIBERATE '…' hidden here (on/auto) never held content, so its eager ⏳ placeholder
+            // is EDITED AWAY to the quiet limb mark '✓' — never deleted (operator 2026-08-24,
+            // "nothing is ever deleted"), never left showing '…' (operator 2026-10-08). An EMPTY turn
+            // is different: the bridge got NOTHING from the model, so it says so in its OWN voice
+            // (BRIDGE_SILENCE) — never a faked '…'.
             //
-            // ...BUT IT NEVER LANDS BESIDE PROSE (operator 2026-09-01). BRIDGE_SILENCE means one
-            // thing only — "the bridge got NOTHING from the model" — and the message is
-            // append-only, so appending it under a seam to text a human has ALREADY READ asserts
-            // a silence that visibly did not happen (live: "...doesn't need a reply from me. — ↓
-            // reply — <received silence (error?)>", which is what the operator diagnosed as "the
-            // bridge acted on it but forgot that the reply was non empty"). With something already
-            // shown there is nothing to resolve: the placeholder settles on exactly what was read,
-            // the ⏳ comes off, nothing is erased and nothing is invented. Nothing shown ⇒ the
-            // mark, unchanged.
-            const settled = t.trim() ? t : (shown() ? '' : BRIDGE_SILENCE);
+            // ...BUT NEITHER MARK EVER LANDS BESIDE PROSE (operator 2026-09-01). The message is
+            // append-only, so appending a silence mark under a seam to text a human has ALREADY READ
+            // asserts a silence that visibly did not happen (live: "...doesn't need a reply from me.
+            // — ↓ reply — <received silence (error?)>", the operator's "the bridge acted on it but
+            // forgot that the reply was non empty"). With something already shown there is nothing to
+            // resolve: the placeholder settles on exactly what was read, the ⏳ comes off, nothing is
+            // erased and nothing invented. Nothing shown ⇒ the mark ('✓' for '…', BRIDGE_SILENCE for
+            // empty).
+            const settled = isDeliberateSilence(t) ? (shown() ? '' : quietLimbMark())
+              : t.trim() ? t
+              : (shown() ? '' : BRIDGE_SILENCE);
             if (stream) await stream.finish?.(absorb(settled));
             return;
           }

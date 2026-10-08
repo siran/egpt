@@ -98,7 +98,9 @@ describe('beeper-port adapter', () => {
   });
 
   it('exposes NO delete limb — a being never removes a message', async () => {
-    // operator 2026-08-24: there is no use case for deletion.
+    // operator 2026-08-24: there is no use case for deletion. The 2026-10-08 "stray …" fix keeps
+    // this lock — a HIDDEN '…' (on/auto) is EDITED to the quiet limb mark '✓' (src/spine/sender.mjs),
+    // never deleted — so the port wrapper still exposes no delete verb.
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     const s2 = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt' });

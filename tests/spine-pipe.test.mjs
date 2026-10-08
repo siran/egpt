@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { createSender, RETAINED_SEAM } from '../src/spine/sender.mjs';
+import { createGating } from '../src/spine/gating.mjs';
 
 // --- fakes: each port/service as a tiny recorder ------------------------------
 function fakeBridge() {
@@ -545,6 +546,35 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     await bridge.emit({ ...MSG, isVoice: true });
 
     expect(bridge.media).toHaveLength(0);   // no confirmedId → voice-out skipped entirely, no throw
+  });
+
+  // THE VOICE PATH SHARES THE DELIVERY (operator 2026-10-08, the stray "🐶 E: ..." after a voice
+  // note "perrito …"). The on/auto drop ALSO suppresses voice-out: a HIDDEN '…' (on/auto) must post
+  // NOTHING — no text AND nothing synthesized. The voice path has no silence-specific code; it reads
+  // `deliverable`, which gating.surfaces sets false for a '…' in on/auto. With REAL gating in 'on'
+  // mode this REPRODUCES the wrong fix two ways: the correct on/auto drop stays (surface:false, no
+  // voice), while the ruled-wrong "drop in EVERY mode" would have hidden it in mention too. The
+  // placeholder is EDITED to '✓' in the real sender (spine-sender.test.mjs) — never deleted.
+  it("voice-in whose model reply is '…' (ON mode, REAL gating): HIDDEN — nothing synthesized, nothing posted, resolved via the withheld path", async () => {
+    let synthCalls = 0;
+    const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
+    const bridge = fakeVoiceBridge();
+    const brain = { async turn() { return { text: '…', sessionId: 's1' }; } };   // the model CHOSE silence
+    const sender = fakeSenderRecording(bridge);
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter,
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }), loadState: null, defaultKey: 'e' }),   // REAL gating → 'on' hides the '…'
+      sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true });
+
+    expect(synthCalls).toBe(0);                              // the hidden '…' is never spoken (voice-out suppressed)
+    expect(bridge.media).toHaveLength(0);                   // no voice note attached
+    expect(bridge.sent).toHaveLength(0);                    // no text posted either
+    expect(sender.finishCalls[0].opts.surface).toBe(false); // resolved via the withheld path (→ '✓' in the real sender)
   });
 });
 
