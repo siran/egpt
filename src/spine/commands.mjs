@@ -3673,23 +3673,35 @@ export function createCommands({
   // WHOLE trimmed, lower-cased message must EQUAL a configured phrase; never prefix/contains — so an
   // everyday sentence can never fire one. Returns the command name to run (join|split|send|end), or null.
   const PHRASE_TRIGGER_CMDS = ['join', 'split', 'send', 'end'];
+  // THE one trigger-matching rule, reused by the super summon and the operator fork triggers: the
+  // whole trimmed + lower-cased `body` must EQUAL some entry of `triggers` (each likewise trimmed +
+  // lower-cased) — EXACT whole-message only, never prefix/contains. A non-array/empty list matches
+  // nothing. One definition so the super trigger and the '/'-command triggers can never drift apart.
+  const matchesTrigger = (triggers, body) =>
+    Array.isArray(triggers) && triggers.some((t) => String(t ?? '').trim().toLowerCase() === body);
   function phraseCommand(ev) {
-    // SUPER CHANNEL SUMMON (operator 2026-10-08, CHUNK 1) — the ONE phrase trigger that is NOT
-    // operator-gated: an inbound message whose whole trimmed body is the deliberate-silence shape
-    // ("…"/"...") from ANY participant summons the super channel, so a counterparty can read the
-    // bot's reply there. CHECKED BEFORE the isOperator gate the other triggers sit behind — the
-    // any-sender scope is the whole point. Gated only on config.super.enabled (unset/false ⇒ the
-    // "…" falls through exactly as today). INBOUND ONLY: the model's reply-"…" is OUTBOUND and never
-    // reaches this (inbound-dispatch) path — it is echo-deduped before classify, so it cannot
-    // self-summon. isDeliberateSilence is the ONE ellipsis-shape predicate (auto-mode.mjs), reused.
-    if (cfg()?.super?.enabled && isDeliberateSilence(ev?.body)) return 'super';
-    if (!isOperator(ev)) return null;                        // same gate the '/'-commands sit behind
     const body = String(ev?.body ?? '').trim().toLowerCase();
+    // SUPER CHANNEL SUMMON (operator 2026-10-08) — the ONE phrase trigger that is NOT operator-gated:
+    // an inbound message from ANY participant summons the super channel, so a counterparty can read
+    // the bot's reply there. CHECKED BEFORE the isOperator gate the other triggers sit behind — the
+    // any-sender scope is the whole point. Gated on config.super.enabled (unset/false ⇒ it falls
+    // through exactly as today). The summon PHRASE is config.super.triggers when set to a non-empty
+    // LIST (EXACT whole-message match, the SAME matchesTrigger the fork triggers use) — else, UNSET,
+    // the deliberate-silence shape ("…"/"...") via isDeliberateSilence (auto-mode.mjs, the ONE
+    // ellipsis-shape predicate), preserving today's default behavior exactly. INBOUND ONLY: the
+    // model's reply-"…" is OUTBOUND, echo-deduped before classify, so it cannot self-summon.
+    const superCfg = cfg()?.super;
+    if (superCfg?.enabled) {
+      const triggers = superCfg.triggers;
+      const summoned = Array.isArray(triggers) && triggers.length
+        ? matchesTrigger(triggers, body)        // configured phrases replace the default
+        : isDeliberateSilence(ev?.body);        // DEFAULT (unset/empty): the "…"/"..." shape
+      if (summoned) return 'super';
+    }
+    if (!isOperator(ev)) return null;                        // same gate the '/'-commands sit behind
     if (!body) return null;
     for (const cmd of PHRASE_TRIGGER_CMDS) {
-      const triggers = cfg()?.[cmd]?.triggers;
-      if (!Array.isArray(triggers)) continue;
-      if (triggers.some((t) => String(t ?? '').trim().toLowerCase() === body)) return cmd;   // EXACT only
+      if (matchesTrigger(cfg()?.[cmd]?.triggers, body)) return cmd;   // EXACT only, operator-gated above
     }
     return null;
   }

@@ -2884,6 +2884,14 @@ export const CONFIG_SCHEMA = {
         DEFAULT: false (unset ⇒ off). The master switch. Off ⇒ an inbound "…" does NOTHING special
         (it falls through exactly as today). On ⇒ an inbound "…" summons / reuses this chat's super
         channel. Created only by the node whose node_role is 'primary' (like a nameless /join).
+      triggers
+        DEFAULT: unset ⇒ the "…"/"..." deliberate-silence shape summons (today's behavior). Set a LIST
+        of exact whole-message phrases to summon on those instead: the whole trimmed body must EQUAL
+        one (case-insensitive) — never prefix/contains, so an everyday sentence can't fire it. SAME
+        matching as join/split/send/end .triggers, with ONE difference: those are OPERATOR-ONLY, but
+        the super trigger is ANY-SENDER (a counterparty summoning so they can read the reply there is
+        the whole point). An empty list falls back to the "…" default. Pick phrases you won't say by
+        accident.
       suffix
         DEFAULT: "-super". The channel's title is <this chat's title> + suffix.
       mode

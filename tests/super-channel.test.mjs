@@ -116,6 +116,52 @@ describe('phraseCommand — the "…" super summon is any-sender and super.enabl
   });
 });
 
+// ── config.super.triggers: the summon PHRASE is configurable, still ANY-SENDER (operator 2026-10-08) ──
+// A non-empty config.super.triggers LIST replaces the "…"/"..." default with EXACT whole-message
+// phrases — the SAME matching the operator join/split/send/end triggers use, but ANY-SENDER (the super
+// summon is never operator-gated). UNSET / empty ⇒ the deliberate-silence default, byte-for-byte as before.
+describe('phraseCommand — config.super.triggers makes the summon phrase configurable', () => {
+  const withTriggers = (triggers, enabled = true) => cfg({ superBlock: { enabled, triggers } });
+
+  it('triggers UNSET ⇒ the "…"/"..." default still summons (any-sender preserved)', () => {
+    const { cmds } = harness({ config: cfg() });              // super.enabled, NO triggers key
+    expect(cmds.phraseCommand(inbound('…'))).toBe('super');
+    expect(cmds.phraseCommand(inbound('...'))).toBe('super');
+  });
+
+  it('triggers=["beep"] ⇒ a whole-message "beep" (any case, trim-tolerant) summons; "…" no longer does', () => {
+    const { cmds } = harness({ config: withTriggers(['beep']) });
+    expect(cmds.phraseCommand(inbound('beep'))).toBe('super');
+    expect(cmds.phraseCommand(inbound('BEEP'))).toBe('super');     // case-insensitive
+    expect(cmds.phraseCommand(inbound('  Beep  '))).toBe('super'); // whole TRIMMED body
+    expect(cmds.phraseCommand(inbound('…'))).toBe(null);           // the default is REPLACED, not added
+  });
+
+  it('EXACT whole-message only — prefix / contains / typo do NOT summon', () => {
+    const { cmds } = harness({ config: withTriggers(['beep']) });
+    expect(cmds.phraseCommand(inbound('beeep'))).toBe(null);   // typo
+    expect(cmds.phraseCommand(inbound('say beep'))).toBe(null);
+    expect(cmds.phraseCommand(inbound('beep now'))).toBe(null);
+  });
+
+  it('an EMPTY triggers list falls back to the "…" default (not "match nothing")', () => {
+    const { cmds } = harness({ config: withTriggers([]) });
+    expect(cmds.phraseCommand(inbound('…'))).toBe('super');
+  });
+
+  it('triggers set but super.enabled FALSE ⇒ nothing summons', () => {
+    const { cmds } = harness({ config: withTriggers(['beep'], false) });
+    expect(cmds.phraseCommand(inbound('beep'))).toBe(null);
+    expect(cmds.phraseCommand(inbound('…'))).toBe(null);
+  });
+
+  it('a configured trigger from a NON-operator summons (ANY-SENDER, unlike the fork triggers)', () => {
+    const { cmds } = harness({ config: withTriggers(['beep']) });
+    // inbound() is a plain participant (SUMMONER), never the operator — it still fires.
+    expect(cmds.phraseCommand(inbound('beep'))).toBe('super');
+  });
+});
+
 // ── the summon: create + alias + invite + opener + mode ─────────────────────────────────────────────
 describe('ensureSuperChannel via the "…" summon — a first summon with NO existing channel', () => {
   it('creates <chat>-super (Rodz + the summoner, type group, no inline messageText) and ALIASES it to the conversation', async () => {

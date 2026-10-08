@@ -88,10 +88,13 @@ wake_up:
 # (one shared thread/transcript, two chat surfaces), NOT a diverging /split copy.
 # Summoned by an inbound "…" / "..." (a whole-message deliberate-silence) from ANY
 # participant - so a counterparty can read the reply there; close it with /end.
+# The "…"/"..." is the DEFAULT trigger; set `triggers` (a list of exact phrases)
+# to summon on different words instead. Still ANY-SENDER (unlike join/split/send/end).
 # Off unless enabled. Created only by the node_role: primary node (like /join).
 # NOTE: QUOTE mode - bare on/off are YAML booleans, not the auto-mode strings.
 # super:
 #   enabled: true
+#   triggers: ["beep"]          # exact whole-message phrases that summon; UNSET => the "…"/"..." default. ANY-SENDER (unlike join/split/send/end, which are operator-only)
 #   suffix: "-super"            # channel title = <this chat's title> + suffix
 #   mode: "on"                  # MUST be quoted ("on"/"off" are YAML booleans)
 #   opener: "🌟 Super channel of {chat} - same agents, same conversation. Reply /send to a message to copy it back; /end to close."
