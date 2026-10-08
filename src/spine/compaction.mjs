@@ -29,9 +29,17 @@
 // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (read in the claude.exe bundle, which calls it a TEST override -
 // measure it before relying on it; it would still not re-feed the identity).
 // THIS DECISION CAN BE REVISITED.
+import { join } from 'node:path';
 import { dueForCompaction, criticallyOver, compactionPolicy, compactionRatio, positiveOrNull } from '../tools/compact-being.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
+// THE WARN GAP (operator 2026-10-08): the WARN threshold sits this fraction of the window BELOW the
+// compact `ratio`, so the handoff is written and the operator is told a few % before the context
+// actually compacts. Per-being/room overridable (compaction.warn_gap), same place as ratio.
+const DEFAULT_WARN_GAP = 0.03;
+// THE DEFAULT PRE-COMPACTION NOTICE text (top-level compaction_warn_notice). {agent} = being handle,
+// {percent} = current fullness, {path} = the handoff file the being writes. Unset → this; blank → skip.
+const DEFAULT_WARN_NOTICE = 'the conversation is at {percent}%, handoff being written, compaction next. you can read the handoff here: {path}';
 
 // THE compaction ratio the spine applies, and its 0.20 default: defined in compact-being.mjs with
 // the rest of the policy since 2026-09-24 (compactionPolicy - so /status reads the SAME rule the
@@ -52,6 +60,19 @@ export function compactedNotice({ node = null, label, chat = null, tokens } = {}
   return `🗜️ ${who}${where} compacted its context${was}. The full history stays in its transcript.md.`;
 }
 
+// THE PRE-COMPACTION WARN LINE the admin channel gets (operator 2026-10-08): a few % before the
+// /compact, so the operator is warned AND the handoff already exists by the time the context is
+// summarised away. THIS is the primary compaction notice now; compactedNotice's post-hoc line is a
+// secondary confirmation. Same `node · chat` prefix as compactedNotice (every node posts into the
+// one channel). `text` is the configurable compaction_warn_notice, already {agent}/{percent}/{path}-
+// resolved by the service — which alone holds the live size and the handoff path. Pure, so its
+// frame is pinned by a test.
+export function warnNotice({ node = null, label, chat = null, text } = {}) {
+  const who = node ? `${node} · ${label}` : label;
+  const where = chat ? ` in ${chat}` : '';
+  return `🗜️ ${who}${where}: ${text}`;
+}
+
 export function createCompaction({
   pool,
   getConfig = () => ({}),
@@ -66,6 +87,11 @@ export function createCompaction({
   // behaviour, byte-for-byte. A blank/whitespace string is treated as unset for the same reason.
   const resolveAgent = (tpl, agent) => (typeof tpl === 'string' && tpl.trim()) ? tpl.replaceAll('{agent}', agent) : '';
   const pending = new Map();          // warm key -> timer handle
+  // THE WARN ONCE-GUARD (operator 2026-10-08): warm keys that have already fired their WARN step
+  // (handoff + pre-compaction notice) and are waiting to cross the compact ratio. Cleared on the
+  // /compact, and whenever the session reads back below the warn threshold (a fresh/compacted
+  // thread), so the next growth warns again.
+  const warned = new Set();
   const ratio = () => compactionRatio(getConfig());
   const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
 
@@ -95,6 +121,25 @@ export function createCompaction({
   const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
   const _pos = positiveOrNull;
   const coolingFor = (o) => _pos(o?.cooling_ms) ?? coolingMs();
+  // THE WARN GAP, per-being/room then node, else the default. A NON-NEGATIVE number (0 = warn
+  // coincides with compact): zero is a legitimate "no early warning", so this is _nonNeg, not _pos.
+  // Booleans and negatives rejected like every other read here (Number(true) is 1, which would warn
+  // a full window early, i.e. never below 0).
+  const _nonNeg = (v) => { const n = typeof v === 'boolean' ? NaN : Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
+  const warnGapFor = (o) => _nonNeg(o?.warn_gap) ?? _nonNeg(cfg().warn_gap) ?? DEFAULT_WARN_GAP;
+  // The configurable pre-compaction notice BODY (top-level compaction_warn_notice), {agent}/
+  // {percent}/{path}-resolved. Unset → the operator default; a blank string → '' so the caller
+  // SKIPS the notice (same degrade as handoff_prompt/welcome). {path} is the being's conversation
+  // folder + handoffs/{agent}.handoff.md — what the being writes and the operator can open.
+  const warnNoticeBody = (agent, tokens, window, cwd) => {
+    const raw = getConfig()?.compaction_warn_notice;
+    const tpl = (raw === undefined || raw === null) ? DEFAULT_WARN_NOTICE
+      : (typeof raw === 'string' && raw.trim()) ? raw : '';
+    if (!tpl) return '';
+    const percent = window > 0 ? Math.round((tokens / window) * 100) : 0;
+    const path = cwd ? join(cwd, 'handoffs', `${agent}.handoff.md`) : `handoffs/${agent}.handoff.md`;
+    return tpl.replaceAll('{agent}', agent).replaceAll('{percent}', String(percent)).replaceAll('{path}', path);
+  };
   // THE CRITICAL RATIO (operator 2026-09-14: "10 minutes of quiet or a critical .9"). The
   // cooling wait exists so a compact lands in a gap between turns instead of mid-exchange --
   // but the timer is RE-ARMED on every turn, so a conversation that stays busy never goes
@@ -115,31 +160,60 @@ export function createCompaction({
   async function fire(key, target) {
     pending.delete(key);
     try {
-      const { due, tokens, threshold } = dueFor(target, { ratio: target.ratio ?? ratio() });
-      if (!due) return;
-      onLog(`compacting ${key} (${tokens} tok >= ${threshold})`);
+      const compactRatio = target.ratio ?? ratio();
+      const { due, tokens, threshold } = dueFor(target, { ratio: compactRatio });
+      // No readable session (no file): nothing to measure, exactly the old `!due` return.
+      if (!Number.isFinite(tokens)) return;
       // THE BEING'S HANDLE for {agent}: the first segment of the warm key
-      // (`<being>:<engine>:<surface>:<slug>`, brainpool.mjs). The being about to be compacted is
+      // (`<being>:<engine>:<surface>:<slug>`, brainpool.mjs). The being being warned/compacted is
       // the one that writes the handoff and gets the welcome.
       const agent = String(key).split(':')[0];
-      // ① GRACEFUL COMPACTION — THE HANDOFF (operator 2026-10-04). BEFORE the /compact, if a
-      // handoff_prompt is configured, give the being ONE turn on the SAME warm session — still
-      // holding its full pre-compact context — to write its working state to
-      // handoffs/{agent}.handoff.md in its own cwd (it has write access to its conversation
-      // folder), so it can pick up seamlessly once the compact summarises that context away.
-      //
-      // NON-FATAL, and the compaction PROCEEDS regardless: losing a handoff must never block the
-      // compaction this service exists to perform. Its OWN try/catch, one log line. The output is
-      // NOT posted to chat (the no-op onText, like /compact's). Unset handoff_prompt → '' → the
-      // turn is skipped, which is today's behaviour exactly.
-      const handoffPrompt = resolveAgent(cfg().handoff_prompt, agent);
-      if (handoffPrompt) {
-        try { await pool.run(key, handoffPrompt, () => {}, { brainOptions: target.brainOptions, klass: 'conversation' }); }
-        catch (e) { onLog(`compact ${key}: handoff turn failed (compacting anyway): ${e?.message ?? e}`); }
+      // ── TWO THRESHOLDS (operator 2026-10-08). The WARN threshold sits `warn_gap` of the window
+      //    BELOW the compact `ratio` (frozen onto the target at arm time, alongside ratio/window),
+      //    so the handoff is written and the operator told a few % before the context compacts. A
+      //    compact-due session is NECESSARILY warn-due (warnRatio ≤ compactRatio), so `due` folds
+      //    in — a thread that jumped straight past the compact ratio still gets its handoff first. ──
+      const window = Number(target.window) || 0;
+      const warnGap = Number.isFinite(target.warnGap) ? target.warnGap : DEFAULT_WARN_GAP;
+      const warnRatio = Math.max(0, compactRatio - warnGap);
+      const warnDue = due || tokens >= Math.round(window * warnRatio);
+      // Below the warn threshold → nothing due. Re-arm the once-guard: the session reads this small
+      // on a fresh thread AND right after any compaction (latestContextTokens ~0 past the boundary),
+      // so clearing here is how "naturally on a fresh thread" and the post-compact reset both land.
+      if (!warnDue) { warned.delete(key); return; }
+      // ① WARN — FIRE ONCE PER THREAD (operator 2026-10-08). The handoff turn (MOVED here from the
+      // compact step) + the pre-compaction admin notice. The `warned` guard stops a second tick
+      // between warn and compact from repeating either; it is cleared on the /compact below.
+      if (!warned.has(key)) {
+        warned.add(key);
+        // THE HANDOFF (operator 2026-10-04): ONE turn on the SAME warm session — still holding its
+        // full pre-compact context — to write handoffs/{agent}.handoff.md in its own cwd, so it can
+        // pick up seamlessly once the compact summarises that context away. NON-FATAL, the
+        // compaction proceeds regardless; own try/catch, one log line; output not posted to chat.
+        // Unset handoff_prompt → '' → skipped, today's behaviour exactly.
+        const handoffPrompt = resolveAgent(cfg().handoff_prompt, agent);
+        if (handoffPrompt) {
+          try { await pool.run(key, handoffPrompt, () => {}, { brainOptions: target.brainOptions, klass: 'conversation' }); }
+          catch (e) { onLog(`compact ${key}: handoff turn failed (compacting anyway): ${e?.message ?? e}`); }
+        }
+        // THE PRE-COMPACTION NOTICE to the admin channel (operator 2026-10-08) — the PRIMARY
+        // compaction notice: "the conversation is at {percent}%, handoff being written, compaction
+        // next. you can read the handoff here: {path}". brainpool's closure prefixes its node · chat
+        // line. NON-FATAL; unset/blank text or no sink → skipped. Its own catch, like the handoff's.
+        const body = warnNoticeBody(agent, tokens, window, target.brainOptions?.cwd);
+        if (body) {
+          try { await target.noticeWarn?.({ text: body }); }
+          catch (e) { onLog(`compact ${key}: warn notice failed: ${e?.message ?? e}`); }
+        }
       }
+      // Still short of the compact ratio → warned, and waiting for the session to cross it.
+      if (!due) return;
+      // ② COMPACT — at `ratio`, unchanged. The handoff already ran at WARN, so it is NOT re-run here.
+      onLog(`compacting ${key} (${tokens} tok >= ${threshold})`);
       // native /compact through the SAME warm session (in place, same id). brainOptions
       // match the turn's so a live entry is reused (never a second session on the jsonl).
       await pool.run(key, '/compact', () => {}, { brainOptions: target.brainOptions, klass: 'conversation' });
+      warned.delete(key);   // compacted → clear the once-guard so the next growth warns again
       // …AND THE IDENTITY GOES BACK IN (operator 2026-09-10: the feed rides start, refresh,
       // rethread AND compaction). /compact rewrote this session's context in place, so the
       // kickoff feed can have been summarised away; arming re-feeds it on the being's next real
@@ -162,12 +236,11 @@ export function createCompaction({
       // carries no welcome, so a plain refresh is unaffected.
       try { await target.armIdentityRefresh?.(resolveAgent(cfg().welcome, agent)); }
       catch (e) { onLog(`compact ${key}: compacted, but arming the identity re-feed failed: ${e?.message ?? e}`); }
-      // …AND THE ADMIN CHANNEL IS TOLD (operator 2026-09-24: "can the bridge emit notice of this
-      // when it happens?", then "make it's posted on admin channel, eGPT Admin"). brainpool's
-      // closure, bound to the being and the conversation of the turn that armed this compaction;
-      // boot says the line in config.yaml's admin_channel through its one placement. Only here,
-      // after a compact that SUCCEEDED, and in its own catch: a notice that could not be said is
-      // logged and is never a failed compact.
+      // …AND THE ADMIN CHANNEL GETS THE POST-HOC CONFIRMATION (operator 2026-09-24: "can the bridge
+      // emit notice of this when it happens?"). SECONDARY since 2026-10-08: the PRIMARY compaction
+      // notice is now the pre-compaction warn above (handoff path + percent). This one just confirms
+      // the compact landed. brainpool's closure, bound to the being/conversation; only here, after a
+      // compact that SUCCEEDED, own catch: a notice that could not be said is logged, never a failed compact.
       try { await target.noticeCompacted?.({ tokens }); }
       catch (e) { onLog(`compact ${key}: compacted, but the admin-channel notice failed: ${e?.message ?? e}`); }
     } catch (e) { onLog(`compact ${key}: ${e?.message ?? e}`); }
@@ -176,7 +249,7 @@ export function createCompaction({
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted } = {}) {
+    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted, noticeWarn } = {}) {
       const over = _obj(compaction);
       if (!enabledFor(over) || !pool || !key || !sessionId) return;
       const prev = pending.get(key);
@@ -184,14 +257,15 @@ export function createCompaction({
       // The resolved ratio is FROZEN ONTO THE TARGET, not re-read when the timer fires: the
       // policy that armed this compaction is the one that should run it, and the alternative is
       // a conversation compacted under whichever config happened to be loaded a cooling period
-      // later. `window` was already frozen here for the same reason.
+      // later. `window` was already frozen here for the same reason, and `warn_gap` now is too —
+      // the warn threshold it derives belongs to the policy that armed this compaction.
       // `armIdentityRefresh` is frozen onto the target for the same reason the ratio and the
       // window are: the turn that armed this compaction is the turn whose being should get its
       // identity back, and it closes over that turn's scope/being (operator 2026-09-10).
-      // `noticeCompacted` is frozen onto the target for the same reason: it is bound to the being
+      // `noticeCompacted` / `noticeWarn` are frozen for the same reason: each is bound to the being
       // and the conversation of the turn that armed this compaction, which is what the line names.
       const { window, ratio: frozenRatio } = compactionPolicy(getConfig(), model, over);
-      const target = { sessionId, model, window, ratio: frozenRatio, armIdentityRefresh, noticeCompacted, brainOptions: { sessionId, cwd, model, allowedTools } };
+      const target = { sessionId, model, window, ratio: frozenRatio, warnGap: warnGapFor(over), armIdentityRefresh, noticeCompacted, noticeWarn, brainOptions: { sessionId, cwd, model, allowedTools } };
       // ALREADY CRITICAL? Then do not wait for a quiet that may never come. The probe reads a
       // BOUNDED TAIL of the session jsonl rather than the whole file (compact-being's
       // criticallyOver): this runs after every single turn, and the ordinary check's
@@ -212,6 +286,6 @@ export function createCompaction({
       h?.unref?.();
       pending.set(key, h);
     },
-    stop() { for (const h of pending.values()) scheduler.clear(h); pending.clear(); },
+    stop() { for (const h of pending.values()) scheduler.clear(h); pending.clear(); warned.clear(); },
   };
 }

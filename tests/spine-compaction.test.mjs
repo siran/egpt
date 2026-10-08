@@ -200,3 +200,102 @@ describe('compaction service: graceful compaction (handoff + welcome)', () => {
     expect(welcomeArg).toBe('');
   });
 });
+
+// ── TWO THRESHOLDS: WARN (handoff + pre-compaction notice), then COMPACT (operator 2026-10-08) ──
+// The WARN threshold sits `warn_gap` of the window BELOW the compact `ratio`. At WARN the being
+// writes its handoff and the admin channel gets the pre-compaction notice, ONCE per thread; at
+// `ratio` the /compact runs and the handoff is NOT re-run. TARGET is model haiku → window 200_000,
+// default ratio 0.20 → compact threshold 40_000, default warn_gap 0.03 → warn threshold 34_000.
+// dueFor is mocked with the COMPACT `due` and a `tokens`; the service derives WARN from tokens+window.
+describe('compaction service: two thresholds (warn, then compact)', () => {
+  it('(a) WARN fires ONCE: handoff + notice run at the warn threshold, and a second tick between warn and compact repeats neither', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const notices = [];
+    let state = { due: false, tokens: 36_000, threshold: 40_000 };   // warn-due (>=34_000), not compact-due
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction: { handoff_prompt: 'HANDOFF {agent}' }, compaction_warn_notice: 'at {percent}%' }),
+      scheduler: sched,
+      dueFor: () => state,
+    });
+    const tgt = { ...TARGET, noticeWarn: async (n) => { notices.push(n); } };
+    c.afterTurn(tgt);
+    await sched.fire();
+    expect(pool.runs.map((r) => r.msg)).toEqual(['HANDOFF e']);       // handoff ran, NO /compact yet
+    expect(notices).toHaveLength(1);                                  // pre-compaction notice posted once
+    // a second tick, still between warn and compact — neither repeats
+    state = { due: false, tokens: 37_000, threshold: 40_000 };
+    c.afterTurn(tgt);
+    await sched.fire();
+    expect(pool.runs.map((r) => r.msg)).toEqual(['HANDOFF e']);       // no re-handoff
+    expect(notices).toHaveLength(1);                                  // no re-post
+  });
+
+  it('(b) COMPACT after WARN: /compact runs at the ratio and the handoff is NOT re-run', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let state = { due: false, tokens: 36_000, threshold: 40_000 };
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction: { handoff_prompt: 'HANDOFF {agent}' } }),
+      scheduler: sched,
+      dueFor: () => state,
+    });
+    c.afterTurn(TARGET); await sched.fire();                          // WARN tick
+    expect(pool.runs.map((r) => r.msg)).toEqual(['HANDOFF e']);
+    state = { due: true, tokens: 50_000, threshold: 40_000 };         // now past the compact ratio
+    c.afterTurn(TARGET); await sched.fire();                          // COMPACT tick
+    expect(pool.runs.map((r) => r.msg)).toEqual(['HANDOFF e', '/compact']);   // compacted, handoff not repeated
+  });
+
+  it('(c) the notice interpolates {agent}, {percent} and {path}', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    let body;
+    const c = createCompaction({
+      pool,
+      getConfig: () => ({ compaction_warn_notice: '{agent} at {percent}% -> {path}' }),
+      scheduler: sched,
+      dueFor: () => ({ due: false, tokens: 36_000, threshold: 40_000 }),   // 36_000 / 200_000 = 18%
+    });
+    c.afterTurn({ ...TARGET, noticeWarn: async ({ text }) => { body = text; } });
+    await sched.fire();
+    expect(body).toMatch(/^e at 18% -> /);        // {agent} = e (warm-key head), {percent} = 18
+    expect(body).toContain('handoffs');           // {path} = cwd-joined handoff file…
+    expect(body).toContain('e.handoff.md');        // …named for the being
+  });
+
+  it('(d) warn_gap: the default 0.03 and node/per-being overrides set the warn threshold', async () => {
+    // window 200_000, ratio 0.20. warn threshold = round(window * (ratio - warn_gap)).
+    const warnFired = async ({ config = {}, compaction, tokens }) => {
+      const sched = makeScheduler();
+      const notices = [];
+      const c = createCompaction({ pool: fakePool(), getConfig: () => config, scheduler: sched, dueFor: () => ({ due: false, tokens, threshold: 40_000 }) });
+      const base = { ...TARGET, noticeWarn: async (n) => { notices.push(n); } };
+      c.afterTurn(compaction === undefined ? base : { ...base, compaction });
+      await sched.fire();
+      return notices.length > 0;
+    };
+    // default 0.03 → threshold round(200_000 * 0.17) = 34_000
+    expect(await warnFired({ tokens: 34_000 })).toBe(true);
+    expect(await warnFired({ tokens: 33_999 })).toBe(false);
+    // node override 0.10 → threshold round(200_000 * 0.10) = 20_000
+    expect(await warnFired({ config: { compaction: { warn_gap: 0.10 } }, tokens: 20_000 })).toBe(true);
+    expect(await warnFired({ config: { compaction: { warn_gap: 0.10 } }, tokens: 19_999 })).toBe(false);
+    // per-being override WINS over the node: 0.02 → threshold round(200_000 * 0.18) = 36_000
+    expect(await warnFired({ config: { compaction: { warn_gap: 0.10 } }, compaction: { warn_gap: 0.02 }, tokens: 36_000 })).toBe(true);
+    expect(await warnFired({ config: { compaction: { warn_gap: 0.10 } }, compaction: { warn_gap: 0.02 }, tokens: 35_999 })).toBe(false);
+  });
+
+  it('(e) degrade: a blank compaction_warn_notice skips the notice, and no sink is harmless', async () => {
+    const sched = makeScheduler();
+    let posted = 0;
+    const c = createCompaction({ pool: fakePool(), getConfig: () => ({ compaction_warn_notice: '   ' }), scheduler: sched, dueFor: () => ({ due: false, tokens: 36_000, threshold: 40_000 }) });
+    c.afterTurn({ ...TARGET, noticeWarn: async () => { posted++; } });
+    await sched.fire();
+    expect(posted).toBe(0);                                           // blank text → notice skipped
+    // and a warn-due tick with NO noticeWarn sink wired neither throws nor posts (today's degrade)
+    const sched2 = makeScheduler();
+    const c2 = createCompaction({ pool: fakePool(), getConfig: () => ({}), scheduler: sched2, dueFor: () => ({ due: false, tokens: 36_000, threshold: 40_000 }) });
+    c2.afterTurn({ ...TARGET });
+    await expect(sched2.fire()).resolves.toBeUndefined();
+  });
+});

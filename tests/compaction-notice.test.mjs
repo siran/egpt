@@ -5,7 +5,7 @@
 // logged and is never a failed compact. Where it is SAID (the admin channel) is boot's, and is
 // pinned in tests/admin-channel-notice.test.mjs.
 import { describe, it, expect } from 'vitest';
-import { createCompaction, compactedNotice } from '../src/spine/compaction.mjs';
+import { createCompaction, compactedNotice, warnNotice } from '../src/spine/compaction.mjs';
 
 function makeScheduler() {
   const s = {
@@ -90,5 +90,20 @@ describe('compactedNotice: the line itself', () => {
   it('an unknown part is left out rather than invented', () => {
     expect(compactedNotice({ label: 'E', chat: 'acim', tokens: undefined })).toBe('🗜️ E in acim compacted its context. The full history stays in its transcript.md.');
     expect(compactedNotice({ node: 'kg', label: 'E', tokens: 0 })).toBe('🗜️ kg · E compacted its context. The full history stays in its transcript.md.');
+  });
+});
+
+// ── THE PRE-COMPACTION WARN LINE (operator 2026-10-08) — the primary compaction notice now ──────
+// Said at the WARN threshold, a few % before the /compact, so the operator is warned and the
+// handoff already exists. The service builds the body ({agent}/{percent}/{path}-resolved); this
+// pure builder only adds the same node · chat prefix compactedNotice uses.
+describe('warnNotice: the pre-compaction line itself', () => {
+  it('prefixes node · chat, then the service-built body', () => {
+    expect(warnNotice({ node: 'kg', label: 'E', chat: 'Favel Konefka', text: 'the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md' }))
+      .toBe('🗜️ kg · E in Favel Konefka: the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md');
+  });
+  it('leaves out an unknown node or chat rather than inventing it', () => {
+    expect(warnNotice({ label: 'E', chat: 'acim', text: 'at 18%' })).toBe('🗜️ E in acim: at 18%');
+    expect(warnNotice({ node: 'kg', label: 'E', text: 'at 18%' })).toBe('🗜️ kg · E: at 18%');
   });
 });

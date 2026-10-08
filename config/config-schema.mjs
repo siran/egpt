@@ -2881,7 +2881,18 @@ export const CONFIG_SCHEMA = {
         DEFAULT: on; false disables.
       ratio
         DEFAULT: 0.20 — compact once the session passes this fraction of the
-        context window.
+        context window. This is the COMPACT threshold; warn_gap below sets a
+        second, lower WARN threshold a few % under it.
+      warn_gap
+        DEFAULT: 0.03 (operator 2026-10-08). The WARN threshold sits this fraction
+        of the window BELOW ratio: warn_threshold = (ratio - warn_gap) of the
+        window, clamped at >= 0. At the warn threshold the being writes its handoff
+        and the admin channel gets the pre-compaction notice (compaction_warn_notice,
+        a top-level key), ONCE per thread; at ratio the actual /compact runs. So the
+        operator is warned and the handoff exists ~warn_gap of the window before the
+        context compacts. Per-being/room overridable, same place as ratio. A
+        non-negative number (0 = warn coincides with compact, i.e. no early warning);
+        booleans and negatives are rejected and fall back to the default.
       cooling_ms
         DEFAULT: 120000 — quiet period after the last reply before the size
         check runs.
@@ -2898,11 +2909,13 @@ export const CONFIG_SCHEMA = {
         Override the per-model window token count.
         DEFAULT: windowForModel(model)
       handoff_prompt
-        GRACEFUL COMPACTION, step ① (operator 2026-10-04). An instruction given to
-        the being on its OWN warm session BEFORE the /compact, while it still holds
-        its full pre-compact context, so it can write its working state to
-        handoffs/{agent}.handoff.md in its conversation folder and resume from there
-        afterwards. {agent} is replaced with the being's handle. The handoff turn is
+        GRACEFUL COMPACTION, step ① (operator 2026-10-04; moved to the WARN threshold
+        2026-10-08). An instruction given to the being on its OWN warm session at the
+        WARN threshold (warn_gap below ratio), while it still holds its full pre-compact
+        context, so it can write its working state to handoffs/{agent}.handoff.md in its
+        conversation folder and resume from there after the /compact at ratio. It fires
+        ONCE per thread, not on every loop tick between warn and compact. {agent} is
+        replaced with the being's handle. The handoff turn is
         NON-FATAL: a failed one logs a line and the compaction proceeds (losing a
         handoff never blocks the compact), and its output is not posted to chat.
         DEFAULT: unset — no handoff turn (today's behaviour). The reference text is:
@@ -2919,5 +2932,25 @@ export const CONFIG_SCHEMA = {
         DEFAULT: unset — re-feed with no welcome (today's behaviour). The reference
         text is: "hi, you have just been compacted. please read your handoff at
         handoffs/{agent}.handoff.md and continue where you left off."
+  `,
+
+  compaction_warn_notice: `
+    The PRE-COMPACTION notice posted to the admin channel at the WARN threshold
+    (compaction.warn_gap below compaction.ratio), operator 2026-10-08 — the PRIMARY
+    compaction notice now, said a few % before the context compacts so the operator
+    is warned AND the handoff already exists. The node still prefixes its own
+    "node · chat" line (src/spine/compaction.mjs warnNotice), as it does for the
+    post-hoc "compacted" confirmation.
+
+    PLACEHOLDERS (resolved like {agent} already is elsewhere):
+      {agent}    the being's handle (first segment of the warm key)
+      {percent}  current fullness = round(tokens / window * 100)
+      {path}     the handoff file the being writes — its conversation folder +
+                 handoffs/{agent}.handoff.md, so the operator can open it
+
+    DEFAULT: unset — the operator's reference wording is used:
+    "the conversation is at {percent}%, handoff being written, compaction next. you
+    can read the handoff here: {path}". A blank/whitespace string SKIPS the notice
+    (same degrade as handoff_prompt / welcome); no admin_channel sink also skips it.
   `,
 };

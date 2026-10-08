@@ -36,7 +36,7 @@ import { renderConfigBlock, writeConfigCard } from './being-config-card.mjs';
 import { resolveMode } from './gating.mjs';
 // The chat line a compaction leaves behind, and the per-conversation override the service reads -
 // both owned by the compaction policy, never re-spelled here (operator 2026-09-24).
-import { compactedNotice } from './compaction.mjs';
+import { compactedNotice, warnNotice } from './compaction.mjs';
 import { compactionOverrideOf } from '../tools/compact-being.mjs';
 // WHICH APPROVED TARGET a room's outbox/ is drained to, resolved by the ONE owner of that walk
 // (the boot sweep is the other reader) — see src/room-outbox.mjs. The conversation names a KEY;
@@ -693,7 +693,7 @@ export function createBrainPool({
   writeCard = writeConfigCard,      // (room, being, block, {io, onLog}) -> <room>/directives/config.readonly.yaml when it changed
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
-  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh, noticeCompacted}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `noticeCompacted` ({tokens}) says so in the turn's chat, null unless noticeTo is wired; `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
+  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh, noticeCompacted, noticeWarn}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `noticeWarn` ({text}) is the PRE-compaction admin notice (the primary one, said at the warn threshold) and `noticeCompacted` ({tokens}) the post-hoc confirmation, both null unless noticeTo is wired; `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
   // drive win32 AND posix in one run without redefining process.platform (same options-DI
@@ -1549,7 +1549,20 @@ export function createBrainPool({
           tokens,
         }), being)
         : null;
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted }); } catch { /* non-fatal */ }
+      // THE PRE-COMPACTION WARN NOTICE (operator 2026-10-08) — the PRIMARY compaction notice, said a
+      // few % before the /compact so the operator is warned and the handoff already exists. Same hook,
+      // same binding and same admin channel as noticeCompacted; the service builds the body ({percent}/
+      // {path}/{agent}-resolved) and this closure only prefixes the node · chat line, exactly as the
+      // post-hoc one does.
+      const noticeWarn = typeof noticeTo === 'function'
+        ? ({ text } = {}) => noticeTo(warnNotice({
+          node: getConfig()?.node_name ?? null,
+          label: labelOf(being) || being,
+          chat: scope.scoped ? slug : (ev.chatName || slug),
+          text,
+        }), being)
+        : null;
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn }); } catch { /* non-fatal */ }
       // `verbose` (the one reading of verbose_thinking resolved above) rides out on the reply so the
       // spine can gate the limb-only commandMark on it without a second config read (src/spine/sender.mjs).
       return { text, sessionId: newSession ?? sessionId ?? null, being, verbose };
