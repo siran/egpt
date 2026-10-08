@@ -432,7 +432,9 @@ export function createSpine({
     if (d.mode !== 'auto' || !d.mayReply) { note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
     const replyTo = ev.msgId ?? null;                 // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
-    const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
+    // CHUNK 2 super-channel routing: the reply goes to this conversation's super channel when it has
+    // one right now (gating.decide's live lookup), else the arrival chat — unchanged otherwise.
+    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, auto: true });
     // `trigger` (operator 2026-09-11) — the handle-stripped dispatch line of the message that
     // armed this dwell. It is the BASE only when the drained cycle came back empty (a burst with
     // lines prompts with those verbatim), and each of those lines was already stripped on its way
@@ -1394,7 +1396,10 @@ export function createSpine({
   function openAndRunReply({ to, ev, d, turnKey, pinned = false, trigger = null }) {
     const replyTo = ev.msgId ?? null;
     const ahead = bumpTrain(turnKey);
-    const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
+    // CHUNK 2 super-channel routing: post to the conversation's super channel when it has one right
+    // now (gating.decide's live lookup), else the arrival chat — unchanged otherwise. The transcript/
+    // limbs below stay keyed to ev.chatId (the alias shares that one on-disk conversation).
+    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
     return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger }));
   }
 
@@ -1666,7 +1671,11 @@ export function createSpine({
               // Said like /media (makeOutbound `say`), replying to the text. That text's id lives
               // where the sender put it (`confirmedIn`: a local mouth's room, else this chat's own
               // connection), so its key is read off that copy and the id itself is handed on only there.
-              const o = outbound(to, ev.chatId);
+              // Same target the TEXT reply used (d.replyChatId — the super channel when one exists):
+              // the voice note replies to that delivered text, so it must land in the SAME chat, not
+              // the arrival chat. This changes only the destination chatId — the wantsVoice gate and
+              // the settle path above/below are untouched (CHUNK 2 super-channel routing).
+              const o = outbound(to, d.replyChatId ?? ev.chatId);
               const heldBy = out.confirmedIn ?? null;
               try { await o.say((on, room, replyTo) => on.sendMedia(room, tmpPath, { replyTo }), { msgId: heldBy ? null : textId, keyOf: o.keyOf(textId, 'voice', heldBy), what: 'voice' }); }
               catch (e) { note(`voice-send ${to}/${ev.chatId}: ${e?.message ?? e}`); }

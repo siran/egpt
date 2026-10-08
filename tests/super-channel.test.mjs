@@ -26,7 +26,7 @@ vi.hoisted(() => {
   const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
   process.env.EGPT_HOME = `${tmp}/egpt-super-channel-home`;
 });
-import { createCommands, SUPER_SUFFIX_DEFAULT, SUPER_MODE_DEFAULT, SUPER_OPENER_DEFAULT } from '../src/spine/commands.mjs';
+import { createCommands, SUPER_SUFFIX_DEFAULT, SUPER_OPENER_DEFAULT } from '../src/spine/commands.mjs';
 import { ensureContact, recordThread, getContact, getBeing, aliasTargetOf } from '../src/conversations-state.mjs';
 import { sanitizeSlug } from '../src/sanitize.mjs';
 import { shortChatId } from '../src/bridges/chat-id.mjs';
@@ -132,8 +132,9 @@ describe('ensureSuperChannel via the "…" summon — a first summon with NO exi
 
     const st = getState();
     const primaryJid = getContact(st, 'whatsapp', C_CHAT).jid;
-    // THE SAME alias kind /join writes — exactly { aliasOf, transcript }, nothing else (not a new field)
-    expect(st.contacts.whatsapp[SUPER_CHAT]).toEqual({ aliasOf: primaryJid, transcript: sanitizeSlug(SUPER_TITLE) });
+    // THE /join alias kind PLUS the one marker chunk 2 adds — { aliasOf, transcript, super: true }.
+    // `super: true` is what the reply path (gate + routing) keys on; /join never carries it.
+    expect(st.contacts.whatsapp[SUPER_CHAT]).toEqual({ aliasOf: primaryJid, transcript: sanitizeSlug(SUPER_TITLE), super: true });
     expect(aliasTargetOf(st, 'whatsapp', SUPER_CHAT)).toBe(primaryJid);
     expect(getContact(st, 'whatsapp', SUPER_CHAT).slug).toBe(getContact(st, 'whatsapp', C_CHAT).slug);   // shared folder/thread
   });
@@ -146,13 +147,15 @@ describe('ensureSuperChannel via the "…" summon — a first summon with NO exi
     expect(calls.post).toEqual([{ chatId: SEC_SUPER_ROOM, text: expected, replyToMessageID: null, via: 'secondary' }]);
   });
 
-  it('sets the channel auto-mode to config.super.mode (default "on"); the mode is on the SHARED entry (alias semantics), resident thread preserved', async () => {
+  it('stores NO mode on summon (CHUNK 2): the origin\'s stored mode is UNCHANGED, the resident thread is intact (the channel\'s mode is intrinsic, read live at the gate)', async () => {
     const { cmds, getState } = harness({ config: cfg() });
     await cmds.runPhrase(inbound('…'), 'super');
     const st = getState();
-    expect(getBeing(st, 'whatsapp', SUPER_CHAT, 'e').mode).toBe('on');   // the channel's mode
-    expect(getBeing(st, 'whatsapp', C_CHAT, 'e').mode).toBe('on');       // same shared entry (no per-alias mode)
-    expect(getBeing(st, 'whatsapp', C_CHAT, 'e').threadId).toBe('src-e-thread');   // the merge kept the resident thread
+    // Summoning must mutate NO stored mode — the old chunk-1 patchBeing flipped the SHARED entry
+    // (and never reverted on /end). The seed set no mode, so it stays unset (null) on both surfaces.
+    expect(getBeing(st, 'whatsapp', C_CHAT, 'e').mode).toBeNull();       // origin mode UNCHANGED
+    expect(getBeing(st, 'whatsapp', SUPER_CHAT, 'e').mode).toBeNull();   // alias resolves through → same (none)
+    expect(getBeing(st, 'whatsapp', C_CHAT, 'e').threadId).toBe('src-e-thread');   // resident thread intact
   });
 
   it('without a summoner id, invites only Rodz', async () => {
@@ -173,36 +176,25 @@ describe('ensureSuperChannel — an existing channel is REUSED', () => {
   });
 });
 
-// ── config: mode coercion, suffix/opener overrides ───────────────────────────────────────────────────
-describe('config.super — mode (quoted vs YAML-boolean), suffix, opener', () => {
-  it('an explicit string mode is honoured', async () => {
-    const { cmds, getState } = harness({ config: cfg({ superBlock: { enabled: true, mode: 'mute' } }) });
-    await cmds.runPhrase(inbound('…'), 'super');
-    expect(getBeing(getState(), 'whatsapp', SUPER_CHAT, 'e').mode).toBe('mute');
-  });
-
-  it('a YAML-boolean mode is COERCED to the string (true → "on", false → "off")', async () => {
-    const t = harness({ config: cfg({ superBlock: { enabled: true, mode: true } }) });
-    await t.cmds.runPhrase(inbound('…'), 'super');
-    expect(getBeing(t.getState(), 'whatsapp', SUPER_CHAT, 'e').mode).toBe('on');
-
-    const f = harness({ config: cfg({ superBlock: { enabled: true, mode: false } }) });
-    await f.cmds.runPhrase(inbound('…'), 'super');
-    expect(getBeing(f.getState(), 'whatsapp', SUPER_CHAT, 'e').mode).toBe('off');
-  });
-
-  it('an unrecognized mode falls back to the default and logs', async () => {
-    const { cmds, getState, logs } = harness({ config: cfg({ superBlock: { enabled: true, mode: 'bogus' } }) });
-    await cmds.runPhrase(inbound('…'), 'super');
-    expect(getBeing(getState(), 'whatsapp', SUPER_CHAT, 'e').mode).toBe(SUPER_MODE_DEFAULT);
-    expect(logs.some((l) => /invalid mode/i.test(l))).toBe(true);
-  });
-
+// ── config: suffix/opener overrides, and NO stored mode whatever config.super.mode says ───────────────
+// The mode is no longer stored on summon (CHUNK 2); its coercion (quoted vs YAML-boolean, invalid →
+// default) is unit-tested as superModeOf in auto-mode.test.mjs and applied live at the gate in
+// gating-dispatch.test.mjs. Here we only lock the create-time title/opener and that summon stores NOTHING.
+describe('config.super — suffix / opener overrides, mode never stored', () => {
   it('config.super.suffix and config.super.opener override the built-in fallbacks', async () => {
     const { cmds, calls } = harness({ config: cfg({ superBlock: { enabled: true, suffix: ' ⭐', opener: 'hola {chat}' } }) });
     await cmds.runPhrase(inbound('…'), 'super');
     expect(calls.create[0].title).toBe(`${CHAT_TITLE} ⭐`);
     expect(calls.post[0].text).toBe(`hola ${CHAT_TITLE}`);
+  });
+
+  it('a configured mode (string, YAML-boolean, or invalid) still stores NOTHING — the mode is intrinsic', async () => {
+    for (const mode of ['mute', true, false, 'bogus']) {
+      const { cmds, getState } = harness({ config: cfg({ superBlock: { enabled: true, mode } }) });
+      await cmds.runPhrase(inbound('…'), 'super');
+      expect(getBeing(getState(), 'whatsapp', C_CHAT, 'e').mode).toBeNull();       // origin never flipped
+      expect(getBeing(getState(), 'whatsapp', SUPER_CHAT, 'e').mode).toBeNull();   // alias resolves through → same
+    }
   });
 });
 

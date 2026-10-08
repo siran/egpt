@@ -1523,6 +1523,38 @@ export function aliasTranscriptKeyOf(state, surface, jid) {
   return (entry && entry.aliasOf) ? (entry.transcript ?? null) : null;
 }
 
+// ── the SUPER CHANNEL resolvers (operator 2026-10-08, CHUNK 2) ────────────────
+// A super channel is a /join-style ALIAS of its origin conversation (shares folder/thread/
+// transcript) carrying ONE extra marker — `super: true` — set on the alias entry at creation
+// (commands.ensureSuperChannel). That marker is the smallest group-independent state the operator
+// authorized for chunk 2, and it is what makes a super channel identifiable from the REPLY PATH
+// (the per-surface gate + the reply routing) — which the chunk-1 transcript-key heuristic buried
+// inside commands.mjs could neither reach nor key robustly. ONE definition of each question here,
+// reused by commands.mjs (existingSuperChannel/ensureSuperChannel) AND gating.mjs (the gate + the
+// routing) — never a parallel scan.
+
+// Is THIS exact chatId a super channel? (the GATE: a message that ARRIVED here is gated by
+// config.super.mode, not the shared stored mode.) An alias entry carrying the super marker.
+export function isSuperChannel(state, surface, chatId) {
+  const entry = state?.contacts?.[surface]?.[chatId];
+  return !!(entry && entry.aliasOf && entry.super === true);
+}
+
+// Does the conversation `chatId` belongs to HAVE a super channel right now, and what is its chatId?
+// (the ROUTING: a reply for this conversation posts there instead of the main chat.) Resolves
+// `chatId` to its origin primary (getContact follows the alias), then finds that primary's super
+// alias. LIVE by design: /end drops the alias, so this returns null again and replies revert to the
+// main chat with nothing stored to restore. Returns the super chatId or null.
+export function superChannelFor(state, surface, chatId) {
+  const primaryJid = getContact(state, surface, chatId)?.jid;
+  if (!primaryJid) return null;
+  const bucket = state?.contacts?.[surface] ?? {};
+  for (const [id, entry] of Object.entries(bucket)) {
+    if (entry?.aliasOf === primaryJid && entry?.super === true) return id;
+  }
+  return null;
+}
+
 // THE write side of _beingBlock — every per-being field write (mode, threadId, access_level,
 // …) lands in the ONE place getBeing reads: `entry.agents.<being>`, merged over the block's
 // existing fields (siblings survive), like patchContact. Phase 1 (operator 2026-08-14): there

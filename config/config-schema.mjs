@@ -2887,13 +2887,14 @@ export const CONFIG_SCHEMA = {
       suffix
         DEFAULT: "-super". The channel's title is <this chat's title> + suffix.
       mode
-        DEFAULT: "on". The auto-mode set on the channel (conversations-state, via the SAME per-being
-        writer /agents mode uses). Because the channel is an ALIAS, the mode lands on the SHARED
-        conversation entry — channel and origin share it (there is no per-alias mode slot). Must be
-        one of the auto-mode tokens.
+        DEFAULT: "on". The auto-mode the channel runs under. Read LIVE at the reply gate (operator
+        2026-10-08, CHUNK 2): a message that ARRIVED in the super channel is gated by THIS value, not
+        the shared stored mode — group-independent, so the channel and its origin never conflict.
+        Summoning stores NOTHING (the mode is intrinsic), so /end reverts it for free. Must be one of
+        the auto-mode tokens.
         ⚠ QUOTE IT. Bare on/off are YAML BOOLEANS (on → true, off → false), not the strings this wants.
-        A boolean that slips through is COERCED here (true → "on", false → "off"); an unrecognized
-        value falls back to the default and is logged.
+        A boolean that slips through is COERCED (true → "on", false → "off"); an unrecognized value
+        falls back to the default and is logged.
       opener
         The bridge-voice intro posted once (FROM the secondary) when the channel is created, so the
         otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages). A {chat}/{group}

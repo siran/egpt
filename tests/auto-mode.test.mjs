@@ -2,7 +2,7 @@
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { AUTO_MODES, mentionHits, mentionHitsAnywhere, mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
+import { AUTO_MODES, mentionHits, mentionHitsAnywhere, mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision, superModeOf } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -634,5 +634,31 @@ describe('mayEmitChat — global pause kill over the mode gate', () => {
   it('defaults are fail-safe (no args → no emit)', () => {
     expect(mayEmitChat()).toBe(false);                       // no mode, not paused → mayEmit(undefined) → false
     expect(mayEmitChat({ mode: 'mention' })).toBe(false);    // mention w/o replyAllowed → fails closed
+  });
+});
+
+// superModeOf — config.super.mode → a concrete auto-mode token (operator 2026-10-08, CHUNK 2). THE
+// ONE coercion, shared by the summon (commands.superMode) and the per-surface super gate
+// (gating.decide). Pure: takes the raw config value, reads no config/env (the purity lock above
+// still holds). This replaces the stored-mode coercion the chunk-1 super-channel test used to check.
+describe('superModeOf — the shared config.super.mode coercion', () => {
+  it('an explicit auto-mode string is honoured', () => {
+    expect(superModeOf('mute')).toBe('mute');
+    expect(superModeOf('mention')).toBe('mention');
+  });
+  it('a YAML-boolean is coerced (true → on, false → off)', () => {
+    expect(superModeOf(true)).toBe('on');
+    expect(superModeOf(false)).toBe('off');
+  });
+  it('unset → the fallback (default "on"; overridable)', () => {
+    expect(superModeOf(undefined)).toBe('on');
+    expect(superModeOf(null)).toBe('on');
+    expect(superModeOf(undefined, { fallback: 'mention' })).toBe('mention');
+  });
+  it('an unrecognized value falls back AND calls onInvalid (the summon logs it)', () => {
+    let seen = null;
+    expect(superModeOf('bogus', { onInvalid: (raw) => { seen = raw; } })).toBe('on');
+    expect(seen).toBe('bogus');
+    expect(superModeOf(42, { fallback: 'mute' })).toBe('mute');
   });
 });

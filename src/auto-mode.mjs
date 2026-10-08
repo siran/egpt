@@ -58,6 +58,19 @@ export const DEFAULT_AUTO_MODE = 'mention';
 
 export function isAutoMode(m) { return AUTO_MODES.includes(String(m)); }
 
+// config.super.mode → a concrete auto-mode token. THE ONE coercion, shared by the summon
+// (commands.mjs superMode) and the per-surface super gate (gating.mjs decide) so the gate and the
+// channel can never disagree on what "super.mode" means (operator 2026-10-08, CHUNK 2). YAML parses
+// a bare on/off as a BOOLEAN, so a boolean that slipped past config.super.mode's "quote it" guidance
+// is coerced (true → 'on', false → 'off'); unset → `fallback` (config.super.mode's documented
+// default, 'on'); an unrecognized string falls back and calls onInvalid (the summon logs it). PURE —
+// takes the raw value, reads no config/env (the auto-mode purity lock depends on it).
+export function superModeOf(raw, { onInvalid = () => {}, fallback = 'on' } = {}) {
+  const m = raw === true ? 'on' : raw === false ? 'off' : (raw == null ? fallback : String(raw));
+  if (!isAutoMode(m)) { onInvalid(raw); return fallback; }
+  return m;
+}
+
 // PER-BEING per-chat mode (generalizes the E-only mode to EVERY being — E,
 // Wren, Don, L — across every surface). A being's mode in a chat decides whether
 // it RECEIVES that chat's messages and when it REPLIES, exactly like E's mode;

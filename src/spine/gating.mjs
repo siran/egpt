@@ -20,8 +20,8 @@
 // E is a sibling, not a network); the whatsapp.* reads stay as back-compat fallbacks
 // so an un-migrated config is a no-op. The old config.auto_modes route is GONE —
 // modes live in the agents registry + conversations.yaml.
-import { getBeing } from '../conversations-state.mjs';
-import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
+import { getBeing, isSuperChannel, superChannelFor } from '../conversations-state.mjs';
+import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE, superModeOf } from '../auto-mode.mjs';
 
 const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
 
@@ -51,20 +51,24 @@ export function resolveMode(bv, being, c = {}) {
 
 export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e' } = {}) {
   const cfg = () => getConfig() ?? {};
-  async function beingView(being, ev) {
-    if (!loadState) return null;
-    try { return getBeing(await loadState(), ev.surface, ev.chatId, being); } catch { return null; }
-  }
 
-  // The single per-message decision. ONE conversations.yaml read resolves the
-  // conversation's mode + send_to_egpt; the rest is pure auto-mode logic. `mention`
-  // is passed explicitly by the loop (it's the ROUTED being's mention — a sibling
-  // routed by its own @name is mentioned for ITS gate, not @e's); default to
-  // ev.mention for direct callers.
+  // The single per-message decision. ONE conversations.yaml read resolves the conversation's
+  // mode + send_to_egpt AND the two super-channel facts the reply path needs (CHUNK 2), so there
+  // is still exactly one state load per message. `mention` is passed explicitly by the loop (it's
+  // the ROUTED being's mention — a sibling routed by its own @name is mentioned for ITS gate, not
+  // @e's); default to ev.mention for direct callers.
   async function decide(being, ev, mention = ev.mention) {
     const c = cfg();
-    const bv = await beingView(being, ev);
-    const { mode } = resolveMode(bv, being, c);
+    let state = null;
+    if (loadState) { try { state = await loadState(); } catch { state = null; } }
+    let bv = null;
+    if (state) { try { bv = getBeing(state, ev.surface, ev.chatId, being); } catch { bv = null; } }
+    let { mode } = resolveMode(bv, being, c);
+    // PER-SURFACE SUPER GATE (operator 2026-10-08, CHUNK 2): a message that ARRIVED in a super
+    // channel is gated by config.super.mode, NOT the shared stored mode — group-independent and
+    // READ-ONLY (nothing stored, nothing mutated; /end reverts it for free). The main chat keeps
+    // its own stored mode, so the two surfaces never conflict.
+    if (state && isSuperChannel(state, ev.surface, ev.chatId)) mode = superModeOf(c.super?.mode);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
     const mayReply = mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
@@ -74,7 +78,12 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
     const sendToEgpt = being !== defaultKey
       ? 'mode'
       : (_send(bv?.send_to_egpt) ?? _send(c.dispatch?.send_to_egpt) ?? _send(c.whatsapp?.send_to_egpt) ?? 'mode');
-    return { mode, receives: receives(mode), mayReply, sendToEgpt };
+    // REPLY ROUTING (operator 2026-10-08, CHUNK 2): when this conversation HAS a super channel
+    // right now, the reply is posted THERE instead of the main chat (the Mouth "pinned" to the
+    // super channel). LIVE lookup off the same state read — /end drops the alias, so this reverts
+    // to the arrival chat automatically with no un-pin to undo. No super channel → ev.chatId.
+    const replyChatId = (state && superChannelFor(state, ev.surface, ev.chatId)) || ev.chatId;
+    return { mode, receives: receives(mode), mayReply, sendToEgpt, replyChatId };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an
