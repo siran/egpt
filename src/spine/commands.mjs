@@ -358,7 +358,7 @@ const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|
 //
 //   /agents <handle>|all [<conv>]                             status
 //   /agents refresh|rethread|reset <handle>|all [<conv>]
-//   /agents auto <mode> <handle>|all [<conv>]
+//   /agents mode <mode> <handle>|all [<conv>]                 (`auto` is a deprecated alias of `mode`)
 //   /agents access_level <level> <handle>|all [<conv>]        (level: see ACCESS_LEVELS)
 //
 // The object-first order (`/agents e rethread`) is GONE — operator 2026-08-29, "remove legacy
@@ -380,16 +380,25 @@ const NODE_ADDRESSABLE = /^\/(chrome|status|tabs|tab|open|close|members?|config|
 // both "restart this node" and "give this conversation a new thread". Keeping the token
 // parseable is what lets it be REFUSED BY NAME instead of falling through to be misread as a
 // handle; it is the same treatment the retired object-first order gets, for the same reason.
-export const AGENT_SUB_ARITY = { refresh: 0, rethread: 0, reset: 0, auto: 1, access_level: 1, restart: 0 };
+export const AGENT_SUB_ARITY = { refresh: 0, rethread: 0, reset: 0, mode: 1, access_level: 1, restart: 0 };
 // Parsed, named, and refused — never executed. verb -> the verb that replaced it.
 export const RETIRED_AGENT_SUBS = { restart: 'rethread' };
+// DEPRECATED-BUT-STILL-WORKING verb aliases: the old spelling keeps ACTING (unlike a RETIRED sub,
+// which is refused by name), resolved to its live verb before anything downstream reads it.
+// `auto` was this verb's name until 2026-10-08 and is ALSO an auto-mode VALUE (`/agents auto auto
+// e`) — the exact confusion the rename to `mode` removes — so it stays live for habit and for
+// configs/scripts that already type it, while `mode` is the one the surface teaches.
+export const AGENT_SUB_ALIASES = { auto: 'mode' };
+// Canonicalize an alias to its live verb; identity for a non-alias (and for null). ONE definition,
+// used by the parser below and the retired-order rebuild, so the alias can never resolve two ways.
+const canonicalAgentSub = (verb) => AGENT_SUB_ALIASES[verb] ?? verb;
 // The verbs that actually DO something, derived so a retired token can never leak into an
 // operator-facing list by being forgotten in a hand-kept literal.
 const LIVE_AGENT_SUBS = Object.keys(AGENT_SUB_ARITY).filter((v) => !Object.hasOwn(RETIRED_AGENT_SUBS, v));
 // Every level name in the operator-facing text comes from ACCESS_LEVELS (permission-levels.mjs),
 // never a literal: the tier list is spelled out in ONE place, and a new tier updates this line,
 // the refusals below and /help together or not at all. Same rule now holds for the verb list.
-export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: refresh | rethread | reset | auto <mode> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status. <conversation> is the rest of the line, spaces and all: \`/agents refresh e eGPT Rodz Lulu An\`.`;
+export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<conversation>] — verbs: refresh | rethread | reset | mode <${AUTO_MODES.join('|')}> | access_level <${ACCESS_LEVELS.join('|')}>. Bare \`/agents <handle>|all\` shows status. <conversation> is the rest of the line, spaces and all: \`/agents refresh e eGPT Rodz Lulu An\`.`;
 
 // args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
 // slug }, or { retired } for the old order. Pure; exported for tests.
@@ -400,16 +409,19 @@ export const AGENTS_USAGE = `usage: /agents [<verb>] [<value>] <handle>|all [<co
 // 2609201419`), so `refresh e eGPT Rodz Lulu An` resolved "eGPT" and answered `don't know
 // where to put "Rodz Lulu An"`. With nothing left over in any shape, that reply went too.
 export function normalizeAgentsArgs(args) {
-  const verb = args[0]?.toLowerCase();
+  // Alias → live verb BEFORE the arity lookup, and the canonical verb is what downstream reads:
+  // `auto` is resolved to `mode` here so the dispatch, confirmations and help all speak one verb.
+  const verb = canonicalAgentSub(args[0]?.toLowerCase());
   if (verb && Object.hasOwn(AGENT_SUB_ARITY, verb)) {
     const takesValue = AGENT_SUB_ARITY[verb] === 1;
     const value = takesValue ? args[1] : undefined;
     const handle = takesValue ? args[2] : args[1];
-    return { args: [handle, args[0], value], slug: args.slice(takesValue ? 3 : 2).join(' ') || null };
+    return { args: [handle, verb, value], slug: args.slice(takesValue ? 3 : 2).join(' ') || null };
   }
   // No leading verb: either the bare status form (`<handle> [<conv>]`) or the retired
-  // object-first order, which is recognisable exactly — and worth recognising, to say so.
-  const second = args[1]?.toLowerCase();
+  // object-first order, which is recognisable exactly — and worth recognising, to say so. The
+  // second token is canonicalized too, so `e auto mention` is still caught as the old order.
+  const second = canonicalAgentSub(args[1]?.toLowerCase());
   if (second && Object.hasOwn(AGENT_SUB_ARITY, second)) {
     return { retired: { handle: args[0], verb: args[1], rest: args.slice(2) } };
   }
@@ -560,7 +572,7 @@ export function createCommands({
   // profile's own console port. Harmless while the two agree — wrong the moment they do not, and
   // this is the door the Session 1 successor's announce comes in through (successor-announce.mjs).
   writeStanddownTarget,
-  loadState = null, writeState = null,   // conv-state IO — lets /agents auto persist a mode
+  loadState = null, writeState = null,   // conv-state IO — lets /agents mode persist a mode
   brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
   // ── THE BRAIN'S OWN TWO SEAMS (brainpool.mjs `scopeOf` / `evict`) ─────────────────────────
@@ -985,7 +997,7 @@ export function createCommands({
       return;
     }
 
-    // /agents[=<slug>] <handle>|all [refresh|rethread|reset|auto <mode>|access_level <level>] —
+    // /agents[=<slug>] <handle>|all [refresh|rethread|reset|mode <mode>|access_level <level>] —
     // the general per-being command surface (operator 2026-08-15, retires /e + /egpt entirely).
     // /e's whole family was hardcoded to defaultKey (the persona's own map key) — "a failure
     // in design" now that every resident being (the persona AND a sibling like wren) is
@@ -998,7 +1010,7 @@ export function createCommands({
     //   /agents refresh <handle>|all [<conv>]                     → re-feed identity + directives into the RUNNING thread
     //   /agents rethread <handle>|all [<conv>]                    → clear threadId + roll transcript.md; everything else survives
     //   /agents reset <handle>|all [<conv>]                       → archive + wipe + reseed
-    //   /agents auto <mode> <handle>|all [<conv>]                 → was /e auto <mode>
+    //   /agents mode <mode> <handle>|all [<conv>]                 → was /agents auto <mode> (alias kept), and /e auto <mode>
     //   /agents access_level <level> <handle>|all [<conv>]        → was /e access all|regular
     //
     // See § COMMAND GRAMMAR at module scope for the shape and why the target trails.
@@ -1023,11 +1035,12 @@ export function createCommands({
       // The retired object-first order gets its own line back, rebuilt into the new one —
       // naming the exact replacement, not just the rule.
       if (retired) {
-        // A verb that was ALSO renamed (restart -> rethread) is rebuilt under its LIVE name,
-        // so one reply fixes both mistakes instead of sending the operator round a second
-        // refusal for the old word.
-        const verb = RETIRED_AGENT_SUBS[retired.verb.toLowerCase()] ?? retired.verb;
-        const fixed = AGENT_SUB_ARITY[retired.verb.toLowerCase()] === 1
+        // A verb that was ALSO renamed (restart -> rethread) or ALIASED (auto -> mode) is rebuilt
+        // under its LIVE name, so one reply fixes both mistakes instead of sending the operator
+        // round a second refusal for the old word.
+        const vraw = retired.verb.toLowerCase();
+        const verb = RETIRED_AGENT_SUBS[vraw] ?? canonicalAgentSub(vraw);
+        const fixed = AGENT_SUB_ARITY[canonicalAgentSub(vraw)] === 1
           ? `/agents ${verb} ${retired.rest[0] ?? '<value>'} ${retired.handle}`
           : `/agents ${verb} ${retired.handle}`;
         await send?.(ev.chatId, `/agents: the verb comes first now — \`${fixed}\``);
@@ -1483,7 +1496,7 @@ export function createCommands({
     await send?.(ev.chatId, `/rooms: unknown verb "${first}" — create|join|leave|members|delete`);
   }
 
-  // /agents[=<slug>] <handle>|all [refresh|rethread|reset|auto <mode>|access_level <level>] — THE
+  // /agents[=<slug>] <handle>|all [refresh|rethread|reset|mode <mode>|access_level <level>] — THE
   // dispatcher (operator 2026-08-15, retires the whole /e/egpt family — see its own comment
   // at the dispatch site above for the "failure in design" this closes). Parses the already-
   // tokenized args ([handle-or-'all', subcommand?, value?] — the regex above split them),
@@ -1511,12 +1524,12 @@ export function createCommands({
       return;
     }
     if (sub && !LIVE_AGENT_SUBS.includes(sub)) {
-      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — ${LIVE_AGENT_SUBS.join('|')} (auto <mode>, access_level <${ACCESS_LEVELS.join('|')}>). Verb first: /agents <sub> <handle>.`);
+      await send?.(ev.chatId, `/agents: unknown subcommand "${subRaw}" — ${LIVE_AGENT_SUBS.join('|')} (mode <${AUTO_MODES.join('|')}>, access_level <${ACCESS_LEVELS.join('|')}>). Verb first: /agents <sub> <handle>.`);
       return;
     }
-    if (sub === 'auto') {
+    if (sub === 'mode') {
       const mode = valueRaw?.toLowerCase() || null;
-      if (!mode) { await send?.(ev.chatId, `/agents: auto needs a mode — one of: ${AUTO_MODES.join(', ')}`); return; }
+      if (!mode) { await send?.(ev.chatId, `/agents: mode needs a value — one of: ${AUTO_MODES.join(', ')}`); return; }
       if (!isAutoMode(mode)) { await send?.(ev.chatId, `/agents: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
     }
     // The level set is permission-levels.mjs's (isAccessLevel), so this validator can never
@@ -1643,7 +1656,7 @@ export function createCommands({
     if (sub === 'refresh') { await agentsRefresh(ev, surface, jid, where, handles, state, named); return; }
     if (sub === 'reset') { await agentsReset(ev, surface, jid, where, handles, state, named); return; }
     if (sub === 'rethread') { await agentsRethread(ev, surface, jid, where, handles, state, named); return; }
-    if (sub === 'auto') { await agentsAuto(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
+    if (sub === 'mode') { await agentsMode(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
     if (sub === 'access_level') { await agentsAccessLevel(ev, surface, jid, where, handles, valueRaw.toLowerCase(), state, named); return; }
     await send?.(ev.chatId, await agentsStatus(ev, surface, jid, handles, state, named));
   }
@@ -2063,7 +2076,8 @@ export function createCommands({
     }
   }
 
-  // /agents auto <mode> <handle>|all — was /e auto <mode> [<target>], generalized:
+  // /agents mode <mode> <handle>|all — was `/agents auto <mode>` (renamed 2026-10-08; `auto` is
+  // still accepted as a deprecated alias) and before that /e auto <mode> [<target>], generalized:
   // sets EACH target being's own conversation mode (modes live in conversations.yaml,
   // `agents.<being>.mode`, merged over the block's existing fields via patchBeing — siblings
   // survive). Bare (`where === 'here'`): this chat. `=<slug>`-resolved: a DIFFERENT known
@@ -2078,13 +2092,13 @@ export function createCommands({
   // per the room. So `surface, jid` here is the RIGHT address, not an oversight: a group invited
   // into room/acim gets its OWN mode, exactly as it is read. It also evicts nothing, and needs
   // to: a mode change does not alter a warm process's spawn args.
-  async function agentsAuto(ev, surface, jid, where, handles, mode, state, named = handles.join(', ')) {
+  async function agentsMode(ev, surface, jid, where, handles, mode, state, named = handles.join(', ')) {
     try {
       let next = state;
       for (const h of handles) next = patchBeing(next, surface, jid, h, { mode });
       await writeState(next);
       await send?.(ev.chatId, `✅ ${named} mode ${where} → ${mode}`);
-    } catch (e) { onLog(`/agents auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: auto failed — ${e?.message ?? e}`); }
+    } catch (e) { onLog(`/agents mode ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: mode failed — ${e?.message ?? e}`); }
   }
 
   // /agents access_level <level> <handle>|all — was /e access all|regular
@@ -4061,7 +4075,7 @@ export function createCommands({
   // RETIRED AGAIN (operator 2026-08-15): the ENTIRE /e / /egpt command family (auto/reset/
   // access, and the bare-/e usage reply that followed) is gone too — replaced by /agents,
   // which reaches any resident being in any conversation instead of only defaultKey (see the
-  // § /agents dispatch + agentsCmd/agentsReset/agentsAuto/agentsAccessLevel/agentsStatus
+  // § /agents dispatch + agentsCmd/agentsReset/agentsMode/agentsAccessLevel/agentsStatus
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 

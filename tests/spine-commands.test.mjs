@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, RETIRED_AGENT_SUBS, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, RETIRED_AGENT_SUBS, AGENT_SUB_ALIASES, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { contextSinceLastTurn } from '../src/transcript-log.mjs';
@@ -117,6 +117,37 @@ describe('commands.run', () => {
     // start with the token, so it re-parsed as a command and the two nodes traded it forever.
     expect(sent[0].text).toMatch(/`\/channels`: recognized/);
     expect(sent[0].text.startsWith('/')).toBe(false);
+  });
+
+  // THE VERB IS `mode` NOW (operator 2026-10-08): `auto` was both a verb AND an auto-mode value
+  // (`/agents auto auto e`), so the verb was renamed to `mode`. `/agents mode on e` persists mode=on
+  // and reports it — part (b)'s "make `on` usable" lock: the mode is actually set.
+  it('/agents mode on e persists mode=on into conversations.yaml (the renamed verb)', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/agents mode on e', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
+    expect(sent[0].text).toMatch(/e mode here → on/);
+  });
+
+  // `/agents mode auto e` — the renamed verb taking the `auto` mode VALUE, the exact pair the old
+  // name conflated. It must set mode=auto, not trip over the repeated word.
+  it('/agents mode auto e sets mode=auto (verb and value both named, unambiguously)', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/agents mode auto e', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('auto');
+    expect(sent[0].text).toMatch(/e mode here → auto/);
+  });
+
+  // DEPRECATED ALIAS: `auto` keeps WORKING (back-compat for habits/configs), canonicalized to `mode`.
+  // `/agents auto auto e` — alias verb + `auto` value — is the shape the rename had to keep alive.
+  it('/agents auto <mode> e STILL works as a deprecated alias of `mode`', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/agents auto auto e', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('auto');
+    expect(sent[0].text).toMatch(/e mode here → auto/);
   });
 
   it('/agents auto <mode> e persists the conversation mode into conversations.yaml', async () => {
@@ -3011,9 +3042,23 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   });
 
   it('a value-taking verb puts the VALUE before the target, conversation last', () => {
-    expect(parse('auto mention p spoiler')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: 'spoiler' });
-    expect(parse('auto mention p')).toMatchObject({ args: ['p', 'auto', 'mention'], slug: null });
+    expect(parse('mode mention p spoiler')).toMatchObject({ args: ['p', 'mode', 'mention'], slug: 'spoiler' });
+    expect(parse('mode mention p')).toMatchObject({ args: ['p', 'mode', 'mention'], slug: null });
     expect(parse('access_level all p')).toMatchObject({ args: ['p', 'access_level', 'all'], slug: null });
+  });
+
+  // `auto` was this verb's name until 2026-10-08 (and is ALSO an auto-mode VALUE, the confusion the
+  // rename removes). It stays a DEPRECATED-BUT-WORKING alias: the parser canonicalizes it to `mode`
+  // before anything downstream reads it, so the whole dispatch speaks one verb. `/agents auto auto
+  // e` — alias verb + the `auto` mode value — is exactly the shape that must keep working.
+  it('the deprecated `auto` verb canonicalizes to `mode` at parse (value + target placed the same)', () => {
+    expect(AGENT_SUB_ALIASES.auto).toBe('mode');
+    expect(parse('auto mention p spoiler')).toMatchObject({ args: ['p', 'mode', 'mention'], slug: 'spoiler' });
+    expect(parse('auto mention p')).toMatchObject({ args: ['p', 'mode', 'mention'], slug: null });
+    expect(parse('auto auto e')).toMatchObject({ args: ['e', 'mode', 'auto'], slug: null });
+    // the surface teaches `mode <…>`, never the old `auto <mode>` verb spelling
+    expect(AGENTS_USAGE).toMatch(/mode <on\|auto\|/);
+    expect(AGENTS_USAGE).not.toMatch(/ auto <mode>/);
   });
 
   it('`all` reads as the target, in either arity, and is never mistaken for a value', () => {
@@ -3033,7 +3078,7 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   it('everything after the handle is ONE conversation term, single-spaced, in every verb shape', () => {
     expect(parse('refresh e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'refresh', undefined], slug: 'eGPT Rodz Lulu An' });
     expect(parse('rethread all eGPT Rodz Lulu An')).toMatchObject({ args: ['all', 'rethread', undefined], slug: 'eGPT Rodz Lulu An' });
-    expect(parse('auto mention e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'auto', 'mention'], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('mode mention e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'mode', 'mention'], slug: 'eGPT Rodz Lulu An' });
     expect(parse('access_level all e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'access_level', 'all'], slug: 'eGPT Rodz Lulu An' });
     expect(parse('e eGPT   Rodz Lulu An')).toMatchObject({ args: ['e'], slug: 'eGPT Rodz Lulu An' });
   });

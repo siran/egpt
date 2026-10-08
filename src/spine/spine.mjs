@@ -1041,6 +1041,28 @@ export function createSpine({
       else if (!beyondGuard) await guardCountNonHuman(ev, channel);
     }
 
+    // OUR OWN ECHO NEVER TRIGGERS A TURN — IN ANY MODE, 'on'/'auto' INCLUDED (operator 2026-10-08,
+    // the PALMA loop's REPLY face). THIS node's own output re-entering — the ⏳ placeholder posted
+    // eagerly as the streaming target (sender.mjs), or a finished reply — carries this node's own
+    // frame (so fromThisNode), or re-enters as one of our own id'd sends (wasSentByUs). stop-guard
+    // turnKind already calls that 'echo' and guardCountNonHuman already refuses to COUNT it — but
+    // counting was the ONLY thing that ever looked at it. The reply gate never did, and 'on'/'auto'
+    // answer EVERY message (replyAllowed → true, no @mention needed), so a being answered its own
+    // placeholder, which posted another, unstoppably. mention/mention-direct/accum escaped only
+    // because a placeholder @-mentions nobody — nothing was stopping the echo, their gate simply
+    // never fired on it.
+    //
+    // The invariant is mode-INDEPENDENT (a being must never reply to its own message), so it is
+    // enforced at the ONE dispatch chokepoint below: the primary turn, fanOutExtras' other agents,
+    // the mesh forward, the auto dwell and roomRelay.fanOut all hang off this single return, so one
+    // guard covers every wake this message could produce. A no-op ACTION, not null: the frame IS
+    // received — it stays on the record (handleFast wrote it above) and the being reads it as
+    // back-context like any other line — it simply prompts nobody. 'echo' is OUR OWN alone
+    // (wasSentByUs / fromThisNode); ANOTHER node's being is turnKind 'being' and STILL wakes,
+    // because cross-node and same-node inter-agent addressing is wanted — which is exactly what the
+    // 'A BEING DOES NOT WAKE…' note just below is about (that note is the COUNTER, not this gate).
+    if (kindOf(ev) === 'echo') return () => { note(`echo: ${guardChannel(ev)} — this node's own output re-entered; recorded, prompts nobody`); };
+
     // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31, on a
     // room message fanned into a group that the other node then sees). The node signature already
     // told the guard this was not a person — that only bounded the COUNTING. It did not stop a

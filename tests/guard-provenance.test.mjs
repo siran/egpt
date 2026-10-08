@@ -378,3 +378,111 @@ describe('the node signature survives the REAL identity into the guard', () => {
     }
   });
 });
+
+// === OUR OWN ECHO NEVER TRIGGERS A TURN — IN ANY MODE ('on'/'auto' INCLUDED) ================
+// (operator 2026-10-08, the PALMA loop's REPLY face.) A being set to 'on'/'auto' entered an
+// endless reply loop: it was answering its OWN "⏳ Thinking…" placeholder, posted eagerly as the
+// streaming target (sender.mjs) through the mouth account and re-entering on the ear carrying THIS
+// node's own frame. turnKind already classified it 'echo' and the loop COUNTER already refused to
+// count it — but counting was the only thing that ever looked. The reply gate never did, and
+// 'on'/'auto' answer every message (replyAllowed → true, no @mention needed), so the echo triggered
+// a turn that posted another placeholder, unstoppably. mention/mention-direct/accum escaped only
+// because a placeholder @-mentions nobody. The fix enforces the mode-independent invariant at the
+// ONE dispatch chokepoint: an own-echo is received + recorded but prompts NOBODY; a genuine inbound
+// still replies. 'kg' is THIS node here (fromThisNode), 'do' remains a PEER (turnKind 'being').
+const SIG_KG = encodeNodeSignature('kg');
+// A controllable fake timer (the 'auto' dwell is armed through the spine's setTimeout seam —
+// borrowed from tests/spine-auto-dwell.test.mjs). An 'on' chat arms none; an 'auto' chat arms the
+// pre-turn dwell, and flushing it fires the turn. The whole point of the echo cases: an own-echo
+// is suppressed in classify, BEFORE the dwell branch, so it arms NO timer and fires NO turn.
+function fakeTimers() {
+  let seq = 0;
+  const pending = new Map();
+  return {
+    setTimeout: (fn, delay = 0) => { const id = ++seq; pending.set(id, { fn, delay }); return { __id: id, unref() {} }; },
+    clearTimeout: (t) => { if (t && t.__id != null) pending.delete(t.__id); },
+    size: () => pending.size,
+    flush() { const es = [...pending.values()]; pending.clear(); for (const { fn } of es) fn(); },
+  };
+}
+const yieldMacro = () => new Promise((r) => setTimeout(r, 0));
+async function settle(timers, rounds = 20) {
+  for (let i = 0; i < rounds; i++) { await yieldMacro(); if (timers.size() === 0) break; timers.flush(); }
+  await yieldMacro();
+}
+function buildReplySpine({ mode = 'on', fromThisNode = () => false, wasSentByUs = () => false } = {}) {
+  const bridge = { onMessage() {}, send() {}, stop() {}, wasSentByUs };
+  const brain = { calls: [], async turn(b, ev) { this.calls.push({ b, ev }); return { text: 'x' }; } };
+  const identity = createIdentity({ now: () => 1000 });     // the REAL one: the frame has to survive it
+  const router = { resolve: () => 'e' };
+  // mode 'on'/'auto' with mayReply:true — the gate that answers EVERY message, which is the whole
+  // point: it must still answer a genuine inbound, and must NOT answer our own echo.
+  const gating = {
+    async decide() { return { mode, receives: true, mayReply: true, sendToEgpt: 'mode' }; },
+    surfaces: () => true,
+  };
+  const transcript = { logged: [], async log(ev) { this.logged.push(ev); } };
+  const heartbeats = { runDue() {} };
+  const sender = { opened: 0, open() { this.opened++; return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
+  const mesh = { isEnvelope: (ev) => parseMesh(ev?.body ?? '') != null, async handle() {} };
+  const timers = fakeTimers();
+  const spine = createSpine({
+    bridge, brain, identity, router, gating, sender, transcript, heartbeats,
+    mesh, fromThisNode, isSelfChat: () => false, clock: { now: () => 1000 }, defaultBeing: 'e',
+    rng: () => 0.5, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+  });
+  return { spine, brain, transcript, sender, timers };
+}
+
+describe("an 'on'/'auto' being never replies to its own ⏳ placeholder / echo (the PALMA loop)", () => {
+  // THIS node is 'kg', so a frame that decodes to 'kg' is OUR OWN echo (fromThisNode).
+  const fromThisNode = (ev) => String(ev?.fromNode ?? '').toLowerCase() === 'kg';
+
+  it("REPRODUCE: 'on' mode answers a genuine inbound but NOT its own returning ⏳ placeholder", async () => {
+    const { spine, brain, transcript, sender } = buildReplySpine({ mode: 'on', fromThisNode });
+    // a real person speaks → a turn runs (the gate works; 'on' must stay usable, part (b))
+    await spine.handleInbound({ body: 'hola', from: realFrom({ msgKey: 'h1', isSender: false, senderName: 'Bob' }) });
+    expect(brain.calls).toHaveLength(1);
+    expect(sender.opened).toBe(1);
+    // our OWN "⏳ Thinking…" placeholder comes back carrying this node's frame → NO new turn,
+    // NO new placeholder. (On pre-fix code this fires a turn — the loop.) isSender:false is the
+    // FAITHFUL mouth-account case the operator hit: posted via the secondary account, it does NOT
+    // read as our own id'd send (wasSentByUs false), so ONLY the node frame (fromThisNode) catches
+    // it — the exact sub-question of the diagnosis.
+    await spine.handleInbound({ body: `⏳ Thinking…${SIG_KG}`, from: realFrom({ msgKey: 'kg-echo-1', isSender: false }) });
+    expect(brain.calls).toHaveLength(1);                     // unchanged — the echo prompted nobody
+    expect(sender.opened).toBe(1);
+    // …but it WAS received and recorded (the frame rendered to a legible <kg>, no invisible byte)
+    expect(transcript.logged.at(-1).body).toBe('⏳ Thinking…<kg>');
+  });
+
+  it("'auto' mode: a genuine inbound dwells→replies; its own echo arms no dwell and prompts nobody", async () => {
+    const { spine, brain, timers } = buildReplySpine({ mode: 'auto', fromThisNode });
+    // a real person → one dwell armed, no turn yet; flushing the dwell fires the turn
+    await spine.handleInbound({ body: 'oye', from: realFrom({ msgKey: 'h2', isSender: false, senderName: 'Bob' }) });
+    expect(brain.calls).toHaveLength(0);
+    expect(timers.size()).toBe(1);
+    await settle(timers);
+    expect(brain.calls).toHaveLength(1);                     // 'auto' stays usable
+    // the echo (mouth-account shape, isSender:false — caught ONLY by fromThisNode): suppressed in
+    // classify, BEFORE the dwell branch, so it arms NO dwell and no turn ever fires for it.
+    await spine.handleInbound({ body: `⏳ Thinking…${SIG_KG}`, from: realFrom({ msgKey: 'kg-echo-2', isSender: false }) });
+    expect(timers.size()).toBe(0);                           // no dwell armed by the echo
+    await settle(timers);
+    expect(brain.calls).toHaveLength(1);                     // still 1 — the echo prompted nobody
+  });
+
+  it('an own send that re-enters by id (wasSentByUs, same-account belt) is also suppressed', async () => {
+    const wasSentByUs = (chatId, msgId) => msgId === 'ours-1';
+    const { spine, brain } = buildReplySpine({ mode: 'on', wasSentByUs });
+    await spine.handleInbound({ body: 'our own reply bouncing back', from: realFrom({ msgKey: 'ours-1', isSender: true }) });
+    expect(brain.calls).toHaveLength(0);                     // wasSentByUs → turnKind 'echo' → no turn
+  });
+
+  it("a PEER node's post STILL wakes (turnKind 'being', not echo) — cross-node addressing is wanted", async () => {
+    // fromThisNode only matches 'kg'; 'do' is another node, so its frame is 'being', and 'on' replies.
+    const { spine, brain } = buildReplySpine({ mode: 'on', fromThisNode });
+    await spine.handleInbound({ body: `algo${SIG_DO}`, from: realFrom({ msgKey: 'peer-x' }) });
+    expect(brain.calls).toHaveLength(1);
+  });
+});

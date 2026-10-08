@@ -868,7 +868,12 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
         streams.push(h); return h;
       },
       react: () => true,
-      wasSentByUs: () => true,
+      // id-EXACT, as the real bridge is (beeper.mjs) — NOT a blanket true. The inbound trigger
+      // (MSG, `m1`) is an EXTERNAL message, so it is NOT ours; anything else (a reposted limb,
+      // an /edit target) is. A blanket `() => true` used to be inert here (no guard wired), but
+      // the spine now refuses to reply to its OWN output (turnKind 'echo'), so a trigger wrongly
+      // flagged as ours would be suppressed and never answered.
+      wasSentByUs: (_chat, id) => id !== MSG.msgId,
       stop() {},
     };
   }
