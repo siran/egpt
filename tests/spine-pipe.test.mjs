@@ -576,6 +576,56 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     expect(bridge.sent).toHaveLength(0);                    // no text posted either
     expect(sender.finishCalls[0].opts.surface).toBe(false); // resolved via the withheld path (→ '✓' in the real sender)
   });
+
+  // A DELIBERATE '…' is NEVER SPOKEN, in ANY mode (operator 2026-10-08) — even in mention/accum,
+  // where gating.surfaces LETS it through as TEXT. mention mode + REAL gating + a voice turn: the
+  // '…' IS delivered as text (deliverable stays true), but synthesis is NOT invoked. This REPRODUCES
+  // on pre-fix code (which spoke it: deliverable && ev.isVoice), and locks the voice-only suppression
+  // that leaves text deliverability untouched — distinct from the on/auto case above (text hidden too).
+  it("voice-in whose model reply is '…' (MENTION mode, REAL gating): text '…' delivers, but it is NEVER synthesized", async () => {
+    let synthCalls = 0;
+    const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
+    const bridge = fakeVoiceBridge();
+    const brain = { async turn() { return { text: '…', sessionId: 's1' }; } };   // the model CHOSE silence
+    const sender = fakeSenderRecording(bridge);
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter,
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null, defaultKey: 'e' }),
+      sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true, mention: { atEAnywhere: true } });   // the mention gate opens → '…' surfaces as text
+
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '…', opts: {} }]);   // TEXT still delivered (mention/accum unchanged)
+    expect(synthCalls).toBe(0);                                                 // …but the deliberate silence is never spoken
+    expect(bridge.media).toHaveLength(0);                                       // no voice note attached
+  });
+
+  // REGRESSION LOCK (matched pair with the above): a NORMAL reply on the SAME mention-mode voice turn
+  // is STILL synthesized — the suppression is silence-specific, not a mode-wide voice kill.
+  it('voice-in with a NORMAL reply (MENTION mode, REAL gating): text delivers AND is synthesized', async () => {
+    let synthCalls = 0;
+    const synthesize = async () => { synthCalls++; return Buffer.from('AUDIO'); };
+    const bridge = fakeVoiceBridge();
+    const brain = { async turn(being, ev) { return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
+    const sender = fakeSenderRecording(bridge);
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter,
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null, defaultKey: 'e' }),
+      sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, isVoice: true, mention: { atEAnywhere: true } });
+
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola', opts: {} }]);
+    expect(synthCalls).toBe(1);
+    expect(bridge.media).toHaveLength(1);
+    expect(bridge.media[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: 'text-conf-1' } });
+  });
 });
 
 // SYMMETRIC NODES (operator 2026-07-09): the sibling-output guard + standby takeover were

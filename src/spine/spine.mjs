@@ -28,7 +28,7 @@ import { makeOutbound } from './sender.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, turnKind, parseStopWord } from '../stop-guard.mjs';
-import { mentionHits, withoutAddress } from '../auto-mode.mjs';
+import { mentionHits, withoutAddress, isDeliberateSilence } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 import { cleanForSpeech } from '../speech-clean.mjs';
 
@@ -1645,7 +1645,10 @@ export function createSpine({
       // Every failure mode (no confirmedId, synthesis declines, the send itself fails)
       // degrades to "text only" — the text already went out above either way.
       const evOverride = deliverable && mentionHits(ev.body, ['ev'], { addressWithoutAt: false }).length > 0;
-      const wantsVoice = deliverable && (evOverride || ev.isVoice);
+      // A DELIBERATE '…' is NEVER SPOKEN, in ANY mode (operator 2026-10-08) — even where it still
+      // surfaces as TEXT (mention/accum). Gates ONLY voice-out: `deliverable` above is untouched, so
+      // the text still delivers; isDeliberateSilence is the SAME ellipsis helper the sender resolves on.
+      const wantsVoice = deliverable && !isDeliberateSilence(proseText) && (evOverride || ev.isVoice);
       if (wantsVoice && synthesize && voice) {
         const textId = await out.confirmedId;
         if (!textId) {
