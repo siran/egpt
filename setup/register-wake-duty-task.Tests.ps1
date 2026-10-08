@@ -72,6 +72,47 @@ Describe 'Get-WakeDutyTaskDefinition (the exact shape the registrar sends to Win
   }
 }
 
+Describe 'Get-WakeUpConfig (config-driven cadence + enable flag, parsed from text, no profile)' {
+  It 'frequency_minutes: 15 yields a 15-minute definition (fed into Get-WakeDutyTaskDefinition)' {
+    $cfg = @('node_name: kg', 'wake_up:', '  enabled: true', '  frequency_minutes: 15', 'user_name: "x"') -join "`n"
+    $w = Get-WakeUpConfig -Text $cfg
+    $w.FrequencyMinutes | Should Be 15
+    $w.Enabled | Should Be $true
+    $d = Get-WakeDutyTaskDefinition -VbsPath $script:FakeVbs -RepeatMinutes $w.FrequencyMinutes
+    $d.Trigger.Repetition.Interval | Should Be 'PT15M'
+  }
+
+  It 'enabled: false is the flag the registrar removes on (routes to removal)' {
+    $cfg = @('wake_up:', '  enabled: false', '  frequency_minutes: 30') -join "`n"
+    (Get-WakeUpConfig -Text $cfg).Enabled | Should Be $false
+  }
+
+  It 'an ABSENT wake_up block falls back to 30 minutes, enabled' {
+    $cfg = @('node_name: kg', 'user_name: "x"') -join "`n"
+    $w = Get-WakeUpConfig -Text $cfg
+    $w.Enabled | Should Be $true
+    $w.FrequencyMinutes | Should Be 30
+  }
+
+  It 'empty config text falls back to the defaults (30, enabled)' {
+    $w = Get-WakeUpConfig -Text ''
+    $w.Enabled | Should Be $true
+    $w.FrequencyMinutes | Should Be 30
+  }
+
+  It 'strips the skeleton inline comment on frequency_minutes' {
+    $cfg = @('wake_up:', '  enabled: true', '  frequency_minutes: 45   # egpt wakes up to check around') -join "`n"
+    (Get-WakeUpConfig -Text $cfg).FrequencyMinutes | Should Be 45
+  }
+
+  It 'the block ends at the next column-0 key - a later top-level enabled: does not leak in' {
+    $cfg = @('wake_up:', '  frequency_minutes: 20', 'some_other_block:', '  enabled: false') -join "`n"
+    $w = Get-WakeUpConfig -Text $cfg
+    $w.FrequencyMinutes | Should Be 20
+    $w.Enabled | Should Be $true   # the false below belongs to some_other_block, not wake_up
+  }
+}
+
 Describe 'the shape of the shipped scripts (the rules they are meant to keep)' {
   $script:RegistrarSrc = Get-Content -LiteralPath $script:RegistrarPath -Raw
   $script:VbsSrc       = Get-Content -LiteralPath (Join-Path $script:SetupDir 'egpt-wake-duty.vbs') -Raw
@@ -88,6 +129,16 @@ Describe 'the shape of the shipped scripts (the rules they are meant to keep)' {
   It 'registers idempotently with -Force and -ErrorAction Stop' {
     $script:RegistrarSrc | Should Match 'Register-ScheduledTask'
     $script:RegistrarSrc | Should Match '-Force -ErrorAction Stop'
+  }
+
+  It 'reads wake_up from the live profile config and routes removal when disabled' {
+    $script:RegistrarSrc | Should Match 'Get-WakeUpConfig'
+    $script:RegistrarSrc | Should Match ([regex]::Escape('.egpt\config\config.yaml'))
+    $script:RegistrarSrc | Should Match '\$removeBecauseDisabled'
+  }
+
+  It 'keeps -RepeatMinutes as an explicit override of the configured frequency' {
+    $script:RegistrarSrc | Should Match ([regex]::Escape("PSBoundParameters.ContainsKey('RepeatMinutes')"))
   }
 
   It 'does NOT pass the battery switches on the settings line, so AC-only holds by default' {

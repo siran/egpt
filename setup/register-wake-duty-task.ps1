@@ -1,5 +1,8 @@
 # register-wake-duty-task.ps1 - register / inspect / remove the SCHEDULED TASK that fires the
-# wake-duty cycle (setup\egpt-wake-duty.vbs -> egpt-wake-duty.ps1) every 30 min.
+# wake-duty cycle (setup\egpt-wake-duty.vbs -> egpt-wake-duty.ps1). CONFIG-DRIVEN: whether the
+# duty runs at all, and how often, come from the live profile's config.yaml `wake_up:` block
+# (enabled / frequency_minutes; defaults true / 30 min). enabled:false removes the task, and
+# -RepeatMinutes overrides the configured frequency.
 #
 #   .\setup\register-wake-duty-task.ps1            # register (idempotent)
 #   .\setup\register-wake-duty-task.ps1 -Status    # read-only: is it registered, and to what
@@ -77,6 +80,37 @@ function Get-WakeDutyTaskDefinition {
   }
 }
 
+# --- wake_up: config reader, a PURE function so the Tests can feed it text with no profile. ---
+# Targeted FLAT-block parse of just this node's wake_up: enabled / frequency_minutes scalars.
+# PowerShell 5.1 has no YAML parser; the repo's node-helper pattern (setup\global-read-paths.mjs)
+# exists to keep a LIST in agreement with the SPINE's own reading - but nothing in the spine reads
+# wake_up (this registrar is its ONLY reader), so a two-scalar parse here is the whole need.
+# ASSUMES the block is simple and flat, the shape the skeleton ships: a column-0 'wake_up:' then
+# indented 'enabled:' / 'frequency_minutes:' lines. Absent block or empty text => the documented
+# defaults: enabled = true, frequency_minutes = 30.
+function Get-WakeUpConfig {
+  param([string] $Text = '')
+  $enabled = $true
+  $freq    = 30
+  $inBlock = $false
+  foreach ($line in ($Text -split "`r?`n")) {
+    if (-not $inBlock) {
+      if ($line -match '^wake_up:\s*(#.*)?$') { $inBlock = $true }
+      continue
+    }
+    if ($line -match '^\S') { break }   # a column-0 line ends the block (next top-level key / comment)
+    if ($line -match '^\s+enabled:\s*(.+?)\s*(#.*)?$') {
+      $v = $Matches[1].Trim().Trim('"').Trim("'").ToLower()
+      if ($v -eq 'false') { $enabled = $false } elseif ($v -eq 'true') { $enabled = $true }
+    } elseif ($line -match '^\s+frequency_minutes:\s*(.+?)\s*(#.*)?$') {
+      $v = $Matches[1].Trim().Trim('"').Trim("'")
+      $n = 0
+      if ([int]::TryParse($v, [ref]$n) -and $n -gt 0) { $freq = $n }
+    }
+  }
+  return [PSCustomObject]@{ Enabled = $enabled; FrequencyMinutes = $freq }
+}
+
 if ($LoadFunctionsOnly) { return }
 
 # --- resolve the vbs beside THIS registrar, so a deployed copy points at the deployed vbs ----
@@ -112,8 +146,20 @@ function Show-Status {
 # --- -Status: read only --------------------------------------------------------------------
 if ($Status) { Show-Status; return }
 
-# --- -Remove: take away exactly what was added ---------------------------------------------
-if ($Remove) {
+# --- read this node's wake_up: block from the LIVE profile config (READ-ONLY) --------------
+# enabled gates register-vs-remove; frequency_minutes is the repeat interval UNLESS -RepeatMinutes
+# was passed explicitly. Absent file or block => defaults (enabled=true, 30 min).
+$ConfigPath = Join-Path $env:USERPROFILE '.egpt\config\config.yaml'
+$cfgText    = if (Test-Path -LiteralPath $ConfigPath) { [string](Get-Content -LiteralPath $ConfigPath -Raw) } else { '' }
+$wake       = Get-WakeUpConfig -Text $cfgText
+if (-not $PSBoundParameters.ContainsKey('RepeatMinutes')) { $RepeatMinutes = [int]$wake.FrequencyMinutes }
+$removeBecauseDisabled = -not $wake.Enabled
+
+# --- -Remove (explicit), or wake_up.enabled:false in config -> take the task away -----------
+if ($Remove -or $removeBecauseDisabled) {
+  if ($removeBecauseDisabled -and -not $Remove) {
+    Write-Host "wake_up.enabled is false in $ConfigPath - this node declines the wake duty; removing." -ForegroundColor Yellow
+  }
   $t = Get-Task
   if (-not $t) {
     Write-Host "'$TaskName' is not registered - nothing to remove."

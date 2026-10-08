@@ -72,6 +72,16 @@ node_name: kg                     # REQUIRED - this node's name on the network, 
 # node_alias: [kg2, kg3]            # extra identities this ONE process also answers to
 user_name: "John"                  # the human here; shown as <user_name>@<surface>
 
+# --- Periodic wake duty -------------------------------------------------------
+# A scheduled task (setup/register-wake-duty-task.ps1) wakes this machine from
+# sleep on a fixed cadence to run ONE eGPT work cycle - revive the daemon if it
+# died, let the resumed spine drain backlogs and run due turns - then releases so
+# the machine drifts back to sleep. The registrar READS this block: enabled:false
+# removes the task, frequency_minutes is its repeat interval.
+wake_up:
+  enabled: true
+  frequency_minutes: 30   # egpt wakes up from sleep to check around: heartbeats, pending interactions
+
 # peer_nodes - node identities sharing THIS Beeper account (include self).
 # Nodes on DIFFERENT accounts appear as distinct room members and need no listing;
 # co-account nodes collapse to one member, so list them here to complete the HRW

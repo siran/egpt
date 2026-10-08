@@ -158,6 +158,28 @@ export const CONFIG_SCHEMA = {
     collapses the LOCAL answering, not a real-room self-hop.
   `,
 
+  wake_up: `
+    This node's PERIODIC WAKE DUTY (operator 2026-10-08) — a scheduled task that
+    wakes the machine from sleep on a fixed cadence to run ONE eGPT work cycle
+    (revive the daemon if it died, let the resumed spine drain backlogs and run
+    due turns), then releases so the machine sleeps again.
+
+    READ ONLY BY setup/register-wake-duty-task.ps1 — no spine path reads this
+    block; the duty itself is setup/egpt-wake-duty.ps1. It is registered here so
+    the skeleton can ship it and /config does not reject it as unknown.
+
+    KEYS:
+      enabled
+        DEFAULT: true
+        false => the registrar REMOVES the task (same as its -Remove), so a node
+        can decline the wake duty by config without deleting the block.
+      frequency_minutes
+        DEFAULT: 30
+        The task's repeat interval, in minutes — how often the machine wakes to
+        check around (heartbeats, pending interactions). The registrar's
+        -RepeatMinutes flag, when passed, OVERRIDES this value.
+  `,
+
   heartbeat: `
     Supervisor liveness config.
 
