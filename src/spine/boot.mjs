@@ -2868,15 +2868,20 @@ export async function boot({
   // roster, and a name has none: left a name, every notice would fall back to the ear. Logged
   // first, like the alert above: the log does not need a network. Unset => the log is all there
   // is (fail-closed, like the advice channel).
-  const adminChannelDeclared = () => { const c = getConfig()?.admin_channel; const s = c == null ? '' : String(c).trim(); return s || null; };
+  // declaredChannel — the trimmed NAME a config key declares (empty/unset => null). THE ONE reader
+  // every config-named channel shares: admin_channel (compaction + silent heartbeat) and log_to_group
+  // (the per-command audit), read identically so neither grows its own copy.
+  const declaredChannel = (key) => { const c = getConfig()?.[key]; const s = c == null ? '' : String(c).trim(); return s || null; };
+  const adminChannelDeclared = () => declaredChannel('admin_channel');
   // eGPT Admin (config.yaml `admin_channel`), resolved to a concrete chat id — the ONE resolveChatId
   // call the compaction notice AND a `silent:` heartbeat share, never a second copy (the operator's
   // 2026-09-30 ruling routes a silent beat's whole output here). A configured NAME becomes its room by
   // the bridge's own resolveChatId, the resolver the send already runs. Returns { chatId } on success,
   // else { reason } — 'unset' | 'no-chat' | 'unresolvable' (with `to`/`error`) — so each caller FAILS
-  // CLOSED in its own words: the notice stays in the log, a silent beat posts nothing.
-  const resolveAdminChat = async () => {
-    const to = adminChannelDeclared();
+  // CLOSED in its own words: the notice stays in the log, a silent beat posts nothing. GENERALIZED
+  // 2026-10-08 to resolve ANY channel NAME (resolveConfiguredChat), so the per-command audit resolves
+  // log_to_group through the EXACT same lookup; resolveAdminChat is just that call bound to admin_channel.
+  const resolveConfiguredChat = async (to) => {
     if (!to) return { reason: 'unset' };
     const on = outbound(null, to).bridge;
     if (typeof on?.resolveChatId !== 'function') return { chatId: to, to };
@@ -2886,14 +2891,27 @@ export async function boot({
       return { chatId, to };
     } catch (e) { return { reason: 'unresolvable', to, error: e?.message ?? String(e) }; }
   };
-  const noticeToAdmin = async (text, being) => {
-    log.line?.(`[compact] ${text}`);
-    const r = await resolveAdminChat();
-    if (r.reason === 'unset') { log.line?.('[compact] admin_channel is not set in config.yaml - the notice stays in this log'); return false; }
-    if (r.reason === 'no-chat') { log.line?.(`[compact] admin_channel ${JSON.stringify(r.to)} names no chat on this node - notice not sent`); return false; }
-    if (r.reason === 'unresolvable') { log.line?.(`[compact] admin_channel ${JSON.stringify(r.to)} could not be resolved - notice not sent: ${r.error}`); return false; }
-    return sayOnce({ being, chatId: r.chatId, text, what: 'compaction' });
+  const resolveAdminChat = () => resolveConfiguredChat(adminChannelDeclared());
+  // noticeToChannel — resolve the channel a config KEY names and say `text` there through sayOnce, the
+  // ONE placement, FAIL CLOSED (unset/no-chat/unresolvable → logs why under [tag], posts nothing). The
+  // compaction notice (noticeToAdmin) and the per-command audit (log_to_group) are the two callers;
+  // neither copies the resolver or the poster. The log text names the KEY, so each caller's fail-closed
+  // line reads about its own config key.
+  const noticeToChannel = async ({ configKey, text, being = null, what, tag = 'notice' }) => {
+    log.line?.(`[${tag}] ${text}`);
+    const r = await resolveConfiguredChat(declaredChannel(configKey));
+    if (r.reason === 'unset') { log.line?.(`[${tag}] ${configKey} is not set in config.yaml - the notice stays in this log`); return false; }
+    if (r.reason === 'no-chat') { log.line?.(`[${tag}] ${configKey} ${JSON.stringify(r.to)} names no chat on this node - notice not sent`); return false; }
+    if (r.reason === 'unresolvable') { log.line?.(`[${tag}] ${configKey} ${JSON.stringify(r.to)} could not be resolved - notice not sent: ${r.error}`); return false; }
+    return sayOnce({ being, chatId: r.chatId, text, what });
   };
+  const noticeToAdmin = (text, being) => noticeToChannel({ configKey: 'admin_channel', text, being, what: 'compaction', tag: 'compact' });
+  // THE PER-COMMAND AUDIT SINK (operator 2026-10-08): config.log_to_group, resolved + posted by the
+  // SAME noticeToChannel as the compaction notice — never a second subsystem. Unset/empty → OFF,
+  // silently (no post, no log line). Fail-closed and non-throwing, so a command's own reply is never
+  // affected by whether its audit landed. Wired into createCommands below; exposed on the app for
+  // assertability, exactly like noticeToAdmin.
+  const logToGroup = async (text) => (declaredChannel('log_to_group') ? noticeToChannel({ configKey: 'log_to_group', text, what: 'audit', tag: 'audit' }) : false);
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
@@ -3052,6 +3070,7 @@ export async function boot({
       // (the SAME map; single-account nodes collapse it to the ear bridge), scoped by accountID at the call.
       resolvePrimaryChatIdByTitle: (title, opts) => postBridgeFor('primary').resolveChatIdByTitle(title, opts),
     },
+    logToGroup,                                          // per-command audit → config.log_to_group (fail-closed, see above); the dispatch chokepoint emits ONE metadata-only line per command
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);
@@ -3447,6 +3466,7 @@ export async function boot({
     spine, bridge, shellPort, pool, cfg, peerNodes,      // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
     noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer
+    logToGroup,                                          // the per-command audit sink (config.log_to_group) — exposed for the same reason: the generalized resolve+post is assertable without running the whole dispatch
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
 
     stop: () => {

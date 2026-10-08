@@ -721,6 +721,11 @@ export function createCommands({
     resolveUserIdByPhone: async () => null,   // (phoneDigits, { accountID }) -> "@whatsapp_lid-…:beeper.local" | null
     resolveSecondaryChatIdByTitle: async () => null,   // (title, { accountID }) -> the SECONDARY account's own room id for the group titled `title` | null
   },
+  // Per-command audit sink (operator 2026-10-08): (text) => Promise<bool>, posts ONE metadata-only line
+  // to config.log_to_group through boot's fail-closed resolver+poster (noticeToChannel). Safe no-op
+  // default so a standalone/test createCommands audits nowhere; a failed/absent post never affects a
+  // command (the chokepoint swallows it).
+  logToGroup = async () => false,
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -949,7 +954,34 @@ export function createCommands({
     return lines.join('\n\n');
   }
 
+  // ── PER-COMMAND AUDIT → log_to_group (operator 2026-10-08) ─────────────────────────────────────
+  // run() is THE dispatch chokepoint, so the audit is emitted here ONCE for every slash command,
+  // never sprinkled into the handlers. The line is METADATA ONLY — "/<cmd> in <chat> by <sender> →
+  // <outcome?>" — and NEVER carries any part of the command's reply body, so a /config dump, a /recap
+  // listing or a contact list can never leak into the log group. <outcome> is appended only where a
+  // silent/side-effecting handler returns one (today: /end — "archived <chat>" or the no-op reason).
+  // Posting is fail-closed and swallowed here, so whether the audit lands never changes a command's
+  // own behavior or reply. logToGroup is boot's wired sink (unset log_to_group → OFF, silently).
+  const NO_AUDIT = Symbol('no-audit');   // runDispatch returns this when nothing auditable ran on THIS node
+  const auditCommand = async (ev, cmd, outcome = null) => {
+    const chat = ev?.chatName || ev?.chatId || '?';
+    const who = ev?.senderName || ev?.senderId || 'someone';
+    try { await logToGroup(`/${cmd} in ${chat} by ${who}${outcome ? ` → ${outcome}` : ''}`); }
+    catch { /* fail-closed: a broken audit never breaks the command */ }
+  };
+  // THE WRAPPER around the dispatch: run the command, then emit the ONE audit line. A '/'-command the
+  // dispatch handled on THIS node is audited (outcome inline when the handler returned one); NO_AUDIT
+  // (a command addressed to ANOTHER node — it audits there) and a non-'/'-message (the rs radio quick
+  // reply) are not. The token is read from ev.body so an `=<node>` binding (/tab=do) still audits as /tab.
   async function run(ev) {
+    const outcome = await runDispatch(ev);
+    if (outcome === NO_AUDIT) return;
+    const m = /^\/(\w+)/.exec(String(ev?.body ?? '').trim());
+    if (!m) return;
+    await auditCommand(ev, m[1], typeof outcome === 'string' ? outcome : null);
+  }
+
+  async function runDispatch(ev) {
     let line = String(ev.body ?? '').trim();
 
     // rs — THE RADIO QUICK REPLY: the one non-slash message isCommand ever routes here for
@@ -971,7 +1003,7 @@ export function createCommands({
     // same deliberate silence, so exactly one node answers on a shared account. Bare forms
     // and everything outside the set fall through untouched.
     const addressed = nodeAddressed(line);
-    if (addressed && !ownNodeNamesOf(cfg()).has(addressed.node)) return;
+    if (addressed && !ownNodeNamesOf(cfg()).has(addressed.node)) return NO_AUDIT;   // another node owns it — it audits there, not here
     // `=<name>` bound to the command token (or the bare dispatch.default_node stand-in, raw:
     // '') has done its job — drop it so each command's own grammar is unchanged (`/tab=do 3`
     // parses as `/tab 3`). Bound to the token, stripping is just cutting the `=<name>` back out
@@ -1182,7 +1214,7 @@ export function createCommands({
     const sendMatch = /^\/send\b[\s\S]*$/i.exec(line);
     if (sendMatch) { await sendToOriginal(ev); return; }
     const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
-    if (endMatch) { await end(ev); return; }
+    if (endMatch) { return await end(ev); }   // end() returns its outcome string (archived / no-op) for the audit line
 
     // /e and /egpt carry NO special meaning any more (retired 2026-08-15 — see § /agents
     // above, which replaces the whole family). A bare `/e` or `/e <anything>` no longer gets
@@ -3525,10 +3557,11 @@ export function createCommands({
     const state = await loadState();
     const aliasTarget = aliasTargetOf(state, surface, ev.chatId);
     const parent = getContact(state, surface, ev.chatId)?.entry?.parent_chat ?? null;
-    if (!aliasTarget && !parent) return;                   // not a join/split group → silent
+    if (!aliasTarget && !parent) return 'no-op — not a /join or /split side channel';   // silent to the chat; the audit says why nothing happened
     await forkBridge.archiveChat(ev.chatId);
     await writeState(dropContact(await loadState(), surface, ev.chatId));
     onLog(`/end: ${aliasTarget ? 'join' : 'split'} group ${ev.chatId} archived + ${aliasTarget ? `alias to ${aliasTarget}` : `split conv mapping (parent ${parent})`} dropped`);
+    return `archived ${ev.chatName || ev.chatId}`;         // the audit's <outcome> for a successful archive
   }
 
   // ── PHRASE TRIGGERS for the fork commands (operator 2026-10-04) ──────────────────────────────────

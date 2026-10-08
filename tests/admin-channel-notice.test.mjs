@@ -152,3 +152,47 @@ describe('the compaction notice goes to config.yaml\'s admin_channel', () => {
     expect(t.lines.join('\n')).toMatch(/admin_channel "No Such Group" names no chat on this node - notice not sent/);
   });
 });
+
+// The per-command audit sink is the SAME resolver + poster as the compaction notice, bound to a
+// DIFFERENT config key (log_to_group) — the generalization the operator asked for (2026-10-08:
+// "reconfigure, don't add a second subsystem"). boot exposes it as app.logToGroup, so the resolve +
+// fail-closed behavior for the new key is assertable without running the whole command dispatch.
+describe('the per-command audit goes to config.yaml\'s log_to_group (generalized from admin_channel)', () => {
+  const AUDIT = '/end in Favel Konefka by An → no-op — not a /join or /split side channel';
+
+  it('a NAME is resolved to its room (the SAME resolveChatId admin_channel uses) and the audit line is said there', async () => {
+    const t = await bootWith(config({ log_to_group: 'eGPT Admin' }));
+    expect(typeof t.app.logToGroup).toBe('function');
+    await t.app.logToGroup(AUDIT);
+    const hits = t.sentTo(ADMIN_ROOM);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].text).toContain(AUDIT);
+    expect(t.built.flatMap((b) => b.resolved)).toContain('eGPT Admin');
+  });
+
+  it('a raw room id works as it is — and log_to_group is INDEPENDENT of admin_channel', async () => {
+    // admin_channel unset, log_to_group set: the audit still lands (the two keys are not coupled).
+    const t = await bootWith(config({ log_to_group: ADMIN_ROOM }));
+    await t.app.logToGroup(AUDIT);
+    expect(t.sentTo(ADMIN_ROOM)).toHaveLength(1);
+  });
+
+  it('unset (or blank): auditing is OFF, silently — nothing is posted and nothing is even logged', async () => {
+    for (const cfg of [config(), config({ log_to_group: '   ' })]) {
+      const t = await bootWith(cfg);
+      const before = t.built.flatMap((b) => b.sent).length;
+      const result = await t.app.logToGroup(AUDIT);
+      expect(result).toBe(false);
+      expect(t.built.flatMap((b) => b.sent).length).toBe(before);   // nothing posted
+      expect(t.lines.join('\n')).not.toContain(AUDIT);               // OFF silently — no log spam either
+    }
+  });
+
+  it('a name that names no chat: fail-closed through the SAME machinery — nothing posted, the log names log_to_group', async () => {
+    const t = await bootWith(config({ log_to_group: 'No Such Group' }));
+    const before = t.built.flatMap((b) => b.sent).length;
+    await t.app.logToGroup(AUDIT);
+    expect(t.built.flatMap((b) => b.sent).length).toBe(before);
+    expect(t.lines.join('\n')).toMatch(/log_to_group "No Such Group" names no chat on this node - notice not sent/);
+  });
+});

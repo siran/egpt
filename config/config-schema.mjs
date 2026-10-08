@@ -2770,6 +2770,24 @@ export const CONFIG_SCHEMA = {
     daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
   `,
 
+  log_to_group: `
+    The per-command audit channel (operator 2026-10-08): the ONE group this node
+    posts a compact, METADATA-ONLY line to for EVERY slash command that runs —
+    "/<cmd> in <chat> by <sender> → <outcome?>" — so a command that otherwise does
+    its work silently (notably /end's no-op outside a /join or /split side channel,
+    and a successful archive) is still visible. The reply BODY is NEVER included: a
+    /config dump, a /recap listing or a contact list can never leak into this group.
+    <outcome> is appended only where a silent/side-effecting handler returns one
+    (today: /end); every other command is just its invocation line.
+
+    VALUE: a chat NAME or a raw Beeper room id in SHORT form, resolved to its room
+    EXACTLY like admin_channel — the SAME boot.mjs resolver + poster (noticeToChannel),
+    fail-closed, said from the being's own mouth. It MAY name the same chat as
+    admin_channel or a different one. Unset (or empty): auditing is OFF — nothing is
+    posted and no command's behavior changes (src/spine/commands.mjs run() chokepoint,
+    boot.mjs logToGroup).
+  `,
+
   node_role: `
     The role THIS node plays in the /join + /split side-group commands (operator 2026-10-03): one of
     'primary' | 'secondary', set PER NODE. Both nodes ingest the same primary Beeper account and the
