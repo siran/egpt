@@ -126,6 +126,24 @@ describe('the audit is fail-closed — it never changes a command', () => {
   });
 });
 
+describe('the cross-account key is threaded to the sink (two-node convergence, 2026-10-08)', () => {
+  it('auditCommand forwards ev.msgHash as { key } so boot can converge the two nodes onto one message', async () => {
+    const calls = [];
+    const { cmds } = harness({ state: stateWithJoin(), logToGroup: async (text, opts) => { calls.push({ text, opts }); return true; } });
+    await cmds.run({ ...ev(JOIN_CHAT, '/end', 'favel'), msgHash: 'deadbeef'.repeat(8) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toBe('/end in favel by An → archived favel');     // metadata only, unchanged
+    expect(calls[0].opts).toEqual({ key: 'deadbeef'.repeat(8) });           // the content hash, never a body
+  });
+
+  it('a command with no msgHash (a synthetic) forwards key:null — the sink then posts plainly', async () => {
+    const calls = [];
+    const { cmds } = harness({ state: seedC(), logToGroup: async (text, opts) => { calls.push({ text, opts }); return true; } });
+    await cmds.run(ev(C_CHAT, '/end', 'conversas con favel'));              // the ev helper carries no msgHash
+    expect(calls[0].opts).toEqual({ key: null });
+  });
+});
+
 describe('what is NOT audited', () => {
   it('a non-"/"-message (reaches the catch-all) is never audited', async () => {
     const { cmds, sent, audit } = harness({ state: seedC() });

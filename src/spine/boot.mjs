@@ -24,6 +24,8 @@ import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, 
 // LOCAL mouth below keys with the same primitive the peer link keys with; there is one definition
 // of "which of MY chats is that ONE real chat" and both transports ask it.
 import { crossAccountChatKey } from '../bridges/beeper.mjs';
+import { htmlToMarkdown } from '../html-to-markdown.mjs';
+import { mergeAudit } from './audit-merge.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-session.mjs';
@@ -2911,7 +2913,38 @@ export async function boot({
   // silently (no post, no log line). Fail-closed and non-throwing, so a command's own reply is never
   // affected by whether its audit landed. Wired into createCommands below; exposed on the app for
   // assertability, exactly like noticeToAdmin.
-  const logToGroup = async (text) => (declaredChannel('log_to_group') ? noticeToChannel({ configKey: 'log_to_group', text, what: 'audit', tag: 'audit' }) : false);
+  //
+  // TWO-NODE CONVERGENCE (operator 2026-10-08, the follow-up): a few commands (/join, /split,
+  // /status <sibling>, /end in a one-node side-room) are NOT deduped by the default_node gate, so
+  // BOTH co-account nodes audit the same command EVENT and post TWO lines here. audit-merge.mjs
+  // converges them onto ONE message keyed by ev.msgHash (the `key`, carried identically on both
+  // nodes): the PRIMARY posts read-free with a marker; the SECONDARY staggers, reads THIS chat's
+  // recent messages for that marker and EDITS the primary's line (appending its own segment) — or
+  // posts its own line when it is the sole auditor. `post` is the unchanged single post; the reader
+  // (listMessagesRaw, the one ownCopy/reactLocally read through) and editor (editMessage, the one the
+  // streaming relay edits co-account copies with) are the SAME bridge the post lands on, routed in —
+  // no second channel. Everything is best-effort: a resolve/read/edit miss degrades to a plain post.
+  const logToGroup = async (text, { key = null } = {}) => {
+    if (!declaredChannel('log_to_group')) return false;   // OFF, silently — unchanged
+    const post = (full) => noticeToChannel({ configKey: 'log_to_group', text: full, what: 'audit', tag: 'audit' });
+    const role = getConfig()?.node_role;
+    // Only the SECONDARY reads + edits; the PRIMARY (and a single-node deployment) never touch the
+    // chat. Resolve the chat + its bridge the SAME way the post does (outbound's bridge, resolveConfiguredChat),
+    // mapping the read-back HTML to markdown so the marker matches and the edit re-sends plain text.
+    let readRecent = null, edit = null;
+    if (String(role ?? '').trim().toLowerCase() === 'secondary') {
+      try {
+        const name = declaredChannel('log_to_group');
+        const r = await resolveConfiguredChat(name);
+        const on = outbound(null, name).bridge;
+        if (r.chatId && typeof on?.listMessagesRaw === 'function' && typeof on?.editMessage === 'function') {
+          readRecent = async () => (await on.listMessagesRaw(r.chatId)).map((m) => ({ id: m?.id ?? null, text: htmlToMarkdown(m?.text) || '' }));
+          edit = (id, full) => on.editMessage(r.chatId, id, full);
+        }
+      } catch { /* leave readRecent/edit null → mergeAudit degrades to a plain post */ }
+    }
+    return mergeAudit({ role, nodeLabel: getConfig()?.node_name ?? '?', text, key, post, readRecent, edit });
+  };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs

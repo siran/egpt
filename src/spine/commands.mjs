@@ -966,7 +966,12 @@ export function createCommands({
   const auditCommand = async (ev, cmd, outcome = null) => {
     const chat = ev?.chatName || ev?.chatId || '?';
     const who = ev?.senderName || ev?.senderId || 'someone';
-    try { await logToGroup(`/${cmd} in ${chat} by ${who}${outcome ? ` → ${outcome}` : ''}`); }
+    // ev.msgHash (bridges/beeper.crossAccountMsgKey) is carried IDENTICALLY on both co-account nodes
+    // for the same inbound command, so the sink uses it to converge the two nodes' lines onto ONE
+    // message (boot's logToGroup → audit-merge.mjs). It is a content hash, never any reply body, so
+    // the audit stays metadata-only. A sink that ignores the 2nd arg (the standalone default) is
+    // unaffected.
+    try { await logToGroup(`/${cmd} in ${chat} by ${who}${outcome ? ` → ${outcome}` : ''}`, { key: ev?.msgHash ?? null }); }
     catch { /* fail-closed: a broken audit never breaks the command */ }
   };
   // THE WRAPPER around the dispatch: run the command, then emit the ONE audit line. A '/'-command the
