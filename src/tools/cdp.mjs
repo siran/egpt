@@ -222,6 +222,85 @@ export async function peekTab(targetId, pollScript) {
 }
 
 /**
+ * Open a per-tab CDP session, run `fn(send)` where `send(method, params)` returns a
+ * Promise of that command's result, then close. The SAME per-tab WebSocket + id/pending
+ * machinery streamFromTab already uses, factored out for the one-shot helpers below so
+ * each doesn't re-hand-roll it. `fn` may issue several commands on the one socket (a
+ * trusted click is three Input events in a row) before it resolves.
+ */
+async function withTabSession(targetId, fn, timeoutMs = 5000) {
+  const tab = await findTab(targetId);
+  if (!tab) throw new Error(`Tab ${targetId?.slice(0, 8) ?? '?'}… not found`);
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(tab.webSocketDebuggerUrl);
+    let msgId = 0;
+    const pending = new Map();
+    let settled = false;
+    const tmo = setTimeout(() => finish(reject, new Error('CDP session timeout')), timeoutMs);
+    function finish(cb, arg) { if (settled) return; settled = true; clearTimeout(tmo); try { ws.close(); } catch {} cb(arg); }
+    const send = (method, params = {}) => {
+      const id = ++msgId;
+      ws.send(JSON.stringify({ id, method, params }));
+      return new Promise((res, rej) => pending.set(id, { res, rej }));
+    };
+    ws.addEventListener('message', e => {
+      let data; try { data = JSON.parse(e.data.toString()); } catch { return; }
+      if (data.id && pending.has(data.id)) {
+        const { res, rej } = pending.get(data.id);
+        pending.delete(data.id);
+        if (data.error) rej(new Error(data.error.message)); else res(data.result);
+      }
+    });
+    ws.addEventListener('error', () => finish(reject, new Error('CDP WebSocket error')));
+    ws.addEventListener('open', async () => {
+      try { const out = await fn(send); finish(resolve, out); }
+      catch (err) { finish(reject, err); }
+    });
+  });
+}
+
+/**
+ * Evaluate `expression` in a tab and return its value by value (the whole value, not just
+ * `.text` as peekTab does). The generic inject the login limb runs its detect / field-state /
+ * classify / OTP-read scripts through — Runtime.evaluate, the SAME CDP surface peekTab and
+ * streamFromTab already drive, no second client. `userGesture`/`awaitPromise` are passed through
+ * for the cases that need them (a value a page only yields under activation, a promise result).
+ */
+export async function evaluate(targetId, expression, { awaitPromise = false, userGesture = false } = {}) {
+  return withTabSession(targetId, async (send) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise, userGesture });
+    return r?.result?.value ?? null;
+  });
+}
+
+/**
+ * Dispatch a TRUSTED left click at viewport (x, y): the moved → pressed → released triple over
+ * the tab's own debugger socket. A CDP Input event carries user activation, which is what lets
+ * Chrome commit an autofilled credential on the submit it triggers (plan Phase-0 (B) — only
+ * CONFIRMABLE live, never in a unit test; the seam exists so ops can drive it live).
+ */
+export async function dispatchClick(targetId, x, y) {
+  return withTabSession(targetId, async (send) => {
+    const base = { x, y, button: 'left' };
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, clickCount: 0 });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, clickCount: 1 });
+    return true;
+  });
+}
+
+/**
+ * Screenshot a tab, returning base64 PNG `data` (CAPTCHA branch — the operator needs to SEE it).
+ * Page.captureScreenshot on the per-tab session; no Page.enable needed for a single capture.
+ */
+export async function captureScreenshot(targetId, { format = 'png' } = {}) {
+  return withTabSession(targetId, async (send) => {
+    const r = await send('Page.captureScreenshot', { format });
+    return r?.data ?? null;
+  });
+}
+
+/**
  * Open a CDP session against a tab, inject text + submit, then poll DOM until
  * the streamed reply stabilizes. Brain-specific knowledge is in the two scripts.
  */

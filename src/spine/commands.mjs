@@ -598,6 +598,11 @@ export function createCommands({
   // CDP seam for /chrome, /tabs, /open, /tab, /close — the real localhost probe by
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
+  // /login <site> → the auto-login limb (src/spine/login.mjs), injected by boot. Returns an
+  // OUTCOME token (logged-in | needs-2fa | captcha-posted | failed | no-autofill) — NEVER a
+  // credential. Absent (standalone construction / a test that doesn't need it) → /login replies
+  // that the limb isn't wired, never throwing.
+  requestLogin = null,
   // Room/member seams (Phase 2). listRoomNames enumerates the saved rooms; loadAdapters
   // yields the web-brain adapters (config/brains/*-cdp.mjs). Both are injected in tests so
   // /rooms + /members run against temp-dir rooms and a fake adapter list — no live profile,
@@ -1148,6 +1153,13 @@ export function createCommands({
     const closeMatch = /^\/close\s+(\d+)\s*$/i.exec(line);
     if (closeMatch) { await send?.(ev.chatId, await closeTabCmd(Number(closeMatch[1]))); return; }
 
+    // /login <site> — drive Chrome's OWN saved password into <site>'s login form on the brain
+    // profile (src/spine/login.mjs). Same slot as /chrome: matched BEFORE the catch-all so it
+    // never leaks to E. isCommand already gated it operator-only. The reply is the OUTCOME token —
+    // never a credential (the limb never reads one).
+    const loginMatch = /^\/login\s+(\S+)\s*$/i.exec(line);
+    if (loginMatch) { await send?.(ev.chatId, await loginCmd(loginMatch[1])); return; }
+
     // /rooms — bare: list the saved rooms. Otherwise `/rooms <verb> [<room>]`, routed to the
     // same room() the singular /rooms used to reach. /rooms itself is retired (operator
     // 2026-08-29: "keep only '/agents', '/rooms'") and now answers the plural question below.
@@ -1484,6 +1496,15 @@ export function createCommands({
     if (error) return `/close: ${error}`;
     try { await cdp.closeTab(tab.id); return `closed ${n} · ${trunc(tab?.title ?? '(untitled)', 48)}`; }
     catch (e) { return `/close: failed — ${e?.message ?? e}`; }
+  }
+
+  // /login <site> — ask the auto-login limb to sign in using Chrome's own saved password. The
+  // whole reply is the limb's outcome token; the limb owns the flow (detect → autofill → trusted
+  // click → classify, with the 2FA / CAPTCHA branches) and the secret boundary. Absent seam → say so.
+  async function loginCmd(site) {
+    if (typeof requestLogin !== 'function') return `/login: the auto-login limb isn't wired on this node`;
+    try { return `/login ${site} → ${await requestLogin(site)}`; }
+    catch (e) { return `/login: failed — ${e?.message ?? e}`; }
   }
 
   const ROOM_USAGE = 'usage: /rooms | /rooms create <name> | /rooms join|leave|members <room> | /rooms delete [force] <room>';

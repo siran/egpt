@@ -73,6 +73,7 @@ import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs'
 // test and every other node take the identical path they took before it existed.
 import { isSession1Successor, announceStanddown, SESSION1_ENV } from './successor-announce.mjs';
 import { createCommands, launchChromeDirect } from './commands.mjs';
+import { createLoginLimb } from './login.mjs';
 import { createBeingLink } from './being-link.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
@@ -2947,6 +2948,36 @@ export async function boot({
   };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
+  // ── THE AUTO-LOGIN LIMB (plan plans/2610082200-EGPT-LOGIN-PLAN.md, approach (ii)) ─────────────
+  // Driven over the SAME CDP driver (src/tools/cdp.mjs) /chrome, /tabs, the web-brains and bus.mjs
+  // already drive — NOT a second client. The seam composes the driver's generic Runtime.evaluate
+  // (cdp.evaluate), its trusted Input click (cdp.dispatchClick) and its Page.captureScreenshot into
+  // the five operations login.mjs needs; the OTP enters through `fill` ALONE and nowhere else, with
+  // the expression (which holds the OTP) kept out of any error message. The admin post goes through
+  // boot's EXISTING noticeToChannel — the same resolver + poster compaction + the per-command audit
+  // use, never a second posting path. The secret itself is Chrome's and is never read here.
+  const loginCdp = {
+    openOrFocus: async (url) => {
+      let origin = null; try { origin = new URL(url).origin; } catch {}
+      let targetId = null;
+      if (origin) {
+        try { const tabs = await cdp.listTabs(); const hit = tabs.find((t) => { try { return new URL(t.url).origin === origin; } catch { return false; } }); if (hit) targetId = hit.id; } catch {}
+      }
+      if (!targetId) targetId = await cdp.openTab(url);
+      try { await cdp.activateTarget(targetId); } catch {}
+      return { targetId };
+    },
+    evaluate: (targetId, expr) => cdp.evaluate(targetId, expr),
+    click: (targetId, x, y) => cdp.dispatchClick(targetId, x, y),
+    fill: async (targetId, selector, value) => {
+      const expr = `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set; if (set) set.call(el, ${JSON.stringify(value)}); else el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`;
+      try { return await cdp.evaluate(targetId, expr); } catch { throw new Error('fill failed'); }
+    },
+    screenshot: (targetId) => cdp.captureScreenshot(targetId),
+  };
+  const loginLimb = createLoginLimb({ cdp: loginCdp, bridge: { noticeToChannel }, getConfig, log: (m) => log.line?.(m) });
+  const requestLogin = (domain) => loginLimb.requestLogin(domain);
+
   // ONE turn machinery for the whole node (see the import note). Built here because it needs
   // `brain` (its scopeOf/allowNewInput/steer seams) and the bridge pair the steer-ack rides —
   // all three exist by now — and because BOTH consumers below take this same instance.
@@ -3104,6 +3135,7 @@ export async function boot({
       resolvePrimaryChatIdByTitle: (title, opts) => postBridgeFor('primary').resolveChatIdByTitle(title, opts),
     },
     logToGroup,                                          // per-command audit → config.log_to_group (fail-closed, see above); the dispatch chokepoint emits ONE metadata-only line per command
+    requestLogin,                                        // /login <site> → the auto-login limb (src/spine/login.mjs); returns an outcome token, never a credential
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);
@@ -3500,6 +3532,7 @@ export async function boot({
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
     noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer
     logToGroup,                                          // the per-command audit sink (config.log_to_group) — exposed for the same reason: the generalized resolve+post is assertable without running the whole dispatch
+    requestLogin,                                        // the spine's being-facing auto-login entry ("egpt can request to log in") — exposed so its outcome is assertable without a live Chrome
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
 
     stop: () => {

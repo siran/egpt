@@ -2788,6 +2788,42 @@ export const CONFIG_SCHEMA = {
     boot.mjs logToGroup).
   `,
 
+  login: `
+    The auto-login limb (operator 2026-10-08, plan plans/2610082200-EGPT-LOGIN-PLAN.md). /login
+    <site> — and the being-facing requestLogin(domain) the spine exposes — sign a being in to
+    <site> on the brain Chrome profile using CHROME'S OWN saved password. The spine drives the
+    detect + the one TRUSTED click over the CDP it already holds; Chrome commits its own
+    credential; nothing of ours ever reads it. The limb's only output is an outcome token
+    (logged-in | needs-2fa | captcha-posted | failed | no-autofill) — never a credential, never
+    the 2FA OTP it reads and enters.
+
+    Every key is OPTIONAL; an unset block uses the defaults below, and a node that never runs
+    /login pays nothing for it.
+
+    KEYS:
+      otp_sources
+        DEFAULT: [gmail, google_voice]
+        The tabs the 2FA branch reads the one-time code from, in order (gmail =>
+        mail.google.com, google_voice => voice.google.com). The code is read inside the limb and
+        entered; it is NEVER logged, returned, or posted.
+      captcha_channel
+        DEFAULT: admin_channel
+        The CONFIG KEY whose channel the CAPTCHA branch posts to — resolved by the SAME
+        noticeToChannel the compaction notice and the per-command audit use. Default points at
+        admin_channel; set it to another registered channel key to divert captcha notices. The
+        post is metadata only (the domain + a screenshot size); the screenshot IMAGE itself is
+        not yet delivered (noticeToChannel has no attachment path — see the plan).
+      autofill_wait_ms
+        DEFAULT: 4000
+        How long to wait for Chrome auto-sign-in to populate the login form (detected by field
+        STATE, since the value is masked) before giving up with no-autofill.
+      submit_overrides
+        DEFAULT: {} (none)
+        Per-domain overrides for sites the generic form detector misreads:
+        { "<domain>": { url: "<login URL>", submit: "<CSS selector of the submit control>" } }.
+        Added as needed; the generic heuristics handle the common case.
+  `,
+
   node_role: `
     The role THIS node plays in the /join + /split side-group commands (operator 2026-10-03): one of
     'primary' | 'secondary', set PER NODE. Both nodes ingest the same primary Beeper account and the
