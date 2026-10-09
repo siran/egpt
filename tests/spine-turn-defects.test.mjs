@@ -106,6 +106,7 @@ function buildSpine(over = {}) {
     heartbeats: fakeHeartbeats,
     clock: { now: () => 1000 },
     turnTimeoutMs: over.turnTimeoutMs ?? 600_000,
+    setTimeout: over.setTimeout, clearTimeout: over.clearTimeout,   // undefined → createSpine's globalThis defaults
     log: over.log,
   });
   spine.start();
@@ -174,6 +175,73 @@ describe('spine — DEFECT 2: per-turn timeout fails visibly, evicts the warm en
     expect(evicted).toEqual([`e:wa:${CHAT}`]);                             // the wedged entry was evicted
     expect(sender.placeholders[0].failed).toMatch(/timeout/i);            // turn 1 failed visibly
     expect(sender.placeholders[1].finished.text).toBe('reply-two');       // the queue drained on
+  });
+});
+
+// The per-turn timeout (DEFECT 2 above) is CONFIGURABLE (operator 2026-10-09): config
+// turn_timeout_ms flows to createSpine's turnTimeoutMs, and -1 (or ANY value <= 0) DISABLES
+// the race entirely — a long turn runs to completion, never killed, never evicted. The disable
+// check is `!(turnTimeoutMs > 0)` in runTurnWithTimeout; these lock that the param reaches it
+// both ways. The timer seam (setTimeout/clearTimeout) is injected so "the race was never armed"
+// is an ASSERTION, not an inference from timing.
+describe('spine — the per-turn timeout is configurable; a non-positive bound disables it', () => {
+  // A fake timer seam: records every arm, and NEVER fires on its own, so a turn under a
+  // disabled bound can only ever finish by the brain resolving.
+  function fakeTimers() {
+    const armed = [];
+    return {
+      armed,
+      setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; armed.push(t); return t; },
+      clearTimeout: (t) => { if (t) t.cleared = true; },
+    };
+  }
+
+  for (const bound of [-1, 0]) {
+    it(`turnTimeoutMs = ${bound} → the race is NEVER armed; a slow turn resolves normally and is not evicted`, async () => {
+      const evicted = [];
+      let turnCalled; const called = new Promise((r) => { turnCalled = r; });
+      let resolveTurn;
+      const brain = {
+        evict(being, ev) { evicted.push(`${being}:${ev.surface}:${ev.chatId}`); },
+        turn() { turnCalled(); return new Promise((r) => { resolveTurn = r; }); },   // pends until we resolve it
+      };
+      const timers = fakeTimers();
+      const sender = recordingSender();
+      const { bridge } = buildSpine({ brain, sender, turnTimeoutMs: bound, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
+      const p = bridge.emit(mention('hola', 'm1'));
+      await called;   // the turn is now in flight, so if a timer were going to be armed it already would be
+
+      expect(timers.armed).toEqual([]);                          // the race was skipped: no timer armed
+      resolveTurn({ text: 'the real answer', sessionId: 's0' });  // nothing killed it — it finishes on its own
+      await p;
+
+      expect(evicted).toEqual([]);                               // the warm entry was never evicted
+      expect(sender.placeholders[0].finished.text).toBe('the real answer');
+    });
+  }
+
+  it('a POSITIVE turnTimeoutMs ARMS the race with exactly that bound, cleared on normal completion', async () => {
+    const brain = { async turn() { return { text: 'quick', sessionId: 's0' }; } };
+    const timers = fakeTimers();
+    const sender = recordingSender();
+    const { bridge } = buildSpine({ brain, sender, turnTimeoutMs: 777, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
+    await bridge.emit(mention('hola', 'm1'));
+
+    expect(timers.armed.map((t) => t.ms)).toEqual([777]);   // the bound flows through to the timer
+    expect(timers.armed[0].cleared).toBe(true);             // cleared in the finally on normal completion
+    expect(sender.placeholders[0].finished.text).toBe('quick');
+  });
+
+  it('ABSENT config key → the shipped 600000 default still arms the guard (boot/factory default = enabled)', async () => {
+    // buildSpine mirrors boot's `Number.isFinite(cfg.turn_timeout_ms) ? ... : 600_000` and the
+    // spine factory default (spine.mjs turnTimeoutMs = 600_000): omitting it keeps the 10-min cap.
+    const brain = { async turn() { return { text: 'quick', sessionId: 's0' }; } };
+    const timers = fakeTimers();
+    const sender = recordingSender();
+    const { bridge } = buildSpine({ brain, sender, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
+    await bridge.emit(mention('hola', 'm1'));
+
+    expect(timers.armed.map((t) => t.ms)).toEqual([600_000]);   // default is the enabled wedge guard, not disabled
   });
 });
 

@@ -3432,7 +3432,12 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, fromThisNode, say: sayOnce, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  // The per-turn backstop (DEFECT 2), operator-tunable via config turn_timeout_ms
+  // (config/config-schema.mjs): absent -> 600000 (today's 10-min wedge guard, the spine
+  // factory's own default); -1 or any value <= 0 flows through to runTurnWithTimeout's
+  // `!(turnTimeoutMs > 0)` disable so a turn runs uncapped.
+  const turnTimeoutMs = Number.isFinite(cfg.turn_timeout_ms) ? cfg.turn_timeout_ms : 600_000;
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, fromThisNode, say: sayOnce, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

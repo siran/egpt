@@ -346,6 +346,10 @@ networks:
 # echo_max_age_ms: 3600000        # never echo a note older than this (skips resynced backlog)
 
 # --- Everyday knobs (defaults shown) -----------------------------------------
+# -1 = infinite (no per-turn cap). Default 600000 (10 min) is a wedge guard: it evicts a hung
+# CLI session so the chat's queue can drain. Disabling it means a genuinely wedged turn will
+# NOT self-heal until a restart.
+turn_timeout_ms: 600000
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
