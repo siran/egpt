@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, RETIRED_AGENT_SUBS, AGENT_SUB_ALIASES, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
+import { createCommands, normalizeAgentsArgs, AGENTS_USAGE, RETIRED_AGENT_SUBS, AGENT_SUB_ALIASES, SINGULAR_CMD, PLURAL_OF, launchChromeDirect, CHROME_BRAIN_PROFILE, chromeProfileOf } from '../src/spine/commands.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { contextSinceLastTurn } from '../src/transcript-log.mjs';
@@ -2444,6 +2444,53 @@ describe('/chrome: the Session 0 hop and the Session 1 direct spawn', () => {
     expect(sent[0].text).toMatch(/I can't open it myself — I run as a service in another Windows session/);
     expect(sent[0].text).toMatch(/register-chrome-task\.ps1/);
     expect(sent[0].text).not.toMatch(/I tried to open one myself/);
+  });
+});
+
+// ── chromeProfileOf: the per-conversation profile resolver (plan 2610091931 chunk 1) ──────────
+// ADDITIVE + INERT: the no-conversation path is byte-for-byte the legacy value (every caller in
+// chunk 1 keeps calling it with no conversation), the admin conversation keeps `brain`, and every
+// other conversation gets its own <profiles-root>/<slug>. No launch happens here — this is the
+// pure decision function, tested in isolation.
+describe('chromeProfileOf(c, conversation) — per-conversation profiles', () => {
+  const profilesRoot = dirname(CHROME_BRAIN_PROFILE);
+
+  it('no conversation → exactly the legacy value (discovered brain when no chrome.profile_dir)', () => {
+    expect(chromeProfileOf({})).toBe(CHROME_BRAIN_PROFILE);
+    expect(chromeProfileOf(undefined)).toBe(CHROME_BRAIN_PROFILE);
+  });
+
+  it('no conversation → exactly the legacy value (config chrome.profile_dir when set)', () => {
+    expect(chromeProfileOf({ chrome: { profile_dir: 'C:/x/brain' } })).toBe('C:/x/brain');
+  });
+
+  it('the admin conversation (name === admin_channel) keeps the legacy/brain value', () => {
+    const c = { admin_channel: 'eGPT Admin' };
+    // Even though it carries its own slug, the admin conversation resolves to brain, not a sibling.
+    expect(chromeProfileOf(c, { name: 'eGPT Admin', slug: 'eGPT Admin-2601010000' })).toBe(CHROME_BRAIN_PROFILE);
+    // ...and to the configured profile_dir when the operator named one (brain == profile_dir then).
+    expect(chromeProfileOf({ ...c, chrome: { profile_dir: 'C:/x/brain' } }, { name: 'eGPT Admin', slug: 'eGPT Admin-2601010000' })).toBe('C:/x/brain');
+  });
+
+  it('a non-admin conversation → <profiles-root>/<slug>', () => {
+    const c = { admin_channel: 'eGPT Admin' };
+    expect(chromeProfileOf(c, { name: 'Reinie Alvino', slug: 'Reinie Alvino-2607150057' }))
+      .toBe(join(profilesRoot, 'Reinie Alvino-2607150057'));
+  });
+
+  it('the slug is sanitized for filesystem safety (Windows-illegal chars collapse to a space)', () => {
+    // sanitizeSlug: < > : " / \ | ? * and control chars → space, whitespace collapsed.
+    expect(chromeProfileOf({}, { slug: 'a/b:c' })).toBe(join(profilesRoot, 'a b c'));
+  });
+
+  it('a non-admin conversation with no usable slug falls back to legacy rather than mint a junk dir', () => {
+    expect(chromeProfileOf({ admin_channel: 'eGPT Admin' }, { name: 'Nameless' })).toBe(CHROME_BRAIN_PROFILE);
+    expect(chromeProfileOf({ chrome: { profile_dir: 'C:/x/brain' } }, { slug: '   ' })).toBe('C:/x/brain');
+  });
+
+  it('admin_channel unset → no conversation is admin; a named conversation still gets its own profile', () => {
+    expect(chromeProfileOf({}, { name: 'eGPT Admin', slug: 'eGPT Admin-2601010000' }))
+      .toBe(join(profilesRoot, 'eGPT Admin-2601010000'));
   });
 });
 

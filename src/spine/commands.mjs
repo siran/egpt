@@ -28,7 +28,7 @@ import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -91,14 +91,41 @@ function defaultLaunchChromeTask() {
 // and the direct launcher, so "launch on the port I will attach to" can never become two answers.
 const chromePortOf = (host) => String(host).split(':')[1] ?? '9221';
 
-// The --user-data-dir a launch should use: config `chrome.profile_dir` when the operator set one,
-// else the discovered brain profile. CONFIGURATION BEATS DISCOVERY, and the schema says why in its
-// own words — profile_dir names "a REAL, already-logged-in profile kept for the purpose", and it is
-// the same path a being is TOLD to drive CDP on (30-pointers.md). A spine that launched Chrome into
-// some other directory would hand its beings a browser logged in to nothing they were promised.
-// resolveBrainProfile() is the fallback precisely because it is a HEURISTIC: it scans for a profile
-// that has been used on an AI site. Unset ⇒ CHROME_BRAIN_PROFILE ⇒ byte-identical to before.
-export const chromeProfileOf = (c) => c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
+// The --user-data-dir a launch should use. THE ONE PLACE THE PROFILE IS DECIDED (see ensureChrome's
+// banner) — no caller resolves its own.
+//
+// LEGACY (one arg, the no-conversation path every caller still takes in chunk 1): config
+// `chrome.profile_dir` when the operator set one, else the discovered brain profile. CONFIGURATION
+// BEATS DISCOVERY, and the schema says why in its own words — profile_dir names "a REAL,
+// already-logged-in profile kept for the purpose", and it is the same path a being is TOLD to drive
+// CDP on (30-pointers.md). A spine that launched Chrome into some other directory would hand its
+// beings a browser logged in to nothing they were promised. resolveBrainProfile() is the fallback
+// precisely because it is a HEURISTIC: it scans for a profile that has been used on an AI site.
+// No conversation ⇒ CHROME_BRAIN_PROFILE ⇒ byte-identical to before.
+//
+// PER-CONVERSATION (plans/2610091931 chunk 1 — ADDITIVE and INERT: no caller passes `conversation`
+// yet; the rewire + per-conversation ports are chunk 2). `conversation` is a small PURE descriptor,
+// whatever chunk 2's caller carries from the conversation state entry:
+//   { slug, name }
+//     • slug — the conversation's dir name (basename of its `conversation_path`, e.g.
+//       "Reinie Alvino-2607150057"); becomes the profile dir name. Re-run through sanitizeSlug (a
+//       real slug is already idempotent under it) so a raw name can never escape the profiles root.
+//     • name — the conversation's display name (its `pushedName`), matched against `admin_channel`.
+// The ADMIN conversation — the one whose name equals the EXISTING `admin_channel` config (e.g.
+// "eGPT Admin"); no new key — KEEPS the legacy/`brain` profile, because brain is where the admin
+// creds (Gmail / ClassDojo / AWS) are signed in. Every OTHER conversation gets its own
+// <profiles-root>/<slug>, profiles-root being the parent of CHROME_BRAIN_PROFILE
+// (.egpt/chrome/profiles/), so whatever is signed into one conversation's Chrome is invisible to
+// the rest. A blank/unslugged conversation falls back to legacy rather than mint a junk dir.
+export const chromeProfileOf = (c, conversation) => {
+  const legacy = c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
+  if (!conversation) return legacy;                             // no conversation → byte-for-byte legacy
+  const admin = String(c?.admin_channel ?? '').trim();          // the existing config key, read like boot's declaredChannel
+  const name = String(conversation.name ?? '').trim();
+  if (admin && name === admin) return legacy;                   // the admin conversation keeps brain
+  const slug = sanitizeSlug(conversation.slug);
+  return slug ? join(dirname(CHROME_BRAIN_PROFILE), slug) : legacy;
+};
 // The executable: config `chrome.bin`, else null — which lets chrome-launcher run its own
 // per-platform CHROME_PATHS search. Never a second locator here.
 const chromeBinOf = (c) => c?.chrome?.bin || null;
