@@ -2789,18 +2789,27 @@ export const CONFIG_SCHEMA = {
   `,
 
   login: `
-    The auto-login limb (operator 2026-10-08, plan plans/2610082200-EGPT-LOGIN-PLAN.md). /login
-    <site> — and the being-facing requestLogin(domain) the spine exposes — sign a being in to
-    <site> on the brain Chrome profile using CHROME'S OWN saved password. The spine drives the
-    detect + the one TRUSTED click over the CDP it already holds; Chrome commits its own
-    credential; nothing of ours ever reads it. The limb's only output is an outcome token
-    (logged-in | needs-2fa | captcha-posted | failed | no-autofill) — never a credential, never
-    the 2FA OTP it reads and enters.
+    The auto-login limb (operator 2026-10-08, plan plans/2610082200-EGPT-LOGIN-PLAN.md,
+    approach (2)). /login <site> — and the being-facing requestLogin(domain) the spine exposes —
+    sign a being in to <site> on the brain Chrome profile using CHROME'S OWN saved password. The
+    spine READS the saved credential straight out of Chrome's store (the DPAPI master key + the
+    AES-256-GCM 'logins' table, the same way Chrome keeps it), TYPES the username + password over
+    the CDP it already holds, and drives the one TRUSTED submit click. The credential is a local:
+    it is typed and nulled, and NEVER returned, logged, or posted. The limb's only output is an
+    outcome token (logged-in | needs-2fa | captcha-posted | failed | no-credential) — never a
+    credential, never the 2FA OTP it reads and enters. (Approach (ii), "ride Chrome's autofill",
+    was abandoned: no CDP command triggers Chrome's saved-password autofill.)
 
     Every key is OPTIONAL; an unset block uses the defaults below, and a node that never runs
     /login pays nothing for it.
 
     KEYS:
+      chrome_profile_path
+        DEFAULT: chrome.profile_dir, else the discovered brain profile (chromeProfileOf)
+        The Chrome user-data-dir whose saved logins are read. Unset derives from the SAME place
+        /chrome launches into — chrome.profile_dir when set, else the auto-discovered brain profile
+        (typically <egptHome>/chrome/profiles/brain) — so there is no second source of truth; set
+        this only to read a DIFFERENT profile than the one the spine drives.
       otp_sources
         DEFAULT: [gmail, google_voice]
         The tabs the 2FA branch reads the one-time code from, in order (gmail =>
@@ -2813,10 +2822,6 @@ export const CONFIG_SCHEMA = {
         admin_channel; set it to another registered channel key to divert captcha notices. The
         post is metadata only (the domain + a screenshot size); the screenshot IMAGE itself is
         not yet delivered (noticeToChannel has no attachment path — see the plan).
-      autofill_wait_ms
-        DEFAULT: 4000
-        How long to wait for Chrome auto-sign-in to populate the login form (detected by field
-        STATE, since the value is masked) before giving up with no-autofill.
       submit_overrides
         DEFAULT: {} (none)
         Per-domain overrides for sites the generic form detector misreads:

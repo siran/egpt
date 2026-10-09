@@ -105,7 +105,7 @@ export const COMMANDS = [
 
   { section: 'BROWSER (CDP)' },
   { cmd: '/chrome',         surface: 'shell',     usage: '/chrome',                                        desc: 'launch the brain Chrome with the extension loaded', wired: true },
-  { cmd: '/login',          surface: 'shell',     usage: '/login <site>',                                  desc: 'sign in to <site> on the brain Chrome using CHROME\'S OWN saved password — the spine drives the detect + trusted-click, Chrome commits the credential, nothing of ours ever reads it. Reply is the outcome token (logged-in | needs-2fa | captcha-posted | failed | no-autofill). Handles the 2FA (reads the OTP from Gmail/Google Voice) and CAPTCHA (posts to the admin channel) branches.', wired: true },
+  { cmd: '/login',          surface: 'shell',     usage: '/login <site>',                                  desc: 'sign in to <site> on the brain Chrome using CHROME\'S OWN saved password — the spine reads the saved credential (DPAPI + AES-GCM), types it, and drives the trusted-click; it is typed and nulled, never returned/logged/posted. Reply is the outcome token (logged-in | needs-2fa | captcha-posted | failed | no-credential). Handles the 2FA (reads the OTP from Gmail/Google Voice) and CAPTCHA (posts to the admin channel) branches.', wired: true },
   { cmd: '/tabs',           surface: 'both',      usage: '/tabs [all]',                                    desc: 'list open Chrome pages', wired: true },
   { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
   { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },

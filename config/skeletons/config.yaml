@@ -369,13 +369,14 @@ networks:
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
 
 # --- Auto-login (opt-in) -----------------------------------------------------
-# /login <site> signs in on the brain Chrome using CHROME'S OWN saved password: the spine drives
-# the detect + the one trusted click over CDP, Chrome commits its own credential, nothing of ours
-# ever reads it. The reply is an outcome token (logged-in | needs-2fa | captcha-posted | failed |
-# no-autofill). Requires Chrome "auto sign-in" ON for the brain profile. All keys optional; unset =
-# the defaults shown. Full reference: config/config-schema.mjs (login).
+# /login <site> signs in on the brain Chrome using CHROME'S OWN saved password: the spine reads the
+# saved credential (DPAPI master key + AES-GCM), types the username + password over CDP, and drives
+# the one trusted submit click. The credential is typed and nulled, never returned/logged/posted.
+# The reply is an outcome token (logged-in | needs-2fa | captcha-posted | failed | no-credential).
+# Needs a password SAVED in the brain Chrome profile for the site. All keys optional; unset = the
+# defaults shown. Full reference: config/config-schema.mjs (login).
 # login:
+#   chrome_profile_path: ""              # Chrome user-data-dir to read logins from; unset = chrome.profile_dir, else the discovered brain profile
 #   otp_sources: [gmail, google_voice]   # where the 2FA branch reads the OTP (read + entered inside the limb, never surfaced)
 #   captcha_channel: admin_channel       # CONFIG KEY whose channel the CAPTCHA branch posts to (metadata only)
-#   autofill_wait_ms: 4000               # how long to wait for Chrome to populate the form before giving up (no-autofill)
 #   submit_overrides: {}                 # per-domain fixups: { "example.com": { url: "https://example.com/login", submit: "#signin" } }

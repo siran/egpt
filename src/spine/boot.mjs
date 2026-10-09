@@ -72,8 +72,9 @@ import { createIngest, lifecycleExit, isShellConnectMarker } from './ingest.mjs'
 // Absent EGPT_SESSION1 this is one `false` and nothing else runs — every Session 0 spine, every
 // test and every other node take the identical path they took before it existed.
 import { isSession1Successor, announceStanddown, SESSION1_ENV } from './successor-announce.mjs';
-import { createCommands, launchChromeDirect } from './commands.mjs';
+import { createCommands, launchChromeDirect, chromeProfileOf } from './commands.mjs';
 import { createLoginLimb } from './login.mjs';
+import { readChromeCredential } from '../tools/chrome-creds.mjs';
 import { createBeingLink } from './being-link.mjs';
 import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
@@ -2948,14 +2949,18 @@ export async function boot({
   };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
-  // ── THE AUTO-LOGIN LIMB (plan plans/2610082200-EGPT-LOGIN-PLAN.md, approach (ii)) ─────────────
+  // ── THE AUTO-LOGIN LIMB (plan plans/2610082200-EGPT-LOGIN-PLAN.md, approach (2)) ──────────────
   // Driven over the SAME CDP driver (src/tools/cdp.mjs) /chrome, /tabs, the web-brains and bus.mjs
   // already drive — NOT a second client. The seam composes the driver's generic Runtime.evaluate
   // (cdp.evaluate), its trusted Input click (cdp.dispatchClick) and its Page.captureScreenshot into
-  // the five operations login.mjs needs; the OTP enters through `fill` ALONE and nowhere else, with
-  // the expression (which holds the OTP) kept out of any error message. The admin post goes through
-  // boot's EXISTING noticeToChannel — the same resolver + poster compaction + the per-command audit
-  // use, never a second posting path. The secret itself is Chrome's and is never read here.
+  // the operations login.mjs needs; the username, password and OTP enter through `fill` ALONE and
+  // nowhere else, with the expression (which holds them) kept out of any error message. The
+  // credential is Chrome's OWN saved login, read for the brain profile via chrome-creds.mjs (the
+  // DPAPI master key + AES-256-GCM) — a LOCAL that login.mjs types and nulls, never returned,
+  // logged, or posted (chrome-creds logs nothing). The profile is the ONE the brain Chrome uses:
+  // login.chrome_profile_path if set, else chrome.profile_dir, else the discovered brain profile —
+  // chromeProfileOf, the SAME source commands.mjs /chrome launches into (no second source of truth).
+  // The admin post goes through boot's EXISTING noticeToChannel — never a second posting path.
   const loginCdp = {
     openOrFocus: async (url) => {
       let origin = null; try { origin = new URL(url).origin; } catch {}
@@ -2975,7 +2980,11 @@ export async function boot({
     },
     screenshot: (targetId) => cdp.captureScreenshot(targetId),
   };
-  const loginLimb = createLoginLimb({ cdp: loginCdp, bridge: { noticeToChannel }, getConfig, log: (m) => log.line?.(m) });
+  // The brain profile the credential is read from: login override, else the chrome.profile_dir the
+  // launcher uses, else the discovered brain profile — one source of truth (chromeProfileOf).
+  const loginProfilePath = () => getConfig()?.login?.chrome_profile_path || chromeProfileOf(getConfig());
+  const readCredential = (domain) => readChromeCredential({ profilePath: loginProfilePath(), domain });
+  const loginLimb = createLoginLimb({ cdp: loginCdp, bridge: { noticeToChannel }, readCredential, getConfig, log: (m) => log.line?.(m) });
   const requestLogin = (domain) => loginLimb.requestLogin(domain);
 
   // ONE turn machinery for the whole node (see the import note). Built here because it needs

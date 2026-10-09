@@ -1,32 +1,39 @@
-// login.mjs — the auto-login limb (plan plans/2610082200-EGPT-LOGIN-PLAN.md, approach (ii)).
+// login.mjs — the auto-login limb (plan plans/2610082200-EGPT-LOGIN-PLAN.md, approach (2)).
 //
-// When a being hits a login wall on the brain Chrome profile, log in with CHROME'S OWN saved
-// password — without the being, the spine, or the model ever reading the credential. Chrome holds
-// and masks the secret; the spine only drives the one TRUSTED gesture that makes Chrome commit it.
+// When a being hits a login wall on the brain Chrome profile, sign in with CHROME'S OWN saved
+// password. Approach (ii) ("ride Chrome's autofill") proved impossible — no CDP command triggers
+// Chrome's saved-password autofill and a CDP click does not fill it — so the spine READS Chrome's
+// own saved credential (src/tools/chrome-creds.mjs: the DPAPI master key + AES-256-GCM, the exact
+// way Chrome stores it) and TYPES it, then drives the one TRUSTED submit gesture.
 //
-// This file is a STATE MACHINE with the CDP driver and the admin-channel poster as INJECTED SEAMS,
-// so it unit-tests with no live browser (tests/login.test.mjs). boot.mjs builds the real seams from
-// src/tools/cdp.mjs (the SAME driver /chrome, /tabs, the web-brains and bus.mjs already drive — not
-// a second CDP client) and from its own noticeToChannel closure.
+// This file is a STATE MACHINE with the CDP driver, the credential reader, and the admin-channel
+// poster as INJECTED SEAMS, so it unit-tests with no live browser (tests/login.test.mjs). boot.mjs
+// builds the real seams from src/tools/cdp.mjs (the SAME driver /chrome, /tabs, the web-brains and
+// bus.mjs already drive — not a second CDP client), from chrome-creds.mjs bound to the brain
+// profile, and from its own noticeToChannel closure.
 //
 // THE SECRET BOUNDARY (the invariant — enforced here and locked by the secret test):
-//   - The injected detect / field-state scripts report SELECTORS and BOXES only — never a field
+//   - The username and password the reader returns are LOCALS: they reach cdp.fill and nothing
+//     else, are nulled right after the fill, and are NEVER returned, logged, posted to the admin
+//     channel, or put in a being's context. chrome-creds.mjs itself logs nothing.
+//   - The injected detect / classify scripts report SELECTORS and BOXES only — never a field
 //     VALUE. Nothing here ever reads `.value`.
 //   - The limb's ONLY outputs are an outcome token: 'logged-in' | 'needs-2fa' | 'captcha-posted' |
-//     'failed' | 'no-autofill'. No credential and no OTP is ever returned, logged, posted to the
-//     admin channel, or put in a being's context.
+//     'failed' | 'no-credential'. No credential and no OTP is ever surfaced.
 //   - The 2FA OTP IS read by the limb from the GV/Gmail tab and entered through cdp.fill — but it
 //     stays a local, ephemeral value: it reaches the fill seam and nothing else (never a return, a
 //     log line, or a notice body).
 
-export const OUTCOMES = ['logged-in', 'needs-2fa', 'captcha-posted', 'failed', 'no-autofill'];
+export const OUTCOMES = ['logged-in', 'needs-2fa', 'captcha-posted', 'failed', 'no-credential'];
 
 const DEFAULTS = {
   otp_sources: ['gmail', 'google_voice'],
   captcha_channel: 'admin_channel',   // a config KEY noticeToChannel resolves (default = the admin channel)
-  autofill_wait_ms: 4000,
   submit_overrides: {},               // per-domain: { url?, submit? } — login URL / submit selector overrides
+  settle_ms: 6000,                    // after the submit click, poll classify up to this long so an SPA's
+                                      // post-login navigation completes before the verdict (else a false 'failed')
 };
+const SETTLE_POLL_MS = 500;           // classify poll interval while the page settles
 
 // Where each OTP source is read from. voice.google.com / Gmail, per the plan.
 const OTP_SOURCE_URLS = {
@@ -37,9 +44,9 @@ const OTP_SOURCE_URLS = {
 
 // ── the injected GENERIC scripts (run via cdp.evaluate = Runtime.evaluate) ──────────────────────
 // Each is a self-contained IIFE. NONE of them read an input's .value: the detectors return a stable
-// CSS selector plus (for click targets) a bounding box; the autofill probe reads field STATE via
-// the autofill pseudo-classes; the classifier reads which KIND of control is on the page. The only
-// value that ever crosses is the OTP, and that goes the OTHER way — into cdp.fill, never out.
+// CSS selector plus (for click targets) a bounding box; the classifier reads which KIND of control
+// is on the page. The only values that ever cross go the OTHER way — the username, password and OTP
+// into cdp.fill, never out.
 
 const HELPERS = `
   const vis = (el) => { if (!el) return false; try { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; } catch (e) { return false; } };
@@ -62,25 +69,19 @@ const HELPERS = `
       || [...scope.querySelectorAll('button, [role="button"]')].find(vis) || null;
 `;
 
-// Find the password input, its form, and the submit control. { ok, password:{selector},
+// Find the username input, the password input, their form, and the submit control. Selectors +
+// (for the submit) a box only — never a field VALUE. username is null when the page has none (a
+// password-only or a username-first step). { ok, username:{selector}|null, password:{selector},
 // form:{selector}|null, submit:{selector, box} } — or { ok:false, reason }.
 const DETECT_SCRIPT = `(() => {${HELPERS}
   const pw = [...document.querySelectorAll('input[type="password"]')].find(vis);
   if (!pw) return { ok: false, reason: 'no-password-input' };
   const form = pw.form || null;
-  const submit = submitIn(form || document);
+  const scope = form || document;
+  const uname = [...scope.querySelectorAll('input[autocomplete="username"], input[autocomplete="email"], input[type="email"], input[name*="user" i], input[name*="email" i], input[name*="login" i], input[id*="user" i], input[id*="email" i], input[type="text"], input[type="tel"]')].find((el) => el !== pw && vis(el)) || null;
+  const submit = submitIn(scope);
   if (!submit) return { ok: false, reason: 'no-submit-control' };
-  return { ok: true, password: { selector: cssPath(pw) }, form: form ? { selector: cssPath(form) } : null, submit: { selector: cssPath(submit), box: boxOf(submit) } };
-})()`;
-
-// Autofill probe — STATE, not value. The autofill pseudo-classes are the only robust signal, and
-// the value is masked anyway. `has` tries each independently so an unsupported selector is false,
-// not a throw. { ok, filled } | { ok:false, reason:'gone' }.
-const autofillScript = (selector) => `(() => {
-  const el = document.querySelector(${JSON.stringify(selector)});
-  if (!el) return { ok: false, reason: 'gone' };
-  const has = (sel) => { try { return el.matches(sel); } catch (e) { return false; } };
-  return { ok: true, filled: has(':autofill') || has(':-webkit-autofill') || has(':-internal-autofill-selected') };
+  return { ok: true, username: uname ? { selector: cssPath(uname) } : null, password: { selector: cssPath(pw) }, form: form ? { selector: cssPath(form) } : null, submit: { selector: cssPath(submit), box: boxOf(submit) } };
 })()`;
 
 // Classify the post-submit page. 'captcha' | '2fa' | 'login' (still at step 1 / rejected) |
@@ -129,16 +130,19 @@ function resolveUrl(site, overrides) {
 }
 
 /**
- * The limb. All I/O is through the two seams, so the whole machine runs in a test with fakes.
+ * The limb. All I/O is through the seams, so the whole machine runs in a test with fakes.
  * @param {object} o
  * @param {object} o.cdp     { openOrFocus(url)->{targetId}, evaluate(id,expr)->value,
  *                             click(id,x,y), fill(id,selector,value), screenshot(id)->base64 }
  * @param {object} o.bridge  { noticeToChannel({configKey, text}) } — boot's EXISTING admin poster
+ * @param {function} [o.readCredential] (domain) -> Promise<{username,password}|null>; the brain
+ *                             Chrome's OWN saved login (src/tools/chrome-creds.mjs). Default: none
+ *                             saved (every domain -> no-credential), so a standalone/test build is
+ *                             inert until boot wires the real reader.
  * @param {function} o.getConfig  () -> the live config (login block read as .login)
- * @param {function} [o.log]       (line) -> daemon log; only ever handed outcome + domain + selector
- * @param {function} [o.sleep]     (ms) -> Promise; injected so the autofill wait is instant in tests
+ * @param {function} [o.log]       (line) -> daemon log; only ever handed outcome + domain + note
  */
-export function createLoginLimb({ cdp, bridge, getConfig = () => ({}), log = () => {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export function createLoginLimb({ cdp, bridge, readCredential = async () => null, getConfig = () => ({}), log = () => {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const loginCfg = () => ({ ...DEFAULTS, ...(getConfig()?.login || {}) });
 
   const done = (token, site, note) => {
@@ -146,16 +150,21 @@ export function createLoginLimb({ cdp, bridge, getConfig = () => ({}), log = () 
     return token;
   };
 
-  // Poll the password field's autofill STATE until it is populated or the budget runs out.
-  async function waitForAutofill(targetId, selector, waitMs) {
-    const pollMs = 150;
-    const deadline = Math.max(1, Math.ceil(waitMs / pollMs));
-    for (let i = 0; i < deadline; i++) {
-      const st = await cdp.evaluate(targetId, autofillScript(selector));
-      if (st && st.ok && st.filled) return true;
-      await sleep(pollMs);
+  // After the submit click, the page may be an SPA that navigates ASYNCHRONOUSLY to a logged-in view
+  // (ClassDojo: /login -> /story). Classifying immediately would see the login form still there and
+  // report a false 'failed'. Poll classify until it leaves 'login' (-> logged-in / 2fa / captcha) or
+  // the settle budget runs out; the first non-'login' verdict returns at once, so a fast page never
+  // waits. 'login' after the budget is a genuine failure (e.g. a rejected password).
+  async function classifyAfterSubmit(targetId) {
+    const budget = loginCfg().settle_ms ?? DEFAULTS.settle_ms;
+    const tries = Math.max(1, Math.ceil(budget / SETTLE_POLL_MS));
+    let state = 'login';
+    for (let i = 0; i < tries; i++) {
+      state = await cdp.evaluate(targetId, CLASSIFY_SCRIPT);
+      if (state !== 'login') return state;
+      await sleep(SETTLE_POLL_MS);
     }
-    return false;
+    return state;
   }
 
   async function readOtp(source) {
@@ -193,7 +202,7 @@ export function createLoginLimb({ cdp, bridge, getConfig = () => ({}), log = () 
       await cdp.fill(targetId, field.selector, code); // enter it; the value reaches the fill seam only
       const box = field.submit?.box || loginForm?.submit?.box;
       if (box) await cdp.click(targetId, centerOf(box).x, centerOf(box).y);
-      const state = await cdp.evaluate(targetId, CLASSIFY_SCRIPT);
+      const state = await classifyAfterSubmit(targetId);
       if (state === 'logged-in') return done('logged-in', site, `2fa via ${source}`);
       if (state === 'captcha') return captchaBranch(targetId, site, cfg);
     }
@@ -215,8 +224,19 @@ export function createLoginLimb({ cdp, bridge, getConfig = () => ({}), log = () 
       const form = await cdp.evaluate(targetId, DETECT_SCRIPT);
       if (!form || !form.ok || !form.submit) return done('failed', site, form?.reason || 'no login form');
 
-      const filled = await waitForAutofill(targetId, form.password.selector, cfg.autofill_wait_ms);
-      if (!filled) return done('no-autofill', site);
+      // Chrome's OWN saved login for this site. The values are LOCALS: they go into cdp.fill and
+      // are nulled right after — never returned, logged, or posted (the secret boundary).
+      const cred = await readCredential(site);
+      if (!cred || !cred.password) return done('no-credential', site);
+      let username = cred.username || null;
+      let password = cred.password;
+      cred.username = null; cred.password = null;   // drop the reader's object refs too
+      try {
+        if (form.username?.selector && username) await cdp.fill(targetId, form.username.selector, username);
+        await cdp.fill(targetId, form.password.selector, password);   // the value reaches the fill seam only
+      } finally {
+        username = null; password = null;            // nulled after the fill
+      }
 
       const ov = cfg.submit_overrides?.[site]?.submit;
       const box = ov ? (await cdp.evaluate(targetId, `(() => { const el = document.querySelector(${JSON.stringify(ov)}); if (!el) return null; const b = el.getBoundingClientRect(); return { x:b.x, y:b.y, width:b.width, height:b.height }; })()`)) : form.submit.box;
@@ -224,7 +244,7 @@ export function createLoginLimb({ cdp, bridge, getConfig = () => ({}), log = () 
       const c = centerOf(box);
       await cdp.click(targetId, c.x, c.y);            // the one TRUSTED gesture — Chrome commits its own password
 
-      const state = await cdp.evaluate(targetId, CLASSIFY_SCRIPT);
+      const state = await classifyAfterSubmit(targetId);
       if (state === 'logged-in') return done('logged-in', site);
       if (state === 'captcha') return captchaBranch(targetId, site, cfg);
       if (state === '2fa') return twofaBranch(targetId, site, cfg, form);

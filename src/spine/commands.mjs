@@ -98,7 +98,7 @@ const chromePortOf = (host) => String(host).split(':')[1] ?? '9221';
 // some other directory would hand its beings a browser logged in to nothing they were promised.
 // resolveBrainProfile() is the fallback precisely because it is a HEURISTIC: it scans for a profile
 // that has been used on an AI site. Unset ⇒ CHROME_BRAIN_PROFILE ⇒ byte-identical to before.
-const chromeProfileOf = (c) => c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
+export const chromeProfileOf = (c) => c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
 // The executable: config `chrome.bin`, else null — which lets chrome-launcher run its own
 // per-platform CHROME_PATHS search. Never a second locator here.
 const chromeBinOf = (c) => c?.chrome?.bin || null;
@@ -599,7 +599,7 @@ export function createCommands({
   // default; tests inject fakes so the suite never needs a live Chrome or a real socket.
   cdp = { isRunning: cdpIsRunning, listTabs: cdpListTabs, cdpHost: cdpHostOf, openTab: cdpOpenTab, activateTarget: cdpActivateTarget, closeTab: cdpCloseTab },
   // /login <site> → the auto-login limb (src/spine/login.mjs), injected by boot. Returns an
-  // OUTCOME token (logged-in | needs-2fa | captcha-posted | failed | no-autofill) — NEVER a
+  // OUTCOME token (logged-in | needs-2fa | captcha-posted | failed | no-credential) — NEVER a
   // credential. Absent (standalone construction / a test that doesn't need it) → /login replies
   // that the limb isn't wired, never throwing.
   requestLogin = null,
