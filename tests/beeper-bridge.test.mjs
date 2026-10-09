@@ -1088,6 +1088,137 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
+  // OWN VOICE REPLY RE-ENTERING (operator 2026-10-09) — REPRODUCE-FIRST, the live PALMA loop's voice
+  // face. A human sends a voice note; E replies in TEXT; the spine synthesizes that text to a .ogg and
+  // sends it; that OWN .ogg re-enters, is re-transcribed, and — because whisper's re-transcription is
+  // not byte-identical to the text and TTS carries no node signature — the text echo gates (the id
+  // ledger and fromThisNode) both miss it, so it is ingested as a fresh incoming and RE-PROMPTS E (who
+  // has nothing to add and emits '…'). The AUDIO BYTES are identical on the way back, so sendMedia
+  // records the sent .ogg's bytes key into the SAME own-send ledger the id path uses, and the incoming
+  // voice gate matches on it and records the note's own id as ours — the spine's existing
+  // kindOf==='echo' gate then prompts nobody (guard-provenance.test.mjs locks that wasSentByUs→echo
+  // chain). Keyed on BYTES alone: a human voice note with different bytes is still ingested and prompts.
+  it("E's own voice reply (.ogg) re-entering is recognized by its audio bytes and routed into own-output suppression; a human voice note is not", async () => {
+    const OWN = 'egpt-voice-reply-bytes', HUMAN = 'a-humans-spoken-words';
+    const sha = (b) => createHash('sha256').update(Buffer.from(b)).digest('hex');
+    const { bridge, incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),                         // a genuine note WOULD get a 👂
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+
+    // 1) The spine sends a voice reply (.ogg) through the mouth → sendMedia keys the .ogg's audio bytes
+    //    into the own-send ledger (wasSentByUs recognizes our own output by its bytes, not just its id).
+    const sentOgg = join(stateDir, 'egpt-voice-reply-deadbeef.ogg');
+    writeFileSync(sentOgg, OWN);
+    const sent = await bridge.sendMedia(CHAT('chat-1'), sentOgg);
+    await sent.confirmedId;
+    expect(bridge.wasSentByUs(CHAT('chat-1'), sha(OWN))).toBe(true);        // FAILS on current code
+
+    // 2) That SAME .ogg re-enters as an incoming voice note (isSender:false, as the loop surfaced it).
+    //    It is still recorded (onIncoming fires — a being never deletes a message) but marked as OUR
+    //    own send, so the spine's kindOf==='echo' makes it prompt nobody.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'own-echo', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(OWN)],
+    })] });
+    await waitFor(() => incoming.find((i) => i.from.msgKey === 'own-echo'));   // recorded
+    expect(bridge.wasSentByUs(CHAT('chat-1'), 'own-echo')).toBe(true);         // FAILS on current code — the echo would prompt
+
+    // 3) LOCK: a human voice note (different bytes) is NOT recognized as ours — it still prompts.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'human-note', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(HUMAN)],
+    })] });
+    await waitFor(() => incoming.find((i) => i.from.msgKey === 'human-note'));
+    expect(bridge.wasSentByUs(CHAT('chat-1'), 'human-note')).toBe(false);
+
+    // …and only the human note draws a 👂; our own re-entering .ogg posts none (rank-0 opt-out).
+    await waitFor(() => fake.posts.some((p) => p.replyToMessageID === 'human-note'));
+    expect(fake.posts.some((p) => p.replyToMessageID === 'own-echo')).toBe(false);
+  });
+
+  // THE TWO-ACCOUNT SPLIT (operator 2026-10-09) — REPRODUCE-FIRST for OUR real topology, the gap the
+  // single-account test above cannot reach. One spine drives TWO bridges: a PRIMARY (the EAR) and a
+  // SECONDARY (the MOUTH), each a separate startBeeperBridge with its OWN _sentIds, and one real chat
+  // is a DIFFERENT room id per account. E's voice reply is sent on the MOUTH (keyed in the MOUTH's
+  // store under the MOUTH's room id); the echo arrives on the EAR (different store, different room id),
+  // so the EAR's per-bridge, chat-qualified wasSentByUs MISSES it and E is re-prompted + double-👂'd.
+  // Boot wires each bridge an isOwnAudioEcho that fans the CHAT-INDEPENDENT audio store across every
+  // bridge and takes any yes (the same "ask every connection" the fan-out wasSentByUs uses); the EAR
+  // then finds the MOUTH's sent-audio key by BYTES alone and routes the echo into the SAME own-output
+  // path. FAILS on the baseline (local wasSentByUs only); PASSES with the cross-bridge resolver.
+  it('two-account split: a voice reply sent on the MOUTH bridge, echoing on the EAR bridge under a different room id, is suppressed via the cross-bridge resolver (not the local ledger)', async () => {
+    const OWN = 'egpt-split-voice-reply-bytes', HUMAN = 'a-humans-spoken-words-split';
+    const sha = (b) => createHash('sha256').update(Buffer.from(b)).digest('hex');
+    const MOUTH_ROOM = CHAT('mouth-room'), EAR_ROOM = CHAT('ear-room');   // one real chat, a DIFFERENT room id per account
+
+    // Each account is its OWN Beeper install (own port) with its OWN seen-state dir, so the mouth's
+    // _sentIds is genuinely invisible to the ear — the split, modelled honestly. The EAR rides the
+    // suite's `fake` (afterEach closes it; its `posts` is what a 👂 lands in).
+    const mouthFake = await startFakeBeeper();
+    const mouthState = mkdtempSync(join(tmpdir(), 'egpt-beeper-mouth-'));
+    const earState = mkdtempSync(join(tmpdir(), 'egpt-beeper-ear-'));
+
+    // The node's bridge set, read at CALL time — exactly how boot's isOwnAudioEcho reads
+    // bridgeByEndpoint (the siblings are built after the first one).
+    const nodeBridges = [];
+    const isOwnAudioEcho = (s) => nodeBridges.some((b) => !!b?.wasAudioSentByUs?.(s));
+
+    const build = async (f, state, extra) => {
+      const incoming = [];
+      const sub = f.subscribed();
+      const b = await startBeeperBridge({
+        beeperToken: 'test-token', baseUrl: `http://127.0.0.1:${f.port}`, wsUrl: `ws://127.0.0.1:${f.port}/v1/ws`,
+        stateDir: state, onIncoming: (t, from) => incoming.push({ t, from }), onMedia: () => {},
+        transcribe: async () => 'fake transcript',
+        onLog: (m) => { if (/failed|DROPPED|error/i.test(m)) console.error('[BRIDGELOG]', m); },
+        postsBackDelayMs: 0, ...extra,
+      });
+      bridges.push(b); nodeBridges.push(b);
+      await waitFor(() => f.subscribed() > sub);
+      await b.startupReady;
+      return { b, incoming };
+    };
+
+    try {
+      const { b: mouth } = await build(mouthFake, mouthState, {});                         // SECONDARY: speaks, never wakes
+      const { b: ear, incoming } = await build(fake, earState, {                           // PRIMARY: the ear
+        isOwnAudioEcho,
+        echoPlan: () => ({ rank: 1, winner: true }),                                       // a genuine note WOULD get a 👂
+        resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+      });
+
+      // 1) E's voice reply goes out on the MOUTH bridge → its bytes key lands in the MOUTH's store,
+      //    under the MOUTH's room id. The EAR's own store never sees it — that is the split.
+      const sentOgg = join(mouthState, 'egpt-voice-reply-split.ogg');
+      writeFileSync(sentOgg, OWN);
+      const sent = await mouth.sendMedia(MOUTH_ROOM, sentOgg);
+      await sent.confirmedId;
+      expect(mouth.wasAudioSentByUs(sha(OWN))).toBe(true);
+      expect(ear.wasAudioSentByUs(sha(OWN))).toBe(false);     // the EAR's own ledger does NOT have it (the split)
+      expect(isOwnAudioEcho(sha(OWN))).toBe(true);            // …but the node-level fan finds the MOUTH's key
+
+      // 2) The SAME bytes re-enter as an incoming voice note on the EAR, under the EAR's room id
+      //    (delivered only to the EAR's fake). The cross-bridge resolver recognizes it → the EAR
+      //    records the note's id as ours, so the spine's kindOf==='echo' prompts nobody.
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({
+        chatID: EAR_ROOM, id: 'split-echo', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(OWN)],
+      })] });
+      await waitFor(() => incoming.find((i) => i.from.msgKey === 'split-echo'));            // still transcribed + logged
+      expect(ear.wasSentByUs(EAR_ROOM, 'split-echo')).toBe(true);                           // FAILS on baseline — the echo would re-prompt
+
+      // 3) LOCK: a human voice note (different bytes) on the EAR is NOT ours — it still prompts + 👂s.
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({
+        chatID: EAR_ROOM, id: 'human-note-split', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(HUMAN)],
+      })] });
+      await waitFor(() => fake.posts.some((p) => p.replyToMessageID === 'human-note-split'));
+      expect(ear.wasSentByUs(EAR_ROOM, 'human-note-split')).toBe(false);
+      expect(fake.posts.some((p) => p.replyToMessageID === 'split-echo')).toBe(false);      // our own re-entering .ogg posts no 👂
+    } finally {
+      await mouthFake.close();
+      rmSync(mouthState, { recursive: true, force: true });
+      rmSync(earState, { recursive: true, force: true });
+    }
+  });
+
   // 👂 THE FALLBACK KEY THAT WAS NOT A KEY (live, 2026-09-12) — REPRODUCE-FIRST.
   // When the audio could not be hashed the bridge FELL BACK to msg.id — node-LOCAL, the exact key the
   // audio hash exists to replace, so the failure path silently reinstated the double-👂 the design

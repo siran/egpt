@@ -263,6 +263,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     },
     editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, wrapPersona(opts, text)); },
     wasSentByUs(chat, msgId) { return real.wasSentByUs?.(chat, msgId); },
+    // CROSS-BRIDGE own-voice query (operator 2026-10-09) — forwarded like wasSentByUs so boot's
+    // isOwnAudioEcho fan can reach it through this port wrapper. A bridge without it answers
+    // undefined (falsy), which the fan reads as "not mine".
+    wasAudioSentByUs(sha) { return real.wasAudioSentByUs?.(sha); },
     // MEMBERSHIP (operator 2026-08-31) — "is <identity> a participant of this chat?", the ONE
     // question a `fallback_handle:` asks before waking (src/spine/router.mjs fallbackWake). Not an
     // outbound: a READ of this account's own copy of the roster, cached and TTL'd in the bridge.
