@@ -440,7 +440,7 @@ export function createSpine({
     const ahead = bumpTrain(turnKey);
     // CHUNK 2 super-channel routing: the reply goes to this conversation's super channel when it has
     // one right now (gating.decide's live lookup), else the arrival chat — unchanged otherwise.
-    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, auto: true });
+    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, auto: true, origin: ev.chatId });
     // `trigger` (operator 2026-09-11) — the handle-stripped dispatch line of the message that
     // armed this dwell. It is the BASE only when the drained cycle came back empty (a burst with
     // lines prompts with those verbatim), and each of those lines was already stripped on its way
@@ -1405,7 +1405,7 @@ export function createSpine({
     // CHUNK 2 super-channel routing: post to the conversation's super channel when it has one right
     // now (gating.decide's live lookup), else the arrival chat — unchanged otherwise. The transcript/
     // limbs below stay keyed to ev.chatId (the alias shares that one on-disk conversation).
-    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
+    const out = sender.open(d.replyChatId ?? ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', origin: ev.chatId });
     return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger }));
   }
 

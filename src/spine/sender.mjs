@@ -342,8 +342,18 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   return {
-    open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
+    open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false, origin = null } = {}) {
       const { bridge: bridgeForThisBeing, route: peerRoute } = outbound(being, chatId);
+      // ROUTED-TARGET FALLBACK (never a silent drop): a send the sending account can't place on the
+      // routed room (a super/alias room it isn't a member of → resolveChatId null → DROPPED) re-sends
+      // to the origin chat, which always resolves (the message just arrived there). origin unset / ==
+      // chatId ⇒ byte-identical to before.
+      const deliverHere = async (payload, sendOpts) => {
+        const r = await bridgeForThisBeing.send(chatId, payload, sendOpts);
+        if (r || !origin || origin === chatId) return r;
+        onLog(`sender: ${being} reply undeliverable to routed ${chatId} — delivering to origin ${origin}`);
+        return bridgeForThisBeing.send(origin, payload, sendOpts);
+      };
       // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
       // NO persona line (no body_emoji/label tag passed → the port stamps nothing), no
       // end-marker, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
@@ -365,7 +375,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           async finish(reply, { surface = true } = {}) {
             const t = textOf(reply);
             if (!surface || !t.trim()) return;          // withheld / empty → post nothing
-            sendResult = await bridgeForThisBeing.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
+            sendResult = await deliverHere(t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
           },
           async fail() { /* a human doesn't post a typing/failure scaffold — stay silent */ },
           get confirmedId() { return sendResult?.confirmedId ?? null; },
@@ -564,9 +574,9 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // spoke and why. NEVER a silent drop, and never a lost reply.
           if (stream) {
             await stream.finish?.(body);
-            if (!stream.delivered) fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);   // §7 fallback
+            if (!stream.delivered) fallbackResult = await deliverHere(body, tag);   // §7 fallback
           } else {
-            fallbackResult = await bridgeForThisBeing.send(chatId, body, tag);
+            fallbackResult = await deliverHere(body, tag);
           }
         },
         async fail() {                                 // visible failure: the message ends with ❌

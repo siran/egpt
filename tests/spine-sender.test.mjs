@@ -452,3 +452,62 @@ describe('sender — bridgeOf: per-being connection routing (multi-connection Be
     expect(bridge.streams[0].finals).toEqual(['hi']);
   });
 });
+
+// ROUTED-TARGET FALLBACK (the live Favel drop, 2026-10-10): a reply is routed to a super/alias room
+// (gating.decide's replyChatId), but the sending account is NOT a member of that room — resolveChatId
+// returns null and the whole reply was DROPPED ("send DROPPED … resolved=null"). It must fall back to
+// the origin chat (always resolvable — the message just arrived there) instead of being lost.
+describe('sender — routed-target drop falls back to the origin chat (never a silent drop)', () => {
+  // Models the live failure: the routed room is unreachable on this account (stream never delivers,
+  // a fresh send returns null — the DROP); every other chat resolves and delivers.
+  function routingBridge({ unreachable }) {
+    const sent = [], streams = [];
+    return {
+      sent, streams,
+      send(chat, text, opts) {
+        if (chat === unreachable) return null;                 // not a member → resolveChatId null → DROPPED
+        sent.push({ chat, text, opts });
+        return { ok: true, chatId: chat, confirmedId: Promise.resolve('id') };
+      },
+      startStream(chat, init, opts) {
+        const reachable = chat !== unreachable;
+        const h = {
+          chat, init, opts, frames: [], finals: [], delivered: false,
+          update(t) { h.frames.push(t); },
+          async finish(t) { h.finals.push(t); if (reachable) h.delivered = true; },   // unreachable → never in-place → §7
+        };
+        streams.push(h); return h;
+      },
+    };
+  }
+
+  it('a reply ROUTED to an unresolvable super room is delivered to the ORIGIN, not dropped (RED before the fix)', async () => {
+    const SUPER = '!super', ORIGIN = '!origin';
+    const bridge = routingBridge({ unreachable: SUPER });
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open(SUPER, { being: 'e', replyTo: 'm1', origin: ORIGIN });
+    await out.finish({ text: 'la respuesta completa' });
+    // the stream could not place it on the super room; current code then re-sends to SUPER too and
+    // drops (sent empty). The fix re-delivers to the origin.
+    expect(bridge.sent.map((s) => s.chat)).toEqual([ORIGIN]);
+    expect(bridge.sent[0].text).toBe('la respuesta completa');
+  });
+
+  it('a mode:auto reply routed to an unresolvable super room also falls back to the origin', async () => {
+    const SUPER = '!super', ORIGIN = '!origin';
+    const bridge = routingBridge({ unreachable: SUPER });   // auto never streams — the post-once send is the one that drops
+    const out = createSender({ bridge }).open(SUPER, { being: 'e', replyTo: 'm1', auto: true, origin: ORIGIN });
+    await out.finish({ text: 'texto plano' });
+    expect(bridge.sent.map((s) => s.chat)).toEqual([ORIGIN]);
+    expect(bridge.sent[0].text).toBe('texto plano');
+  });
+
+  it('a reply routed to a REACHABLE room still delivers THERE — the origin fallback does not fire (unchanged)', async () => {
+    const ROUTED = '!routed', ORIGIN = '!origin';
+    const bridge = routingBridge({ unreachable: '!nope' });   // ROUTED resolves
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open(ROUTED, { being: 'e', replyTo: 'm1', origin: ORIGIN });
+    await out.finish({ text: 'hola' });
+    expect(bridge.streams[0].chat).toBe(ROUTED);
+    expect(bridge.streams[0].finals).toEqual(['hola']);       // delivered in place on the routed room
+    expect(bridge.sent).toHaveLength(0);                      // no fresh send anywhere
+  });
+});
