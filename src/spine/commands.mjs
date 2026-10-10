@@ -3550,11 +3550,14 @@ export function createCommands({
     // routing can find this channel from the reply path. NO mode is stored — the channel's mode is
     // intrinsic (read live at the gate, see the header). operator + Rodz + the summoner (a plain
     // create-time invite — chunk 3 owns respect-exit / re-invite). null → createGroup gave no chatId.
-    const participantIDs = [rodz.rodzUserId, ...(participantToInvite ? [participantToInvite] : [])];
+    // invitable summoner only: a bridged @…:beeper.local id is surface-valid; a @…:beeper.com (owner / cross-account matrix id) is NOT — DROP it so createGroup never 400s and the channel still creates.
+    const invitee = String(participantToInvite ?? '').endsWith(':beeper.local') ? participantToInvite : null;
+    if (participantToInvite && !invitee) onLog(`super: summoner ${participantToInvite} is not an invitable ${surface} participant id — creating the channel without inviting them`);
+    const participantIDs = [rodz.rodzUserId, ...(invitee ? [invitee] : [])];
     const aliased = await createAliasedSideGroup(ev, surface, title, rodz.accountID, participantIDs, 'super', { super: true });
     if (!aliased) return;
     const { chatId: superChatId } = aliased;
-    onLog(`super: ${cTitle} -> channel ${superChatId} aliased to ${primaryJid}, invited ${participantToInvite ?? '(none)'}`);
+    onLog(`super: ${cTitle} -> channel ${superChatId} aliased to ${primaryJid}, invited ${invitee ?? '(none)'}`);
     // POST THE OPENER (bridge voice, FROM RODZ) so the new group surfaces in Beeper — same postOpener
     // path /join uses; a failure here never undoes the alias above.
     await postOpener({ verb: 'super', newChatId: superChatId, title, openerText: superOpenerText(cTitle), accountID: rodz.accountID });

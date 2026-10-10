@@ -209,6 +209,33 @@ describe('ensureSuperChannel via the "…" summon — a first summon with NO exi
     await cmds.runPhrase(inbound('…', { senderId: undefined }), 'super');
     expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID]);
   });
+
+  // The live bug (2026-10-09): the operator in a 1:1 summons as a MATRIX id (@anrodriguez:beeper.com),
+  // which the whatsapp createGroup rejects (M_INVALID_PARAM) — the whole channel aborted, nothing posted.
+  // A non-surface-native summoner must be DROPPED (createGroup handed ONLY valid ids), channel still
+  // created + aliased + opener posted. FAILS pre-fix (the bad id passes through → createGroup 400s/aborts).
+  it('a MATRIX-form summoner (@…:beeper.com) is DROPPED; the channel still creates + aliases + posts the opener', async () => {
+    const OWNER_MATRIX = '@anrodriguez:beeper.com';
+    const { cmds, calls, getState } = harness({ config: cfg() });
+    await cmds.runPhrase(inbound('…', { senderId: OWNER_MATRIX }), 'super');
+
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID]);   // ONLY Rodz — the bad id dropped, NOT passed through
+    const st = getState();
+    const primaryJid = getContact(st, 'whatsapp', C_CHAT).jid;
+    expect(st.contacts.whatsapp[SUPER_CHAT]).toEqual({ aliasOf: primaryJid, transcript: sanitizeSlug(SUPER_TITLE), super: true });
+    expect(aliasTargetOf(st, 'whatsapp', SUPER_CHAT)).toBe(primaryJid);
+    expect(calls.post).toHaveLength(1);                               // opener still posted
+    expect(calls.post[0].via).toBe('secondary');
+  });
+
+  // Companion: a surface-native summoner id (@…:beeper.local) IS included (so a real counterparty reads E's reply).
+  it('a surface-valid summoner id (@…:beeper.local) IS invited', async () => {
+    const COUNTERPARTY = '@whatsapp_lid-99887766:beeper.local';
+    const { cmds, calls } = harness({ config: cfg() });
+    await cmds.runPhrase(inbound('…', { senderId: COUNTERPARTY }), 'super');
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID, COUNTERPARTY]);
+  });
 });
 
 // ── reuse: a second "…" when the channel already exists ──────────────────────────────────────────────
