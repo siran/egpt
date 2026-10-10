@@ -49,8 +49,10 @@ import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
-import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab } from '../tools/cdp.mjs';
-import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile, spawnChrome } from '../tools/chrome-launcher.mjs';
+import { isRunning as cdpIsRunning, listTabs as cdpListTabs, cdpHost as cdpHostOf, openTab as cdpOpenTab, activateTarget as cdpActivateTarget, closeTab as cdpCloseTab, createCdpClient, createPipeTransport } from '../tools/cdp.mjs';
+import { findChromeExecutable, chromeArgs, chromeCommandLine, resolveBrainProfile, spawnChrome, spawnChromePipe as defaultSpawnChromePipe } from '../tools/chrome-launcher.mjs';
+import { admitLaunch, estimateChromeBytes } from './chrome-pool.mjs';
+import { freemem } from 'node:os';
 import { helpText } from '../interpreter.mjs';
 import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature } from '../node-signature.mjs';
@@ -73,6 +75,28 @@ export const CHROME_BRAIN_PROFILE = resolveBrainProfile();
 export const CHROME_LAUNCH_TASK = 'egpt-chrome';
 const CHROME_LAUNCH_TIMEOUT_MS = 20000;   // how long to wait for a cold Chrome to bind its CDP port
 const CHROME_LAUNCH_POLL_MS = 500;
+
+// Dedicated-Chrome memory-admission defaults (chunk 3b); overridable via config chrome.launch_estimate_mb
+// (per-Chrome cost floor) and chrome.memory_margin_mb (free-memory margin a launch must leave).
+const CHROME_LAUNCH_ESTIMATE_MB = 500;
+const CHROME_MEMORY_MARGIN_MB = 1024;
+const MB = 1024 * 1024;
+
+// Default per-pid RSS reader (injected seam; faked in tests). Best-effort working set in bytes, or
+// null when unreadable — a null sample is DROPPED by estimateChromeBytes, never counted as 0.
+function defaultRssOf(pid) {
+  if (!pid) return null;
+  try {
+    if (process.platform === 'win32') {
+      const out = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true }).stdout || '';
+      const m = out.match(/"([\d.,]+)\s*K"\s*$/m);
+      return m ? Number(m[1].replace(/[.,]/g, '')) * 1024 : null;
+    }
+    const out = spawnSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '';
+    const kb = Number(String(out).trim());
+    return Number.isFinite(kb) && kb > 0 ? kb * 1024 : null;
+  } catch { return null; }
+}
 
 // Default launch seam: fire the scheduled task and report whether schtasks accepted it. A
 // non-zero exit (the task isn't registered) or a spawn error both surface as { ok: false },
@@ -697,6 +721,14 @@ export function createCommands({
   // advancing fake clock so the ~20s wait is instant and deterministic.
   now = () => Date.now(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  // Dedicated-Chrome pool seams (chunk 3b) — a FAKE child + injected memory in tests, never a real
+  // spawn or a real OS probe. spawnChromePipe direct-spawns a pipe Chrome (DIRECT-SPAWN only, the
+  // spine holds the fds); freeMem/rssOf feed the pure admission (chrome-pool.mjs); onChromeLog
+  // reports launches / evictions / deaths. Boot injects none of these → the dedicated path is INERT.
+  spawnChromePipe = defaultSpawnChromePipe,
+  freeMem = () => freemem(),
+  rssOf = defaultRssOf,
+  onChromeLog = () => {},
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
   gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
@@ -1350,8 +1382,92 @@ export function createCommands({
   // not fire two launches at one profile, so a call that arrives while a launch is in flight JOINS
   // it and gets the same answer. Nothing is queued: the next call after it settles probes afresh,
   // and finds the browser up.
+  // ── DEDICATED-CHROME POOL (chunk 3b) ─────────────────────────────────────────────────────────
+  // One pipe-driven chrome.exe per DEDICATED profile dir; the shared brain path below is untouched.
+  const _dedicated = new Map();          // profileDir → { child, client, writable, readable, pid, lastUsedAt, busy }
+  const _dedicatedEnsuring = new Map();  // profileDir → in-flight launch (per-profile single-flight)
+  const chromeAlive = (e) => !!e?.child && e.child.exitCode == null && !e.child.killed;
+  const launchEstimateBytes = () => (Number(cfg()?.chrome?.launch_estimate_mb) || CHROME_LAUNCH_ESTIMATE_MB) * MB;
+  const memoryMarginBytes = () => (Number(cfg()?.chrome?.memory_margin_mb) || CHROME_MEMORY_MARGIN_MB) * MB;
+
+  // Evict the idlest NON-busy dedicated Chrome (lowest lastUsedAt); profile dir persists → relaunch
+  // comes up still-logged-in. The shared brain is not in this map, so it is never evicted.
+  function evictIdlestDedicated() {
+    let victim = null;
+    for (const [dir, e] of _dedicated) {
+      if (e.busy || !chromeAlive(e)) continue;
+      if (!victim || e.lastUsedAt < victim.e.lastUsedAt) victim = { dir, e };
+    }
+    if (!victim) return false;
+    try { victim.e.child.kill(); } catch {}
+    _dedicated.delete(victim.dir);
+    onChromeLog(`evicted dedicated Chrome ${victim.dir} (pid ${victim.e.pid ?? '?'}) under memory pressure`);
+    return true;
+  }
+
+  // A dedicated conversation's OWN Chrome: memory-admitted, pipe-spawned, driven by a pipe cdpClient.
+  // Registry keyed by profile dir; a live profile is NEVER relaunched; single-flight per profile.
+  function ensureDedicatedChrome(conversation) {
+    const profileDir = chromeProfileOf(cfg(), conversation);
+    // A conversation that resolves to the shared brain (admin / unslugged) is NOT dedicated.
+    if (profileDir === chromeProfileOf(cfg())) return ensureChrome();
+    const live = _dedicated.get(profileDir);
+    if (chromeAlive(live)) { live.lastUsedAt = now(); return Promise.resolve({ dedicated: true, profileDir, client: live.client, pid: live.pid, launched: false, running: true }); }
+    if (_dedicatedEnsuring.has(profileDir)) return _dedicatedEnsuring.get(profileDir);
+    const p = (async () => {
+      const estimateBytes = estimateChromeBytes({
+        runningRssBytes: [..._dedicated.values()].filter(chromeAlive).map((e) => rssOf(e.pid)),
+        floorBytes: launchEstimateBytes(),
+      });
+      const marginBytes = memoryMarginBytes();
+      for (;;) {
+        const availableBytes = freeMem();
+        const canEvict = [..._dedicated.values()].some((e) => !e.busy && chromeAlive(e));
+        const d = admitLaunch({ availableBytes, estimateBytes, marginBytes, canEvict });
+        if (d.action === 'launch') break;
+        if (d.action === 'evict' && evictIdlestDedicated()) continue;
+        onChromeLog(`declined dedicated Chrome ${profileDir}: ${d.reason}`);
+        return { dedicated: true, profileDir, client: null, launched: false, running: false, declined: true, why: d.reason };
+      }
+      let spawned;
+      try {
+        spawned = await spawnChromePipe({
+          userDataDir: profileDir,
+          bin: chromeBinOf(cfg()),
+          onExit: ({ code, signal, error }) => {
+            if (_dedicated.get(profileDir)?.pid === spawned?.pid) _dedicated.delete(profileDir);
+            onChromeLog(error
+              ? `dedicated Chrome ${profileDir} never started — ${error?.message ?? error}`
+              : `dedicated Chrome ${profileDir} exited (${signal ? `signal ${signal}` : `code ${code}`}) — nothing restarted; it relaunches on next need`);
+          },
+        });
+      } catch (e) {
+        onChromeLog(`dedicated Chrome ${profileDir} launch failed — ${e?.message ?? e}`);
+        return { dedicated: true, profileDir, client: null, launched: false, running: false, why: String(e?.message ?? e) };
+      }
+      const client = createCdpClient(createPipeTransport({ writable: spawned.writable, readable: spawned.readable }));
+      _dedicated.set(profileDir, { child: spawned.child, client, writable: spawned.writable, readable: spawned.readable, pid: spawned.pid, lastUsedAt: now(), busy: false });
+      onChromeLog(`launched dedicated Chrome ${profileDir} (pid ${spawned.pid ?? '?'}) over --remote-debugging-pipe`);
+      return { dedicated: true, profileDir, client, pid: spawned.pid, launched: true, running: true };
+    })().finally(() => { _dedicatedEnsuring.delete(profileDir); });
+    _dedicatedEnsuring.set(profileDir, p);
+    return p;
+  }
+
+  // 3c LOOKUP: conversation → its CDP client. A dedicated conversation ensures its own pipe Chrome and
+  // yields that pipe cdpClient; everyone else is shared/brain and keeps the default port client — beings
+  // stay on the port client until 3c rewires the being cdp seam. Ensures on demand; single-flight.
+  async function chromeClientFor(conversation) {
+    const r = await ensureChrome(conversation);
+    if (r?.dedicated) return { dedicated: true, profileDir: r.profileDir, client: r.client ?? null, pid: r.pid ?? null, declined: !!r.declined, why: r.why ?? '' };
+    return { dedicated: false, host: r?.host ?? null, client: cdp };
+  }
+
   let _ensuring = null;
-  function ensureChrome() {
+  // A DEDICATED conversation gets its OWN pipe Chrome (above); everyone else — conversation-less, or a
+  // non-dedicated conversation — takes the byte-identical shared/brain port path below.
+  function ensureChrome(conversation) {
+    if (conversation && conversation.dedicated) return ensureDedicatedChrome(conversation);
     if (_ensuring) return _ensuring;
     _ensuring = (async () => {
       let host = '?';
@@ -4284,5 +4400,5 @@ export function createCommands({
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 
-  return { isCommand, phraseCommand, runPhrase, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf, startBrowser };
+  return { isCommand, phraseCommand, runPhrase, run, runCaptured, remoteNode, nodeCommandForMe, makeNodeExplicit, currentRoomOf, startBrowser, chromeClientFor };
 }

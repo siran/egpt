@@ -373,6 +373,17 @@ turn_timeout_ms: 600000
 # log_to_group: "eGPT Admin"      # per-/command audit → this group: one metadata-only line per command ("/<cmd> in <chat> by <sender> → <outcome?>"), NEVER the reply body. May equal or differ from admin_channel; unset = off
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
 
+# --- Chrome control (optional) -----------------------------------------------
+# The shared brain Chrome (CDP :9221) and the per-conversation dedicated-Chrome pool. Full
+# reference: config/config-schema.mjs (chrome). NOTE: chrome.dedicated is PER-CONVERSATION — set it
+# in a conversation's own config.yaml, NOT here. The two memory knobs below are node-level and bound
+# only the EXTRA dedicated Chromes; the shared brain is never gated or evicted.
+# chrome:
+#   bin: ""                    # Chrome executable; unset = platform default lookup
+#   profile_dir: ""            # --user-data-dir for the shared brain CDP profile; unset = discovered brain profile
+#   launch_estimate_mb: 500    # per-Chrome memory cost floor for dedicated-launch admission when none is running to measure
+#   memory_margin_mb: 1024     # free physical memory a dedicated launch must leave; below it the idlest dedicated Chrome is evicted, else declined
+
 # --- Auto-login (opt-in) -----------------------------------------------------
 # /login <site> signs in on the brain Chrome using CHROME'S OWN saved password: the spine reads the
 # saved credential (DPAPI master key + AES-GCM), types the username + password over CDP, and drives

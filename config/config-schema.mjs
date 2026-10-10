@@ -2391,6 +2391,25 @@ export const CONFIG_SCHEMA = {
         rules. Targets the brain Chrome by PID when egpt spawned it (/chrome);
         falls back to app-name on macOS / Linux. Set to "off" if the focus theft
         becomes intrusive (e.g. mid-typing in another app).
+      dedicated
+        ENUM: true | false (DEFAULT false). PER-CONVERSATION, set in the
+        conversation's OWN config.yaml (read via chrome-pool.parseDedicatedFlag),
+        NOT a node-level key. true opts this conversation OUT of the shared brain
+        Chrome and onto its OWN profile + its OWN chrome.exe, driven by the spine
+        over --remote-debugging-pipe (no port, no listening socket). Absent /
+        false / anything-but-the-boolean-true = shared brain (the default). What
+        is signed into one dedicated conversation's Chrome is invisible to every
+        other. (plans/2610091931 — per-conversation Chrome.)
+      launch_estimate_mb
+        INT MB (DEFAULT 500). The deterministic per-Chrome memory COST used for
+        dedicated-launch admission (chrome-pool.estimateChromeBytes floor) when no
+        dedicated Chrome is running to measure. With one or more running, the
+        measured MAX working-set RSS supersedes this. Node-level.
+      memory_margin_mb
+        INT MB (DEFAULT 1024). The free physical memory a dedicated launch must
+        leave (chrome-pool.admitLaunch): launch only if available − estimate >=
+        this margin; below it, evict the idlest dedicated Chrome and retry, else
+        decline. NEVER gates or evicts the shared brain Chrome. Node-level.
   `,
 
   mirror: `

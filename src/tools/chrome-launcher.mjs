@@ -255,6 +255,46 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
   return { pid: child.pid, command };
 }
 
+// Pipe-mode flags (chunk 3b): --remote-debugging-pipe instead of a port, and NO --remote-allow-origins
+// (that is port/WS-only). Keeps the non-default --user-data-dir (Chrome 136 requires it), --no-first-run,
+// the no-banner --silent-debugger-extension-api, and the renderer-alive flags. --load-extension still opts.
+export function chromePipeArgs({ userDataDir, extensionDir, url = 'about:blank' }) {
+  const args = [
+    '--remote-debugging-pipe',
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    `--disable-features=ChromeWhatsNewUI${extensionDir ? ',DisableLoadExtensionCommandLineSwitch' : ''}`,
+    '--silent-debugger-extension-api',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--new-window',
+  ];
+  if (extensionDir) args.push(`--load-extension=${extensionDir}`);
+  args.push(url);
+  return args;
+}
+
+/**
+ * Spawn a DEDICATED Chrome driven over --remote-debugging-pipe. DIRECT-SPAWN ONLY: the spine must
+ * hold fds 3 & 4 itself (the Session-0 task hop cannot pass fds), so this is never routed through the
+ * scheduled-task seam. stdio ['inherit','inherit','inherit','pipe','pipe'] hands the child fd3 (we
+ * write CDP) and fd4 (we read CDP). Returns { child, writable, readable, pid } — createPipeTransport
+ * in cdp.mjs takes { writable, readable }. onExit mirrors spawnChrome's (wrapped, optional).
+ */
+export async function spawnChromePipe({ userDataDir, extensionDir, url = 'about:blank', bin = null, onExit = null }) {
+  const chrome = bin || findChromeExecutable();
+  if (!chrome) throw new Error('Chrome executable not found in standard locations');
+  await mkdir(userDataDir, { recursive: true });
+  const args = chromePipeArgs({ userDataDir, extensionDir, url });
+  const child = spawn(chrome, args, { stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'] });
+  if (onExit) {
+    child.on('error', (error) => { try { onExit({ code: null, signal: null, error }); } catch { /* supervisor's problem */ } });
+    child.on('exit', (code, signal) => { try { onExit({ code, signal, error: null }); } catch { /* supervisor's problem */ } });
+  }
+  return { child, writable: child.stdio[3], readable: child.stdio[4], pid: child.pid };
+}
+
 /**
  * Poll Chrome's /json/version until it responds or timeout elapses.
  * @param {number} port
