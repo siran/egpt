@@ -10,6 +10,22 @@
 // Browser-portable: in Node the default getter returns localhost:9221
 // (override via $EGPT_CDP_HOST); the extension overrides at boot via
 // setCdpHostGetter to read its own chrome.storage.
+//
+// ── TRANSPORT vs OPS (chunk 3a) ──────────────────────────────────────
+// The high-level ops (listTabs/openTab/evaluate/streamFromTab/…) are the
+// SAME CDP methods regardless of how bytes reach Chrome. What differs is
+// the TRANSPORT. Two live here:
+//   • the WS-over-port transport (createPortTransport) — HTTP /json/* for
+//     discovery + one WebSocket per endpoint, to localhost:9221. THE DEFAULT;
+//     every existing caller keeps this path byte-for-byte.
+//   • the pipe transport (createPipeTransport) — \0-delimited JSON over the
+//     two inherited fds (3 client→Chrome, 4 Chrome→client) of a Chrome
+//     launched with --remote-debugging-pipe; NO port, NO HTTP. Target
+//     discovery/addressing via the Target domain (flat protocol, sessionId).
+// createCdpClient(transport) binds the ops to a chosen transport. The
+// module-level exports are a default client over the port transport, so
+// nothing downstream changes. Chunk 3b hands createPipeTransport the two fd
+// streams and routes a dedicated Chrome's client to it.
 
 let _hostGetter = null;
 
@@ -67,244 +83,242 @@ async function fetchJson(path) {
   return res.json();
 }
 
-export async function isRunning() {
-  try { await fetchJson('/json/version'); return true; }
-  catch { return false; }
+// ── small shared helpers ─────────────────────────────────────────────
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** Race a promise against a deadline, rejecting with `message` if it wins. */
+function withDeadline(promise, ms, message = 'CDP timeout') {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(message)), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
-export async function listTabs(filterRegex = null) {
-  const all = await fetchJson('/json');
-  return all
-    .filter(t => t.type === 'page')
-    .filter(t => !filterRegex || filterRegex.test(t.url));
-}
+// ── TRANSPORT: WS-over-port (the default) ─────────────────────────────
+//
+// A "session" is the uniform handle the ops drive, whatever the transport:
+//   send(method, params) → Promise<result>   (rejects on a CDP error)
+//   onEvent(cb)   — cb(method, params) for unsolicited protocol events
+//   onClose(cb)   — cb(err) when the underlying channel drops (fires at most once)
+//   close()       — release this session
+// In port mode a browser-level session is a WebSocket to /json/version's
+// webSocketDebuggerUrl; a target session is a WebSocket to the tab's own
+// webSocketDebuggerUrl. Each is its own socket, correlated by the integer id.
 
-export async function closeBrowser() {
-  if (!(await isRunning())) throw new Error('Brain is not running');
-  const v = await fetchJson('/json/version');
-  await new Promise(resolve => {
-    const ws = new WebSocket(v.webSocketDebuggerUrl);
-    const settle = () => { try { ws.close(); } catch {} ; resolve(); };
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-    });
-    ws.addEventListener('close', settle);
-    ws.addEventListener('error', settle); // browser dying triggers ws error — that's fine
-    setTimeout(settle, 3000);
+/** Open a WebSocket, wire id-correlation + events, resolve a session handle
+ *  once the socket is open. Mirrors the per-socket machinery the ops used
+ *  inline before — byte-for-byte the same behavior on the port path. */
+function openWsSession(url) {
+  const ws = new WebSocket(url);
+  let msgId = 0;
+  const pending = new Map();
+  let eventCb = null;
+  let closeCb = null;
+  let closed = false;
+  let closeErr = null;
+  const drop = (err) => {
+    if (closed) return;
+    closed = true; closeErr = err;
+    for (const { rej } of pending.values()) rej(err);
+    pending.clear();
+    if (closeCb) closeCb(err);
+  };
+  ws.addEventListener('message', e => {
+    let data;
+    try { data = JSON.parse(e.data.toString()); } catch { return; }
+    if (data.id && pending.has(data.id)) {
+      const { res, rej } = pending.get(data.id);
+      pending.delete(data.id);
+      if (data.error) rej(new Error(data.error.message)); else res(data.result);
+    } else if (data.method && eventCb) {
+      eventCb(data.method, data.params);
+    }
   });
-  // wait until /json/version stops answering
-  for (let i = 0; i < 10; i++) {
-    if (!(await isRunning())) return;
-    await new Promise(r => setTimeout(r, 250));
-  }
-}
-
-export async function findTab(targetId) {
-  const tabs = await listTabs();
-  return tabs.find(t => t.id === targetId);
-}
-
-export async function openTab(url) {
-  const v = await fetchJson('/json/version');
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(v.webSocketDebuggerUrl);
-    let id = 0;
-    const timeout = setTimeout(() => { try { ws.close(); } catch {} ; reject(new Error('Timed out opening tab')); }, 10000);
-    ws.addEventListener('open', () => {
-      id = 1;
-      ws.send(JSON.stringify({ id, method: 'Target.createTarget', params: { url } }));
-    });
-    ws.addEventListener('message', e => {
-      let data;
-      try { data = JSON.parse(e.data.toString()); } catch { return; }
-      if (data.id === id) {
-        clearTimeout(timeout);
-        ws.close();
-        if (data.error) reject(new Error(data.error.message));
-        else resolve(data.result.targetId);
-      }
-    });
-    ws.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('CDP WS error opening tab')); });
-  });
-}
-
-/** Close a tab by its CDP targetId. */
-export async function closeTab(targetId) {
-  const v = await fetchJson('/json/version');
-  await new Promise(resolve => {
-    const ws = new WebSocket(v.webSocketDebuggerUrl);
-    const settle = () => { try { ws.close(); } catch {} resolve(); };
-    ws.addEventListener('open', () =>
-      ws.send(JSON.stringify({ id: 1, method: 'Target.closeTarget', params: { targetId } })));
-    ws.addEventListener('message', settle);
-    ws.addEventListener('error', settle);
-    setTimeout(settle, 2000);
-  });
-}
-
-/**
- * Activate (focus) a tab via CDP — brings both the tab and its Chrome
- * window to the foreground. Uses TWO CDP calls because Target.
- * activateTarget alone reliably makes the tab the active one within
- * Chrome but doesn't always bring the OS window forward (Windows
- * SetForegroundWindow restrictions, X11 focus stealing prevention).
- * Page.bringToFront is the per-page request to surface the renderer's
- * window; together they're as aggressive as CDP gets.
- *
- * Best-effort: silently returns if Chrome isn't reachable or the
- * target is gone, so callers don't need to catch.
- */
-export async function activateTarget(targetId) {
-  if (!targetId) return;
-  let v;
-  try { v = await fetchJson('/json/version'); } catch { return; }
-  // Find the tab's per-page WS so we can issue Page.bringToFront in
-  // the same call. The /json list yields webSocketDebuggerUrl on
-  // each page entry.
-  let pageWs = null;
-  try {
-    const tabs = await fetchJson('/json');
-    pageWs = tabs.find(t => t.id === targetId)?.webSocketDebuggerUrl ?? null;
-  } catch {}
-  // (1) Target.activateTarget on the BROWSER ws — selects the tab.
-  await new Promise(resolve => {
-    const ws = new WebSocket(v.webSocketDebuggerUrl);
-    const settle = () => { try { ws.close(); } catch {} resolve(); };
-    ws.addEventListener('open', () =>
-      ws.send(JSON.stringify({ id: 1, method: 'Target.activateTarget', params: { targetId } })));
-    ws.addEventListener('message', settle);
-    ws.addEventListener('error', settle);
-    setTimeout(settle, 1500);
-  });
-  // (2) Page.bringToFront on the PAGE ws — the additional request
-  // that tells Chrome to surface this renderer's window. Skipped
-  // silently if we couldn't resolve a page ws.
-  if (!pageWs) return;
-  await new Promise(resolve => {
-    const ws = new WebSocket(pageWs);
-    const settle = () => { try { ws.close(); } catch {} resolve(); };
-    ws.addEventListener('open', () =>
-      ws.send(JSON.stringify({ id: 1, method: 'Page.bringToFront' })));
-    ws.addEventListener('message', settle);
-    ws.addEventListener('error', settle);
-    setTimeout(settle, 1500);
-  });
-}
-
-/**
- * Run pollScript once against a tab and return the .text it reports.
- * Used by /refresh — pulls the current assistant message text without sending anything.
- */
-export async function peekTab(targetId, pollScript) {
-  const tab = await findTab(targetId);
-  if (!tab) throw new Error(`Tab ${targetId?.slice(0, 8) ?? '?'}… not found`);
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(tab.webSocketDebuggerUrl);
-    const tmo = setTimeout(() => { try { ws.close(); } catch {} ; reject(new Error('peek timeout')); }, 5000);
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({
-        id: 1, method: 'Runtime.evaluate',
-        params: { expression: pollScript, returnByValue: true },
-      }));
-    });
-    ws.addEventListener('message', e => {
-      let data;
-      try { data = JSON.parse(e.data.toString()); } catch { return; }
-      if (data.id === 1) {
-        clearTimeout(tmo);
-        try { ws.close(); } catch {}
-        if (data.error) reject(new Error(data.error.message));
-        else resolve(data.result?.result?.value?.text ?? '');
-      }
-    });
-    ws.addEventListener('error', () => { clearTimeout(tmo); reject(new Error('CDP error')); });
-  });
-}
-
-/**
- * Open a per-tab CDP session, run `fn(send)` where `send(method, params)` returns a
- * Promise of that command's result, then close. The SAME per-tab WebSocket + id/pending
- * machinery streamFromTab already uses, factored out for the one-shot helpers below so
- * each doesn't re-hand-roll it. `fn` may issue several commands on the one socket (a
- * trusted click is three Input events in a row) before it resolves.
- */
-async function withTabSession(targetId, fn, timeoutMs = 5000) {
-  const tab = await findTab(targetId);
-  if (!tab) throw new Error(`Tab ${targetId?.slice(0, 8) ?? '?'}… not found`);
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(tab.webSocketDebuggerUrl);
-    let msgId = 0;
-    const pending = new Map();
-    let settled = false;
-    const tmo = setTimeout(() => finish(reject, new Error('CDP session timeout')), timeoutMs);
-    function finish(cb, arg) { if (settled) return; settled = true; clearTimeout(tmo); try { ws.close(); } catch {} cb(arg); }
-    const send = (method, params = {}) => {
+  ws.addEventListener('error', () => drop(new Error('CDP WebSocket error')));
+  const handle = {
+    send(method, params = {}) {
       const id = ++msgId;
       ws.send(JSON.stringify({ id, method, params }));
       return new Promise((res, rej) => pending.set(id, { res, rej }));
-    };
-    ws.addEventListener('message', e => {
-      let data; try { data = JSON.parse(e.data.toString()); } catch { return; }
-      if (data.id && pending.has(data.id)) {
-        const { res, rej } = pending.get(data.id);
-        pending.delete(data.id);
-        if (data.error) rej(new Error(data.error.message)); else res(data.result);
-      }
-    });
-    ws.addEventListener('error', () => finish(reject, new Error('CDP WebSocket error')));
-    ws.addEventListener('open', async () => {
-      try { const out = await fn(send); finish(resolve, out); }
+    },
+    onEvent(cb) { eventCb = cb; },
+    onClose(cb) { if (closed) cb(closeErr); else closeCb = cb; },
+    close() { try { ws.close(); } catch {} },
+  };
+  return new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(handle));
+    ws.addEventListener('error', () => reject(new Error('CDP WebSocket error')));
+  });
+}
+
+/** The default transport: Chrome's own remote-debugging port. HTTP /json/*
+ *  for discovery, a fresh WebSocket per session. Stateless — it resolves the
+ *  host live on each call, so setCdpHostGetter keeps steering it at runtime. */
+export function createPortTransport() {
+  return {
+    isRunning: async () => {
+      try { await fetchJson('/json/version'); return true; } catch { return false; }
+    },
+    listTargets: async () => fetchJson('/json'),
+    openBrowserSession: async () => {
+      const v = await fetchJson('/json/version');
+      return openWsSession(v.webSocketDebuggerUrl);
+    },
+    openTargetSession: async (targetId) => {
+      const tab = (await fetchJson('/json'))
+        .filter(t => t.type === 'page')
+        .find(t => t.id === targetId);
+      if (!tab) throw new Error(`No tab with targetId "${targetId}" — opened then closed?`);
+      return openWsSession(tab.webSocketDebuggerUrl);
+    },
+  };
+}
+
+// ── TRANSPORT: --remote-debugging-pipe (chunk 3a) ─────────────────────
+//
+// One persistent connection over the inherited fd pair, modeled on
+// Puppeteer's pipe mode. Framing: each CDP message is ASCII JSON followed by
+// a single \0 byte. We write command JSON + \0 to fd3 (writable) and split
+// the fd4 stream (readable) on \0. No /json HTTP: targets are discovered and
+// addressed through the Target domain (flat protocol — Target.attachToTarget
+// {flatten:true} yields a sessionId that per-target commands carry). Responses
+// correlate by the integer id (one id space for the whole connection);
+// unsolicited `method` messages dispatch as events, routed to the owning
+// session by sessionId. When fd4 ends (Chrome exits) every in-flight call
+// fails cleanly and sessions see onClose — a normal disconnect never throws.
+//
+// 3b hands this { writable, readable } = child.stdio[3], child.stdio[4] of a
+// Chrome it direct-spawned with stdio ['inherit','inherit','inherit','pipe','pipe'].
+export function createPipeTransport({ writable, readable }) {
+  let nextId = 0;
+  const pending = new Map();          // id → { resolve, reject }
+  const sessions = new Map();         // sessionId → target-session internals
+  const browserCloseCbs = new Set();  // browser-session onClose callbacks
+  const browserEventCbs = new Set();  // browser-scope event callbacks
+  let closed = false;
+  let closeErr = null;
+  let buf = Buffer.alloc(0);
+
+  const failAll = (err) => {
+    if (closed) return;
+    closed = true; closeErr = err;
+    for (const { reject } of pending.values()) reject(err);
+    pending.clear();
+    for (const s of sessions.values()) s.drop(err);
+    for (const cb of browserCloseCbs) cb(err);
+  };
+
+  const dispatch = (msg) => {
+    if (msg.id != null && pending.has(msg.id)) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) reject(new Error(msg.error.message)); else resolve(msg.result);
+      return;
+    }
+    if (msg.method) {
+      if (msg.sessionId && sessions.has(msg.sessionId)) sessions.get(msg.sessionId).emit(msg.method, msg.params);
+      else for (const cb of browserEventCbs) cb(msg.method, msg.params);
+    }
+  };
+
+  readable.on('data', (chunk) => {
+    buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+    let i;
+    while ((i = buf.indexOf(0)) !== -1) {
+      const frame = buf.subarray(0, i);
+      buf = buf.subarray(i + 1);
+      if (frame.length === 0) continue;
+      let msg;
+      try { msg = JSON.parse(frame.toString('utf8')); } catch { continue; }
+      dispatch(msg);
+    }
+  });
+  readable.on('end', () => failAll(new Error('CDP pipe closed (Chrome exited)')));
+  readable.on('close', () => failAll(new Error('CDP pipe closed (Chrome exited)')));
+  readable.on('error', (e) => failAll(new Error(`CDP pipe error: ${e?.message ?? e}`)));
+
+  const rawSend = (message) => {
+    if (closed) return Promise.reject(closeErr ?? new Error('CDP pipe closed'));
+    const id = ++nextId;
+    // Register the pending handler BEFORE writing: a response can arrive before
+    // write() returns (an in-memory peer answers synchronously; a real fd pipe
+    // is async but this ordering is correct either way).
+    const p = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    writable.write(JSON.stringify({ ...message, id }) + '\0');
+    return p;
+  };
+
+  return {
+    // The connection is live until fd4 ends; no round-trip needed to know it.
+    isRunning: async () => !closed,
+    listTargets: async () => {
+      const r = await rawSend({ method: 'Target.getTargets' });
+      // Shape-match the port path's /json entries so the ops stay transport-agnostic.
+      return (r?.targetInfos ?? []).map(t => ({ id: t.targetId, type: t.type, url: t.url, title: t.title }));
+    },
+    openBrowserSession: async () => {
+      let eventCb = null;
+      let closeCb = null;
+      const browserCb = (err) => { if (closeCb) closeCb(err); };
+      return {
+        send: (method, params = {}) => rawSend({ method, params }),
+        onEvent(cb) { if (eventCb) browserEventCbs.delete(eventCb); eventCb = cb; browserEventCbs.add(cb); },
+        onClose(cb) { if (closed) { cb(closeErr); return; } closeCb = cb; browserCloseCbs.add(browserCb); },
+        close() { if (eventCb) browserEventCbs.delete(eventCb); browserCloseCbs.delete(browserCb); },
+      };
+    },
+    openTargetSession: async (targetId) => {
+      const r = await rawSend({ method: 'Target.attachToTarget', params: { targetId, flatten: true } });
+      const sessionId = r.sessionId;
+      let eventCb = null;
+      let closeCb = null;
+      const internals = {
+        emit: (m, p) => { if (eventCb) eventCb(m, p); },
+        drop: (err) => { if (closeCb) closeCb(err); },
+      };
+      sessions.set(sessionId, internals);
+      return {
+        send: (method, params = {}) => rawSend({ sessionId, method, params }),
+        onEvent(cb) { eventCb = cb; },
+        onClose(cb) { if (closed) cb(closeErr); else closeCb = cb; },
+        close() {
+          sessions.delete(sessionId);
+          if (!closed) rawSend({ method: 'Target.detachFromTarget', params: { sessionId } }).catch(() => {});
+        },
+      };
+    },
+  };
+}
+
+// ── OPS: transport-agnostic CDP methods ───────────────────────────────
+
+/**
+ * Open a per-target session, run `fn(send)` where `send(method, params)` returns a
+ * Promise of that command's result, then close. The one-shot helpers below are built
+ * on it; `fn` may issue several commands on the one session (a trusted click is three
+ * Input events in a row) before it resolves. Transport-agnostic: the session is a
+ * per-tab WebSocket on the port path, an attached Target session on the pipe path.
+ */
+async function withTabSession(transport, targetId, fn, timeoutMs = 5000) {
+  const session = await transport.openTargetSession(targetId);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const tmo = setTimeout(() => finish(reject, new Error('CDP session timeout')), timeoutMs);
+    function finish(cb, arg) { if (settled) return; settled = true; clearTimeout(tmo); session.close(); cb(arg); }
+    session.onClose(() => finish(reject, new Error('CDP WebSocket error')));
+    (async () => {
+      try { const out = await fn(session.send); finish(resolve, out); }
       catch (err) { finish(reject, err); }
-    });
-  });
-}
-
-/**
- * Evaluate `expression` in a tab and return its value by value (the whole value, not just
- * `.text` as peekTab does). The generic inject the login limb runs its detect / field-state /
- * classify / OTP-read scripts through — Runtime.evaluate, the SAME CDP surface peekTab and
- * streamFromTab already drive, no second client. `userGesture`/`awaitPromise` are passed through
- * for the cases that need them (a value a page only yields under activation, a promise result).
- */
-export async function evaluate(targetId, expression, { awaitPromise = false, userGesture = false } = {}) {
-  return withTabSession(targetId, async (send) => {
-    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise, userGesture });
-    return r?.result?.value ?? null;
-  });
-}
-
-/**
- * Dispatch a TRUSTED left click at viewport (x, y): the moved → pressed → released triple over
- * the tab's own debugger socket. A CDP Input event carries user activation, which is what lets
- * Chrome commit an autofilled credential on the submit it triggers (plan Phase-0 (B) — only
- * CONFIRMABLE live, never in a unit test; the seam exists so ops can drive it live).
- */
-export async function dispatchClick(targetId, x, y) {
-  return withTabSession(targetId, async (send) => {
-    const base = { x, y, button: 'left' };
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, clickCount: 0 });
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, clickCount: 1 });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, clickCount: 1 });
-    return true;
-  });
-}
-
-/**
- * Screenshot a tab, returning base64 PNG `data` (CAPTCHA branch — the operator needs to SEE it).
- * Page.captureScreenshot on the per-tab session; no Page.enable needed for a single capture.
- */
-export async function captureScreenshot(targetId, { format = 'png' } = {}) {
-  return withTabSession(targetId, async (send) => {
-    const r = await send('Page.captureScreenshot', { format });
-    return r?.data ?? null;
+    })();
   });
 }
 
 /**
  * Open a CDP session against a tab, inject text + submit, then poll DOM until
  * the streamed reply stabilizes. Brain-specific knowledge is in the two scripts.
+ * The connection comes from the transport (a per-tab WS on a port, an attached
+ * Target session over a pipe); the stabilization logic below is unchanged.
  */
-export function streamFromTab({
+function _streamFromTab(transport, {
   targetId,
   injectScript,
   pollScript,
@@ -330,45 +344,25 @@ export function streamFromTab({
   copyScript = null,
   onLog = () => {},
 }) {
-  return new Promise(async (resolve, reject) => {
-    let tab;
-    try { tab = await findTab(targetId); }
-    catch (e) { return reject(e); }
-    if (!tab) return reject(new Error(`No tab with targetId "${targetId}" — opened then closed?`));
-
-    const ws = new WebSocket(tab.webSocketDebuggerUrl);
-    let msgId = 0;
-    const pending = new Map();
+  return new Promise((resolve, reject) => {
+    let session = null;
     let pollHandle = null, timeoutHandle = null;
     let settled = false;
 
     const cleanup = () => {
       if (pollHandle) clearInterval(pollHandle);
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      try { ws.close(); } catch {}
+      try { session?.close(); } catch {}
     };
     const fail = err => { if (!settled) { settled = true; cleanup(); reject(err); } };
     const done = text => { if (!settled) { settled = true; cleanup(); resolve(text); } };
 
-    const cdp = (method, params = {}) => {
-      const id = ++msgId;
-      ws.send(JSON.stringify({ id, method, params }));
-      return new Promise((res, rej) => pending.set(id, { res, rej }));
-    };
+    (async () => {
+      try { session = await transport.openTargetSession(targetId); }
+      catch (e) { return reject(e); }
+      session.onClose(() => fail(new Error('CDP WebSocket error')));
+      const cdp = (method, params = {}) => session.send(method, params);
 
-    ws.addEventListener('message', e => {
-      let data;
-      try { data = JSON.parse(e.data.toString()); } catch { return; }
-      if (data.id && pending.has(data.id)) {
-        const { res, rej } = pending.get(data.id);
-        pending.delete(data.id);
-        if (data.error) rej(new Error(data.error.message));
-        else res(data.result);
-      }
-    });
-    ws.addEventListener('error', () => fail(new Error('CDP WebSocket error')));
-
-    ws.addEventListener('open', async () => {
       try {
         const initial = await cdp('Runtime.evaluate', { expression: pollScript, returnByValue: true });
         const initialId = initial?.result?.value?.id ?? null;
@@ -502,6 +496,150 @@ export function streamFromTab({
       } catch (e) {
         fail(e);
       }
-    });
+    })();
   });
 }
+
+/**
+ * Bind the CDP ops to a transport. The returned object exposes the same ops
+ * the module has always exported; each is a CDP method sequence that reads the
+ * same whether the bytes ride a port WebSocket or a pipe. 3b/3c build one of
+ * these per dedicated Chrome over a pipe transport.
+ */
+export function createCdpClient(transport) {
+  const client = {
+    isRunning: () => transport.isRunning(),
+
+    listTabs: async (filterRegex = null) => {
+      const all = await transport.listTargets();
+      return all
+        .filter(t => t.type === 'page')
+        .filter(t => !filterRegex || filterRegex.test(t.url));
+    },
+
+    findTab: async (targetId) => {
+      const tabs = await client.listTabs();
+      return tabs.find(t => t.id === targetId);
+    },
+
+    openTab: async (url) => {
+      const s = await transport.openBrowserSession();
+      try {
+        const r = await withDeadline(s.send('Target.createTarget', { url }), 10000, 'Timed out opening tab');
+        return r.targetId;
+      } finally { s.close(); }
+    },
+
+    /** Close a tab by its CDP targetId. Best-effort. */
+    closeTab: async (targetId) => {
+      const s = await transport.openBrowserSession();
+      try { await withDeadline(s.send('Target.closeTarget', { targetId }), 2000); } catch {} finally { s.close(); }
+    },
+
+    closeBrowser: async () => {
+      if (!(await client.isRunning())) throw new Error('Brain is not running');
+      const s = await transport.openBrowserSession();
+      try { await withDeadline(s.send('Browser.close'), 3000); } catch {} finally { s.close(); }
+      // wait until the browser stops answering
+      for (let i = 0; i < 10; i++) {
+        if (!(await client.isRunning())) return;
+        await delay(250);
+      }
+    },
+
+    /**
+     * Activate (focus) a tab via CDP — brings both the tab and its Chrome
+     * window to the foreground. Uses TWO CDP calls because Target.
+     * activateTarget alone reliably makes the tab the active one within
+     * Chrome but doesn't always bring the OS window forward (Windows
+     * SetForegroundWindow restrictions, X11 focus stealing prevention).
+     * Page.bringToFront is the per-page request to surface the renderer's
+     * window; together they're as aggressive as CDP gets.
+     *
+     * Best-effort: silently returns if Chrome isn't reachable or the
+     * target is gone, so callers don't need to catch.
+     */
+    activateTarget: async (targetId) => {
+      if (!targetId) return;
+      if (!(await client.isRunning())) return;
+      // (1) Target.activateTarget at browser scope — selects the tab.
+      try {
+        const s = await transport.openBrowserSession();
+        try { await withDeadline(s.send('Target.activateTarget', { targetId }), 1500); } catch {} finally { s.close(); }
+      } catch {}
+      // (2) Page.bringToFront on the target — tells Chrome to surface this
+      // renderer's window. Skipped silently if the target can't be attached.
+      try {
+        const s = await transport.openTargetSession(targetId);
+        try { await withDeadline(s.send('Page.bringToFront'), 1500); } catch {} finally { s.close(); }
+      } catch {}
+    },
+
+    /**
+     * Run pollScript once against a tab and return the .text it reports.
+     * Used by /refresh — pulls the current assistant message text without sending anything.
+     */
+    peekTab: (targetId, pollScript) =>
+      withTabSession(transport, targetId, async (send) => {
+        const r = await send('Runtime.evaluate', { expression: pollScript, returnByValue: true });
+        return r?.result?.value?.text ?? '';
+      }),
+
+    /**
+     * Evaluate `expression` in a tab and return its value by value (the whole value, not just
+     * `.text` as peekTab does). `userGesture`/`awaitPromise` are passed through for the cases that
+     * need them (a value a page only yields under activation, a promise result).
+     */
+    evaluate: (targetId, expression, { awaitPromise = false, userGesture = false } = {}) =>
+      withTabSession(transport, targetId, async (send) => {
+        const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise, userGesture });
+        return r?.result?.value ?? null;
+      }),
+
+    /**
+     * Dispatch a TRUSTED left click at viewport (x, y): the moved → pressed → released triple over
+     * the tab's own session. A CDP Input event carries user activation, which is what lets Chrome
+     * commit an autofilled credential on the submit it triggers.
+     */
+    dispatchClick: (targetId, x, y) =>
+      withTabSession(transport, targetId, async (send) => {
+        const base = { x, y, button: 'left' };
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, clickCount: 0 });
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, clickCount: 1 });
+        return true;
+      }),
+
+    /**
+     * Screenshot a tab, returning base64 PNG `data` (CAPTCHA branch — the operator needs to SEE it).
+     * Page.captureScreenshot on the per-tab session; no Page.enable needed for a single capture.
+     */
+    captureScreenshot: (targetId, { format = 'png' } = {}) =>
+      withTabSession(transport, targetId, async (send) => {
+        const r = await send('Page.captureScreenshot', { format });
+        return r?.data ?? null;
+      }),
+
+    streamFromTab: (opts) => _streamFromTab(transport, opts),
+  };
+  return client;
+}
+
+// ── Default client: the WS-over-port transport ────────────────────────
+// The module-level named exports delegate to one default client so every
+// existing caller (`import * as cdp` / named imports) is unchanged. The port
+// transport resolves the host live, so setCdpHostGetter still steers it.
+const _default = createCdpClient(createPortTransport());
+
+export const isRunning = (...a) => _default.isRunning(...a);
+export const listTabs = (...a) => _default.listTabs(...a);
+export const findTab = (...a) => _default.findTab(...a);
+export const openTab = (...a) => _default.openTab(...a);
+export const closeTab = (...a) => _default.closeTab(...a);
+export const closeBrowser = (...a) => _default.closeBrowser(...a);
+export const activateTarget = (...a) => _default.activateTarget(...a);
+export const peekTab = (...a) => _default.peekTab(...a);
+export const evaluate = (...a) => _default.evaluate(...a);
+export const dispatchClick = (...a) => _default.dispatchClick(...a);
+export const captureScreenshot = (...a) => _default.captureScreenshot(...a);
+export const streamFromTab = (...a) => _default.streamFromTab(...a);
