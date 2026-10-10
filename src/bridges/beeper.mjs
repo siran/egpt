@@ -2054,6 +2054,12 @@ export async function startBeeperBridge(opts = {}) {
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
     if (msg.id) { if (_processedIds.has(msgKeyOf(chatID, msg.id))) return; markProcessed(chatID, msg.id); }
+    // …and the same message under a SECOND identity (operator 2026-10-10): one human WhatsApp message
+    // enters twice — matrix id + wa-bridge roster echo — different id+sender, same body+ts. The id
+    // dedup can't see it, so the second used to mint its own placeholder/steer ("E: … E: …"). Collapse
+    // onto the same seen-set keyed by cross-account identity + payload ts (a later repeat has a new ts).
+    const _xKey = crossAccountMsgKey(msg), _xTs = _msgTimestampMs(msg);
+    if (_xKey && _xTs != null) { const xid = `x|${_xKey}|${_xTs}`; if (_processedIds.has(msgKeyOf(chatID, xid))) return; markProcessed(chatID, xid); }
     // A picker @-mention of the account this node speaks through becomes `@<name>` HERE, before
     // anything reads the body (mouthMentionsAsAddresses, above). Every other anchor is untouched.
     if (text) text = await mouthMentionsAsAddresses(text, msg);

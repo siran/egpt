@@ -385,6 +385,37 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.atEStart).toBe(true);
   });
 
+  // DUAL-IDENTITY COLLAPSE (operator 2026-10-10, the live "E: … E: …" stray bubbles). One human
+  // WhatsApp message enters this account TWICE — once under his matrix id (@anrodriguez:beeper.com),
+  // once as the wa-bridge roster echo (display name "An Michel Rodriguez VZLA") — with a DIFFERENT
+  // id AND sender, but the SAME body and the SAME payload timestamp. That pair IS one real message
+  // (crossAccountMsgKey's header: two views share CONTENT and TIMESTAMP, nothing else). The per-id
+  // dedup can't see it (two ids), so both used to dispatch — minting a second placeholder/steer/turn.
+  it('dual-identity: one human message arriving twice (matrix id + roster echo, same body+ts) dispatches ONCE', async () => {
+    const { incoming } = await startBridge();
+    const ts = Date.now();
+    const chatID = CHAT('chat-1');
+    const copyText = 'the address is cmarquez@eserviciosat.net';
+    fake.emit({ type: 'message.upserted', entries: [{ id: 'mx-1', chatID, text: copyText, senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', isSender: false, timestamp: ts }] });
+    fake.emit({ type: 'message.upserted', entries: [{ id: 'wa-1', chatID, text: copyText, senderID: 'wa_lid-694:beeper.local', senderName: 'An Michel Rodriguez VZLA', isSender: false, timestamp: ts }] });
+    // A later DISTINCT message is the sentinel: once IT lands, both copies have been fully processed.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-1', text: 'sentinel', senderName: 'An', timestamp: ts + 1000 })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.filter((i) => i.text === copyText)).toHaveLength(1);   // the roster echo is collapsed onto the matrix copy
+  });
+
+  // A genuine SECOND message with the same text later (different timestamp) is NOT one message —
+  // the timestamp is what tells a repeat apart from the dual-identity echo, so it still dispatches.
+  it('dual-identity: the same text sent AGAIN later (different ts) is a new message, still dispatched', async () => {
+    const { incoming } = await startBridge();
+    const chatID = CHAT('chat-1');
+    fake.emit({ type: 'message.upserted', entries: [{ id: 'a-1', chatID, text: 'ok', senderName: 'An', isSender: false, timestamp: 1000 }] });
+    fake.emit({ type: 'message.upserted', entries: [{ id: 'a-2', chatID, text: 'ok', senderName: 'An', isSender: false, timestamp: 9000 }] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-2', text: 'sentinel', senderName: 'An', timestamp: 9999 })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.filter((i) => i.text === 'ok')).toHaveLength(2);   // two real messages, not one echo
+  });
+
   // MESSAGES-FIRST-CLASS-PLAN Phase 2: a reaction rides the TARGET message's
   // re-upsert (reactions[] = [{participantID, reactionKey}]); the bare type:REACTION
   // event carries no emoji and is skipped. Baseline-on-first-sight (I10): only a
