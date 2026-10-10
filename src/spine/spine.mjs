@@ -170,6 +170,12 @@ export function createSpine({
   // of small file reads) relative to the turn-dispatch machinery around it. Null (every
   // existing pipe path / test) = the option cannot engage — byte-identical to before.
   refreshConfig = null,
+  // AUTO-RESTART ON CONFIG CHANGE (operator 2026-10-09): see maybeRestartOnConfigChange + tick.
+  // All injected; null/false = inert (byte-identical to before for every existing caller/test).
+  autoRestartOnConfigChange = false,   // the enabled flag (config auto_restart_on_config_change; DEFAULT false)
+  configBootHash = null,               // boot-time config.yaml content hash (boot's configContentHashSync())
+  readConfigHash = null,               // () => string|null — live config content hash; null = absent/malformed/partial (ignore, wait)
+  requestRestart = null,               // () => void — boot wires announceAndExit(43), the ingest /restart's own path
   roomRelay = null,                    // optional §Phase-4 room brain-member fan-out (createRoomRelay, boot-wired): delivers a received room message to each brain member per mode, streams the reply back, and RE-ENTERS it as a non-human turn. Null = no web-brain members (byte-identical to before).
   radioRelay = null,                   // optional (ev) => Promise<void> — air a WhatsApp voice note on the internet radio station its room is joined to (createRadioNoteRelay, boot-wired). Called ONLY for ev.isVoice + humanTurn(ev) (below), fire-and-forget with its own catch — a side effect that must never touch the message path. Null = no radio relay (byte-identical to before).
   synthesize = null,                   // optional (text, voice, log) => Promise<Buffer|null> — voice-reply TTS (createVoiceSynthesis, boot-wired). Null = no voice pipeline wired (byte-identical to today: every reply is text).
@@ -1732,8 +1738,25 @@ export function createSpine({
   // operator wrote by hand survives.
   function tick() {
     if (stopSwitch?.present()) { note('STOP file present — stopping the service'); stopSwitch.pull({ reason: 'EGPT_HOME/STOP appeared' }); return; }
+    maybeRestartOnConfigChange();
     resumedAt();
     heartbeats.runDue(clock.now());
+  }
+
+  // AUTO-RESTART ON CONFIG CHANGE (operator 2026-10-09): rides THIS pulse like the STOP check.
+  // A content-hash diff from the boot hash triggers the SAME exit-43 drain the ingest /restart
+  // does (requestRestart → boot's announceAndExit(43)); it does not re-implement it. Content hash
+  // (no-op save → no restart), parse-gated in readConfigHash (null = mid-write/malformed, ignored),
+  // latched once (the respawn's new boot hash does the rest), and read-free when the flag is off.
+  let configRestartRequested = false;
+  function maybeRestartOnConfigChange() {
+    if (!autoRestartOnConfigChange || !readConfigHash || !requestRestart || configBootHash == null) return;
+    if (configRestartRequested) return;
+    let h; try { h = readConfigHash(); } catch { return; }
+    if (h == null || h === configBootHash) return;
+    configRestartRequested = true;
+    note('config.yaml changed on disk — triggering /restart to apply it');
+    try { requestRestart(); } catch (e) { note(`config-change restart: ${e?.message ?? e}`); }
   }
 
   // --- THE RESUME OBSERVATION (2026-09-27, node do) — the same pulse, read as a clock. ---

@@ -7,6 +7,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { EGPT_HOME } from "../egpt-home.mjs";
 import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
@@ -31,6 +32,18 @@ export async function readConfig() {
     if (e?.code === 'ENOENT') return {};
     console.error(`!! readConfig(YAML): ${e?.stack ?? e?.message ?? e}`); return {};
   }
+}
+
+// CONTENT hash of config.yaml — the auto-restart-on-config-change watcher (src/spine/spine.mjs,
+// boot's configBootHash + readConfigHash seams). sha256 hex of the raw bytes, so a no-op save
+// (identical bytes) hashes the same and never restarts. PARSE-GATED: returns null when the file
+// is absent, unreadable, or does not parse as YAML (a mid-write/partial save) — the spine ignores
+// a null and waits, never restarting onto a broken config.
+export function configContentHashSync(path = CONFIG_YAML_PATH) {
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch { return null; }
+  try { YAML.parse(text); } catch { return null; }
+  return createHash('sha256').update(text).digest('hex');
 }
 
 export async function writeConfig(cfg) {

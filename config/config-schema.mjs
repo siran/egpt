@@ -2620,6 +2620,27 @@ export const CONFIG_SCHEMA = {
     backstop, NOT the warm pool's own timeout-free design (left untouched).
   `,
 
+  auto_restart_on_config_change: `
+    Auto-apply a config.yaml edit by restarting (operator 2026-10-09;
+    src/spine/spine.mjs maybeRestartOnConfigChange, wired at boot's createSpine).
+    config.yaml is read ONCE at boot and many values are captured into services
+    there, so an edit otherwise needs a manual /restart. When ON, the spine's
+    tick pulse notices a changed config.yaml and triggers the SAME drain+respawn
+    the ingest /restart does (exit 43) — a FULL restart, so every boot-captured
+    value applies consistently.
+
+      ENUM: true | false
+      DEFAULT: false (ABSENT or any non-true value) — a generic node does not
+        auto-restart; the operator opts in explicitly per node.
+
+    Keyed on the config.yaml CONTENT hash, not mtime — a no-op save (identical
+    bytes) does NOT restart. Parse-gated: a mid-write or malformed config is
+    IGNORED (the spine waits), never a restart onto a broken config. Fires ONCE
+    per change — the respawned spine captures the new content as its boot hash.
+    Only operator-triggered writes touch config.yaml (/config set, /radio
+    disable); nothing automatic does, so there is no restart loop.
+  `,
+
   guard: `
     The SINGLE loop-breaker (src/stop-guard.mjs, wired at the spine prompt
     chokepoint src/spine/spine.mjs; replaces the old flood-guard + mesh circuit

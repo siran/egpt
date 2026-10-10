@@ -350,6 +350,7 @@ networks:
 # CLI session so the chat's queue can drain. Disabling it means a genuinely wedged turn will
 # NOT self-heal until a restart.
 turn_timeout_ms: 600000
+# auto_restart_on_config_change: false   # true = editing this file auto-triggers /restart (full drain+respawn) so the edit applies; keyed on content (no-op saves + mid-write/malformed files never restart). Default false.
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }

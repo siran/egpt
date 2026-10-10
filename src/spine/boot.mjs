@@ -29,7 +29,7 @@ import { mergeAudit } from './audit-merge.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-session.mjs';
-import { readConfigSync } from '../tools/config-io.mjs';
+import { readConfigSync, configContentHashSync } from '../tools/config-io.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 // THE liveness question for a Beeper install, already written and already tested
 // (tests/beeper-whoami.test.mjs): GET /v1/accounts with a candidate's OWN token. Imported, never
@@ -3446,7 +3446,12 @@ export async function boot({
   // factory's own default); -1 or any value <= 0 flows through to runTurnWithTimeout's
   // `!(turnTimeoutMs > 0)` disable so a turn runs uncapped.
   const turnTimeoutMs = Number.isFinite(cfg.turn_timeout_ms) ? cfg.turn_timeout_ms : 600_000;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, fromThisNode, say: sayOnce, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  // AUTO-RESTART ON CONFIG CHANGE (operator 2026-10-09): flag + boot-time content hash, passed to
+  // the spine beside turnTimeoutMs. DEFAULT false. read/hash seam = configContentHashSync; restart
+  // seam = announceAndExit(43), the SAME exit-43 drain the ingest /restart runs (not duplicated).
+  const autoRestartOnConfigChange = cfg.auto_restart_on_config_change === true;
+  const configBootHash = configContentHashSync();
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, advice, guard, guardOverride, fromThisNode, say: sayOnce, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, autoRestartOnConfigChange, configBootHash, readConfigHash: configContentHashSync, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
