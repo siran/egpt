@@ -62,7 +62,7 @@ function seedState() {
   return st;
 }
 
-function harness({ config, state, resolveSecondaryChatIdByTitle = () => SEC_SUPER_ROOM, rodzUserId = RODZ_USER_ID } = {}) {
+function harness({ config, state, resolveSecondaryChatIdByTitle = () => SEC_SUPER_ROOM, rodzUserId = RODZ_USER_ID, chatOtherPartyId = async () => null } = {}) {
   let st = state ?? seedState();
   const sent = [];
   const logs = [];
@@ -74,6 +74,7 @@ function harness({ config, state, resolveSecondaryChatIdByTitle = () => SEC_SUPE
     archiveChat: async () => true,
     chatAccountId: async () => 'whatsapp',
     chatTitle: async () => null,
+    chatOtherPartyId,
     resolveUserIdByPhone: async (digits, opts) => { calls.resolve.push({ digits, opts }); return digits === RODZ_DIGITS ? rodzUserId : null; },
     resolveSecondaryChatIdByTitle: async (title, opts) => { calls.resolveTitle.push({ title, opts }); return resolveSecondaryChatIdByTitle(title, opts); },
   };
@@ -235,6 +236,33 @@ describe('ensureSuperChannel via the "…" summon — a first summon with NO exi
     const { cmds, calls } = harness({ config: cfg() });
     await cmds.runPhrase(inbound('…', { senderId: COUNTERPARTY }), 'super');
     expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID, COUNTERPARTY]);
+  });
+});
+
+// ── 1:1: invite the COUNTERPARTY, whoever summoned (operator 2026-10-10) ──────────────────────────────
+// In a 1:1 the super group must invite the OTHER party so they can read E's reply — regardless of who
+// summoned. chatOtherPartyId resolves that counterparty; it overrides the summoner. A group answers null
+// (no single "other party") so the summoner stays the invitee, exactly as before.
+describe('ensureSuperChannel in a 1:1 — the COUNTERPARTY is invited regardless of summoner', () => {
+  const COUNTERPARTY = '@whatsapp_lid-99887766:beeper.local';
+
+  it('the OPERATOR summons as a matrix id (@…:beeper.com) — the counterparty is invited, not dropped to only-Rodz', async () => {
+    const { cmds, calls } = harness({ config: cfg(), chatOtherPartyId: async () => COUNTERPARTY });
+    await cmds.runPhrase(inbound('…', { senderId: '@anrodriguez:beeper.com' }), 'super');
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID, COUNTERPARTY]);
+  });
+
+  it('the COUNTERPARTY summons — invited ONCE, no duplicate', async () => {
+    const { cmds, calls } = harness({ config: cfg(), chatOtherPartyId: async () => COUNTERPARTY });
+    await cmds.runPhrase(inbound('…', { senderId: COUNTERPARTY }), 'super');
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID, COUNTERPARTY]);
+  });
+
+  it('a GROUP (chatOtherPartyId → null) keeps inviting the summoner, unchanged', async () => {
+    const SUMMONER_LOCAL = '@whatsapp_lid-summoner42:beeper.local';
+    const { cmds, calls } = harness({ config: cfg(), chatOtherPartyId: async () => null });
+    await cmds.runPhrase(inbound('…', { senderId: SUMMONER_LOCAL }), 'super');
+    expect(calls.create[0].participantIDs).toEqual([RODZ_USER_ID, SUMMONER_LOCAL]);
   });
 });
 

@@ -3731,6 +3731,31 @@ describe('beeper bridge — raw chat payloads (crossAccountChatKey needs the ros
     expect(await bridge.chatRaw('boom')).toBeNull();
   });
 
+  // chatOtherPartyId: the 1:1 counterparty's bridged-puppet id (the super-channel invite). The
+  // viewing account's own entry is a :beeper.com matrix id, so "the sole :beeper.local member" IS
+  // the other party, with no self-detection. A group has no single other party → null.
+  it('chatOtherPartyId returns the SOLE :beeper.local member of a single chat (self is :beeper.com)', async () => {
+    fake.chats.set(CHAT('dm'), { title: 'An & Bea', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: '@whatsapp_lid-5:beeper.local', phoneNumber: '+15551112222' }] } });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatOtherPartyId('dm')).toBe('@whatsapp_lid-5:beeper.local');
+  });
+
+  it('chatOtherPartyId is null for a group (no single "other party")', async () => {
+    fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: roster });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatOtherPartyId('grp')).toBeNull();
+  });
+
+  it('chatOtherPartyId is null when the roster is absent or carries no :beeper.local member', async () => {
+    fake.chats.set(CHAT('noroster'), { title: 'Solo', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('selfonly'), { title: 'Solo', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [{ id: '@anrodriguez:beeper.com', isSelf: true }] } });
+    const { bridge } = await startBridge();
+    expect(await bridge.chatOtherPartyId('noroster')).toBeNull();
+    expect(await bridge.chatOtherPartyId('selfonly')).toBeNull();
+  });
+
   it('listChatsRaw serves ONE page by default and the whole account only when asked — the walk is opt-in', async () => {
     // The fake page size is 2 (live it is 25). The receiving half of the mouth reads page one
     // first and walks only when nothing keys alike, so this bound is the feature's cost promise.

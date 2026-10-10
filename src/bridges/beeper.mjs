@@ -944,6 +944,20 @@ export async function startBeeperBridge(opts = {}) {
     return info?.raw ?? null;
   }
 
+  // THE 1:1 COUNTERPARTY (operator 2026-10-10, the super-channel invite) — the OTHER party's
+  // bridged-puppet id in a single chat, the one a `-super` group must invite so they can read the
+  // reply there. Off the SAME chatRaw payload. null for a group (no single other party) or an
+  // ambiguous/empty roster. Self is a :beeper.com matrix id, so the sole :beeper.local member IS the
+  // counterparty — no self-detection.
+  async function chatOtherPartyId(chatID) {
+    const c = await chatRaw(chatID);
+    if ((c?.type ?? 'single') !== 'single') return null;
+    const others = (participantItems(c) ?? [])
+      .map((p) => p?.id)
+      .filter((id) => typeof id === 'string' && id.endsWith(':beeper.local'));
+    return others.length === 1 ? others[0] : null;
+  }
+
   // ── A PICKER @-MENTION OF THE MOUTH IS AN ADDRESS (operator 2026-09-16) ─────────────────────
   // Live on kg, group "Reencuentro CRC 1991-2026": picking "Rodz" from WhatsApp's @-mention picker
   // woke nothing; typing `@rodz` woke the being. The picker sends an ANCHOR, htmlToMarkdown renders
@@ -2673,6 +2687,8 @@ export async function startBeeperBridge(opts = {}) {
     // caches; see listChatsRaw / chatRaw for the cost bound.
     listChatsRaw,
     chatRaw: (chatId) => chatRaw(chatId),
+    // THE 1:1 COUNTERPARTY (operator 2026-10-10) — the super-channel invite in a single chat.
+    chatOtherPartyId: (chatId) => chatOtherPartyId(chatId),
     // PHONE → BEEPER USER ID (operator 2026-10-03) — the /fork create needs Rodz's `@whatsapp_lid-…`
     // id, not his +phone (the API rejects the latter). Reads the SAME rosters chatRaw/listChatsRaw do.
     resolveUserIdByPhone: (phoneDigits, opts) => resolveUserIdByPhone(phoneDigits, opts),

@@ -3666,9 +3666,13 @@ export function createCommands({
     // routing can find this channel from the reply path. NO mode is stored — the channel's mode is
     // intrinsic (read live at the gate, see the header). operator + Rodz + the summoner (a plain
     // create-time invite — chunk 3 owns respect-exit / re-invite). null → createGroup gave no chatId.
-    // invitable summoner only: a bridged @…:beeper.local id is surface-valid; a @…:beeper.com (owner / cross-account matrix id) is NOT — DROP it so createGroup never 400s and the channel still creates.
-    const invitee = String(participantToInvite ?? '').endsWith(':beeper.local') ? participantToInvite : null;
-    if (participantToInvite && !invitee) onLog(`super: summoner ${participantToInvite} is not an invitable ${surface} participant id — creating the channel without inviting them`);
+    // In a 1:1 the OTHER party is the invitee (whoever summoned), so they can read the reply here;
+    // a group has no single other party → fall to the summoner. Optional (harness/bridge may lack it).
+    const other = (await forkBridge.chatOtherPartyId?.(ev.chatId)) ?? null;
+    const toInvite = other ?? participantToInvite;
+    // invitable id only: a bridged @…:beeper.local id is surface-valid; a @…:beeper.com (owner / cross-account matrix id) is NOT — DROP it so createGroup never 400s and the channel still creates.
+    const invitee = String(toInvite ?? '').endsWith(':beeper.local') ? toInvite : null;
+    if (toInvite && !invitee) onLog(`super: ${toInvite} is not an invitable ${surface} participant id — creating the channel without inviting them`);
     const participantIDs = [rodz.rodzUserId, ...(invitee ? [invitee] : [])];
     const aliased = await createAliasedSideGroup(ev, surface, title, rodz.accountID, participantIDs, 'super', { super: true });
     if (!aliased) return;
