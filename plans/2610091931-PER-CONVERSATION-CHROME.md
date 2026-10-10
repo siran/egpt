@@ -9,15 +9,28 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
 
 1. **Profile permanent, process pooled.** `chrome/profiles/<conversation-slug>` persists on
    disk (sessions / cookies / saved passwords survive). The `chrome.exe` is a warm-pooled
-   resource: lazy-launched on first browser need, idle-evicted after a TTL (relaunch comes up
-   still-logged-in from the persisted dir), capped at a max concurrent. "Tied to the
-   conversation" = the *profile* is permanent; the *process* comes and goes.
-2. **`brain` stays the admin profile.** The existing `brain` profile (holds Gmail / ClassDojo /
-   AWS today) is assigned to the ONE designated admin conversation — reuse the existing
-   `admin_channel: eGPT Admin`, no new key. Every other conversation starts clean: no Gmail
-   until it is signed in there.
-3. **Login follows the conversation.** `/login` and the credential read use the CONVERSATION's
-   profile, so a conversation can only log into sites whose creds are saved in its own Chrome.
+   resource: lazy-launched on first browser need, evicted under memory pressure (relaunch comes
+   up still-logged-in from the persisted dir). "Tied to the conversation" = the *profile* is
+   permanent; the *process* comes and goes.
+2. **Sharing is the default; dedicated is opt-in (operator refinement 2026-10-09).** MOST
+   conversations share ONE Chrome (the `brain`/shared profile) — one `chrome.exe`, many
+   conversations. Only a FEW conversations are flagged **dedicated** and get their own `<slug>`
+   profile + their own Chrome. The policy lives in the CALLER: a dedicated conversation calls
+   `chromeProfileOf(cfg, conversation)` (own slug); every other calls `chromeProfileOf(cfg)` (no
+   conversation → shared/`brain`). ⇒ Chunk 1's resolver is already correct and is NOT changed.
+3. **No fixed cap — MEMORY is the limit (operator 2026-10-09).** Launch as many Chromes as are
+   needed, bounded only by memory. Before launching a new one the spine makes a **deterministic**
+   estimate — "if I launch one more Chrome, does it fit in available memory?" — and launches only
+   if it does; otherwise it evicts the idlest managed Chrome and retries, or declines. One Chrome
+   per *profile* (the shared profile is one Chrome for all its conversations). **Any free port**,
+   agreed at launch — no reserved range.
+4. **`brain` stays the admin / shared profile.** The existing `brain` profile (holds Gmail /
+   ClassDojo / AWS today) is the shared default and the admin conversation's profile — reuse the
+   existing `admin_channel: eGPT Admin`, no new key. A dedicated conversation starts clean: no
+   Gmail until it is signed in there.
+5. **Login follows the conversation.** `/login` and the credential read use the CONVERSATION's
+   resolved profile (shared `brain` for most, own `<slug>` for a dedicated one), so a dedicated
+   conversation can only log into sites whose creds are saved in its own Chrome.
 
 ## Where this routes (the code already reserves the spot — reconfigure, don't add beside)
 
@@ -46,11 +59,21 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
    `chromeProfileOf(cfg, conversation)` → `<profiles-root>/<slug>`; the admin conversation
    (matches `admin_channel`) → `brain`; safe fallback to today's behavior when no conversation
    is given. One function + its one caller (`ensureChrome`). Reproduce-first test. NET small.
-2. **Per-conversation launch + warm-Chrome pool** [BIG].
-   `ensureChrome` keyed by conversation: per-conversation single-flight, port allocator (a
-   range), per-port running-check, lazy launch (direct-spawn seam with that port+profile),
-   idle-evict the *process* after a TTL (profile dir persists), max concurrent (LRU). Mirror
-   `warm-sessions.mjs`. Never launch a profile already up (single-instance per `--user-data-dir`).
+2. **Per-profile Chrome pool + memory-bound admission** [BIG].
+   Pool keyed by **profile** (one Chrome per distinct `--user-data-dir`; the shared `brain`
+   serves all non-dedicated conversations, each dedicated profile gets its own). `ensureChrome`
+   takes the conversation, resolves the profile (shared vs dedicated per decision 2), and:
+   per-profile single-flight, per-profile running-check, lazy launch on **any free port** (ask
+   the OS / scan), recorded `profile → {port, pid}`. Never launch a profile already up
+   (single-instance per `--user-data-dir`). **Deterministic memory admission** before launching a
+   profile not yet up: a PURE decision function over (available physical memory, an estimated
+   per-Chrome cost, a safety margin) → launch / evict-idlest-then-retry / decline. The per-Chrome
+   estimate is deterministic — the measured working set of an existing managed Chrome if any, else
+   a configured constant. Seam the OS-memory probe + the per-process RSS read so the decision is
+   unit-testable. Evict the idlest managed Chrome under memory pressure (profile dir persists, so
+   a later turn relaunches still-logged-in). Mirror `warm-sessions.mjs`' lazy-open /
+   never-evict-while-busy shape. The shared/`brain` Chrome is the default path and should not be
+   starved by admission (admission gates the EXTRA, dedicated Chromes).
 3. **CDP routing per conversation.** Resolve the being's `cdp` host/port for ITS conversation
    (`EGPT_CDP_HOST` per being process, or `cdp-proxy` routing by conversation).
 4. **Login + browser tools follow the conversation profile.** `loginProfilePath` /
@@ -62,8 +85,10 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
 
 ## Risks / constraints
 
-- **RAM**: N Chromes (~hundreds of MB each). Pool cap + idle-evict bound it — start at **max 3–4
-  live**, idle TTL **~10–15 min**.
+- **RAM**: N Chromes (~hundreds of MB each). No fixed cap — the deterministic memory-admission
+  (decision 3) is the bound: launch only while a new one fits, evict the idlest under pressure.
+  Most conversations share one Chrome, so the live count is 1 (shared) + the few active dedicated
+  ones. Ports are OS-assigned free ports, not a reserved range.
 - **Single-instance per `--user-data-dir`**: a profile opens in only one `chrome.exe`; the pool
   must never relaunch a profile already up (the per-profile running-check handles it).
 - **Session-0 frozen task** can't do per-conversation (no args) — Session-1 only.
