@@ -31,6 +31,19 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
 5. **Login follows the conversation.** `/login` and the credential read use the CONVERSATION's
    resolved profile (shared `brain` for most, own `<slug>` for a dedicated one), so a dedicated
    conversation can only log into sites whose creds are saved in its own Chrome.
+6. **CDP transport = `--remote-debugging-pipe`, NOT a port (operator nod 2026-10-09).** A dedicated
+   Chrome exposes NO socket: CDP rides a private pair of fds (3 & 4) that only the SPINE holds, so
+   the spine is the sole driver and one conversation has no address by which to reach another's
+   Chrome (closes the cross-conversation hole without a port or per-conversation token — nothing
+   to secure because nothing listens). Verified: neither `-port` nor `-pipe` triggers Chrome's
+   warning banner (that comes from `--no-sandbox` / `--enable-automation` / `--disable-blink-
+   features=…`, none of which our launcher sets; it also sets `--silent-debugger-extension-api`).
+   Chrome 136+ ignores both switches unless paired with a NON-default `--user-data-dir` — satisfied,
+   every profile dir is non-default. **Pipe REQUIRES the spine to direct-spawn Chrome** so the child
+   inherits the spine's fds — the Session-0 frozen-task hop cannot hand over fds, so dedicated-pipe
+   Chromes are a **Session-1 direct-spawn** feature (confirm reve/dolly session). The existing
+   SHARED `brain` Chrome stays on `:9221` for now; migrating it off the port to pipe (and retiring
+   the cdp-proxy/extension-bus that assume a port) is a SEPARATE, larger follow-up — ask first.
 
 ## Where this routes (the code already reserves the spot — reconfigure, don't add beside)
 
@@ -74,24 +87,39 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
    a later turn relaunches still-logged-in). Mirror `warm-sessions.mjs`' lazy-open /
    never-evict-while-busy shape. The shared/`brain` Chrome is the default path and should not be
    starved by admission (admission gates the EXTRA, dedicated Chromes).
-3. **CDP routing per conversation.** Resolve the being's `cdp` host/port for ITS conversation
-   (`EGPT_CDP_HOST` per being process, or `cdp-proxy` routing by conversation).
+   **Built (uncommitted) 2026-10-09. The memory-admission (`chrome-pool.mjs`), the dedicated/shared
+   policy and the per-profile pool/single-flight are KEPT; its free-*port* launch is SUPERSEDED by
+   pipe (3b) and is NOT committed on its own — it lands reworked to pipe together with 3b.**
+3a. **Pipe CDP transport** [FOUNDATION for pipe]. Teach the CDP client to speak CDP over a
+   `--remote-debugging-pipe` fd pair (delimited JSON on fds 3 & 4), alongside the existing
+   HTTP/`/json`+WS-to-port transport. A new transport module + a `cdp.mjs` path that selects it.
+   Unit-test against a fake pipe peer (no real Chrome). Standalone — does not touch chunk 2's files.
+3b. **Pipe launch for dedicated Chromes + wire the pool.** `chrome-launcher` gains a pipe launch
+   (`--remote-debugging-pipe`, spine holds the fds, direct-spawn only); rework chunk 2's
+   `_ensureDedicatedChrome` from free-port to pipe; the pool registry records the pipe handle, not a
+   port. Commit chunk 2's kept pool/admission + this together (first committed dedicated launch is
+   already pipe — no port code enters history).
+3c. **Route a being to its conversation's pipe-Chrome.** The being's browser calls reach ITS
+   conversation's spine-held pipe (never a port). Beings get no address to another Chrome.
 4. **Login + browser tools follow the conversation profile.** `loginProfilePath` /
    `readCredential` (`boot.mjs:2992-2996`) and `browser-tools.mjs` keyed by conversation.
    Depends on chunk 1.
-5. **Session coexistence + the frozen task.** Per-conversation needs direct-spawn; keep the
-   frozen `:9221` task for the admin/`brain` profile, or document the Session-0 limitation.
-   Confirm reve / dolly session at deploy time.
+5. **Session confirmation.** Dedicated-pipe Chromes are Session-1 direct-spawn only (fd
+   inheritance); confirm reve / dolly session at deploy time. The shared `brain` on `:9221` is
+   untouched here; its migration off the port is a separate follow-up (decision 6).
 
 ## Risks / constraints
 
 - **RAM**: N Chromes (~hundreds of MB each). No fixed cap — the deterministic memory-admission
   (decision 3) is the bound: launch only while a new one fits, evict the idlest under pressure.
   Most conversations share one Chrome, so the live count is 1 (shared) + the few active dedicated
-  ones. Ports are OS-assigned free ports, not a reserved range.
+  ones. Dedicated Chromes have NO port — CDP rides a spine-held pipe (decision 6), so there is no
+  listening socket to count, leak, or hijack; that is what makes "one conversation can't drive
+  another's Chrome" true by construction.
 - **Single-instance per `--user-data-dir`**: a profile opens in only one `chrome.exe`; the pool
   must never relaunch a profile already up (the per-profile running-check handles it).
-- **Session-0 frozen task** can't do per-conversation (no args) — Session-1 only.
+- **Pipe needs fd inheritance ⇒ Session-1 direct-spawn only.** The spine must spawn the dedicated
+  Chrome itself to hand it fds 3 & 4; the Session-0 frozen-task hop cannot. Confirm node session.
 - **User-context wrinkle** (`being.mjs:7`): a Chrome started in the wrong user context comes up
   logged-out — the per-conversation launch must use the same user context as today's `brain`.
 - **Migration**: existing conversations share `brain` today; after chunk 1 each resolves to its
