@@ -440,13 +440,15 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const port = await createBeeperBridgePort({}, { start });
     expect(await port.listChatsRaw()).toEqual([]);       // the fake transport has no raw readers
     expect(await port.chatRaw('!room')).toBeNull();
+    expect(await port.chatOtherPartyId('!room')).toBeNull();   // super-channel invite — null without the transport method (the editMessage-class port-forward bug)
 
     const withRaw = await createBeeperBridgePort({}, {
-      start: async (o) => ({ ...(await start(o)), listChatsRaw: async (opts) => { spy.rawOpts = opts; return raw; }, chatRaw: async (c) => ({ id: c }) }),
+      start: async (o) => ({ ...(await start(o)), listChatsRaw: async (opts) => { spy.rawOpts = opts; return raw; }, chatRaw: async (c) => ({ id: c }), chatOtherPartyId: async (c) => `@whatsapp_lid-OTHER:beeper.local` }),
     });
     expect(await withRaw.listChatsRaw({ full: true })).toBe(raw);
     expect(spy.rawOpts).toEqual({ full: true });         // `full` reaches the transport — the walk is the caller's choice
     expect(await withRaw.chatRaw('!room')).toEqual({ id: '!room' });
+    expect(await withRaw.chatOtherPartyId('!room')).toBe('@whatsapp_lid-OTHER:beeper.local');
   });
 
   // /fork + /end OPS (operator 2026-10-01) — REPRODUCE-FIRST for the live bug. The fork handler is

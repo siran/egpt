@@ -327,6 +327,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async chatRaw(chat) {
       return real.chatRaw ? await real.chatRaw(chat) : null;
     },
+    // 1:1 counterparty id — the super-channel invite. Thin-forward like chatRaw (a roster read).
+    async chatOtherPartyId(chat) {
+      return real.chatOtherPartyId ? await real.chatOtherPartyId(chat) : null;
+    },
 
     // /fork + /end OPS (operator 2026-10-01) — forwarded to the raw bridge where they are DEFINED
     // (src/bridges/beeper.mjs), the same thin-forward shape as chatRaw/listChats/selfIdentities
