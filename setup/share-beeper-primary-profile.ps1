@@ -54,8 +54,12 @@ function Get-ShareResumeSteps($s) {
   if ([string]$s.service.preHook -notmatch 's0-identity-reconcile\.ps1.*-PreStart' -or [string]$s.service.stopConsole -ne "$StopGraceMs") {
     $steps += "service: AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart"
   }
-  if (-not $s.task -or $s.task.logonType -ne 'S4U' -or [string]$s.task.userId -match 'SYSTEM') {
-    $steps += "reconciler: register egpt-s0-identity as $($s.user) (S4U, at boot and every 2 min)$(if ($s.task) { " - replacing the one that runs as $($s.task.userId) ($($s.task.logonType))" })"
+  # A repetition only on AtStartup waits for the next boot: it needs a time trigger repeating indefinitely.
+  $repeats = @($s.task.triggers | Where-Object { $_.kind -eq 'Time' -and $_.interval -and -not $_.duration }).Count -gt 0
+  if (-not $s.task -or $s.task.logonType -ne 'S4U' -or [string]$s.task.userId -match 'SYSTEM' -or -not $repeats) {
+    $why = if (-not $s.task) { '' } elseif (-not $repeats -and $s.task.logonType -eq 'S4U' -and [string]$s.task.userId -notmatch 'SYSTEM') { ' - replacing one with no repeating time trigger (it would not run before a reboot)' }
+      else { " - replacing the one that runs as $($s.task.userId) ($($s.task.logonType))" }
+    $steps += "reconciler: register egpt-s0-identity as $($s.user) (S4U, every 2 min from now on, and at boot)$why"
   }
   if ($s.runValue -or -not $s.launcherRunValue -or -not $s.shortcutExists) {
     $steps += "logon: Run value $RunKeyBeeper ($(& $have $s.runValue)) -> $RunKeyWindow ($(& $have $s.launcherRunValue)); shortcut 'Beeper (eGPT)' ($(& $have $s.shortcutExists))"
@@ -103,7 +107,7 @@ function Get-SharePlan($s, [bool] $Revert, [bool] $Resume = $false) {
     "token: write $($s.recordPath); mint a token on the window (click Approve there) -> beeper.primary.token",
     "config: remove beeper.primary_gui: $([bool]$s.config.primaryGui); spine /restart: $([bool]$s.spineLive)",
     "service: stop $($s.serviceName); AppParameters -> $(Get-BeeperServiceArgLine $s.profile); AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart",
-    "reconciler: register egpt-s0-identity as $($s.user) (S4U, at boot and every 2 min)",
+    "reconciler: register egpt-s0-identity as $($s.user) (S4U, every 2 min from now on, and at boot)",
     "logon: Run value $RunKeyBeeper ($(if ($s.runValue) { 'present' } else { 'absent' })) -> $RunKeyWindow; shortcut 'Beeper (eGPT)'",
     'launcher: start beeper-window (claims the profile, watches the window)') }
 }
@@ -159,7 +163,10 @@ function Read-ShareState {
   $s.launcherRunning = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' }).Count -gt 0
   $s.user = ([Security.Principal.SecurityIdentifier]$UserSid).Translate([Security.Principal.NTAccount]).Value
   $t = Get-ScheduledTask -TaskName 'egpt-s0-identity' -ErrorAction SilentlyContinue
-  $s.task = if ($t) { [ordered]@{ userId = [string]$t.Principal.UserId; logonType = [string]$t.Principal.LogonType } } else { $null }
+  $s.task = if ($t) {
+    [ordered]@{ userId = [string]$t.Principal.UserId; logonType = [string]$t.Principal.LogonType
+      triggers = @($t.Triggers | ForEach-Object { [ordered]@{ kind = ($_.CimClass.CimClassName -replace '^MSFT_Task|Trigger$', ''); interval = [string]$_.Repetition.Interval; duration = [string]$_.Repetition.Duration } }) }
+  } else { $null }
   $names = Get-BeeperTokens -RepoRoot (Split-Path -Parent $PSScriptRoot) -EgptHome $EgptHome
   $s.config = [ordered]@{ primary = $names.ContainsKey('primary'); primaryGui = $names.ContainsKey('primary_gui') }
   return $s

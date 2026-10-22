@@ -1,4 +1,4 @@
-# register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 at boot and every few minutes:
+# register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 every few minutes and at boot:
 # it starts a shared-profile Beeper service once Session 1 lets go of the profile (a logoff, a
 # window that quit with no launcher watching). setup\share-beeper-primary-profile.ps1 registers it.
 # Logon needs no trigger: setup\beeper-window.ps1 owns that moment.
@@ -34,6 +34,16 @@ function Get-S0IdentityTaskPrincipal([string] $UserId) {
   return New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
 }
 
+# When it runs. In-memory only (tests read it). The time trigger starts the repetition NOW and keeps
+# it across reboots; a repetition hung off AtStartup alone waits for the next boot (reve 2026-10-22:
+# registered, never ran, no next run time). AtStartup stays for the pass right at boot.
+# No -RepetitionDuration: empty means indefinitely; [TimeSpan]::MaxValue is refused (P99999999DT23H59M59S).
+function Get-S0IdentityTaskTriggers([int] $IntervalMin, [datetime] $At = (Get-Date)) {
+  return @(
+    (New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)),
+    (New-ScheduledTaskTrigger -AtStartup))
+}
+
 if ($LoadFunctionsOnly) { return }
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -63,22 +73,16 @@ $arg = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`"
 if ($LogPath) { $arg += " -LogPath `"$LogPath`"" }
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
 
-# A repetition that never ends, hung off a boot trigger.
-$atBoot  = New-ScheduledTaskTrigger -AtStartup
-# No -RepetitionDuration: an empty duration is "indefinitely"; [TimeSpan]::MaxValue is refused (P99999999DT23H59M59S).
-$atBoot.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) `
-  -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)).Repetition
-
 # RunOnlyIfNetworkAvailable is deliberately OFF: this is a local question about local services and
 # must be answered on a machine with no network at all.
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
   -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $atBoot `
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger (Get-S0IdentityTaskTriggers $IntervalMin) `
   -Settings $settings -Principal (Get-S0IdentityTaskPrincipal $UserId) `
   -Description "Starts $ServiceName when Session 1 is not using its Beeper profile (shared with the operator's window). Never stops it." `
   -ErrorAction Stop | Out-Null
 
-Write-Host "[s0-identity] registered $TaskName - at boot and every $IntervalMin min, as $UserId (S4U), for $ServiceName"
+Write-Host "[s0-identity] registered $TaskName - every $IntervalMin min from now on, and at boot, as $UserId (S4U), for $ServiceName"
 if ($LogPath) { Write-Host "[s0-identity] log: $LogPath" }
 if ($Pause) { Write-Host ''; Read-Host 'Press Enter to close' | Out-Null }

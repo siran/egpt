@@ -17,9 +17,26 @@ Describe 'the reconciler task principal' {
       { Get-S0IdentityTaskPrincipal $u } | Should Throw 'never runs as'
     }
   }
-  It 'the registration uses that principal, and nothing names SYSTEM or Highest' {
+  It 'the registration uses that principal and those triggers, and nothing names SYSTEM or Highest' {
     $code = (Get-Content (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1')) | Where-Object { $_ -notmatch '^\s*#' }
     ($code -join "`n") | Should Match '-Principal \(Get-S0IdentityTaskPrincipal \$UserId\)'
+    ($code -join "`n") | Should Match '-Trigger \(Get-S0IdentityTaskTriggers \$IntervalMin\)'
     ($code -join "`n") | Should Not Match "-User 'SYSTEM'|-RunLevel Highest|RepetitionDuration"
+  }
+}
+
+Describe 'the reconciler task triggers' {
+  $at = Get-Date '2026-10-22T01:20:00'
+  $t = @(Get-S0IdentityTaskTriggers 2 $at)
+  It 'a time trigger from now, repeating every 2 min with no end, and AtStartup' {
+    $t.Count | Should Be 2
+    $t[0].CimClass.CimClassName | Should Be 'MSFT_TaskTimeTrigger'
+    $t[0].Repetition.Interval | Should Be 'PT2M'
+    [string]$t[0].Repetition.Duration | Should BeNullOrEmpty
+    ([datetime]$t[0].StartBoundary) | Should Be $at
+    $t[1].CimClass.CimClassName | Should Be 'MSFT_TaskBootTrigger'
+  }
+  It 'another cadence is that interval' {
+    (@(Get-S0IdentityTaskTriggers 5 $at))[0].Repetition.Interval | Should Be 'PT5M'
   }
 }

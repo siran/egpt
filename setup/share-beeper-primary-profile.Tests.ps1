@@ -84,7 +84,10 @@ function New-HalfState([hashtable] $Over = @{}, [hashtable] $Service = @{}) {
   return New-State $o $svc
 }
 function Get-Ids($p) { @($p.steps | ForEach-Object { ($_ -split ':')[0] }) -join ',' }
-$script:S4U = [pscustomobject]@{ userId = 'reve\an'; logonType = 'S4U' }
+$script:Repeating = @([pscustomobject]@{ kind = 'Time'; interval = 'PT2M'; duration = '' }, [pscustomobject]@{ kind = 'Boot'; interval = ''; duration = '' })
+$script:S4U = [pscustomobject]@{ userId = 'reve\an'; logonType = 'S4U'; triggers = $script:Repeating }
+# reve 2026-10-22 01:16: registered, Ready, never ran - its 2-min repetition hung off AtStartup only.
+$script:BootOnly = [pscustomobject]@{ userId = 'reve\an'; logonType = 'S4U'; triggers = @([pscustomobject]@{ kind = 'Boot'; interval = 'PT2M'; duration = '' }) }
 
 Describe 'Get-SharePlan - resume a conversion that stopped' {
   It 'the live state (task, logon, launcher missing): exactly steps 6, 7, 8' {
@@ -101,6 +104,15 @@ Describe 'Get-SharePlan - resume a conversion that stopped' {
   }
   It 'a half-done logon step (Beeper''s Run value gone, no shortcut yet) is redone whole' {
     Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $false }) $false $true) | Should Be 'logon,launcher'
+  }
+  It 'reve after the resume: a task whose repetition hangs off AtStartup only is registered again; nothing else' {
+    $done = @{ runValue = $null; launcherRunValue = 'x'; shortcutExists = $true; launcherRunning = $true }
+    $p = Get-SharePlan (New-HalfState ($done + @{ task = $script:BootOnly })) $false $true
+    Get-Ids $p | Should Be 'reconciler'
+    $p.steps[0] | Should Match 'every 2 min from now on, and at boot\) - replacing one with no repeating time trigger'
+    Get-Ids (Get-SharePlan (New-HalfState ($done + @{ task = $script:S4U })) $false $true) | Should Be ''
+    $finite = [pscustomobject]@{ userId = 'reve\an'; logonType = 'S4U'; triggers = @([pscustomobject]@{ kind = 'Time'; interval = 'PT2M'; duration = 'P1D' }) }
+    Get-Ids (Get-SharePlan (New-HalfState ($done + @{ task = $finite })) $false $true) | Should Be 'reconciler'
   }
   It 'a task that runs as SYSTEM (or not S4U) is registered again, as the user' {
     $p = Get-SharePlan (New-HalfState @{ task = [pscustomobject]@{ userId = 'SYSTEM'; logonType = 'ServiceAccount' } }) $false $true
