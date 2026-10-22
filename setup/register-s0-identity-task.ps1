@@ -51,9 +51,9 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
 
 # A repetition that never ends, hung off a boot trigger.
 $atBoot  = New-ScheduledTaskTrigger -AtStartup
+# No -RepetitionDuration: an empty duration is "indefinitely"; [TimeSpan]::MaxValue is refused (P99999999DT23H59M59S).
 $atBoot.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) `
-  -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin) `
-  -RepetitionDuration ([TimeSpan]::MaxValue)).Repetition
+  -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)).Repetition
 
 # RunOnlyIfNetworkAvailable is deliberately OFF: this is a local question about local services and
 # must be answered on a machine with no network at all.
