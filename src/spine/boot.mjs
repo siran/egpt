@@ -2859,6 +2859,7 @@ export async function boot({
       if (!conv) { log.line?.(`[warm] ${key}: background task finished, but no conversation ran on that key — nobody to wake`); return; }
       return spineLate?.wakeOnBackground({ ...conv, ...info });
     },
+    keepWarm: (key) => brain.keepsWarm(key),
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 

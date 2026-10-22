@@ -44,6 +44,9 @@ contacts:
       # browser group: browsers.yaml uploads:
       #privileged_browser: true
 
+      # keep this conversation's sessions warm: never idle- or LRU-evicted (config-schema warm)
+      #warm: { keep: true }
+
       # no reply here: every reply goes to a side group the primary makes (config-schema reply_in_side_group);
       # true/yes/on → "SI+<title>", any other text → that title
       #reply_in_side_group: on

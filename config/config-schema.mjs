@@ -3020,6 +3020,15 @@ export const CONFIG_SCHEMA = {
     (ms/s/m/h) — to override the class TTL for THAT conversation only;
     idle_ttl: -1 there = keep this conversation always warm.
     RESOLUTION: per-conversation override > class TTL.
+
+    KEEP (operator 2026-10-22: "that group should be kept always on"):
+    warm: { keep: true } on a conversation's conversations.yaml entry (or its
+    folder config.yaml) — its sessions are never idle-evicted and never LRU-evicted;
+    only a stop, a rethread/re-pin, a configuration reopen or a failure ends one.
+    A pool full of kept or busy sessions grows past max. Read live: an edit
+    applies at the next idle check / LRU pass, no turn and no restart needed.
+    idle_ttl: -1 alone still yields to max (LRU); keep does not. At the node
+    rung it would keep EVERY conversation — set it per conversation.
   `,
 
   advice_channel: `

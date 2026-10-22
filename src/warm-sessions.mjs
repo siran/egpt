@@ -26,6 +26,8 @@
 //     (session.background > 0) is NEVER idle- or LRU-evicted — closing it kills them, and that is
 //     not the bridge's to decide (operator 2026-10-15); the spine asks the being instead (liveness).
 //     Its completion report goes up through onBackgroundDone(key, info).
+//   - KEEP (2026-10-22): keepWarm(key) true (the conversation's warm.keep, asked live) — never idle- or
+//     LRU-evicted, the same holds as background work; a stop, re-pin, reconfigure or failure still ends it.
 //   - ADOPT (2026-10-16): a process the daemon held across a spine restart (src/cli-host.mjs) is
 //     put back as its key's entry — adopt(), no spawn.
 //
@@ -53,6 +55,7 @@ export function createWarmPool({
   dispatchTimeoutMs = 600_000,
   injectWhileBusy = true,            // master switch for steer() — weave a mid-turn message into the live turn
   onBackgroundDone = null,           // (key, { summaries }) — a session's background task finished with no turn in flight
+  keepWarm = () => false,            // (key) → true: never idle- or LRU-evicted (warm.keep)
   onLog = () => {},
   makeSession,                       // REQUIRED: the warm-session factory (injected)
 } = {}) {
@@ -92,13 +95,13 @@ export function createWarmPool({
     return msg ? `turn failed: ${msg}` : 'turn failed';
   }
 
-  // Idle, but background work is still running: held and re-checked, for as long as it runs.
+  // Idle, but background work is still running or the conversation keeps it warm: held and re-checked.
   function _idleOut(key, ttl) {
     const e = _s.get(key);
     if (!e) return;
     const n = e.session.background ?? 0;
-    if (n > 0) {
-      onLog(`warm: kept ${key} past idle — ${n} background task(s) still running`);
+    if (n > 0 || keepWarm(key)) {
+      onLog(`warm: kept ${key} past idle — ${n > 0 ? `${n} background task(s) still running` : 'warm.keep'}`);
       e.idleTimer = setTimeout(() => _idleOut(key, ttl), ttl || BACKGROUND_RECHECK_MS); e.idleTimer.unref?.();
       return;
     }
@@ -126,10 +129,10 @@ export function createWarmPool({
     while (_s.size >= max) {
       let victim = null, oldest = Infinity;
       for (const [k, e] of _s) {
-        if (k === exceptKey || e.busy || e.session.background > 0) continue;
+        if (k === exceptKey || e.busy || e.session.background > 0 || keepWarm(k)) continue;
         if (e.lastUsed < oldest) { oldest = e.lastUsed; victim = k; }
       }
-      if (!victim) break;   // everything is busy — let it grow over `max` briefly
+      if (!victim) break;   // everything is busy or kept — let it grow over `max`
       _evict(victim, 'maxWarm LRU');
     }
   }

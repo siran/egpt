@@ -169,6 +169,20 @@ describe('brainpool.turn', () => {
     expect(brain.convOfKey(pool.calls[0].key)).toEqual({ being: 'e', surface: 'whatsapp', chatId: '!room:beeper.com' });
   });
 
+  // warm.keep (operator 2026-10-22): the pool asks per key, so the answer is read live from the
+  // resolver, for the same conversation dir the turn's own warm.idle_ttl is read for.
+  it('keepsWarm(key) reads warm.keep for that key\'s conversation, live', async () => {
+    const asked = [];
+    let doc = {};
+    const { brain, pool } = harness([{ text: 'hi', sessionId: 'sid-1' }], { resolveConfig: (dir) => { asked.push(dir); return doc; } });
+    await brain.turn('e', ev);
+    const turnDirs = asked.splice(0);
+    expect(brain.keepsWarm(pool.calls[0].key)).toBe(false);
+    doc = { warm: { keep: true } };
+    expect(brain.keepsWarm(pool.calls[0].key)).toBe(true);
+    expect([...new Set(asked)]).toEqual([...new Set(turnDirs)]);
+  });
+
   it('stop(being, ev) interrupts EXACTLY that key through the pool; a conversation that never ran stops nothing', async () => {
     const { brain, pool } = harness([{ text: 'hi', sessionId: 'sid-1' }]);
     const interrupted = [];

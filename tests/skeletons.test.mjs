@@ -255,7 +255,7 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
     // start with '#'. Strip the '#' from the option lines an operator would.
     const on = (t, key) => t.replace(new RegExp(`^(\\s*)#(${key}:.*)$`, 'm'), '$1$2');
     let t = text;
-    for (const k of ['posts_back_delay_ms', 'loop_guard', 'privileged_browser', 'mode', 'send_to_egpt']) t = on(t, k);
+    for (const k of ['posts_back_delay_ms', 'loop_guard', 'privileged_browser', 'warm', 'mode', 'send_to_egpt']) t = on(t, k);
 
     const state = parseConvState(t);
     const entry = getContact(state, 'whatsapp', 'EXAMPLE_CHAT_ID').entry;
@@ -265,6 +265,8 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
     // read by src/spine/being-link.mjs through the config resolver; uploads are per browser group (browsers.yaml)
     expect(entry.privileged_browser).toBe(true);
     expect(text).not.toMatch(/browser_uploads/);
+    // read by brainpool keepsWarm through the config resolver (the warm pool's keepWarm)
+    expect(parseWarmBlock(entry).keep).toBe(true);
 
     // the per-agent pair — read by getBeing → src/spine/gating.mjs
     const b = getBeing(state, 'whatsapp', 'EXAMPLE_CHAT_ID', 'egpt');
@@ -316,7 +318,7 @@ describe('config/skeletons/room/config.yaml (the per-conversation folder config)
     // every block reader takes the RESOLVED doc now (one parse, not one per block)
     const doc = parseEntityConfig(text);
     expect(doc).toEqual({});
-    expect(parseWarmBlock(doc)).toEqual({ idleTtlMs: null });
+    expect(parseWarmBlock(doc)).toEqual({ idleTtlMs: null, keep: false });
     // HEARD but SILENT: the all-commented skeleton opts nobody into the 👂 echo
     // (posts_back is opt-IN, operator 2026-09-13).
     expect(parseTranscriptionConfig(doc)).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: null, listeningReaction: false });

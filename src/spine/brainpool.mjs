@@ -273,11 +273,12 @@ export function sandboxSharePathsFor(def) {
 export function parseWarmBlock(doc) {
   const w = (doc && typeof doc === 'object' && doc.warm && typeof doc.warm === 'object' && !Array.isArray(doc.warm))
     ? doc.warm : {};
+  const keep = w.keep === true;                        // warm.keep: never idle- or LRU-evicted (keepsWarm)
   const v = w.idle_ttl;
-  if (v === undefined || v === null) return { idleTtlMs: null };
-  if (v === 0) return { idleTtlMs: 0 };               // 0 = always evict (parseFrequency rejects it)
-  if (typeof v === 'number' && v < 0) return { idleTtlMs: v };   // any negative = never evict (matches _armIdle's `ttl < 0`; parseFrequency also rejects negatives)
-  return { idleTtlMs: parseFrequency(v) ?? null };    // garbage → null
+  if (v === undefined || v === null) return { idleTtlMs: null, keep };
+  if (v === 0) return { idleTtlMs: 0, keep };               // 0 = always evict (parseFrequency rejects it)
+  if (typeof v === 'number' && v < 0) return { idleTtlMs: v, keep };   // any negative = never evict (matches _armIdle's `ttl < 0`; parseFrequency also rejects negatives)
+  return { idleTtlMs: parseFrequency(v) ?? null, keep };    // garbage → null
 }
 
 // Default identity manifest: the shipped e_identity.md (honoring a config
@@ -1633,6 +1634,13 @@ export function createBrainPool({
       if (!conv) return null;
       const [being, surface, ...chat] = conv.split(':');
       return { being, surface, chatId: chat.join(':') };
+    },
+
+    // warm.keep for the conversation a warm key is for (`being:engine:surface:slug`, the dir its turns
+    // read warm: from), asked live by the pool's idle and LRU checks.
+    keepsWarm(key) {
+      const [, , surface, ...slug] = String(key).split(':');
+      return parseWarmBlock(resolveConfig(slugDir(surface, slug.join(':')))).keep;
     },
 
     // The background tasks still running on this conversation's warm session ([{ description, since }]),
