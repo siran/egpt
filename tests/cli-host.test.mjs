@@ -420,4 +420,63 @@ describe('a dead held session never wedges a conversation', () => {
       expect(w.spawns).toHaveLength(1);
     } finally { vi.useRealTimers(); }
   });
+
+  // Live 2026-10-22 (reve): pid 32420, evicted 23:40, was re-adopted at five restarts and sent a turn at 08:29.
+  it('what a spine evicted is never offered to the next one, even while its process is still up — the next turn spawns fresh', async () => {
+    const w = world();
+    const one = w.spine({ max: 1 });
+    await run(one, 'hola');
+    const evicted = w.spawns[0].child;
+    evicted.kill = () => { evicted.killed = true; return true; };      // no 'exit', no 'close' yet
+    const write = evicted.stdin.write;
+    evicted.stdin.write = (d) => (evicted.ended ? true : write(d));    // its stdin is ended: nothing reaches it
+    await one.pool.run(OTHER, 'hey', () => {}, { brainOptions: { model: 'sonnet' }, klass: 'conversation' });
+    await flush();
+    expect(evicted.killed).toBe(true);
+    one.pair.drop();
+    const two = w.spine();
+    expect((await two.cli.list()).map((h) => h.key)).toEqual([OTHER]);
+    await two.adoptAll();
+    expect((await run(two, 'estás?', { model: 'sonnet', sessionId: 'sess-1' })).text).toBe('echo:estás?');
+    expect(w.spawns).toHaveLength(3);
+    expect(w.spawns[2].args).toEqual(expect.arrayContaining(['--resume', 'sess-1']));
+  });
+
+  it('the turn an adopted process was answering is not lost when that process dies: the being is woken to answer it, and the turn queued behind runs fresh', async () => {
+    const w = world();
+    const one = w.spine();
+    await run(one, 'hola');
+    const claude = w.spawns[0].child;
+    claude.holdNext = true;
+    run(one, 'revisa el sitio', { model: 'sonnet', sessionId: 'sess-1' }).catch(() => {});
+    await flush();
+    one.pair.drop();
+    const two = w.spine();
+    await two.adoptAll();
+    const queued = run(two, 'estás de vuelta?', { model: 'sonnet', sessionId: 'sess-1' });
+    claude.emit('exit', 1, null);
+    claude.emit('close', 1, null);
+    expect((await queued).text).toBe('echo:estás de vuelta?');
+    await flush();
+    expect(two.woken).toEqual([{ key: KEY, lost: 'revisa el sitio', why: expect.stringMatching(/exited 1/) }]);
+    expect(w.spawns).toHaveLength(2);
+  });
+
+  it('…but an adopted turn ended on purpose (/agents stop, an eviction) wakes nothing', async () => {
+    for (const end of [(s) => s.pool.interrupt(KEY, { graceMs: 10 }), (s) => s.pool.evict(KEY)]) {
+      const w = world();
+      const one = w.spine();
+      await run(one, 'hola');
+      const claude = w.spawns[0].child;
+      claude.holdNext = true;
+      run(one, 'revisa el sitio', { model: 'sonnet', sessionId: 'sess-1' }).catch(() => {});
+      await flush();
+      one.pair.drop();
+      const two = w.spine();
+      await two.adoptAll();
+      await end(two);
+      await flush();
+      expect(two.woken).toEqual([]);
+    }
+  });
 });

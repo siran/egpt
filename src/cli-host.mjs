@@ -139,7 +139,8 @@ export function createCliHost({ spawn = nodeSpawn, setPriority, log = () => {}, 
     if (!rec) return;
     if (m.t === 'cli:in') write(rec, m.data);
     else if (m.t === 'cli:end') { try { rec.child.stdin.end(); } catch { /* already closing */ } }
-    else if (m.t === 'cli:kill') { try { rec.child.kill(); } catch { /* already gone */ } }
+    // Ended by its spine: never offered for adoption again, whenever its process is seen to go.
+    else if (m.t === 'cli:kill') { rec.ending = true; try { rec.child.kill(); } catch { /* already gone */ } }
   }
 
   function dropped() {

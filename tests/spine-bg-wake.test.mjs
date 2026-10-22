@@ -162,6 +162,17 @@ describe('spine — a background task\'s result wakes the being', () => {
     expect(b.sender.placeholders[0].finished).toEqual({ text: 'report-1', surface: true });
   });
 
+  it('a turn cut off across a restart (its process died first) wakes the being with that message, through the reply path', async () => {
+    const brain = stubBrain();
+    const b = build({ brain, mode: 'mention' });
+    await b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, lost: 'revisa el sitio', why: 'claude exited 1 mid-turn' });
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].ev.line).toContain('revisa el sitio');
+    expect(brain.calls[0].ev.line).toContain('claude exited 1 mid-turn');
+    expect(brain.calls[0].ev.line).toMatch(/Answer it now/);
+    expect(b.sender.placeholders[0].finished).toEqual({ text: 'report-1', surface: true });
+  });
+
   it('the STOP file suppresses the wake: no placeholder, no turn', async () => {
     const brain = stubBrain();
     const b = build({ brain, stopPresent: true });

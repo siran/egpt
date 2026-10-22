@@ -1394,13 +1394,16 @@ export function createSpine({
   // `line`: liveness's "are they still necessary?" ask rides this same path. A finished task's wake
   // ends the being's status message ✓ and posts its own placeholder at the bottom.
   // `reply`: a turn the daemon held across a spine restart finished after it (src/cli-host.mjs) — its
-  // answer never reached the chat, so the being is handed it to send.
-  async function wakeOnBackground({ being, surface, chatId, summaries = [], reply = null, line = null }) {
-    const what = reply != null ? 'a reply written across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
-    const finished = line == null && reply == null;
+  // answer never reached the chat, so the being is handed it to send. `lost`: that turn's process
+  // ended before it answered (`why`), so the being is handed the message to answer again.
+  async function wakeOnBackground({ being, surface, chatId, summaries = [], reply = null, lost = null, why = null, line = null }) {
+    const what = reply != null ? 'a reply written across a restart' : lost != null ? 'a turn cut off across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
+    const finished = line == null && reply == null && lost == null;
     line ??= reply != null
       ? `[egpt] Your last reply was written while the bridge restarted and never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
-      : `[egpt] A background task you started has finished: ${what}. Verify its result and report to the chat.`;
+      : lost != null
+        ? `[egpt] The bridge restarted while you were answering, and that process ended before you replied (${why}) — nothing reached the chat. The message was:\n\n${lost}\n\nAnswer it now.`
+        : `[egpt] A background task you started has finished: ${what}. Verify its result and report to the chat.`;
     const ev = { surface, chatId, body: line, line, cause: 'background' };   // cause: agent stats' system bucket
     const where = `${being}/${chatId}`;
     if (stopSwitch?.present()) { note(`wake ${where}: STOP file present — not woken`); return false; }

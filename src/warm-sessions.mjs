@@ -107,7 +107,7 @@ export function createWarmPool({
 
   function _backgroundDone(key, info) {
     if (!_s.has(key)) return;
-    onLog(`warm: ${info?.reply != null ? 'an adopted turn' : 'background work'} finished on ${key} with no turn in flight`);
+    onLog(`warm: ${(info?.reply ?? info?.lost) != null ? 'an adopted turn' : 'background work'} finished on ${key} with no turn in flight`);
     try { Promise.resolve(onBackgroundDone(key, info)).catch((err) => onLog(`warm: background wake ${key} failed: ${err?.message ?? err}`)); }
     catch (err) { onLog(`warm: background wake ${key} failed: ${err?.message ?? err}`); }
   }

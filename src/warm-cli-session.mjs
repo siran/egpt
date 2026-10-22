@@ -626,7 +626,12 @@ export function createWarmCliSession(options = {}) {
         if (typeof options.onBackgroundDone !== 'function') return onLog('warm-cli: the adopted turn finished — nobody is listening');
         onLog('warm-cli: the adopted turn finished — reporting its reply up');
         options.onBackgroundDone({ reply: r.text });
-      }, (e) => onLog(`warm-cli: the adopted turn ended without a reply — ${e?.message ?? e}`)).finally(() => { orphan = null; });
+      }, (e) => {
+        onLog(`warm-cli: the adopted turn ended without a reply — ${e?.message ?? e}`);
+        // Its process died under it, so the being answers it again; a stop or an eviction ended it on purpose.
+        if (closed || e?.interrupted || /^\s*\//.test(opener) || typeof options.onBackgroundDone !== 'function') return;
+        options.onBackgroundDone({ lost: opener, why: String(e?.message ?? e) });
+      }).finally(() => { orphan = null; });
     }
     attach(a.proc);
   }
