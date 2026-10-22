@@ -37,6 +37,13 @@ function Get-BeeperWindowPlan([bool] $Shared, [bool] $Claimed, [string] $Service
   return $p + 'watch'
 }
 
+# Where the window opens: the profile this service shares with it (its --user-data-dir, needed
+# unless it is the default profile), else the user's own default profile - never the service's own.
+function Get-BeeperWindowOpen([bool] $Shared, [string] $AppParameters, [string] $AppData) {
+  $p = if ($Shared) { Get-BeeperShareProfile $AppParameters $AppData } else { Get-BeeperDefaultProfile $AppData }
+  return [ordered]@{ profile = $p; args = (Get-BeeperWindowArgs $p $AppData) }
+}
+
 # Polls in a row with no Beeper and no update in progress; two mean Beeper has exited.
 function Get-BeeperWatchCount([bool] $BeeperUp, [bool] $UpdateRunning, [int] $Count) {
   if ($BeeperUp -or $UpdateRunning) { return 0 }
@@ -52,10 +59,11 @@ function Say($m) {
   try { Add-Content -Path $logFile -Value $line -Encoding utf8 } catch { }
 }
 
-$profileDir = Get-BeeperDefaultProfile $AppData
 $par = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters" -ErrorAction SilentlyContinue
 $exe = if ($par.Application) { [string]$par.Application } else { Join-Path $LocalAppData 'Programs\BeeperTexts\Beeper.exe' }
-$shared = [bool]$par -and (Test-BeeperSharedProfile ([string]$par.AppParameters) $AppData)
+$shared = [bool]$par -and (Test-BeeperSharedProfile ([string]$par.AppParameters) $AppData (Get-BeeperPreStartHook $ServiceName))
+$open = Get-BeeperWindowOpen $shared ([string]$par.AppParameters) $AppData
+$profileDir = $open.profile
 $connection = $ServiceName -replace '^egpt-beeper-', ''
 $session = (Get-Process -Id $PID).SessionId
 
@@ -76,7 +84,7 @@ function Test-UpdateRunning {
   }
   return $false
 }
-function Open-Window { Start-Process -FilePath $exe }   # no --user-data-dir: the default profile IS the shared one
+function Open-Window { if ($open.args) { Start-Process -FilePath $exe -ArgumentList $open.args } else { Start-Process -FilePath $exe } }
 
 # The spine's Beeper bridges wait (calls held, no redial) while the profile changes hands.
 $held = $false
@@ -92,7 +100,7 @@ $serviceState = if ($shared) { [string](Get-Service $ServiceName).Status } else 
 $plan = Get-BeeperWindowPlan $shared $claimed $serviceState (Test-WindowUp)
 
 if ($DryRun) {
-  Say "-DryRun: shared=$shared service=$ServiceName ($serviceState) profile=$profileDir plan: $(if ($plan) { $plan -join ' -> ' } else { 'nothing (another launcher owns the profile)' })"
+  Say "-DryRun: shared=$shared service=$ServiceName ($serviceState) profile=$profileDir open: Beeper.exe $($open.args) plan: $(if ($plan) { $plan -join ' -> ' } else { 'nothing (another launcher owns the profile)' })"
   return
 }
 if (-not $shared) { Open-Window; return }

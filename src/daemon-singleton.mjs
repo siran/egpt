@@ -16,6 +16,36 @@
 // belongs to some unrelated process must NOT be read as "a daemon is alive".
 
 import { spawnSync } from 'node:child_process';
+import { closeSync, constants, mkdirSync, openSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+// --- the cross-session locks (operator 2026-10-22) ------------------------------------------------
+// state/runner.lock (the daemon whose spine holds the profile) and state/s1.claim (the Session 1
+// daemon, for its whole life). A share-none open that the OS drops with the process — a logoff, a
+// crash, taskkill /F — so no pid or beat is guessed. 0x10000000 is libuv's UV_FS_O_EXLOCK, which
+// node does not export; it means something only on Windows, where the sessions are.
+const EXLOCK = 0x10000000;
+const lockFlags = (platform) => constants.O_RDWR | constants.O_CREAT | (platform === 'win32' ? EXLOCK : 0);
+
+// The open handle, or null while another process holds it. Anything but a sharing violation throws.
+export function openExclusive(path, platform = process.platform) {
+  mkdirSync(dirname(path), { recursive: true });
+  try { return openSync(path, lockFlags(platform)); }
+  catch (e) { if (e?.code === 'EBUSY') return null; throw e; }
+}
+
+export function closeExclusive(fd) {
+  try { closeSync(fd); } catch { /* already closed */ }
+}
+
+// Held by another process right now? Probed with an exclusive open that lets go at once.
+export function heldExclusive(path, platform = process.platform) {
+  let fd;
+  try { fd = openSync(path, lockFlags(platform)); }
+  catch (e) { return e?.code === 'EBUSY'; }
+  closeExclusive(fd);
+  return false;
+}
 
 // Pure decision over two injected facts: the spine.pid file's content and the
 // alive.txt beat age (ms since its mtime; Infinity when the file is absent).

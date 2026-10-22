@@ -106,7 +106,7 @@ function Read-RunAsState {
     $v = [ordered]@{
       name = $b.Name; state = [string]$w.State; account = [string]$w.StartName; udd = $udd
       uddExists = [bool]($udd -and (Test-Path -LiteralPath $udd)); connection = ($b.Name -replace '^egpt-beeper-', '')
-      lockHeld = $false; aclGaps = 0; firstGap = $null; profileMB = 0; shared = (Test-BeeperSharedProfile $ap $AppData)
+      lockHeld = $false; aclGaps = 0; firstGap = $null; profileMB = 0; shared = (Test-BeeperSharedProfile $ap $AppData (Get-BeeperPreStartHook $b.Name))
     }
     $v.hasToken = $tokens.ContainsKey($v.connection)
     if ($v.uddExists) {

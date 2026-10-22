@@ -93,7 +93,7 @@ if (-not (Test-Path -LiteralPath $profileDir)) { throw "the profile $service use
 Say "connection: $Connection   service: $service"
 Say "profile:    $profileDir"
 
-if ((Test-BeeperSharedProfile ([string]$params.AppParameters)) -or (Test-BeeperClaimHeld (Get-BeeperClaimPath $profileDir))) {
+if ((Test-BeeperSharedProfile ([string]$params.AppParameters) -PreHook (Get-BeeperPreStartHook $service)) -or (Test-BeeperClaimHeld (Get-BeeperClaimPath $profileDir))) {
   Say 'this profile is shared with your Beeper window: renewing there, the service is left as it is'
   if (-not @(Select-BeeperProfileProcesses (Get-CimInstance Win32_Process -Filter "Name='Beeper.exe'" | Where-Object { $_.SessionId -ne 0 }) $profileDir).Count) {
     throw 'your Beeper window is not open: open it with the "Beeper (eGPT)" shortcut (it hands the profile over), then run this again'

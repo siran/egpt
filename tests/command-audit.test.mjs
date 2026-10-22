@@ -167,14 +167,17 @@ describe('what is NOT audited', () => {
 describe('lifecycle audit', () => {
   const shellEv = (body) => ({ chatId: 'shell-1', surface: SHELL_SURFACE, node: 'sh', msgId: null, chatName: 'shell', senderName: 'operator', body });
 
-  it('/standdown is not a command: no exit, the catch-all reply, a plain audit line', async () => {
+  // Back 2026-10-22 as a lifecycle command (45): boot decides whether a Session 1 daemon waits for
+  // the profile; the audit line is plain like its siblings'. A port argument is not a command any more.
+  it('/standdown and /standdown force exit 45 with a plain audit line; /standdown <port> is unknown', async () => {
     const exits = [];
-    const { cmds, audit, sent } = harness({ exit: async (code) => { exits.push(code); } });
+    const { cmds, audit, sent } = harness({ exit: async (code, o) => { exits.push([code, !!o?.force]); } });
     await cmds.run(shellEv('/standdown'));
+    await cmds.run(shellEv('/standdown force'));
     await cmds.run(shellEv('/standdown 23475'));
-    expect(exits).toEqual([]);
-    expect(sent.map((s) => s.text)).toEqual([expect.stringMatching(/standdown`?: recognized/), expect.stringMatching(/standdown`?: recognized/)]);
-    expect(audit).toEqual(['/standdown in shell by operator', '/standdown in shell by operator']);
+    expect(exits).toEqual([[45, false], [45, true]]);
+    expect(sent.map((s) => s.text)).toEqual([expect.stringMatching(/standdown`?: recognized/)]);
+    expect(audit).toEqual(['/standdown in shell by operator', '/standdown in shell by operator', '/standdown in shell by operator']);
   });
 
   it('/restart, /upgrade and /rewind audit lines are unchanged, even when the exit seam returns a count', async () => {

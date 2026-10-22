@@ -779,16 +779,21 @@ describe('(E) setup/stop-egpt.ps1 writes the same STOP file the spine does', () 
     expect(ps1).toContain('if (Test-Path $stopFile)');          // idempotent: an existing STOP file is left alone
   });
 
-  it('stop drives the Session 1 task and kills the daemon tree; start starts the task', async () => {
+  // Since 2026-10-22 both runners: the Session 0 service and the Session 1 task (GENOME 6).
+  it('stop drives both runners and kills the daemon tree; start starts the task, then the service', async () => {
     const [cmd, startPs1, ps1] = await Promise.all([readSetup('stop-egpt.cmd'), readSetup('start-egpt.ps1'), readSetup('stop-egpt.ps1')]);
     expect(cmd).toContain('stop-egpt.ps1');
     expect(cmd).toContain('start-egpt.cmd');                    // the way back is named in the way off
     // the STOP file is written before anything is stopped
-    expect(ps1.indexOf('[IO.File]::WriteAllText($stopFile')).toBeLessThan(ps1.indexOf('Stop-ScheduledTask -TaskName $TaskName'));
+    const wrote = ps1.indexOf('[IO.File]::WriteAllText($stopFile');
+    expect(wrote).toBeGreaterThan(-1);
+    expect(wrote).toBeLessThan(ps1.indexOf('Stop-Service -Name $ServiceName'));
+    expect(wrote).toBeLessThan(ps1.indexOf('Stop-ScheduledTask -TaskName $TaskName'));
     expect(ps1).toContain("'daemon-s1.pid', 'egpt-daemon.mjs'");   // Stop-ScheduledTask does not kill the tree
     expect(ps1).toContain('& taskkill.exe /PID $procId /T /F');
     expect(startPs1).toContain('Remove-Item $stopFile -Force'); // …and the way back actually clears the switch
-    expect(startPs1).toContain('Start-ScheduledTask -TaskName $TaskName');
-    for (const src of [ps1, startPs1]) expect(src).not.toMatch(/Start-Service|Stop-Service/);
+    // the task first, so the service finds Session 1 holding the profile and holds off
+    expect(startPs1.indexOf('Start-ScheduledTask -TaskName $TaskName')).toBeGreaterThan(-1);
+    expect(startPs1.indexOf('Start-ScheduledTask -TaskName $TaskName')).toBeLessThan(startPs1.indexOf('Start-Service -Name $ServiceName'));
   });
 });

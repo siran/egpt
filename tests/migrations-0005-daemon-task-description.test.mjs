@@ -23,7 +23,7 @@ const NODES = {
 };
 const daclOf = (sid) => `D:(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;${sid})(A;;FR;;;${sid})`;
 // What setup/egpt-daemon-task-labels.ps1 returns - checked against the real module below, on Windows.
-const TARGET = 'eGPT spine supervisor (egpt-daemon.mjs) in session 1, started at logon - the only eGPT runner on this node. Disable it and the node stays silent.';
+const TARGET = 'eGPT spine supervisor (egpt-daemon.mjs) in session 1, started at logon: it takes the node over from the egpt-daemon service, which takes it back at logoff. Disable it and the node stays in session 0, with no browser.';
 
 const taskXml = ({ name = 'egpt-daemon', node = 'kg', description } = {}) => [
   '<?xml version="1.0" encoding="UTF-16"?>',

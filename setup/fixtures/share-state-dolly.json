@@ -1,0 +1,32 @@
+{
+  "_note": "INFERRED, not measured: dolly was unreachable on 2026-10-22. Built from NODE-SHAPE.md (do's primary Beeper lives in ~/.egpt/state/an-beeper) and the operator's ruling of 2026-10-22. The exact AppParameters form, the service account and state, the NSSM version, the Run value, primary_gui and the user name are assumptions.",
+  "serviceName": "egpt-beeper-primary",
+  "appData": "C:\\Users\\an\\AppData\\Roaming",
+  "profile": "C:\\Users\\an\\.egpt\\state\\an-beeper",
+  "profileExists": true,
+  "aclGaps": 0,
+  "firstGap": null,
+  "recordPath": "C:\\Users\\an\\.egpt\\state\\beeper-share.json",
+  "record": null,
+  "hooks": true,
+  "spineLive": true,
+  "elevated": false,
+  "service": {
+    "exists": true,
+    "state": "Running",
+    "account": "LocalSystem",
+    "exe": "C:\\Users\\an\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe",
+    "appParameters": "--user-data-dir=C:\\Users\\an\\.egpt\\state\\an-beeper --disable-gpu --disable-gpu-compositing --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+    "stopConsole": "",
+    "preHook": "",
+    "nssmVersion": "2.24-101-g897c7ad"
+  },
+  "windowUp": false,
+  "runValue": "\"C:\\Users\\an\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe\"",
+  "launcherRunValue": null,
+  "shortcutExists": false,
+  "launcherRunning": false,
+  "user": "Dolly\\an",
+  "task": null,
+  "config": { "primary": true, "primaryGui": true }
+}

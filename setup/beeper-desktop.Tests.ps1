@@ -36,6 +36,34 @@ Describe 'Test-BeeperSharedProfile' {
     Test-BeeperSharedProfile '--user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata' 'C:\Users\an\AppData\Roaming' | Should Be $false
     Test-BeeperSharedProfile $script:Flags 'C:\Users\an\AppData\Roaming' | Should Be $false
   }
+  # dolly: the service shares its own --user-data-dir; the conversion's Start/Pre hook says so.
+  It 'a service on its own --user-data-dir is shared only behind the conversion''s Start/Pre hook' {
+    $dolly = '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu'
+    $hook = 'powershell.exe -NoProfile -File "C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart -LogPath "C:\h\s0.log"'
+    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' | Should Be $false
+    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' '' | Should Be $false
+    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' $hook | Should Be $true
+    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' 'powershell.exe -File other.ps1' | Should Be $false
+    Test-BeeperSharedProfile $script:Flags 'C:\Users\an\AppData\Roaming' $hook | Should Be $false
+  }
+}
+
+Describe 'the shared profile and the window that opens it' {
+  It 'the service''s own --user-data-dir when it has one (dolly), else the window''s default profile (reve)' {
+    Get-BeeperShareProfile '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' 'C:\Users\an\AppData\Roaming' | Should Be 'C:\Users\an\.egpt\state\an-beeper'
+    Get-BeeperShareProfile $script:Flags 'C:\Users\an\AppData\Roaming' | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+  }
+  It 'the window needs --user-data-dir for any profile but the default one' {
+    Get-BeeperWindowArgs 'C:\Users\an\AppData\Roaming\BeeperTexts' 'C:\Users\an\AppData\Roaming' | Should Be ''
+    Get-BeeperWindowArgs 'c:/users/an/appdata/roaming/beepertexts/' 'C:\Users\an\AppData\Roaming' | Should Be ''
+    Get-BeeperWindowArgs 'C:\Users\an\.egpt\state\an-beeper' 'C:\Users\an\AppData\Roaming' | Should Be '--user-data-dir="C:\Users\an\.egpt\state\an-beeper"'
+    Get-BeeperUserDataDir (Get-BeeperWindowArgs 'C:\Users\an\.egpt\state\an-beeper' 'C:\Users\an\AppData\Roaming') | Should Be 'C:\Users\an\.egpt\state\an-beeper'
+  }
+  It 'Test-BeeperRunsProfile: a --user-data-dir naming the profile, whatever the spelling; none is not' {
+    Test-BeeperRunsProfile '--user-data-dir="C:\Users\an\.egpt\state\an-beeper" --disable-gpu' 'c:/users/an/.egpt/state/an-beeper/' | Should Be $true
+    Test-BeeperRunsProfile '--user-data-dir=C:\other' 'C:\Users\an\.egpt\state\an-beeper' | Should Be $false
+    Test-BeeperRunsProfile $script:Flags 'C:\Users\an\AppData\Roaming\BeeperTexts' | Should Be $false
+  }
 }
 
 Describe 'Get-BeeperServiceArgLine' {

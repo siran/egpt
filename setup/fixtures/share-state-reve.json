@@ -1,0 +1,32 @@
+{
+  "_note": "reve BEFORE its 2026-10-22 conversion. Measured: AppParameters, stopConsole, preHook, account and runValue from reve's record (state\\beeper-share.json, 2026-10-22 00:30), the NSSM version, the profile and the user. Not measured: windowUp, spineLive, primary_gui and the service state (as in share-beeper-primary-profile.Tests.ps1's reve state).",
+  "serviceName": "egpt-beeper-primary",
+  "appData": "C:\\Users\\an\\AppData\\Roaming",
+  "profile": "C:\\Users\\an\\AppData\\Roaming\\BeeperTexts",
+  "profileExists": true,
+  "aclGaps": 0,
+  "firstGap": null,
+  "recordPath": "C:\\Users\\an\\.egpt\\state\\beeper-share.json",
+  "record": null,
+  "hooks": true,
+  "spineLive": true,
+  "elevated": false,
+  "service": {
+    "exists": true,
+    "state": "Running",
+    "account": "LocalSystem",
+    "exe": "C:\\Users\\an\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe",
+    "appParameters": "--disable-gpu --disable-gpu-compositing --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+    "stopConsole": "1500",
+    "preHook": "",
+    "nssmVersion": "2.24-101-g897c7ad"
+  },
+  "windowUp": true,
+  "runValue": "\"C:\\Users\\an\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe\"",
+  "launcherRunValue": null,
+  "shortcutExists": false,
+  "launcherRunning": false,
+  "user": "reve\\an",
+  "task": null,
+  "config": { "primary": true, "primaryGui": true }
+}

@@ -1,6 +1,6 @@
 # Unit coverage for setup\egpt-daemon-task-labels.ps1 - the ONE place that says how the session 1
 # logon task describes itself, and the two consumers that must take it from there:
-# register-session1-daemon-task.ps1 (a fresh node) and migrations\0005 / 0043 (a node registered before).
+# register-session1-daemon-task.ps1 (a fresh node) and migrations\0005 / 0043 / 0048 (a node registered before).
 #
 # WHAT THIS CAN AND CANNOT PROVE. The module is pure string work and unit-tests completely. The
 # registrar is exercised for real in -DryRun against a throwaway profile folder: that reads Task
@@ -21,10 +21,11 @@ $script:RepoDir  = Split-Path -Parent $PSScriptRoot
 
 Describe 'Get-EgptDaemonTaskDescription' {
   It 'is the one line both nodes get' {
-    Get-EgptDaemonTaskDescription | Should Be 'eGPT spine supervisor (egpt-daemon.mjs) in session 1, started at logon - the only eGPT runner on this node. Disable it and the node stays silent.'
+    Get-EgptDaemonTaskDescription | Should Be 'eGPT spine supervisor (egpt-daemon.mjs) in session 1, started at logon: it takes the node over from the egpt-daemon service, which takes it back at logoff. Disable it and the node stays in session 0, with no browser.'
   }
-  It 'no longer points at the retired session 0 service' {
-    Get-EgptDaemonTaskDescription | Should Not Match 'session 0'
+  It 'names the handover with the session 0 service, and no longer says it is the only runner' {
+    Get-EgptDaemonTaskDescription | Should Match 'takes the node over from the egpt-daemon service, which takes it back at logoff'
+    Get-EgptDaemonTaskDescription | Should Not Match 'only eGPT runner'
   }
   It 'is one line with no XML metacharacters - the migrations write it into the XML verbatim' {
     $d = Get-EgptDaemonTaskDescription
@@ -32,7 +33,7 @@ Describe 'Get-EgptDaemonTaskDescription' {
     $d -match "[<>&`"']" | Should Be $false
   }
   It 'says what disabling it costs' {
-    Get-EgptDaemonTaskDescription | Should Match 'Disable it and the node stays silent'
+    Get-EgptDaemonTaskDescription | Should Match 'Disable it and the node stays in session 0, with no browser'
   }
 }
 

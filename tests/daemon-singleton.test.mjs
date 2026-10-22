@@ -6,7 +6,11 @@
 // incident — a 2nd daemon must be refused, but a stale beat or a dead pid must
 // NOT block a legitimate (re)start.
 import { describe, it, expect } from 'vitest';
-import { liveDaemonPid, defaultIsAlive } from '../src/daemon-singleton.mjs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { liveDaemonPid, defaultIsAlive, openExclusive, closeExclusive, heldExclusive } from '../src/daemon-singleton.mjs';
 
 describe('liveDaemonPid', () => {
   it('returns null when there is no pid file content', () => {
@@ -63,4 +67,45 @@ describe('defaultIsAlive', () => {
   // a platform-conditional smoke test: nothing user-launched here exercises
   // the cross-session path, so just confirm the function exists and matches
   // process.kill semantics for in-session pids.
+});
+
+// The cross-session locks (runner.lock, s1.claim): a share-none open held by one process, seen as held
+// by another, and freed by the OS the moment the holder dies, whatever killed it. Real processes, a temp file.
+describe.runIf(process.platform === 'win32')('openExclusive / heldExclusive', () => {
+  const holder = (path) => new Promise((resolve) => {
+    const mod = new URL('../src/daemon-singleton.mjs', import.meta.url).href;
+    const src = `const { openExclusive } = await import(${JSON.stringify(mod)}); openExclusive(${JSON.stringify(path)}); console.log('held'); setInterval(() => {}, 1000);`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', src], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+    child.stdout.once('data', () => resolve(child));
+  });
+  const gone = (child) => new Promise((resolve) => { child.once('exit', resolve); child.kill(); });
+
+  it('is held while another process has it open, and free once that process is killed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-lock-'));
+    const path = join(dir, 'state', 's1.claim');
+    try {
+      const child = await holder(path);
+      expect(heldExclusive(path)).toBe(true);
+      expect(openExclusive(path)).toBe(null);
+      await gone(child);
+      expect(heldExclusive(path)).toBe(false);
+      const fd = openExclusive(path);
+      expect(typeof fd).toBe('number');
+      closeExclusive(fd);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('a probe does not take it: after heldExclusive the lock is still free to open', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-lock-'));
+    const path = join(dir, 'runner.lock');
+    try {
+      const fd = openExclusive(path);
+      expect(heldExclusive(path)).toBe(true);   // our own open excludes even this process's probe
+      closeExclusive(fd);
+      expect(heldExclusive(path)).toBe(false);
+      const again = openExclusive(path);
+      expect(typeof again).toBe('number');
+      closeExclusive(again);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });

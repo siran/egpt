@@ -1,16 +1,19 @@
 # register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 every few minutes and at boot:
 # it starts a shared-profile Beeper service once Session 1 lets go of the profile (a logoff, a
-# window that quit with no launcher watching). setup\share-beeper-primary-profile.ps1 registers it.
-# Logon needs no trigger: setup\beeper-window.ps1 owns that moment.
+# window that quit with no launcher watching), and the egpt-daemon service when it is Stopped and
+# Automatic with no STOP file. setup\share-beeper-primary-profile.ps1 and install-nssm-service.ps1
+# register it. Logon needs no trigger: setup\beeper-window.ps1 and the egpt-daemon task own that moment.
 #
 # AS THE DESKTOP USER, S4U: it runs whether or not that user is logged on, and no password is
 # stored. NEVER SYSTEM: the script lives in a folder the user can write, so SYSTEM running it would
 # hand that folder SYSTEM's rights. The user already may query and start the Beeper services
-# (grant-beeper-service-control.ps1) and owns the profile, the claim and the lockfile.
+# (grant-beeper-service-control.ps1) and egpt-daemon (install-nssm-service.ps1), and owns the
+# profile, the claim and the lockfile.
 #
 #   .\setup\register-s0-identity-task.ps1 -LogPath <file>   register (or replace) the task
 #   .\setup\register-s0-identity-task.ps1 -UserId reve\an   as that user (default: whoever runs this)
 #   .\setup\register-s0-identity-task.ps1 -IntervalMin 5    a different cadence
+#   .\setup\register-s0-identity-task.ps1 -EgptHome <dir>   the profile whose STOP file it honours
 #   .\setup\register-s0-identity-task.ps1 -Remove           unregister
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less UTF-8 script as ANSI).
@@ -20,6 +23,7 @@ param(
   [string] $ScriptPath  = (Join-Path $PSScriptRoot 's0-identity-reconcile.ps1'),
   [string] $ServiceName = 'egpt-beeper-primary',
   [string] $LogPath     = '',
+  [string] $EgptHome    = '',
   [string] $UserId      = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
   [int]    $IntervalMin = 2,
   [switch] $Remove,
@@ -42,6 +46,14 @@ function Get-S0IdentityTaskTriggers([int] $IntervalMin, [datetime] $At = (Get-Da
   return @(
     (New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)),
     (New-ScheduledTaskTrigger -AtStartup))
+}
+
+# The reconciler's command line. In-memory only (tests read it). No -EgptHome: the reconciler's default.
+function Get-S0IdentityTaskArgument([string] $ScriptPath, [string] $ServiceName, [string] $LogPath, [string] $EgptHome) {
+  $arg = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ServiceName $ServiceName"
+  if ($LogPath) { $arg += " -LogPath `"$LogPath`"" }
+  if ($EgptHome) { $arg += " -EgptHome `"$EgptHome`"" }
+  return $arg
 }
 
 if ($LoadFunctionsOnly) { return }
@@ -69,9 +81,7 @@ if ($Remove) { Write-Host "[s0-identity] done (removed)"; if ($Pause) { Read-Hos
 
 if (-not (Test-Path $ScriptPath)) { throw "reconciler not found: $ScriptPath" }
 
-$arg = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ServiceName $ServiceName"
-if ($LogPath) { $arg += " -LogPath `"$LogPath`"" }
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (Get-S0IdentityTaskArgument $ScriptPath $ServiceName $LogPath $EgptHome)
 
 # RunOnlyIfNetworkAvailable is deliberately OFF: this is a local question about local services and
 # must be answered on a machine with no network at all.
@@ -80,9 +90,9 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger (Get-S0IdentityTaskTriggers $IntervalMin) `
   -Settings $settings -Principal (Get-S0IdentityTaskPrincipal $UserId) `
-  -Description "Starts $ServiceName when Session 1 is not using its Beeper profile (shared with the operator's window). Never stops it." `
+  -Description "Starts $ServiceName when Session 1 is not using its Beeper profile (shared with the operator's window), and egpt-daemon when it is Stopped and Automatic with no STOP file. Never stops either." `
   -ErrorAction Stop | Out-Null
 
-Write-Host "[s0-identity] registered $TaskName - every $IntervalMin min from now on, and at boot, as $UserId (S4U), for $ServiceName"
+Write-Host "[s0-identity] registered $TaskName - every $IntervalMin min from now on, and at boot, as $UserId (S4U), for $ServiceName and egpt-daemon"
 if ($LogPath) { Write-Host "[s0-identity] log: $LogPath" }
 if ($Pause) { Write-Host ''; Read-Host 'Press Enter to close' | Out-Null }

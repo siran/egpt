@@ -675,9 +675,10 @@ describe('the retired session 1 task name is gone from the tree', () => {
   });
 });
 
-// One runner per node: the Session 1 task (operator 2026-10-17). Nothing in setup/ starts the
-// retired egpt-daemon service; a restart is setup/stop-egpt.ps1 then start-egpt.ps1.
-describe('the retired session 0 daemon service is never started', () => {
+// Two runners, one at a time (operator 2026-10-22): the egpt-daemon service and the Session 1 task.
+// Only start-egpt.ps1 starts them, in order (task, then service); a restart is stop-egpt.ps1 then
+// start-egpt.ps1, and the retired restart and Run-key launchers stay gone.
+describe('the runners start only through start-egpt.ps1', () => {
   const code = (f) => readFileSync(join(ROOT, f), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
 
   it('deploy.ps1 and egpt-wake-duty.ps1 go through start-egpt.ps1, never the SCM', () => {

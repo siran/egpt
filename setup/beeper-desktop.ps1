@@ -124,7 +124,8 @@ function Get-BeeperVersionAt([int] $Port) {
 }
 
 # --- one profile, two runtimes ---------------------------------------------------------------
-# A service may run the desktop user's OWN Beeper profile: the window runs it in Session 1 while
+# A service and the desktop user's Beeper window may share ONE profile (the window's default one,
+# or the service's own --user-data-dir): the window runs it in Session 1 while
 # it is open, the service in Session 0 otherwise, never both (two live instances of one profile
 # are two clients claiming one device id). setup\share-beeper-primary-profile.ps1 sets it up;
 # setup\beeper-window.ps1 hands it over; setup\s0-identity-reconcile.ps1 is the backstop.
@@ -137,13 +138,42 @@ function Get-BeeperUserDataDir([string] $CommandLine) {
 
 function ConvertTo-BeeperPathKey([string] $Path) { $Path.Replace('\', '/').TrimEnd('/').ToLower() }
 
+# Does this command line (or AppParameters) name $Profile in its --user-data-dir?
+function Test-BeeperRunsProfile([string] $CommandLine, [string] $Profile) {
+  $udd = Get-BeeperUserDataDir $CommandLine
+  return [bool]$udd -and (ConvertTo-BeeperPathKey $udd) -eq (ConvertTo-BeeperPathKey $Profile)
+}
+
 # The profile the window opens with no --user-data-dir.
 function Get-BeeperDefaultProfile([string] $AppData = $env:APPDATA) { Join-Path $AppData 'BeeperTexts' }
 
-# Does this service run the desktop user's own window profile?
-function Test-BeeperSharedProfile([string] $AppParameters, [string] $AppData = $env:APPDATA) {
+# The profile a service shares (or would share) with the window: its own --user-data-dir, else the
+# window's default profile.
+function Get-BeeperShareProfile([string] $AppParameters, [string] $AppData = $env:APPDATA) {
   $udd = Get-BeeperUserDataDir $AppParameters
-  return [bool]$udd -and (ConvertTo-BeeperPathKey $udd) -eq (ConvertTo-BeeperPathKey (Get-BeeperDefaultProfile $AppData))
+  if ($udd) { return $udd }
+  return Get-BeeperDefaultProfile $AppData
+}
+
+# The NSSM Start/Pre hook share-beeper-primary-profile.ps1 gives a shared-profile service.
+$BeeperPreStartHook = 's0-identity-reconcile\.ps1.*-PreStart'
+
+# A service's Start/Pre hook, where NSSM keeps it (readable without elevation); '' for none.
+function Get-BeeperPreStartHook([string] $ServiceName) {
+  return [string](Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters\AppEvents\Start" -ErrorAction SilentlyContinue).Pre
+}
+
+# Does this service share its profile with the desktop user's window? It runs the window's default
+# profile, or its own --user-data-dir behind the conversion's Start/Pre hook.
+function Test-BeeperSharedProfile([string] $AppParameters, [string] $AppData = $env:APPDATA, [string] $PreHook = '') {
+  if (Test-BeeperRunsProfile $AppParameters (Get-BeeperDefaultProfile $AppData)) { return $true }
+  return [bool](Get-BeeperUserDataDir $AppParameters) -and $PreHook -match $BeeperPreStartHook
+}
+
+# The arguments that open the window on $Profile: none for the default profile.
+function Get-BeeperWindowArgs([string] $Profile, [string] $AppData = $env:APPDATA) {
+  if ((ConvertTo-BeeperPathKey $Profile) -eq (ConvertTo-BeeperPathKey (Get-BeeperDefaultProfile $AppData))) { return '' }
+  return "--user-data-dir=`"$Profile`""
 }
 
 # The flags every Session 0 Beeper runs with:
@@ -187,11 +217,7 @@ function Test-BeeperLockHeld([string] $UserDataDir) {
 # Beeper processes naming this profile. A child always carries --user-data-dir; a process whose
 # command line this user cannot read (another session's SYSTEM process) is not counted here.
 function Select-BeeperProfileProcesses($Processes, [string] $UserDataDir) {
-  $want = ConvertTo-BeeperPathKey $UserDataDir
-  return @($Processes | Where-Object {
-    $u = Get-BeeperUserDataDir ([string]$_.CommandLine)
-    $_.Name -eq 'Beeper.exe' -and $u -and (ConvertTo-BeeperPathKey $u) -eq $want
-  })
+  return @($Processes | Where-Object { $_.Name -eq 'Beeper.exe' -and (Test-BeeperRunsProfile ([string]$_.CommandLine) $UserDataDir) })
 }
 
 function Test-BeeperProfileInUse([string] $UserDataDir, $Processes) {
@@ -431,8 +457,8 @@ function Test-BeeperAclRules($Rules, [string] $Sid) {
 function Get-BeeperAclGaps([string] $Dir, [string] $Sid) {
   $gaps = New-Object System.Collections.Generic.List[string]
   foreach ($e in @(Get-Item -LiteralPath $Dir -Force) + @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue)) {
-    $rules = (Get-Acl -LiteralPath $e.FullName).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-    if (-not (Test-BeeperAclRules $rules $Sid)) { $gaps.Add($e.FullName) }
+    $rules = try { (Get-Acl -LiteralPath $e.FullName).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) } catch { $null }   # unreadable ACL: a gap
+    if (-not $rules -or -not (Test-BeeperAclRules $rules $Sid)) { $gaps.Add($e.FullName) }
   }
   return $gaps.ToArray()
 }

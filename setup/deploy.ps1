@@ -1,13 +1,16 @@
 # setup/deploy.ps1 -- deploy for a SUPERVISOR-level change.
 #
 # Fast-forwards the prod checkout (~/bin/egpt) to origin/main and RESTARTS the
-# Session 1 daemon: prod's setup\stop-egpt.ps1, then setup\start-egpt.ps1. Use this
+# daemons: prod's setup\stop-egpt.ps1, then setup\start-egpt.ps1 - the Session 1 task
+# while the operator is logged on, and the egpt-daemon service either way (so it also
+# works over ssh to a node nobody is logged on to). Use this
 # (not an ingest /restart) when the change alters what the supervisor spawns -- e.g.
 # an entry-point rename that moves the spine to egpt-spine.mjs. An ingest /restart
 # only respawns the spine via the ALREADY-RUNNING supervisor, so a new daemon-runtime
 # appPath never takes effect; only a daemon restart reloads it.
 #
-# No elevation: the task and its processes are the operator's own. Run it from an
+# No elevation: the task and its processes are the operator's own, and
+# install-nssm-service grants the operator stop/start on the service. Run it from an
 # operator shell or ssh, never a being's shell - the stop kills the daemon's tree.
 # A node already STOPPED is fast-forwarded but not restarted. Logs to -LogPath too.
 #
@@ -61,7 +64,7 @@ try {
 
   $stopFile = Join-Path $EgptHome 'STOP'
   if (Test-Path -LiteralPath $stopFile) { throw "node is STOPPED ($stopFile) -- prod updated, daemon NOT restarted; setup\start-egpt.cmd brings it back" }
-  Log "restarting the Session 1 daemon ..."
+  Log "restarting the daemons (the Session 1 task, the egpt-daemon service) ..."
   & (Join-Path $Repo 'setup\stop-egpt.ps1') -EgptHome $EgptHome -Reason 'setup\deploy.ps1 (daemon restart)' 6>&1 | ForEach-Object { Log "  $_" }
   $global:LASTEXITCODE = 0
   & (Join-Path $Repo 'setup\start-egpt.ps1') -EgptHome $EgptHome 6>&1 | ForEach-Object { Log "  $_" }

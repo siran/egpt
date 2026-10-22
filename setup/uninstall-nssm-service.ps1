@@ -1,5 +1,5 @@
-# uninstall-nssm-service.ps1 - remove one egpt v2 node's NSSM service (the retired Session 0
-# egpt-daemon service, 2026-10-17: the node runs from the Session 1 task).
+# uninstall-nssm-service.ps1 - remove one egpt v2 node's NSSM service (egpt-daemon: the Session 0
+# runner; without it nothing runs the node while nobody is logged on. install-nssm-service.cmd puts it back).
 #
 # Removes only the named service. Never kills stray
 # node.exe and never touches other nodes - independent profiles are independent.

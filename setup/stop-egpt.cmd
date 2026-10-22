@@ -1,9 +1,10 @@
 @echo off
 REM stop-egpt.cmd - THE STOP BUTTON. Double-clickable, or a desktop shortcut.
 REM Writes EGPT_HOME\STOP (the kill-switch file, so the node stays down across a
-REM task restart or a reboot), stops the Session 1 task and kills its daemon tree.
+REM runner restart or a reboot), stops the egpt-daemon service and the Session 1 task,
+REM and kills the daemon tree.
 REM
-REM Undo with: start-egpt.cmd   (deletes the file, starts the task)
+REM Undo with: start-egpt.cmd   (deletes the file, starts the task and the service)
 REM
 REM No elevation: the task and its processes are the operator's own. The window
 REM waits for a key, so the result stays readable.

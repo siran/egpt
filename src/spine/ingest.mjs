@@ -7,8 +7,10 @@
 //   /restart        -> exit 43  (daemon respawns this checkout — picks up commits)
 //   /upgrade        -> exit 42  (daemon git pull + npm + build, then respawn)
 //   /rewind <ref>   -> exit 44  (daemon checks out <ref>, then respawn)
+//   /standdown      -> exit 45  (hand the profile to the waiting Session 1 daemon; the Session 0
+//                                daemon holds off until Session 1 lets go — daemon-runtime.mjs)
 //
-// 43 and 42 are deferred since 2026-09-28 (operator: "yes, restart should wait for turns in
+// 43, 42 and 45 are deferred since 2026-09-28 (operator: "yes, restart should wait for turns in
 // progress"): boot routes them through spine.drainForRestart(), which KEEPS SERVING and exits at
 // the first moment no turn is in flight (capped) — see spine.mjs. Only 44 leaves immediately.
 //
@@ -81,11 +83,13 @@ export function lifecycleExit(line, { writeRewindTarget } = {}) {
     if (ref) writeRewindTarget?.(ref);
     return 44;
   }
+  if (tok === '/standdown' && /^(force)?$/.test(cmd.slice(tok.length).trim())) return 45;
   return null;
 }
 
 // `/restart force` / `/upgrade force`: the drain skips its wait for background work (turns are
-// still waited for). Same code as the bare command; the callers hand this to announceAndExit.
+// still waited for). `/standdown force`: it does not wait for the turns either (background work is
+// never waited for there). Same code as the bare command; the callers hand this to announceAndExit.
 export function lifecycleForce(line) {
-  return /^\/(restart|upgrade)\s+force$/.test(String(line ?? '').trim());
+  return /^\/(restart|upgrade|standdown)\s+force$/.test(String(line ?? '').trim());
 }

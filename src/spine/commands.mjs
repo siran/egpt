@@ -565,6 +565,8 @@ export function createCommands({
   // feed the pure admission (chrome-pool.mjs); onChromeLog reports launches / evictions / deaths /
   // refusals. Boot injects onChromeLog only (real host + probes).
   chromeHost = connectChromeHost(),
+  // Run by the Session 0 daemon: no desktop, so no browser until someone logs in (operator 2026-10-22).
+  inSession0 = process.env.EGPT_SUPERVISED === '1' && String(process.env.EGPT_SESSION1 ?? '').trim() !== '1',
   profileHolder = defaultProfileHolder,
   freeMem = () => freemem(),
   rssOf = defaultRssOf,
@@ -1140,7 +1142,9 @@ export function createCommands({
       }
     } catch (e) { onChromeLog(`could not list the daemon's Chromes — ${e?.message ?? e}`); }
   })();
-  const NO_CHROME_HOST = 'this spine has no daemon chrome-host (run by hand, or not the Session 1 daemon) — it launches no browser';
+  const NO_CHROME_HOST = inSession0
+    ? 'no browser while nobody is logged in to this machine — browser work is available once someone logs in'
+    : 'this spine has no daemon chrome-host (run by hand, or not the Session 1 daemon) — it launches no browser';
 
   // THE ONE LAUNCH PATH — /chrome, a being's `browser start` / `browser cdp`, /tabs…, /members,
   // /login, the relay, a browser beat. No conversation → brain. Registry keyed by profile dir; a live

@@ -33,7 +33,7 @@ import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-session.mjs';
 import { connectCliHost } from '../cli-host.mjs';
-import { defaultIsAlive } from '../daemon-singleton.mjs';
+import { defaultIsAlive, heldExclusive } from '../daemon-singleton.mjs';
 import { raiseSelfToNormal } from '../process-priority.mjs';
 import { readConfigSync, configContentHashSync } from '../tools/config-io.mjs';
 import { restartKeysChanged, changedKeys } from './config-swap.mjs';
@@ -1106,6 +1106,8 @@ export async function boot({
   setTimeout: setTimeoutFn = globalThis.setTimeout,          // the KILL SWITCH warning's cap seam (below); injected so a test can drive the 3s timer instead of waiting for it
   fetch: fetchFn = (...a) => globalThis.fetch(...a),         // the /book calendar feed + SES seam; tests inject a fake so no request leaves
   cliHost = connectCliHost(),         // the daemon holding every claude session (src/cli-host.mjs); null = this spine spawns them
+  session1 = String(process.env.EGPT_SESSION1 ?? '').trim() === '1',   // this spine runs under the Session 1 daemon (setup/session1-daemon-launcher.vbs)
+  successorWaiting = () => heldExclusive(join(EGPT_HOME, 'state', 's1.claim')),   // the Session 1 daemon waits for this profile (src/daemon-runtime.mjs)
   backgroundFile = null,              // state/background.json's path when ingest is off (tests); ingest on → EGPT_HOME/state/background.json
   lagProbe: lagProbeIn = null,        // the lag probe (src/spine/lag-probe.mjs); a bench injects one to read the step timings
 } = {}) {
@@ -2757,7 +2759,7 @@ export async function boot({
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
-  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind' };
+  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
   // The going-down half, unchanged: the sidecar the NEXT boot reads back, the capped "↻ …" line,
@@ -2790,24 +2792,42 @@ export async function boot({
   // otherwise the pull that deploy is waiting for would silently never happen. 44 still leaves on
   // the spot: /rewind is the way back FROM bad code, and waiting on a turn that code is writing
   // would defeat it.
+  //
+  // 45 (/standdown, operator 2026-10-22) drains the same way, and only while the Session 1 daemon
+  // waits for this profile (state/s1.claim): turns in flight finish (force: not even those),
+  // background work is never waited for — it ends with this daemon's sessions. 42 outranks 45 (the
+  // pull must still happen; the daemon holds off after it), 45 outranks 43.
   let restartCode = null;   // the code a pending restart drain leaves with
   let beeperUpdate = null;  // /update beeper (created below, real node only)
+  const OUTRANKS = { 42: 3, 45: 2, 43: 1 };
   async function announceAndExit(code, { force = false } = {}) {
+    if (code === 45 && session1) { log.line?.('[standdown] this spine runs in Session 1 — nothing to hand over to; ignored'); return; }
+    if (code === 45 && !successorWaiting()) { log.line?.('[standdown] no Session 1 daemon waits for this profile (state/s1.claim is free) — ignored'); return; }
     // A Beeper update in progress finishes first: its tool runs as this spine's child.
-    if ((code === 42 || code === 43) && beeperUpdate?.busy()) {
+    if (OUTRANKS[code] && beeperUpdate?.busy()) {
       log.line?.(`[drain] ${KIND_OF[code]} waits for the Beeper update or handover in progress`);
       beeperUpdate.idle().then(() => announceAndExit(code, { force })).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`));
       return;
     }
-    if (code === 42 || code === 43) {
-      restartCode = restartCode === 42 ? 42 : code;
-      spine.drainForRestart(() => { goDown(restartCode).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`)); }, {
+    if (code === 45 && force) { await leave(45); return; }
+    if (OUTRANKS[code]) {
+      restartCode = OUTRANKS[code] > (OUTRANKS[restartCode] ?? 0) ? code : restartCode;
+      spine.drainForRestart(() => { leave(restartCode).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`)); }, {
         // temp → rename, the ingest box's own rule for its writers: upgrade.ps1 never reads half a file.
         onWait: async (rec) => { await writeFile(`${drainingFile}.tmp`, JSON.stringify(rec), 'utf8'); await rename(`${drainingFile}.tmp`, drainingFile); },
-        force,   // /restart force: skip the wait for background work
+        force: force || code === 45,   // /restart force, and every /standdown: skip the wait for background work
       });
       return;
     }
+    await goDown(code);
+  }
+  // Leaving while Session 1 waits: the Session 0 daemon holds off and ends every session it holds, so
+  // each being whose background work ends says so first (capped, like the going-down line). A
+  // /standdown whose successor let go while it drained stays.
+  async function leave(code) {
+    const handingOver = !session1 && successorWaiting();
+    if (code === 45 && !handingOver) { restartCode = null; log.line?.('[standdown] Session 1 let go of the profile while this spine drained — staying'); return; }
+    if (handingOver) await Promise.race([spine.noteStoppedBackground(), new Promise((r) => { setTimeout(r, 5_000).unref?.(); })]);
     await goDown(code);
   }
 
@@ -3676,7 +3696,8 @@ export async function boot({
   });
   // backgroundWork: what a restart drain waits for. Held by the daemon, it survives a spine restart, so
   // there is nothing to wait for; spawned by this spine (no daemon host), it dies with it.
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), background, beeperUpdate, advice, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  // allBackground: all of it, whoever holds it — what a /standdown ends (the daemon ends its sessions).
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, advice, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, defaultBeing: defaultKey, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

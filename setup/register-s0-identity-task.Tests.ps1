@@ -25,6 +25,20 @@ Describe 'the reconciler task principal' {
   }
 }
 
+Describe 'the reconciler command line' {
+  $p = 'C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1'
+  It 'the Beeper service and the log, as before; no -EgptHome unless given (the reconciler defaults it)' {
+    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' 'C:\h\s0.log' '' | Should Be '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1" -ServiceName egpt-beeper-primary -LogPath "C:\h\s0.log"'
+  }
+  It 'carries the profile whose STOP file the egpt-daemon part honours' {
+    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' '' 'C:\Users\an\.egpt' | Should Match ' -EgptHome "C:\\Users\\an\\\.egpt"$'
+  }
+  It 'the registration uses it' {
+    $code = (Get-Content (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1')) | Where-Object { $_ -notmatch '^\s*#' }
+    ($code -join "`n") | Should Match '-Argument \(Get-S0IdentityTaskArgument \$ScriptPath \$ServiceName \$LogPath \$EgptHome\)'
+  }
+}
+
 Describe 'the reconciler task triggers' {
   $at = Get-Date '2026-10-22T01:20:00'
   $t = @(Get-S0IdentityTaskTriggers 2 $at)

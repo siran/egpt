@@ -68,10 +68,12 @@ default `~/.egpt`).
    flow). Skeletons seed the rest of the profile (agent types, identities,
    heartbeats, room template) copy-if-missing on first boot.
 
-3. **Install the runner.** On Windows, register the Session 1 logon task
+3. **Install the runners.** On Windows, register the Session 1 logon task
    `egpt-daemon`: `powershell -ExecutionPolicy Bypass -File setup\register-session1-daemon-task.ps1`,
-   then start it with `setup\start-egpt.cmd` (`setup\stop-egpt.cmd` stops it). It
-   triggers at logon: after a reboot nothing runs until you log on.
+   and, at the console, the Session 0 service of the same name: `setup\install-nssm-service.cmd`
+   (it asks your password, checked and never stored). The service runs the node while nobody
+   is logged on; the task takes it over at logon, with the browsers. `setup\start-egpt.cmd`
+   starts both, `setup\stop-egpt.cmd` stops both.
    macOS/Linux: `./setup/install-service.sh` (launchd / systemd user service). The
    daemon keeps the node running and respawns it on the lifecycle exit codes below.
 
@@ -81,8 +83,8 @@ default `~/.egpt`).
    node setup/verify-install.mjs
    ```
 
-   Read-only. Checks the live node — the Session 1 task (and that the retired
-   `egpt-daemon` service is absent or Disabled), profile shape, liveness
+   Read-only. Checks the live node — the Session 1 task and the `egpt-daemon` service
+   (Automatic, as you, AppExit 0 = Exit, yours to stop and start), profile shape, liveness
    (`state/spine.pid` + `state/alive.txt`), `claude` on PATH. Exit 0 = all good.
 
 ## Operating the node

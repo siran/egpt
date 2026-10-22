@@ -143,6 +143,15 @@ describe('no daemon IPC → no browser', () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatch(/no browser for "Reinie"/);
   });
+
+  // Operator 2026-10-22: the Session 0 service runs the node while nobody is logged in; the browser
+  // needs a desktop, so a browser request there is told plainly when it will be possible.
+  it('under the Session 0 daemon it says the browser is available once someone logs in', async () => {
+    const cmds = createCommands({ getConfig: () => ({}), chromeHost: null, inSession0: true, profileHolder: () => null, onChromeLog: () => {}, send: async () => {}, brains: { resolve: (name) => ({ name }) } });
+    const r = await cmds.startBrowser(SHARED);
+    expect(r).toMatchObject({ ok: false, reason: 'no-browser' });
+    expect(r.detail).toMatch(/nobody is logged in.*once someone logs in/);
+  });
 });
 
 describe('the orphan sweep at daemon start', () => {

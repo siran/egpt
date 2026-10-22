@@ -94,6 +94,14 @@ function makeRuntime(extra = {}) {
     aliveStaleMs: extra.aliveStaleMs,
     aliveGraceMs: extra.aliveGraceMs,
     importModule: extra.importModule ?? (async () => ({})),
+    // The cross-session locks and the ingest write are fakes unless a test brings its own: a real
+    // lock would open a file under C:/home/.egpt on the developer's disk.
+    mkdirSync: extra.mkdirSync ?? (() => {}),
+    renameSync: extra.renameSync ?? (() => {}),
+    lockFile: extra.lockFile ?? (() => 1),
+    unlockFile: extra.unlockFile ?? (() => {}),
+    lockHeld: extra.lockHeld ?? (() => false),
+    createCliHost: 'createCliHost' in extra ? extra.createCliHost : null,
     peerProbe: extra.peerProbe,
     now: extra.now ?? (() => Date.UTC(2026, 5, 18, 12, 0, 0)),
     // Anything not named above reaches the runtime as-is. Without this the list was an
@@ -916,28 +924,254 @@ describe('daemon runtime: a sleep is not a wedge', () => {
   });
 });
 
-// ── THE STAND-DOWN WATCH (the Session 0 → Session 1 handover) ──────────────────────────────
-// Exit 45 is the one lifecycle code that does NOT respawn: a peer spine has taken the profile
-// (two spines share one EGPT_HOME here, so exactly one may hold it). The daemon is the only
-// thing alive across the handover, so it watches the console port and brings the Session 0
-// spine back when that port goes quiet — logoff or crash, the session ended.
-//
-// Everything below runs on the injected timer + prober seams: no real network, no real spine.
-// /standdown was retired 2026-10-17: 45 is no longer a lifecycle code, so it takes the crash path.
-describe('daemon runtime: exit 45 is not special', () => {
-  it('respawns on the crash backoff and watches nothing', async () => {
-    const timers = [];
-    const intervals = [];
-    const { runtime, children } = makeRuntime({
-      setTimeout: (fn, ms) => timers.push({ fn, ms }),
-      setInterval: (fn, ms) => { intervals.push(ms); return intervals.length; },
+// =====================================================================================
+// ONE RUNNER ACROSS SESSIONS (operator 2026-10-22, GENOME 6 / CONTRACTS 14.4). The Session 0
+// service is resident; the Session 1 daemon claims the profile at logon (state/s1.claim) and asks
+// the S0 spine to stand down; whoever has a spine holds state/runner.lock. Fake locks, fake files.
+// =====================================================================================
+describe('one runner across sessions', () => {
+  function world({ session1 = false, files = {}, claimedByS1 = false, runnerHeldByOther = false, beatAgeMs = 10_000, sessions = 2, extra = {} } = {}) {
+    const processObj = makeProcess();
+    processObj.pid = session1 ? 5001 : 5000;
+    if (session1) processObj.env.EGPT_SESSION1 = '1';
+    const locks = new Map();   // file name → 'me:<fd>' | 'other'
+    if (claimedByS1) locks.set('s1.claim', 'other');
+    if (runnerHeldByOther) locks.set('runner.lock', 'other');
+    let fd = 10;
+    const name = (p) => String(p).replace(/\\/g, '/').split('/').pop();
+    const intervals = [], timers = [], written = [], renamed = [], ended = [];
+    const h = makeRuntime({
+      processObj,
+      now: () => CLOCK,
+      statSync: () => ({ mtimeMs: CLOCK - beatAgeMs }),
+      readFileSync: (p) => {
+        const path = String(p).replace(/\\/g, '/');
+        for (const [suffix, body] of Object.entries(files)) if (path.endsWith(suffix)) return body;
+        const e = new Error('missing'); e.code = 'ENOENT'; throw e;
+      },
+      writeFileSync: (p, body) => written.push({ path: String(p).replace(/\\/g, '/'), body: String(body) }),
+      renameSync: (a, b) => renamed.push([String(a).replace(/\\/g, '/'), String(b).replace(/\\/g, '/')]),
+      liveDaemonPid: fakeLive,
+      lockFile: (p) => { if (locks.has(name(p))) return null; fd += 1; locks.set(name(p), `me:${fd}`); return fd; },
+      unlockFile: (f) => { for (const [k, v] of locks) if (v === `me:${f}`) locks.delete(k); },
+      lockHeld: (p) => locks.has(name(p)),
+      setInterval: (fn, ms) => { const t = { fn, ms, ref() { t.refd = true; return t; }, unref() { t.unrefd = true; return t; } }; intervals.push(t); return t; },
+      clearInterval: (t) => { if (t) t.cleared = true; },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      createCliHost: () => ({ attach: () => {}, endAll: (why) => { ended.push(why); sessions = 0; }, get size() { return sessions; } }),
+      ...extra,
     });
-    runtime.spawnShell();
-    await children[0].child.handlers.exit(45, null);
-    expect(timers.map((t) => t.ms)).toEqual([RESTART_MIN_MS]);
-    expect(intervals).toEqual([]);
-    timers[0].fn();
-    expect(children).toHaveLength(2);
+    const hold = () => intervals.find((t) => t.ms === 3_000 && !t.cleared);
+    const ingested = () => renamed.filter(([, to]) => /\/state\/ingest\/standdown-\d+$/.test(to));
+    return { ...h, processObj, locks, files, intervals, timers, written, renamed, ended, hold, ingested };
+  }
+
+  describe('the Session 0 daemon', () => {
+    it('with nothing else on the profile takes state/runner.lock and spawns', () => {
+      const w = world();
+      w.runtime.start();
+      expect(w.children).toHaveLength(1);
+      expect(w.locks.get('runner.lock')).toMatch(/^me:/);
+      expect(w.hold()).toBeUndefined();
+    });
+
+    it('arriving while Session 1 holds the profile spawns nothing, stays up on a REF\'d hold timer, and takes the profile back when Session 1 lets go', () => {
+      const w = world({ claimedByS1: true, files: { 'state/spine.pid': '9500\n' } });
+      expect(w.runtime.start()).toBeNull();
+      expect(w.children).toHaveLength(0);
+      expect(w.processObj.exits).toEqual([]);
+      expect(w.locks.has('runner.lock')).toBe(false);
+      const t = w.hold();
+      expect(t.refd).toBe(true);           // the only thing keeping a childless service process alive
+      expect(t.unrefd).toBeUndefined();
+      expect(w.runtime.state.holding).toMatch(/Session 1/);
+      expect(w.ingested()).toEqual([]);    // Session 0 never asks anybody to leave
+
+      t.fn();                               // still held: nothing happens
+      expect(w.children).toHaveLength(0);
+
+      w.locks.delete('s1.claim');           // logoff: the OS drops the claim, the S1 spine dies
+      delete w.files['state/spine.pid'];
+      t.fn();
+      expect(w.children).toHaveLength(1);
+      expect(t.cleared).toBe(true);
+      expect(w.runtime.state.holding).toBe(null);
+      expect(w.locks.get('runner.lock')).toMatch(/^me:/);
+    });
+
+    it('a live spine with no claim (an orphan, an old Session 1 daemon) is waited out, never asked to leave', () => {
+      const w = world({ files: { 'state/spine.pid': '9500\n' } });
+      expect(w.runtime.start()).toBeNull();
+      expect(w.processObj.exits).toEqual([]);
+      expect(w.ingested()).toEqual([]);
+      expect(w.runtime.state.holding).toMatch(/9500/);
+      delete w.files['state/spine.pid'];
+      w.hold().fn();
+      expect(w.children).toHaveLength(1);
+    });
+
+    it('its spine leaving with 45 while Session 1 waits: every held session ends, runner.lock goes, no respawn until Session 1 lets go', async () => {
+      const w = world();
+      w.runtime.start();
+      w.locks.set('s1.claim', 'other');
+      await w.children[0].child.handlers.exit(45, null);
+      expect(w.children).toHaveLength(1);
+      expect(w.ended).toHaveLength(1);
+      expect(w.locks.has('runner.lock')).toBe(false);
+      expect(w.hold().refd).toBe(true);
+      expect(w.timers).toEqual([]);                    // not the crash backoff
+      expect(w.logs.join('')).not.toMatch(/crash/);
+
+      w.locks.delete('s1.claim');
+      w.hold().fn();
+      expect(w.children).toHaveLength(2);
+    });
+
+    it('ends the held sessions once per hold, not on every tick while their processes exit', async () => {
+      const ended = [];
+      const w = world({ extra: { createCliHost: () => ({ attach: () => {}, endAll: (why) => ended.push(why), size: 2 }) } });
+      w.runtime.start();
+      w.locks.set('s1.claim', 'other');
+      await w.children[0].child.handlers.exit(45, null);
+      w.hold().fn();
+      w.hold().fn();
+      expect(ended).toHaveLength(1);
+    });
+
+    for (const [what, code] of [['a /restart (43)', RESTART_EXIT_CODE], ['an /upgrade (42)', UPGRADE_EXIT_CODE], ['a crash', 1]]) {
+      it(`${what} never brings a spine back while Session 1 holds the claim`, async () => {
+        const w = world({ extra: { setImmediate: (fn) => fn() } });
+        w.runtime.start();
+        w.locks.set('s1.claim', 'other');
+        await w.children[0].child.handlers.exit(code, null);
+        for (const t of w.timers) t.fn();
+        expect(w.children).toHaveLength(1);
+        expect(w.runtime.state.holding).toMatch(/Session 1/);
+      });
+    }
+
+    it('a wedge-kill never brings a spine back while Session 1 holds the claim', async () => {
+      const w = world({ beatAgeMs: 200_000, extra: { aliveGraceMs: 0, aliveStaleMs: 150_000, livenessIntervalMs: 30_000 } });
+      w.runtime.start();
+      w.locks.set('s1.claim', 'other');
+      w.runtime.checkLiveness();
+      expect(w.children[0].child.killed).toEqual(['SIGTERM']);
+      await w.children[0].child.handlers.exit(1, 'SIGTERM');
+      for (const t of w.timers) t.fn();
+      expect(w.children).toHaveLength(1);
+    });
+
+    it('45 with nobody waiting is a respawn at once, not a crash', async () => {
+      const w = world();
+      w.runtime.start();
+      await w.children[0].child.handlers.exit(45, null);
+      expect(w.children).toHaveLength(2);
+      expect(w.timers).toEqual([]);
+      expect(w.ended).toEqual([]);
+      expect(w.logs.join('')).not.toMatch(/crash/);
+    });
+  });
+
+  describe('the Session 1 daemon', () => {
+    it('arriving while the S0 spine holds the profile: claims s1.claim, asks ONCE through state/ingest (temp, then rename), spawns only once the profile is free', () => {
+      const w = world({ session1: true, files: { 'state/spine.pid': '9500\n' }, runnerHeldByOther: true, sessions: 0 });
+      expect(w.runtime.start()).toBeNull();
+      expect(w.children).toHaveLength(0);
+      expect(w.processObj.exits).toEqual([]);
+      expect(w.locks.get('s1.claim')).toMatch(/^me:/);
+      const [ask] = w.written.filter((x) => x.path.includes('/state/ingest/'));
+      expect(ask.path).toMatch(/\/state\/ingest\/standdown-\d+\.tmp$/);
+      expect(ask.body).toBe('/standdown');
+      expect(w.ingested()).toEqual([[ask.path, ask.path.replace(/\.tmp$/, '')]]);
+
+      w.hold().fn();                                    // the S0 spine is still draining
+      expect(w.children).toHaveLength(0);
+      expect(w.ingested()).toHaveLength(1);             // asked once, not every tick
+
+      delete w.files['state/spine.pid'];                // it left with 45 …
+      w.hold().fn();
+      expect(w.children).toHaveLength(0);               // … but its daemon still holds runner.lock
+      w.locks.delete('runner.lock');                    // the S0 daemon holds off and lets go
+      w.hold().fn();
+      expect(w.children).toHaveLength(1);
+      expect(w.locks.get('runner.lock')).toMatch(/^me:/);
+      expect(w.hold()).toBeUndefined();
+    });
+
+    it('runner.lock held with no live spine (the S0 daemon between spawns): waits without asking anybody', () => {
+      const w = world({ session1: true, runnerHeldByOther: true });
+      expect(w.runtime.start()).toBeNull();
+      expect(w.ingested()).toEqual([]);
+      w.locks.delete('runner.lock');
+      w.hold().fn();
+      expect(w.children).toHaveLength(1);
+    });
+
+    it('a second Session 1 daemon finds s1.claim held: refused after a few short retries, exit 0, no spine', () => {
+      const slept = [];
+      const w = world({ session1: true, claimedByS1: true, extra: { sleepSync: (ms) => slept.push(ms) } });
+      expect(w.runtime.start()).toBeNull();
+      expect(w.children).toHaveLength(0);
+      expect(w.processObj.exits).toEqual([0]);
+      expect(w.logs.join('')).toMatch(/s1\.claim/);
+      expect(slept.length).toBeGreaterThan(0);
+      expect(slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2_000);
+    });
+
+    // The S0 watcher and the PowerShell scripts probe s1.claim with a share-none open of their own;
+    // one landing on the logon instant must not cost the node its Session 1 daemon.
+    it('a probe holding s1.claim for an instant at logon is retried, not read as a second daemon', () => {
+      let probes = 2;
+      const w = world({
+        session1: true,
+        extra: { sleepSync: () => {}, lockFile: (p) => (String(p).endsWith('s1.claim') && probes-- > 0 ? null : 7) },
+      });
+      w.runtime.start();
+      expect(w.processObj.exits).toEqual([]);
+      expect(w.children).toHaveLength(1);
+    });
+
+    it('its own spine is not a holder: after a 43 it respawns while spine.pid still names that pid', async () => {
+      const w = world({ session1: true, extra: { setImmediate: (fn) => fn() } });
+      w.runtime.start();
+      w.files['state/spine.pid'] = `${w.children[0].child.pid}\n`;
+      await w.children[0].child.handlers.exit(RESTART_EXIT_CODE, null);
+      expect(w.children).toHaveLength(2);
+      expect(w.ingested()).toEqual([]);
+    });
+
+    it('while it waits it says who holds the profile, once a minute, with the orphan hint', () => {
+      let at = CLOCK;
+      const w = world({ session1: true, files: { 'state/spine.pid': '9500\n' }, extra: { now: () => at } });
+      w.runtime.start();
+      const before = w.logs.length;
+      at += 30_000; w.hold().fn();
+      expect(w.logs.length).toBe(before);
+      at += 31_000; w.hold().fn();
+      expect(w.logs.slice(before).join('')).toMatch(/still waiting.*9500.*taskkill \/PID 9500 \/T \/F/);
+    });
+  });
+
+  it('shutdown lets go of both locks and stops the hold timer', () => {
+    const w = world({ session1: true, runnerHeldByOther: true });
+    w.runtime.start();
+    const t = w.hold();
+    w.runtime.shutdown('SIGTERM');
+    expect(t.cleared).toBe(true);
+    expect(w.locks.has('s1.claim')).toBe(false);
+  });
+
+  it('startProfileDaemons counts a runtime that holds off as supervising, not failed', () => {
+    const logs = [];
+    const result = startProfileDaemons({
+      profiles: ['C:/a'],
+      processObj: { env: {}, pid: 7, on: () => {}, exit: () => {} },
+      stdout: { write: (m) => logs.push(m) },
+      setPriority: () => {},
+      createRuntime: () => ({ start: () => null, state: { holding: 'the Session 1 daemon holds state/s1.claim' } }),
+    });
+    expect(result.failed).toEqual([]);
+    expect(logs.join('')).not.toMatch(/did not come up/);
   });
 });
 
@@ -1002,31 +1236,19 @@ describe('daemon runtime: the singleton is session-scoped', () => {
     });
   });
 
-  // The successor's exemption went with the handover (2026-10-17): no daemon spawns into a held profile.
+  // No daemon spawns into a held profile (2026-10-17); since 2026-10-22 it waits instead of exiting
+  // (the 'one runner across sessions' block below).
   describe('a live spine on the profile', () => {
-    it('refuses a daemon in the OTHER session too — exit, no spine', () => {
-      const h = makeSessioned({
-        session1: true,
-        files: { 'state/daemon-s0.pid': '9001\n', 'state/spine.pid': '9500\n' },
-      });
-
-      expect(h.runtime.start()).toBeNull();
-
-      expect(h.children).toHaveLength(0);
-      expect(h.processObj.exits).toEqual([0]);
-      expect(h.logs.join('')).toContain('9500');
-    });
-
     for (const session1 of [false, true]) {
-      it(`refuses the ${session1 ? 's1' : 's0'} daemon and arms no watch`, () => {
+      it(`the ${session1 ? 's1' : 's0'} daemon claims its session, spawns nothing and does not exit`, () => {
         const h = makeSessioned({ session1, files: { 'state/spine.pid': '9500\n' } });
 
         expect(h.runtime.start()).toBeNull();
 
         expect(h.children).toHaveLength(0);
-        expect(h.processObj.exits).toEqual([0]);
-        expect(h.intervals).toEqual([]);
-        expect(h.written.some((w) => w.path.includes('daemon-s'))).toBe(false);   // claimed no session
+        expect(h.processObj.exits).toEqual([]);
+        expect(h.written.some((w) => w.path.endsWith(`daemon-s${session1 ? 1 : 0}.pid`))).toBe(true);
+        expect(h.logs.join('')).toContain('9500');
       });
     }
 
@@ -1378,6 +1600,7 @@ describe('startProfileDaemons: a line from each profile lands in that profile\u2
       mkdirSync: () => {},
       writeFileSync: () => {},
       liveDaemonPid: () => null,
+      lockFile: () => 1, unlockFile: () => {}, lockHeld: () => false, createCliHost: null,
       setInterval: () => 1,
       setTimeout: () => 1,
       livenessIntervalMs: 0,
@@ -1411,6 +1634,7 @@ describe('startProfileDaemons: a line from each profile lands in that profile\u2
       mkdirSync: () => {},
       writeFileSync: () => {},
       liveDaemonPid: () => null,
+      lockFile: () => 1, unlockFile: () => {}, lockHeld: () => false, createCliHost: null,
       setInterval: () => 1,
       setTimeout: () => 1,
       livenessIntervalMs: 0,
@@ -1478,13 +1702,15 @@ describe('the S1 daemon holds the claude sessions', () => {
     expect(h.seen).toEqual([['attach', children[0].child], ['attach', children[1].child]]);
   });
 
-  it('S0: no host, no flag', () => {
+  // Operator 2026-10-22: a session needs no desktop, so the Session 0 daemon holds them too.
+  it('S0 holds them too: the ipc slot + EGPT_CLI_HOST, no browser flag', () => {
     const h = fakeCliHost();
     const { runtime, children } = makeRuntime({ createCliHost: h.create });
     runtime.start();
-    expect(children[0].opts.stdio).toBe('inherit');
-    expect(children[0].opts.env.EGPT_CLI_HOST).toBeUndefined();
-    expect(h.seen).toEqual([]);
+    expect(children[0].opts.stdio).toEqual(['inherit', 'inherit', 'inherit', 'ipc']);
+    expect(children[0].opts.env).toMatchObject({ EGPT_CLI_HOST: '1' });
+    expect(children[0].opts.env.EGPT_CHROME_HOST).toBeUndefined();
+    expect(h.seen).toEqual([['attach', children[0].child]]);
   });
 
   it('42, 43 and a crash (45 included) keep them for the next spine; 44 (/rewind) ends them', async () => {

@@ -29,6 +29,26 @@ Describe 'Get-BeeperWindowPlan' {
   }
 }
 
+Describe 'Get-BeeperWindowOpen - where the window opens' {
+  $appData = 'C:\Users\an\AppData\Roaming'
+  It 'reve (the service shares the default profile): that profile, no --user-data-dir' {
+    $o = Get-BeeperWindowOpen $true '--user-data-dir="C:\Users\an\AppData\Roaming\BeeperTexts" --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    $o.args | Should Be ''
+  }
+  It 'dolly (the service shares its own profile): that profile, with --user-data-dir' {
+    $o = Get-BeeperWindowOpen $true '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\an\.egpt\state\an-beeper'
+    $o.args | Should Be '--user-data-dir="C:\Users\an\.egpt\state\an-beeper"'
+  }
+  It 'not shared (the baseline, or dolly before its conversion): the user''s default profile, never the service''s own' {
+    $o = Get-BeeperWindowOpen $false '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    $o.args | Should Be ''
+    (Get-BeeperWindowOpen $false '' $appData).args | Should Be ''
+  }
+}
+
 Describe 'Get-BeeperWatchCount' {
   It 'Beeper exits after two empty polls; a hidden window, an update or the installer resets it' {
     Get-BeeperWatchCount $false $false 0 | Should Be 1

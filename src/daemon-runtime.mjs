@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as YAML from 'yaml';
-import { liveDaemonPid as defaultLiveDaemonPid } from './daemon-singleton.mjs';
+import { liveDaemonPid as defaultLiveDaemonPid, openExclusive, closeExclusive, heldExclusive } from './daemon-singleton.mjs';
 import { raiseSelfToNormal } from './process-priority.mjs';
 
 export const RESTART_MIN_MS = 2_000;
@@ -12,7 +12,10 @@ export const RESTART_MAX_MS = 60_000;
 export const UPGRADE_EXIT_CODE = 42;
 export const RESTART_EXIT_CODE = 43;
 export const REWIND_EXIT_CODE = 44;
+// /standdown: the spine handed the profile to the waiting Session 1 daemon (operator 2026-10-22).
+export const STANDDOWN_EXIT_CODE = 45;
 export const CLEAN_EXIT_CODE = 0;
+const HOLD_LOG_MS = 60_000;   // while a daemon waits for the profile, it says who holds it this often
 
 // --- the boot-failure recovery ladder (operator 2026-08-30) ------------------------------
 // THE INCIDENT: ~/bin/egpt is both the production checkout and an agent's working dir. An
@@ -42,7 +45,13 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.
 // --- the supervision axis is the SESSION (operator 2026-09-11) ----------------------------
 // One daemon per profile PER SESSION: its marker is state/daemon-<s0|s1>.pid. EGPT_SESSION1=1 is
 // set by the Session 1 task's launcher (setup/session1-daemon-launcher.vbs); it also loads the
-// chrome-host and cli-host below.
+// chrome-host below.
+//
+// --- one runner across sessions (operator 2026-10-22, GENOME 6) ----------------------------
+// The Session 0 service runs while nobody is logged in; at logon the Session 1 daemon takes
+// state/s1.claim and asks the S0 spine to /standdown; the S0 daemon holds off (no spine) until that
+// claim is gone. Whoever has a spine holds state/runner.lock, and no daemon spawns while another
+// live spine holds the profile — checked before EVERY spawn (blocker, below).
 const SESSION1_ENV = 'EGPT_SESSION1';
 // TRIMMED, not `=== '1'`: cmd yields "1 " for the unquoted `set A=1 && …` form (measured on
 // reve 2026-09-06).
@@ -53,8 +62,9 @@ const isSession1 = (env) => String(env?.[SESSION1_ENV] ?? '').trim() === '1';
 // browser, never the watchdog. Its spine end reads EGPT_CHROME_HOST (chrome-host.mjs CHROME_HOST_ENV).
 const chromeHostModule = isSession1(process.env) ? await import('./chrome-host.mjs').catch((e) => e) : null;
 // …and every being's `claude` session (src/cli-host.mjs), so a spine restart never ends one or its
-// background agents. Same rules; its spine end reads EGPT_CLI_HOST (cli-host.mjs CLI_HOST_ENV).
-const cliHostModule = isSession1(process.env) ? await import('./cli-host.mjs').catch((e) => e) : null;
+// background agents. In both sessions: a session needs no desktop (operator 2026-10-22). Same rules;
+// its spine end reads EGPT_CLI_HOST (cli-host.mjs CLI_HOST_ENV).
+const cliHostModule = await import('./cli-host.mjs').catch((e) => e);
 
 // The cap a per-profile child log is rolled at, and the shape of the rolled name. Both are
 // NSSM's: AppRotateBytes 10485760 and `service-stderr-20260911T204353.610.log`. Matched rather
@@ -121,17 +131,25 @@ export function createDaemonRuntime(opts = {}) {
   const importModule = opts.importModule ?? ((url) => import(url));
   const now = opts.now ?? Date.now;
   const createChromeHost = opts.createChromeHost ?? chromeHostModule?.createChromeHost;
-  const createCliHost = opts.createCliHost ?? cliHostModule?.createCliHost;
+  const createCliHost = 'createCliHost' in opts ? opts.createCliHost : cliHostModule?.createCliHost;
+  const lockFile = opts.lockFile ?? openExclusive;
+  const unlockFile = opts.unlockFile ?? closeExclusive;
+  const lockHeld = opts.lockHeld ?? heldExclusive;
+  const holdPollMs = opts.holdPollMs ?? 3_000;
+  const sleepSync = opts.sleepSync ?? ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
 
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
   const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
+  const runnerLockPath = join(egptHome, 'state', 'runner.lock');
+  const s1ClaimPath = join(egptHome, 'state', 's1.claim');
+  const ingestDir = join(egptHome, 'state', 'ingest');
   // WHICH SESSION THIS DAEMON SUPERVISES (see the SESSION1_ENV block above). s1 = the logon session.
   const session1 = opts.session1 ?? isSession1(processObj.env);
   const sessionKey = session1 ? 's1' : 's0';
   const sessionLabel = session1 ? 'the s1 (logon) session' : 'the s0 (service) session';
   const chromeHost = session1 && createChromeHost ? createChromeHost({ profilesRoot: join(egptHome, 'chrome', 'profiles'), log }) : null;
-  const cliHost = session1 && createCliHost ? createCliHost({ log }) : null;
+  const cliHost = createCliHost ? createCliHost({ log }) : null;
   // The singleton's own file, written by the DAEMON, one per session. Distinct from
   // state/spine.pid, which the spine writes and which is shared by whichever spine holds the
   // profile — that file cannot say which session a supervisor is in, and it is why the old
@@ -181,6 +199,13 @@ export function createDaemonRuntime(opts = {}) {
   let stopping = false;
   let backoff = RESTART_MIN_MS;
   let child = null;
+  let runnerLock = null;     // our handle on state/runner.lock while this daemon has a spine
+  let s1Claim = null;        // the Session 1 daemon's handle on state/s1.claim, for its whole life
+  let holdTimer = null;      // while the profile is held elsewhere: asks the gate again every holdPollMs
+  let holding = null;        // why, while holding off
+  let holdSince = 0, holdLoggedAt = 0;
+  let askedOf = null;        // the spine pid this Session 1 daemon already asked to stand down
+  let lastChildPid = null;   // our own last spine: gone by the time the gate asks, whatever spine.pid says
   // Consecutive wedge kills without a fresh beat in between. Each one escalates
   // the respawn delay (RESTART_MIN_MS·2^(streak-1), capped at RESTART_MAX_MS) so a
   // permanently-dead heartbeat (e.g. heartbeats disabled) doesn't hot-loop
@@ -640,8 +665,74 @@ export function createDaemonRuntime(opts = {}) {
     return fds;
   }
 
+  // --- the gate before every spawn (operator 2026-10-22) -------------------------------------
+  function tryLock(path) {
+    try { return lockFile(path); }
+    catch (e) { log(`could not open ${path} (${e?.code ?? e?.message ?? e}) — not spawning until it can be`); return null; }
+  }
+
+  // Why this daemon may not have a spine right now, or null. Session 1's claim first (Session 0
+  // only), then any other live spine, then the lock — taken last, so it is only held with a spine.
+  function blocker() {
+    if (!session1 && lockHeld(s1ClaimPath)) return { why: 'the Session 1 daemon holds state/s1.claim' };
+    const holder = livePidIn(spinePidPath);
+    if (holder && holder !== lastChildPid) return { why: `spine pid ${holder} holds the profile`, holder };
+    if (!runnerLock) runnerLock = tryLock(runnerLockPath);
+    if (!runnerLock) return { why: 'another daemon holds state/runner.lock' };
+    return null;
+  }
+
+  // No spine for now: let go of the lock, end the sessions no other daemon can adopt, and ask the
+  // gate again on a REF'd timer — with no child it is what keeps this process (and the service) up.
+  function holdOff({ why, holder = null }) {
+    if (runnerLock) { unlockFile(runnerLock); runnerLock = null; }
+    if (session1 && holder && askedOf !== holder) { askedOf = holder; askToStandDown(holder); }
+    const at = now();
+    if (holding !== why) {
+      if (cliHost?.size) cliHost.endAll(`${why} — no spine of this daemon will adopt them`);
+      holding = why;
+      holdSince = holdLoggedAt = at;
+      log(session1
+        ? `${why} — waiting for it before spawning a spine`
+        : `${why} — this Session 0 daemon holds off (no spine) and takes the profile back when it is free`);
+    } else if (at - holdLoggedAt >= HOLD_LOG_MS) {
+      holdLoggedAt = at;
+      log(`still waiting ${Math.round((at - holdSince) / 1000)}s: ${why}${holder ? ` (if nothing is draining it is an orphan: taskkill /PID ${holder} /T /F)` : ''}`);
+    }
+    if (!holdTimer) {
+      holdTimer = setIntervalFn(() => { if (!stopping && !child) spawnShell(); }, holdPollMs);
+      holdTimer?.ref?.();
+    }
+  }
+
+  function endHold() {
+    if (holdTimer) { clearIntervalFn(holdTimer); holdTimer = null; }
+    if (holding) log(`the profile is free after ${Math.round((now() - holdSince) / 1000)}s (${holding} no longer) — taking it`);
+    holding = null;
+    askedOf = null;
+  }
+
+  // The Session 1 daemon's one sentence to the spine holding the profile, through its ingest box:
+  // nothing of Session 1 is running yet, so only that spine sweeps the box. It says only THAT; the
+  // spine decides WHEN (09-06 ruling): it finishes its turns in flight, then leaves with 45.
+  function askToStandDown(holder) {
+    const name = `standdown-${now()}`;
+    const tmp = join(ingestDir, `${name}.tmp`);
+    try {
+      mkdirSync(ingestDir, { recursive: true });
+      writeFileSync(tmp, '/standdown');
+      renameSync(tmp, join(ingestDir, name));
+      log(`asked spine pid ${holder} to hand the profile over (/standdown in ${ingestDir})`);
+    } catch (e) {
+      log(`could not ask spine pid ${holder} to stand down (${e.message}) — waiting for it to leave on its own`);
+    }
+  }
+
   function spawnShell() {
     if (stopping) return null;
+    const blocked = blocker();
+    if (blocked) { holdOff(blocked); return null; }
+    endHold();
     const appPath = join(root, 'egpt-spine.mjs');
     const args = [appPath, ...shellArgs];
     log('starting node egpt-spine.mjs');
@@ -676,6 +767,7 @@ export function createDaemonRuntime(opts = {}) {
     child.on('exit', async (code, signal) => {
       const exitedPid = child?.pid;   // capture before child = null, below
       child = null;
+      lastChildPid = exitedPid ?? null;
       if (stopping) return;
       log(`shell exited code=${code} signal=${signal ?? '-'}`);
 
@@ -716,6 +808,15 @@ export function createDaemonRuntime(opts = {}) {
       if (code === REWIND_EXIT_CODE) {
         cliHost?.endAll('/rewind: older code may not adopt them');
         await runRewind();
+        backoff = RESTART_MIN_MS;
+        spawnShell();
+        return;
+      }
+
+      // Handed over: the gate holds off while Session 1 claims the profile, and respawns at once if
+      // it already let go.
+      if (code === STANDDOWN_EXIT_CODE) {
+        log('/standdown — the spine handed the profile over');
         backoff = RESTART_MIN_MS;
         spawnShell();
         return;
@@ -766,6 +867,9 @@ export function createDaemonRuntime(opts = {}) {
     releaseSession();
     closeChildLogs();
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
+    if (holdTimer) { clearIntervalFn(holdTimer); holdTimer = null; }
+    for (const fd of [runnerLock, s1Claim]) if (fd != null) unlockFile(fd);
+    runnerLock = s1Claim = null;
     if (child) {
       try { child.kill('SIGTERM'); } catch {}
     }
@@ -788,13 +892,18 @@ export function createDaemonRuntime(opts = {}) {
       processObj.exit(0);
       return false;
     }
-    // A live spine already holds this profile (another session's daemon, or an orphan): a second
-    // spine on one EGPT_HOME is the failure this guard exists for.
-    const holder = livePidIn(spinePidPath);
-    if (holder) {
-      log(`spine pid ${holder} already holds this profile (alive.txt fresh) — refusing to start a daemon that would put a second spine on it. Exiting. (an orphan: taskkill /PID ${holder} /T /F, then start again)`);
-      processObj.exit(0);
-      return false;
+    // A live spine on the profile no longer refuses a daemon: it waits (spawnShell's gate).
+    if (session1) {
+      // Retried: the S0 daemon and the setup scripts probe it with a share-none open of their own.
+      for (let i = 0; i < 10 && s1Claim == null; i += 1) {
+        s1Claim = tryLock(s1ClaimPath);
+        if (s1Claim == null && i < 9) sleepSync(200);
+      }
+      if (s1Claim == null) {
+        log('another Session 1 daemon holds state/s1.claim on this profile — refusing to start a second. Exiting.');
+        processObj.exit(0);
+        return false;
+      }
     }
     return true;
   }
@@ -853,7 +962,7 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, session: sessionKey, egptHome, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, wedgeStreak, neverHealthyStreak, holding, session: sessionKey, egptHome, shellArgs: [...shellArgs] }; },
   };
 }
 
@@ -910,7 +1019,7 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
     runtimes.push({ egptHome: home, runtime });
     let child = null;
     try { child = runtime.start(); } catch (e) { say(`profile ${home} threw while starting: ${e?.message ?? e}`); }
-    if (child == null) failed.push(home);
+    if (child == null && !runtime.state?.holding) failed.push(home);   // holding off IS supervising
   }
   // "Half-alive is worse than down" (INTENT.md): a node asked for two profiles that came up
   // with one must not look healthy. The banner is the ladder's alarm() shape, for the same

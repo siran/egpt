@@ -2844,13 +2844,13 @@ describe('/help "wired" marker matches src/spine/commands.mjs + src/shell/comman
   }
 
   const spineTokens = tokensDispatchedIn(SPINE_SRC);
-  // Lifecycle (/restart, /upgrade, /rewind) dispatches through an IMPORTED function
+  // Lifecycle (/restart, /upgrade, /rewind, /standdown) dispatches through an IMPORTED function
   // (lifecycleExit, src/spine/ingest.mjs), not an inline regex in commands.mjs — verified
   // by requiring BOTH the call site here AND the literal token comparisons there.
   if (
     SPINE_SRC.includes('lifecycleExit(line') &&
-    INGEST_SRC.includes("'/restart'") && INGEST_SRC.includes("'/upgrade'") && INGEST_SRC.includes("'/rewind'")
-  ) { spineTokens.add('restart'); spineTokens.add('upgrade'); spineTokens.add('rewind'); }
+    INGEST_SRC.includes("'/restart'") && INGEST_SRC.includes("'/upgrade'") && INGEST_SRC.includes("'/rewind'") && INGEST_SRC.includes("'/standdown'")
+  ) { spineTokens.add('restart'); spineTokens.add('upgrade'); spineTokens.add('rewind'); spineTokens.add('standdown'); }
 
   it('every entry marked wired:true has a real dispatch in commands.mjs (or ingest.mjs lifecycle)', () => {
     const offenders = [];

@@ -1,8 +1,8 @@
 @echo off
 REM uninstall-nssm-service.cmd — double-clickable wrapper that auto-elevates
 REM and runs uninstall-nssm-service.ps1, which asks for the service name and
-REM stops + removes that NSSM-wrapped service. The Session 0 egpt-daemon service
-REM is retired (2026-10-17): the node runs from the Session 1 task.
+REM stops + removes that NSSM-wrapped service. egpt-daemon is the Session 0 runner:
+REM without it nothing runs the node while nobody is logged on (install-nssm-service.cmd).
 
 setlocal
 set "SCRIPT_DIR=%~dp0"

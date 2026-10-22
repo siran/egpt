@@ -165,6 +165,7 @@ export function createSpine({
   fromThisNode = () => false,          // (ev) => did THIS node's own spine commit this text? boot: `ev.fromNode != null && !fromOtherNode(getConfig(), ev)` — the SAME ownNodeNamesOf set every other "who are we" question reads. The guard's third bucket (stop-guard turnKind 'echo'): our own ⏳ placeholder coming back through Beeper is bookkeeping, so it neither counts toward the loop cap nor resets it (kg 2026-09-20, "🌴FAMILIA PALMA🌴"). Default false = never our own frame, byte-identical to before.
   logToGroup = null,                   // optional (text) => Promise — boot's log_to_group poster (node-prefixed there). Liveness reports a being that did not answer whether its long background work is still needed. Null ⇒ the note is all there is.
   backgroundWork = null,               // optional () => [{ being, chatId, description, since }] — every warm session's live background tasks (boot: the pool's); the restart drain waits for them
+  allBackground = null,                // optional, same shape — every live background task whoever holds the process (boot: the pool's); what a /standdown ends
   background = null,                   // optional registry (src/spine/background.mjs): pending voice notes at the ingestion point, agents mirrored on the tick
   beeperUpdate = null,                 // optional (src/tools/beeper-update.mjs): its 6-hourly Beeper check rides the tick
   say = null,                          // optional ({ chatId, text, what }) => Promise<boolean> — boot's sayOnce, i.e. THE outbound placement (sender.mjs makeOutbound `say`), the same one the STOP confirmation and the lifecycle lines go through. The ONE thing the spine says on its own account: the loop guard's pause notice (operator 2026-09-20: "if the bridge pauses, it must emit warning in the channel with instructions on how to recover, instead of leaving everybody hanging"). Null (tests, a bare pipe) ⇒ a pause is logged and nothing is posted.
@@ -647,6 +648,26 @@ export function createSpine({
     clearIntervalFn(d.timer);
     note(line);
     d.done();
+  }
+
+  // /standdown (operator 2026-10-22): background work is not waited for; it ends with this node's
+  // daemon. Each being whose work ends says so once where it ran: its live status becomes the line,
+  // or the line is posted when it has no status.
+  async function noteStoppedBackground() {
+    const byChat = new Map();
+    for (const b of allBackground?.() ?? []) {
+      const k = `${b.being} ${b.chatId}`;
+      if (!byChat.has(k)) byChat.set(k, []);
+      byChat.get(k).push(b);
+    }
+    await Promise.all([...byChat.values()].map(async (tasks) => {
+      const { being, chatId } = tasks[0];
+      const text = `⏹ background work stopped: ${tasks.map((t) => t.description).join('; ')} — eGPT moved to the logged-in session. Ask again if you still need it.`;
+      note(`standdown: ${being}/${chatId} — ${text}`);
+      if (liveness.endStatus(being, chatId, text)) return;
+      try { await say?.({ being, chatId, text, what: 'standdown' }); }
+      catch (e) { note(`standdown: could not tell ${being}/${chatId} — ${e?.message ?? e}`); }
+    }));
   }
 
   // --- THE SINGLE INGESTION PATH (operator 2026-07-25: "an agent only replies when
@@ -1887,5 +1908,5 @@ export function createSpine({
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound, stats, drainForRestart, resumedAt, backlogOf, wakeOnBackground };
+  return { start, stop, tick, handleInbound, stats, drainForRestart, noteStoppedBackground, resumedAt, backlogOf, wakeOnBackground };
 }

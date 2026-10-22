@@ -111,13 +111,14 @@ export function createLiveness({ sender, brain, now, everyMs = () => LIVENESS_EV
       bg.set(k, s);
       note(`liveness: ${x.being}/${x.ev.chatId} — background task(s) ${s.what} still running, status opened`);
     },
-    // A finished task's wake is starting: the being's status message ends on `text`.
+    // A finished task's wake is starting: the being's status message ends on `text`. False: it had none.
     endStatus(being, chatId, text) {
       const k = keyOf(being, chatId);
       const s = bg.get(k);
-      if (!s) return;
+      if (!s) return false;
       bg.delete(k);
       end(s.out, text);
+      return true;
     },
   };
 }

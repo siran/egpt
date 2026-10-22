@@ -12,7 +12,7 @@ a live Beeper, a real profile, or the network. A green suite is the bar for any 
 
 - **Unit / behavior** (`tests/*.test.mjs`) — the bulk. Each CONTRACTS invariant earns a test. `tests/integrity.test.mjs` fails if `egpt.mjs` reads a config key not registered in `config/config-schema.mjs`.
 - **Boot-profile contract** (`tests/boot-profile-contract.test.mjs`) — boots the REAL spine against an on-disk fixture in the canonical layout with NO path overrides; the tripwire for a relayout that slips past the unit suite.
-- **Install verify** (`node setup/verify-install.mjs [egptHome]`) — read-only, NOT in vitest. Probes the LIVE node: the Session 1 task (log under config/logs) and the retired service, profile shape, `spine.pid`/`alive.txt` liveness, `claude` on PATH. Exit 0 = healthy.
+- **Install verify** (`node setup/verify-install.mjs [egptHome]`) — read-only, NOT in vitest. Probes the LIVE node: the Session 1 task (log under config/logs) and the Session 0 service, profile shape, `spine.pid`/`alive.txt` liveness, `claude` on PATH. Exit 0 = healthy.
 
 Ad-hoc live probes (real Beeper / CDP / audio) live in `tests-manual/` — run by hand, never in CI.
 

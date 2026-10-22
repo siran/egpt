@@ -203,7 +203,7 @@ if ($plan.closeApp) {
 $claim = $null
 foreach ($s in Get-BeeperServices $exe) {
   $ap = [string](Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)\Parameters").AppParameters
-  if (Test-BeeperSharedProfile $ap $AppData) { $claim = Open-BeeperClaim (Get-BeeperClaimPath (Get-BeeperDefaultProfile $AppData)) }
+  if (Test-BeeperSharedProfile $ap $AppData (Get-BeeperPreStartHook $s.Name)) { $claim = Open-BeeperClaim (Get-BeeperClaimPath (Get-BeeperShareProfile $ap $AppData)) }
 }
 
 try {

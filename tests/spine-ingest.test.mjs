@@ -58,20 +58,23 @@ describe('lifecycleExit', () => {
     expect(lifecycleExit('/rewind')).toBe(44);   // no ref → still rewinds (daemon handles empty)
   });
 
-  // /standdown was retired 2026-10-17: an unknown command now, like any other token.
-  it('/standdown is not a lifecycle command — null, port or not', () => {
-    for (const line of ['/standdown', '/standdown 23375', '  /standdown \n']) expect(lifecycleExit(line)).toBe(null);
+  // /standdown is back (operator 2026-10-22): hand the profile to the waiting Session 1 daemon. No port
+  // any more (the locks say who holds the profile), so an argument other than force is not a command.
+  it('/standdown and /standdown force are 45; any other argument is unknown', () => {
+    for (const line of ['/standdown', '  /standdown \n', '/standdown force']) expect(lifecycleExit(line)).toBe(45);
+    for (const line of ['/standdown 23375', '/standdown now', '/standdowns']) expect(lifecycleExit(line)).toBe(null);
   });
 });
 
 // `/restart force` / `/upgrade force` (step C): skip the drain's wait for background work.
 describe('lifecycleForce', () => {
-  it('is true only for /restart force and /upgrade force — the code is still 43 / 42', () => {
+  it('is true only for /restart, /upgrade and /standdown force — the code is still 43 / 42 / 45', () => {
     expect(lifecycleForce('/restart force')).toBe(true);
     expect(lifecycleForce('  /upgrade force \n')).toBe(true);
+    expect(lifecycleForce('/standdown force')).toBe(true);
     expect(lifecycleExit('/restart force')).toBe(43);
     expect(lifecycleExit('/upgrade force')).toBe(42);
-    for (const line of ['/restart', '/upgrade', '/rewind force', '/standdown force', '/restart forced', 'force', '', null]) expect(lifecycleForce(line)).toBe(false);
+    for (const line of ['/restart', '/upgrade', '/standdown', '/rewind force', '/restart forced', 'force', '', null]) expect(lifecycleForce(line)).toBe(false);
   });
 });
 

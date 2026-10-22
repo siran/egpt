@@ -38,15 +38,17 @@ try {
     Start-Sleep -Milliseconds 500
   }
 
-  # 2) revive the Session 1 daemon if it died: start-egpt.ps1 starts the egpt-daemon task only when
-  #    no daemon is live. Never past a STOP file - start-egpt would delete the operator's stop.
+  # 2) revive the runners if one died: start-egpt.ps1 starts the egpt-daemon task (while logged on)
+  #    and the egpt-daemon service, each only when it is not up. Never past a STOP file - start-egpt
+  #    would delete the operator's stop. Nothing started: "already running" and no "Starting task" /
+  #    "Starting service" line.
   $egptHome = Join-Path $prof '.egpt'
   $daemon = 'not revived (STOP file)'
   if (-not (Test-Path -LiteralPath (Join-Path $egptHome 'STOP'))) {
     try {
       $global:LASTEXITCODE = 0
       $o = ((& (Join-Path $PSScriptRoot 'start-egpt.ps1') -EgptHome $egptHome 6>&1 | Out-String) -replace '\s+', ' ').Trim()
-      if ($o -match 'already running') { $daemon = 'running' } else { $daemon = "start-egpt exit $LASTEXITCODE"; L "revive: $o" }
+      if ($LASTEXITCODE -eq 0 -and $o -match 'already running' -and $o -notmatch 'Starting (task|service) ') { $daemon = 'running' } else { $daemon = "start-egpt exit $LASTEXITCODE"; L "revive: $o" }
     } catch { $daemon = 'start-egpt FAILED'; L "revive: start-egpt FAILED: $($_.Exception.Message)" }
   }
 

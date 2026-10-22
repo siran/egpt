@@ -1,7 +1,7 @@
 @echo off
 REM start-egpt.cmd - THE WAY BACK from stop-egpt.cmd. Double-clickable, or a
 REM desktop shortcut. Deletes EGPT_HOME\STOP (printing who stopped the node and
-REM why) and starts the Session 1 task.
+REM why), starts the Session 1 task while you are logged on, then the egpt-daemon service.
 REM
 REM No elevation, same window rules as stop-egpt.cmd - see the header there.
 

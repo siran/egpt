@@ -454,7 +454,7 @@ function heldSessions() {
   };
 }
 
-async function bootHeld() {
+async function bootHeld(extra = {}) {
   const { start, built } = fakeTransport();
   const sessions = heldSessions();
   const timers = fakeIntervals();
@@ -478,6 +478,7 @@ async function bootHeld() {
     setInterval: timers.setInterval,
     clearInterval: timers.clearInterval,
     log: { line: (s) => lines.push(s) },
+    ...extra,
   });
   live.push(app);
   const say = (body, { atE = false } = {}) => built[0].onIncoming(body, {
@@ -485,7 +486,7 @@ async function bootHeld() {
     userId: 'u-1', senderName: 'An', authorized: true, msgKey: `m-${body}-${Math.random()}`,
     atEStart: atE, atEAnywhere: atE,
   });
-  return { app, sessions, timers, exits, lines, say };
+  return { app, sessions, timers, exits, lines, say, sent: () => built[0].sent };
 }
 
 async function waitFor(check, { timeoutMs = 2000, stepMs = 5 } = {}) {
@@ -630,5 +631,111 @@ describe('boot — a /restart with background work live on a warm session (step 
   it('the ingest box carries force too (source lock): boot hands lifecycleForce(line) to announceAndExit', () => {
     const BOOT_SRC = readFileSync(new URL('../src/spine/boot.mjs', import.meta.url), 'utf8');
     expect(BOOT_SRC).toContain('await announceAndExit(code, { force: lifecycleForce(line) })');
+  });
+});
+
+// /STANDDOWN (operator 2026-10-22, GENOME 6): the Session 1 daemon is waiting for this profile
+// (state/s1.claim, injected here as successorWaiting). Turns in flight finish — the same drain, and
+// new messages are still answered; background work is NOT waited for: it ends with the Session 0
+// daemon, and each being whose work ends says so once where it ran. Then exit 45.
+describe('boot — /standdown hands the profile to Session 1', () => {
+  async function bootWithBackground(extra) {
+    const h = await bootHeld(extra);
+    const turn = h.say('e lanza un agente', { atE: true });
+    await waitFor(() => h.sessions.started.length === 1);
+    h.sessions.release();
+    await turn;
+    h.sessions.bg.push({ description: 'indexing the archive', since: Date.UTC(2026, 8, 28, 16, 0) });
+    return h;
+  }
+  const stopped = (sent) => sent.filter((m) => m.text.startsWith('⏹'));
+
+  it('nobody waiting for the profile: ignored — no drain, no exit, and it says why', async () => {
+    const { exits, say, lines } = await bootHeld({ successorWaiting: () => false });
+    await say('/e standdown');
+    await flush();
+    expect(exits).toEqual([]);
+    expect(lines.some((l) => /standdown.*s1\.claim/.test(l))).toBe(true);
+  });
+
+  it('a turn in flight finishes first; background work is not waited for; then exit 45', async () => {
+    const h = await bootWithBackground({ successorWaiting: () => true });
+    const turn = h.say('e otra cosa', { atE: true });
+    await waitFor(() => h.sessions.started.length === 2);
+    await h.say('/e standdown');
+    await flush();
+    expect(h.exits).toEqual([]);                         // the turn is still being written
+    h.sessions.release();
+    await turn;
+    h.timers.fire();
+    expect(await waitFor(() => h.exits.length > 0)).toBe(true);
+    expect(h.exits).toEqual([45]);                        // the indexing task did not hold it
+  });
+
+  it('each being whose background work ends says so ONCE where it ran, naming the work', async () => {
+    const h = await bootWithBackground({ successorWaiting: () => true });
+    await h.say('/e standdown');
+    expect(await waitFor(() => h.exits.length > 0)).toBe(true);
+    expect(h.exits).toEqual([45]);
+    const lines = stopped(h.sent());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ chatId: SELF_DM });
+    expect(lines[0].text).toContain('indexing the archive');
+    expect(lines[0].text).toMatch(/ask again/i);
+  });
+
+  it('no background work: no such line', async () => {
+    const h = await bootHeld({ successorWaiting: () => true });
+    await h.say('/e standdown');
+    expect(await waitFor(() => h.exits.length > 0)).toBe(true);
+    expect(h.exits).toEqual([45]);
+    expect(stopped(h.sent())).toEqual([]);
+  });
+
+  it('Session 1 lets go while the turn drains: it stays — no exit, no line', async () => {
+    let waiting = true;
+    const h = await bootWithBackground({ successorWaiting: () => waiting });
+    const turn = h.say('e otra cosa', { atE: true });
+    await waitFor(() => h.sessions.started.length === 2);
+    await h.say('/e standdown');
+    waiting = false;                                      // a quick logoff
+    h.sessions.release();
+    await turn;
+    h.timers.fire();
+    await flush(); await flush();
+    expect(h.exits).toEqual([]);
+    expect(stopped(h.sent())).toEqual([]);
+  });
+
+  it('/standdown force leaves without waiting for the turn in flight', async () => {
+    const h = await bootHeld({ successorWaiting: () => true });
+    const turn = h.say('e busca esto', { atE: true });
+    await waitFor(() => h.sessions.started.length === 1);
+    await h.say('/e standdown force');
+    expect(await waitFor(() => h.exits.length > 0)).toBe(true);
+    expect(h.exits).toEqual([45]);
+    h.sessions.release();
+    await turn;
+  });
+
+  it('a Session 1 spine refuses it: nothing to hand over to', async () => {
+    const { exits, say, lines } = await bootHeld({ session1: true, successorWaiting: () => true });
+    await say('/e standdown');
+    await flush();
+    expect(exits).toEqual([]);
+    expect(lines.some((l) => /standdown.*Session 1/.test(l))).toBe(true);
+  });
+
+  it('an /upgrade pending when it arrives still leaves as the /upgrade (42 outranks 45: the pull must happen)', async () => {
+    const h = await bootHeld({ successorWaiting: () => true });
+    const turn = h.say('e busca esto', { atE: true });
+    await waitFor(() => h.sessions.started.length === 1);
+    await h.say('/e upgrade');
+    await h.say('/e standdown');
+    h.sessions.release();
+    await turn;
+    h.timers.fire();
+    expect(await waitFor(() => h.exits.length > 0)).toBe(true);
+    expect(h.exits).toEqual([42]);
   });
 });
