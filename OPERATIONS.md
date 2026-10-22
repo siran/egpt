@@ -54,7 +54,8 @@ powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-secondary -To egp
 ```
 
 **One profile for the operator's own account (optional, reve).**
-`setup\share-beeper-primary-profile.cmd` (once, elevated, `-DryRun` / `-Revert`) points
+`setup\share-beeper-primary-profile.cmd` (once, elevated, `-DryRun` / `-Revert`; `-Resume`
+finishes one that stopped after its service step) points
 `egpt-beeper-primary` at the operator's own Beeper window profile, after a full backup beside it:
 one device, one token, no `primary_gui`. Then the window runs that profile while Beeper is open
 and the service runs it otherwise, never both:
@@ -64,7 +65,7 @@ and the service runs it otherwise, never both:
   service again when Beeper exits (tray Quit; a hidden window still counts as open). Open Beeper
   through it, not through Beeper's own shortcut.
 - The service's NSSM Start/Pre hook (`setup\s0-identity-reconcile.ps1 -PreStart`) refuses to start
-  it while Session 1 claims or runs the profile; the `egpt-s0-identity` task (SYSTEM, boot + every
+  it while Session 1 claims or runs the profile; the `egpt-s0-identity` task (as you, S4U, never SYSTEM; boot + every
   2 min) starts it after a logoff. Nothing ever kills Beeper.
 - While the profile changes hands the spine's bridges hold (`/beeper-hold on|off` in the ingest
   box, capped at 3 min), the same state `/update beeper` uses.

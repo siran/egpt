@@ -1,11 +1,15 @@
-# register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 as SYSTEM, at boot and every
-# few minutes: it starts a shared-profile Beeper service once Session 1 lets go of the profile (a
-# logoff, a window that quit with no launcher watching). setup\share-beeper-primary-profile.ps1
-# registers and removes it. Logon needs no trigger: setup\beeper-window.ps1 owns that moment.
+# register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 at boot and every few minutes:
+# it starts a shared-profile Beeper service once Session 1 lets go of the profile (a logoff, a
+# window that quit with no launcher watching). setup\share-beeper-primary-profile.ps1 registers it.
+# Logon needs no trigger: setup\beeper-window.ps1 owns that moment.
 #
-# AS SYSTEM, because it must run with nobody logged in - the state it exists for.
+# AS THE DESKTOP USER, S4U: it runs whether or not that user is logged on, and no password is
+# stored. NEVER SYSTEM: the script lives in a folder the user can write, so SYSTEM running it would
+# hand that folder SYSTEM's rights. The user already may query and start the Beeper services
+# (grant-beeper-service-control.ps1) and owns the profile, the claim and the lockfile.
 #
 #   .\setup\register-s0-identity-task.ps1 -LogPath <file>   register (or replace) the task
+#   .\setup\register-s0-identity-task.ps1 -UserId reve\an   as that user (default: whoever runs this)
 #   .\setup\register-s0-identity-task.ps1 -IntervalMin 5    a different cadence
 #   .\setup\register-s0-identity-task.ps1 -Remove           unregister
 #
@@ -16,11 +20,21 @@ param(
   [string] $ScriptPath  = (Join-Path $PSScriptRoot 's0-identity-reconcile.ps1'),
   [string] $ServiceName = 'egpt-beeper-primary',
   [string] $LogPath     = '',
+  [string] $UserId      = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
   [int]    $IntervalMin = 2,
   [switch] $Remove,
-  [switch] $Pause
+  [switch] $Pause,
+  [switch] $LoadFunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
+
+# Who the task runs as. In-memory only (tests read it).
+function Get-S0IdentityTaskPrincipal([string] $UserId) {
+  if ($UserId -match '(^|\\)SYSTEM$|^NT AUTHORITY\\') { throw "the reconciler task never runs as $UserId (its script is in a user-writable folder)" }
+  return New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
+}
+
+if ($LoadFunctionsOnly) { return }
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -61,10 +75,10 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
   -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $atBoot `
-  -Settings $settings -User 'SYSTEM' -RunLevel Highest `
+  -Settings $settings -Principal (Get-S0IdentityTaskPrincipal $UserId) `
   -Description "Starts $ServiceName when Session 1 is not using its Beeper profile (shared with the operator's window). Never stops it." `
   -ErrorAction Stop | Out-Null
 
-Write-Host "[s0-identity] registered $TaskName - at boot and every $IntervalMin min, as SYSTEM, for $ServiceName"
+Write-Host "[s0-identity] registered $TaskName - at boot and every $IntervalMin min, as $UserId (S4U), for $ServiceName"
 if ($LogPath) { Write-Host "[s0-identity] log: $LogPath" }
 if ($Pause) { Write-Host ''; Read-Host 'Press Enter to close' | Out-Null }

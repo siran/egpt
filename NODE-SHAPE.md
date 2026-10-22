@@ -149,7 +149,7 @@ no `primary_gui`. The window runs it while Beeper is open; the service runs it
 otherwise; never both. `setup\beeper-window.cmd` (logon, and the "Beeper (eGPT)"
 shortcut) stops the service before opening Beeper and starts it when Beeper
 exits; the service's NSSM Start/Pre hook refuses to start it while the window
-claims or runs the profile; `egpt-s0-identity` (SYSTEM) starts it after a
+claims or runs the profile; `egpt-s0-identity` (as you, S4U) starts it after a
 logoff. So `egpt-beeper-primary` is **Stopped while your Beeper is open** — that
 is the shape, not a fault.
 

@@ -6,7 +6,7 @@
 #     the profile -> open the window -> [release the spine once the token answers]
 #   then it waits. When Beeper EXITS (tray Quit, a crash) - a hidden window still counts as open -
 #   it releases the claim and starts the service. A logoff ends this process, which releases the
-#   claim; the SYSTEM reconciler (s0-identity-reconcile.ps1) starts the service then.
+#   claim; the reconciler task (s0-identity-reconcile.ps1) starts the service then.
 #   It never kills Beeper: if the service's Beeper does not let go, the window is not opened.
 #   It waits while beeper-update.ps1 or Beeper's own installer runs.
 #

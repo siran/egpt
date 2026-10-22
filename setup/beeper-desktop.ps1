@@ -127,7 +127,7 @@ function Get-BeeperVersionAt([int] $Port) {
 # A service may run the desktop user's OWN Beeper profile: the window runs it in Session 1 while
 # it is open, the service in Session 0 otherwise, never both (two live instances of one profile
 # are two clients claiming one device id). setup\share-beeper-primary-profile.ps1 sets it up;
-# setup\beeper-window.ps1 hands it over; setup\s0-identity-reconcile.ps1 is the SYSTEM side.
+# setup\beeper-window.ps1 hands it over; setup\s0-identity-reconcile.ps1 is the backstop.
 
 # The --user-data-dir in a command line or AppParameters, or $null (the default profile).
 function Get-BeeperUserDataDir([string] $CommandLine) {
@@ -201,7 +201,7 @@ function Test-BeeperProfileInUse([string] $UserDataDir, $Processes) {
 # The service's NSSM Start/Pre hook: 99 makes NSSM abort the start and leave the service Stopped.
 function Get-BeeperPreStartCode([bool] $Claimed, [bool] $InUse) { if ($Claimed -or $InUse) { return 99 } return 0 }
 
-# The SYSTEM reconciler's only move: start a stopped service nobody in Session 1 claims or runs.
+# The reconciler's only move: start a stopped service nobody in Session 1 claims or runs.
 function Get-BeeperReconcileAction([string] $ServiceState, [bool] $Claimed, [bool] $InUse) {
   if ($ServiceState -eq 'Stopped' -and -not $Claimed -and -not $InUse) { return 'start' }
   return 'none'

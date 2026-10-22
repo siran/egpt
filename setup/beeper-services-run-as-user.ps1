@@ -156,7 +156,7 @@ function Stop-AndRelease($v) {
   if (Test-BeeperLockHeld $v.udd) { throw "$($v.name)'s Beeper still holds $($v.udd)" }
 }
 # One service onto $Credential's account ($null: LocalSystem), stopped and started around it when it
-# runs; a shared profile is claimed meanwhile, so the SYSTEM reconciler leaves it alone.
+# runs; a shared profile is claimed meanwhile, so the reconciler leaves it alone.
 function Switch-Service($v, [pscredential] $Credential, [switch] $Backup) {
   $token = $tokens[$v.connection]
   $was = [string](Get-Service $v.name).Status

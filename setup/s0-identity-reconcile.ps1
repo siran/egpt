@@ -1,4 +1,4 @@
-# s0-identity-reconcile.ps1 - the SYSTEM side of a Beeper profile shared by the operator's window
+# s0-identity-reconcile.ps1 - the backstop of a Beeper profile shared by the operator's window
 # and a Session 0 service (beeper-desktop.ps1, "one profile, two runtimes").
 #
 #   (no switch)  one pass, from the egpt-s0-identity task: start the service when it is stopped
@@ -10,7 +10,8 @@
 #   -WhatIf      say what the pass would do.
 #
 # A service with no --user-data-dir is not shared, and is left alone.
-# Runs as SYSTEM (task, NSSM hook), so it needs no elevation of its own.
+# Runs as the desktop user from the task (S4U, register-s0-identity-task.ps1) and under the
+# service's own account as the NSSM hook; it needs no elevation of its own.
 # ASCII ONLY: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI.
 [CmdletBinding()]
 param(

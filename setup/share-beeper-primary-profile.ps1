@@ -9,16 +9,18 @@
 #   4 config      beeper.primary_gui removed; /restart, so the spine binds the window
 #   5 service     egpt-beeper-primary stopped (its old system-profile device) and pointed at the
 #                 window profile, with a 10 s Ctrl+C grace and the NSSM Start/Pre hook
-#   6 reconciler  egpt-s0-identity (SYSTEM) registered
+#   6 reconciler  egpt-s0-identity registered as the desktop user (S4U), never SYSTEM
 #   7 logon       Beeper's own Run value replaced by beeper-window.vbs, plus a "Beeper (eGPT)" shortcut
 #   8 launcher    beeper-window started: it claims the profile and watches the window
 # The record of what it replaced (state\beeper-share.json) is written before step 3.
+# -Resume finishes a conversion that stopped after step 5: it looks at what is live and runs only
+# what is missing (config, service hook, 6, 7, 8), each step safe to run again.
 # -Revert undoes 8..3 from that record and names the profile backup. It starts the old service
 # device again, which only works until the operator logs that device out.
 # The service keeps its LocalSystem log-on. Running it as the desktop user is a separate, optional
 # step after this one: beeper-services-run-as-user.cmd (-Revert here needs it reverted first).
 #
-#   share-beeper-primary-profile.cmd [-DryRun] [-Revert]
+#   share-beeper-primary-profile.cmd [-DryRun] [-Revert | -Resume]
 #   -StateFile <json>   plan from a recorded machine, not this one (tests); implies -DryRun
 # ASCII ONLY: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI.
 [CmdletBinding()]
@@ -30,6 +32,7 @@ param(
   [string] $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
   [string] $EgptHome = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
   [switch] $Revert,
+  [switch] $Resume,
   [Alias('WhatIf')][switch] $DryRun,
   [string] $StateFile,
   [switch] $Pause,
@@ -43,10 +46,33 @@ $RunKeyBeeper = 'com.automattic.beeper.desktop'   # Beeper's own login item (Ele
 $RunKeyWindow = 'egpt-beeper-window'
 $StopGraceMs = 10000   # NSSM's Ctrl+C wait; Beeper's own SIGINT cleanup caps itself at 5 s
 
+# What a stopped conversion still lacks, from live state; each line starts with its step id. Pure.
+function Get-ShareResumeSteps($s) {
+  $have = { param($b) if ($b) { 'present' } else { 'absent' } }
+  $steps = @()
+  if ($s.config.primaryGui) { $steps += "config: remove beeper.primary_gui; spine /restart: $([bool]$s.spineLive)" }
+  if ([string]$s.service.preHook -notmatch 's0-identity-reconcile\.ps1.*-PreStart' -or [string]$s.service.stopConsole -ne "$StopGraceMs") {
+    $steps += "service: AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart"
+  }
+  if (-not $s.task -or $s.task.logonType -ne 'S4U' -or [string]$s.task.userId -match 'SYSTEM') {
+    $steps += "reconciler: register egpt-s0-identity as $($s.user) (S4U, at boot and every 2 min)$(if ($s.task) { " - replacing the one that runs as $($s.task.userId) ($($s.task.logonType))" })"
+  }
+  if ($s.runValue -or -not $s.launcherRunValue -or -not $s.shortcutExists) {
+    $steps += "logon: Run value $RunKeyBeeper ($(& $have $s.runValue)) -> $RunKeyWindow ($(& $have $s.launcherRunValue)); shortcut 'Beeper (eGPT)' ($(& $have $s.shortcutExists))"
+  }
+  if (-not $s.launcherRunning) { $steps += 'launcher: start beeper-window (claims the profile, watches the window)' }
+  return $steps
+}
+
 # The plan, from a machine state (Read-ShareState, or -StateFile). Pure: tests feed it states.
-function Get-SharePlan($s, [bool] $Revert) {
+function Get-SharePlan($s, [bool] $Revert, [bool] $Resume = $false) {
   $refuse = { param($step, $err, $remedy) [ordered]@{ ok = $false; step = $step; error = $err; remedy = $remedy } }
   if (-not $s.service.exists) { return & $refuse 'service' "no service named $($s.serviceName)" $null }
+  if ($Resume) {
+    if (-not $s.record) { return & $refuse 'record' "no record at $($s.recordPath) - nothing to resume" 'run without -Resume' }
+    if (-not (Test-BeeperSharedProfile $s.service.appParameters $s.appData)) { return & $refuse 'service' "$($s.serviceName) does not run $($s.profile) yet: the conversion stopped before step 5" 'run with -Revert, then convert again' }
+    return [ordered]@{ ok = $true; revert = $false; resume = $true; steps = @(Get-ShareResumeSteps $s) }
+  }
   if ($Revert) {
     if (-not $s.record) { return & $refuse 'record' "no record at $($s.recordPath) - nothing to revert" $null }
     # Back to no --user-data-dir while it logs on as the user = that user's own window profile, twice.
@@ -61,7 +87,10 @@ function Get-SharePlan($s, [bool] $Revert) {
       'spine: /restart',
       "backup: the profile backup stays at $($s.record.profileBackup) ($($s.record.profileBackupMB) MB)") }
   }
-  if ($s.record) { return & $refuse 'record' "a conversion is already recorded at $($s.recordPath)" 'run with -Revert first' }
+  if ($s.record) {
+    $fix = if (Test-BeeperSharedProfile $s.service.appParameters $s.appData) { 'run with -Resume to finish it, or -Revert to undo it' } else { 'run with -Revert first' }
+    return & $refuse 'record' "a conversion is already recorded at $($s.recordPath)" $fix
+  }
   if ($s.service.account -ne 'LocalSystem') { return & $refuse 'account' "$($s.serviceName) runs as $($s.service.account); this conversion keeps LocalSystem" $null }
   if (Test-BeeperSharedProfile $s.service.appParameters $s.appData) { return & $refuse 'shared' "$($s.serviceName) already runs $($s.profile)" 'nothing to do (-Revert undoes it)' }
   if (-not $s.profileExists) { return & $refuse 'profile' "no Beeper profile at $($s.profile)" $null }
@@ -74,7 +103,7 @@ function Get-SharePlan($s, [bool] $Revert) {
     "token: write $($s.recordPath); mint a token on the window (click Approve there) -> beeper.primary.token",
     "config: remove beeper.primary_gui: $([bool]$s.config.primaryGui); spine /restart: $([bool]$s.spineLive)",
     "service: stop $($s.serviceName); AppParameters -> $(Get-BeeperServiceArgLine $s.profile); AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart",
-    'reconciler: register egpt-s0-identity (SYSTEM, at boot and every 2 min)',
+    "reconciler: register egpt-s0-identity as $($s.user) (S4U, at boot and every 2 min)",
     "logon: Run value $RunKeyBeeper ($(if ($s.runValue) { 'present' } else { 'absent' })) -> $RunKeyWindow; shortcut 'Beeper (eGPT)'",
     'launcher: start beeper-window (claims the profile, watches the window)') }
 }
@@ -123,7 +152,14 @@ function Read-ShareState {
     $s.hooks = Test-NssmHooks $s.service.nssmVersion
   }
   $s.windowUp = @(Select-BeeperProfileProcesses (Get-CimInstance Win32_Process -Filter "Name='Beeper.exe'" | Where-Object { $_.SessionId -ne 0 }) $profileDir).Count -gt 0
-  $s.runValue = (Get-ItemProperty $runKey -ErrorAction SilentlyContinue).$RunKeyBeeper
+  $run = Get-ItemProperty $runKey -ErrorAction SilentlyContinue
+  $s.runValue = $run.$RunKeyBeeper
+  $s.launcherRunValue = $run.$RunKeyWindow
+  $s.shortcutExists = Test-Path -LiteralPath $shortcut
+  $s.launcherRunning = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' }).Count -gt 0
+  $s.user = ([Security.Principal.SecurityIdentifier]$UserSid).Translate([Security.Principal.NTAccount]).Value
+  $t = Get-ScheduledTask -TaskName 'egpt-s0-identity' -ErrorAction SilentlyContinue
+  $s.task = if ($t) { [ordered]@{ userId = [string]$t.Principal.UserId; logonType = [string]$t.Principal.LogonType } } else { $null }
   $names = Get-BeeperTokens -RepoRoot (Split-Path -Parent $PSScriptRoot) -EgptHome $EgptHome
   $s.config = [ordered]@{ primary = $names.ContainsKey('primary'); primaryGui = $names.ContainsKey('primary_gui') }
   return $s
@@ -135,12 +171,13 @@ else { $state = Read-ShareState }
 if (-not $DryRun -and -not $state.elevated) {
   $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-ServiceName', $ServiceName, '-AppData', "`"$AppData`"", '-LocalAppData', "`"$LocalAppData`"", '-UserSid', $UserSid, '-EgptHome', "`"$EgptHome`"", '-Pause')
   if ($Revert) { $a += '-Revert' }
+  if ($Resume) { $a += '-Resume' }
   Say 'elevating...'
   Start-Process powershell -Verb RunAs -ArgumentList $a
   return
 }
 
-$plan = Get-SharePlan $state $Revert
+$plan = Get-SharePlan $state $Revert $Resume
 if (-not $plan.ok) {
   Say "refused ($($plan.step)): $($plan.error)"
   if ($plan.remedy) { Say "fix: $($plan.remedy)" }
@@ -148,7 +185,8 @@ if (-not $plan.ok) {
 }
 $i = 0
 foreach ($line in $plan.steps) { $i++; Say "$i $line" }
-if ($DryRun) { Say '-DryRun: nothing changed'; Done ([ordered]@{ ok = $true; dryRun = $true; revert = $plan.revert; steps = $plan.steps }) }
+if ($Resume -and -not @($plan.steps).Count) { Say 'nothing left to do: the conversion is complete'; Done ([ordered]@{ ok = $true; resume = $true; steps = @() }) }
+if ($DryRun) { Say '-DryRun: nothing changed'; Done ([ordered]@{ ok = $true; dryRun = $true; revert = $plan.revert; resume = [bool]$plan.resume; steps = $plan.steps }) }
 
 # --- the machinery -------------------------------------------------------------------------
 # PowerShell 5.1 drops embedded quotes from a native argument; \" survives to nssm's argv.
@@ -170,8 +208,49 @@ function Get-Mb([string] $Dir) { [Math]::Round(((Get-ChildItem -LiteralPath $Dir
 $profileDir = $state.profile
 $exe = $state.service.exe
 $launcherVbs = Join-Path $PSScriptRoot 'beeper-window.vbs'
+$hookCmd = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 's0-identity-reconcile.ps1')`" -PreStart -LogPath `"$hookLog`""
+
+# The steps from 4 on that -Resume can finish. Each is safe to run again.
+function Invoke-ShareStep([string] $Id) {
+  switch ($Id) {
+    'config' {
+      & node (Join-Path $PSScriptRoot 'beeper-share-config.mjs') remove-gui --config $configPath
+      if ($LASTEXITCODE -ne 0) { throw 'beeper.primary_gui was NOT removed' }
+      if (Test-EgptSpineLive $EgptHome) { Send-EgptIngestLine $EgptHome '/restart'; Say 'spine: /restart (it waits for turns in progress, then binds the window)' }
+    }
+    'service' { Set-Nssm AppStopMethodConsole "$StopGraceMs"; Set-NssmHook $hookCmd }
+    'reconciler' { & (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1') -ServiceName $ServiceName -LogPath $hookLog -UserId $state.user }
+    'logon' {
+      Remove-ItemProperty -Path $runKey -Name $RunKeyBeeper -ErrorAction SilentlyContinue
+      Set-ItemProperty -Path $runKey -Name $RunKeyWindow -Value "`"$env:SystemRoot\System32\wscript.exe`" //B //Nologo `"$launcherVbs`""
+      $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+      $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+      $lnk.Arguments = "//B //Nologo `"$launcherVbs`""
+      $lnk.IconLocation = "$exe,0"
+      $lnk.Save()
+    }
+    'launcher' {   # as the desktop user, through the shortcut
+      if (@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' }).Count) { Say 'beeper-window is already running'; return }
+      Start-Process explorer.exe -ArgumentList "`"$shortcut`""
+    }
+    default { throw "unknown step '$Id'" }
+  }
+}
+# A failure here leaves a state -Resume can finish: say so instead of pointing at -Revert.
+function Invoke-ShareTail([string[]] $Ids) {
+  foreach ($id in $Ids) {
+    Say "step: $id"
+    try { Invoke-ShareStep $id } catch { throw "step '$id' failed: $($_.Exception.Message) - fix the cause, then run share-beeper-primary-profile.cmd -Resume" }
+  }
+}
 
 try {
+if ($Resume) {
+  Invoke-ShareTail @($plan.steps | ForEach-Object { ($_ -split ':')[0] })
+  Say "done. Beeper stays yours while it is open; Quit it from the tray and $ServiceName takes the profile in ~10-30 s."
+  Done ([ordered]@{ ok = $true; resume = $true; steps = $plan.steps })
+}
+
 if ($Revert) {
   $r = $state.record
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' } |
@@ -245,23 +324,8 @@ if (Test-EgptSpineLive $EgptHome) { Send-EgptIngestLine $EgptHome '/restart'; Sa
 # 5 service - the account stays LocalSystem (see the header)
 Stop-ShareService
 Set-Nssm AppParameters (Get-BeeperServiceArgLine $profileDir)
-Set-Nssm AppStopMethodConsole "$StopGraceMs"
-Set-NssmHook "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 's0-identity-reconcile.ps1')`" -PreStart -LogPath `"$hookLog`""
-
-# 6 reconciler
-& (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1') -ServiceName $ServiceName -LogPath $hookLog
-
-# 7 logon
-Remove-ItemProperty -Path $runKey -Name $RunKeyBeeper -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $runKey -Name $RunKeyWindow -Value "`"$env:SystemRoot\System32\wscript.exe`" //B //Nologo `"$launcherVbs`""
-$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
-$lnk.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
-$lnk.Arguments = "//B //Nologo `"$launcherVbs`""
-$lnk.IconLocation = "$exe,0"
-$lnk.Save()
-
-# 8 launcher - as the desktop user
-Start-Process explorer.exe -ArgumentList "`"$shortcut`""
+# From here on a failure is something -Resume finishes: the rest of 5, then 6 reconciler, 7 logon, 8 launcher
+Invoke-ShareTail @('service', 'reconciler', 'logon', 'launcher')
 Say "done. Beeper stays yours while it is open; Quit it from the tray and $ServiceName takes the profile in ~10-30 s."
 Say "profile backup: $backup ($backupMb MB). Undo: share-beeper-primary-profile.cmd -Revert"
 Say "optional: beeper-services-run-as-user.cmd runs the Beeper services as you instead of LocalSystem"

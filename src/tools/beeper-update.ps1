@@ -199,7 +199,7 @@ if ($plan.closeApp) {
 }
 
 # A profile the app shares with a service (setup\beeper-desktop.ps1): holding its claim keeps the
-# SYSTEM reconciler from starting that service mid-install. Released before the services start.
+# reconciler from starting that service mid-install. Released before the services start.
 $claim = $null
 foreach ($s in Get-BeeperServices $exe) {
   $ap = [string](Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)\Parameters").AppParameters

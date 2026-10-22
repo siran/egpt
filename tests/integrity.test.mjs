@@ -599,6 +599,17 @@ describe('no production source launches Chrome on a debug port', () => {
 
 // Loopback CDP has no auth: a Beeper service serving it can be driven by every local account,
 // every boxed being included (closed live 2026-10-11).
+// The reconciler task runs a script from a user-writable folder: as SYSTEM that folder would hold
+// SYSTEM's rights (operator 2026-10-22). It runs as the desktop user, S4U.
+describe('the egpt-s0-identity task never runs as SYSTEM', () => {
+  it('register-s0-identity-task.ps1 registers an S4U, Limited principal and refuses SYSTEM', () => {
+    const code = readFileSync(join(ROOT, 'setup/register-s0-identity-task.ps1'), 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect(code).toMatch(/New-ScheduledTaskPrincipal -UserId \$UserId -LogonType S4U -RunLevel Limited/);
+    expect(code).toMatch(/-Principal \(Get-S0IdentityTaskPrincipal \$UserId\)/);
+    expect(code).not.toMatch(/-User 'SYSTEM'|-RunLevel Highest/);
+  });
+});
+
 describe('no Session 0 Beeper service is installed with a debugger', () => {
   it('the one flag line (beeper-desktop.ps1) passes no --remote-debugging-port / --remote-allow-origins, and every service writer uses it', () => {
     const lib = readFileSync(join(ROOT, 'setup/beeper-desktop.ps1'), 'utf8');
