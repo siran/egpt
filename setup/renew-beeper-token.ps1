@@ -4,6 +4,8 @@
 # connection's Beeper service, opens the same install in a window, takes
 # the new token you paste, writes it to config.yaml, starts the service again, checks the token,
 # and restarts the spine so it reconnects.
+# A profile the service shares with the operator's window (setup\beeper-desktop.ps1): the window IS
+# the install, so the token is renewed there; no service is stopped and nothing is closed.
 # Run it via renew-beeper-token.cmd (it elevates: stopping a service needs admin).
 param([ValidateSet('primary', 'secondary')][string]$Connection)
 $ErrorActionPreference = 'Stop'
@@ -37,6 +39,33 @@ function Wait-ProfileClosed([int]$Seconds) {
   Start-Sleep -Seconds 2
 }
 
+function Read-NewToken {
+  Write-Host ''
+  Say 'In the Beeper window: Settings > Integrations (Developers) > Desktop API.'
+  Say 'Keep "Allow connections" on, approve a NEW connection, set it to NEVER expire,'
+  Say 'and copy its token (its Copy button).'
+  Write-Host ''
+  # Read from the clipboard: a masked Read-Host in Windows PowerShell does not take a paste.
+  $t = $null
+  while (-not $t) {
+    Read-Host '  Copy the token in Beeper, then press Enter here' | Out-Null
+    $t = ([string](Get-Clipboard -Raw)).Trim()
+    if ($t -notmatch '^\S{16,}$') {
+      Say 'the clipboard does not hold a token (16+ characters, no spaces).'
+      $t = (Read-Host '  Paste it here instead (Enter alone to retry the clipboard)').Trim()
+      if ($t -notmatch '^\S{16,}$') { $t = $null }
+    }
+  }
+  Set-Clipboard -Value ' '
+  Say ("got a token: " + $t.Length + " characters")
+  return $t
+}
+
+function Write-Token([string]$t) {
+  $t | & node (Join-Path $repo 'setup\set-beeper-token.mjs') $Connection --config (Join-Path $egptHome 'config\config.yaml')
+  if ($LASTEXITCODE -ne 0) { throw 'config.yaml was NOT changed (see the line above)' }
+}
+
 Write-Host ''
 Write-Host 'Renew a Beeper Desktop API token for eGPT'
 Write-Host ''
@@ -64,6 +93,22 @@ if (-not (Test-Path -LiteralPath $profileDir)) { throw "the profile $service use
 Say "connection: $Connection   service: $service"
 Say "profile:    $profileDir"
 
+if ((Test-BeeperSharedProfile ([string]$params.AppParameters)) -or (Test-BeeperClaimHeld (Get-BeeperClaimPath $profileDir))) {
+  Say 'this profile is shared with your Beeper window: renewing there, the service is left as it is'
+  if (-not @(Select-BeeperProfileProcesses (Get-CimInstance Win32_Process -Filter "Name='Beeper.exe'" | Where-Object { $_.SessionId -ne 0 }) $profileDir).Count) {
+    throw 'your Beeper window is not open: open it with the "Beeper (eGPT)" shortcut (it hands the profile over), then run this again'
+  }
+  $token = Read-NewToken
+  $port = Find-BeeperPort $token
+  if ($port) { Say "your Beeper window accepts it (port $port)" } else { Say 'WARNING: your Beeper window does not answer to it yet - writing it anyway' }
+  Write-Token $token
+  if (Test-EgptSpineLive $egptHome) { Send-EgptIngestLine $egptHome '/restart'; Say 'asked the spine to restart (it waits for turns in progress) and reconnect with the new token' }
+  else { Say 'no running spine found; it will read the new token when it starts' }
+  Write-Host ''
+  Say 'Done.'
+  return
+}
+
 Say "stopping $service ..."
 Stop-Service -Name $service -Force
 Wait-ProfileClosed 30
@@ -71,31 +116,12 @@ Wait-ProfileClosed 30
 Say 'opening Beeper on that profile ...'
 Start-Process -FilePath $exe -ArgumentList "--user-data-dir=`"$profileDir`""
 
-Write-Host ''
-Say 'In the Beeper window: Settings > Integrations (Developers) > Desktop API.'
-Say 'Keep "Allow connections" on, approve a NEW connection, set it to NEVER expire,'
-Say 'and copy its token (its Copy button).'
-Write-Host ''
-
-# Read from the clipboard: a masked Read-Host in Windows PowerShell does not take a paste.
-$token = $null
-while (-not $token) {
-  Read-Host '  Copy the token in Beeper, then press Enter here' | Out-Null
-  $token = ([string](Get-Clipboard -Raw)).Trim()
-  if ($token -notmatch '^\S{16,}$') {
-    Say 'the clipboard does not hold a token (16+ characters, no spaces).'
-    $token = (Read-Host '  Paste it here instead (Enter alone to retry the clipboard)').Trim()
-    if ($token -notmatch '^\S{16,}$') { $token = $null }
-  }
-}
-Set-Clipboard -Value ' '
-Say ("got a token: " + $token.Length + " characters")
+$token = Read-NewToken
 $port = Find-BeeperPort $token
 if ($port) { Say "the open Beeper accepts it (port $port)" }
 else { Say 'the open Beeper does not answer to it yet; writing it anyway - the service is checked after it starts' }
 
-$token | & node (Join-Path $repo 'setup\set-beeper-token.mjs') $Connection --config (Join-Path $egptHome 'config\config.yaml')
-if ($LASTEXITCODE -ne 0) { throw 'config.yaml was NOT changed (see the line above)' }
+Write-Token $token
 
 Write-Host ''
 Read-Host '  Quit the Beeper window (tray icon > Quit), then press Enter' | Out-Null

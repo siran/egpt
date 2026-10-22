@@ -23,6 +23,7 @@
 # Run ELEVATED, from the repo root:
 #   .\setup\install-beeper-s0-service.ps1 -ServiceName egpt-beeper-secondary `
 #       -UserDataDir $env:USERPROFILE\.egpt\state\beeper-secondary\userdata
+#   add -RunAsUser to log it on as you instead of LocalSystem (beeper-services-run-as-user.ps1)
 #
 # A FRESH install has no login and no window to log in through. Log the account in (and mint its
 # token, src/tools/beeper-mint-token.mjs) on a Session 1 Beeper started with its own
@@ -42,11 +43,12 @@ param(
   [Parameter(Mandatory = $true)][string] $UserDataDir,
   [string] $BeeperExe = (Join-Path $env:LOCALAPPDATA 'Programs\BeeperTexts\Beeper.exe'),
   [string] $LogDir   = (Join-Path $env:USERPROFILE 'bin\beeper-s0-logs'),
-  # AUTO for the Desktop that must be up BEFORE anyone logs in; MANUAL for one the logon
-  # flip owns, so Windows does not start it behind the flip's back at boot.
+  # AUTO for the Desktop that must be up BEFORE anyone logs in.
   [ValidateSet('auto','manual','disabled')][string] $StartMode = 'auto',
   # The eGPT user, granted start/stop on this service: whoever ran this, before any UAC prompt.
   [string] $GrantSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+  # Log on as that same user instead of LocalSystem (asks the password in a dialog; never stored).
+  [switch] $RunAsUser,
   [switch] $Start,
   [switch] $Pause
 )
@@ -113,16 +115,8 @@ foreach ($d in 'Downloads','Documents','Desktop','Pictures','Music','Videos') {
   if (-not (Test-Path $p)) { New-Item -ItemType Directory -Force -Path $p | Out-Null; Say "created SYSTEM profile folder: $d" }
 }
 
-# THE FLAGS, and why each is here:
-#   --disable-gpu                          no GPU in Session 0.
-#   --disable-gpu-compositing              ditto. NOTE: --disable-software-rasterizer must NOT
-#                                          be added alongside these; together they remove the
-#                                          LAST render path and the app paints nothing.
-#   --disable-background-timer-throttling   Chromium throttles what it thinks is background, and
-#   --disable-renderer-backgrounding        NOTHING in Session 0 is ever foregrounded. Without
-#   --disable-backgrounding-occluded-windows these three a live sync socket stalls.
-# Never --remote-debugging-port / --remote-allow-origins (header: NO CDP).
-$argLine = "--user-data-dir=`"$UserDataDir`" --disable-gpu --disable-gpu-compositing --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
+# The flags, and why each is there: Get-BeeperServiceArgLine (beeper-desktop.ps1).
+$argLine = Get-BeeperServiceArgLine $UserDataDir
 
 Say "installing $ServiceName"
 & $nssm install $ServiceName $BeeperExe | Out-Null
@@ -140,6 +134,18 @@ $startConst = @{ auto = 'SERVICE_AUTO_START'; manual = 'SERVICE_DEMAND_START'; d
 # The eGPT user may stop/start THIS service, so a Beeper update never needs UAC.
 Say "granting start/stop on $ServiceName to $GrantSid"
 Set-BeeperServiceAccess -Name $ServiceName -Sid $GrantSid
+
+# -RunAsUser: the same steps as beeper-services-run-as-user.ps1, on a service nothing runs yet.
+if ($RunAsUser) {
+  $who = (Split-BeeperAccount (([Security.Principal.SecurityIdentifier]$GrantSid).Translate([Security.Principal.NTAccount]).Value)).account
+  $cred = Get-Credential -UserName $who -Message "eGPT: the Windows password of $who, to run $ServiceName as that account. Checked here, never stored."
+  if (-not $cred -or (Split-BeeperAccount $cred.UserName).account -ine $who) { throw "no credential for $who - $ServiceName stays LocalSystem" }
+  $v = Test-BeeperCredential $cred
+  if (-not $v.ok) { throw "$($v.message) - $ServiceName stays LocalSystem" }
+  if ($v.rightMissing) { Set-BeeperServiceLogonRight $GrantSid; Say "granted $BeeperServiceLogonRight to $who" }
+  Set-BeeperServiceAccount $ServiceName $cred
+  Say "$ServiceName logs on as $who"
+}
 
 Say "installed ($StartMode start). user-data-dir: $UserDataDir"
 Say "                    log: $(Join-Path $LogDir "$ServiceName.log")"

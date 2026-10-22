@@ -803,7 +803,9 @@ export const CONFIG_SCHEMA = {
         4. the default OUTPUT connection below (back-compat: a node carrying
            use: and several blocks keeps the ear it had).
       NEVER an ear: 'primary_gui' (the operator's own Beeper window — a second
-      install of an account another connection already is), a connection owned
+      install of an account another connection already is; a node whose
+      egpt-beeper-primary shares the window's profile has none, see
+      setup/share-beeper-primary-profile.ps1), a connection owned
       by another node, and a connection whose account or token duplicates an ear
       already claimed. A node that resolves NO ear boots and says so loudly.
 

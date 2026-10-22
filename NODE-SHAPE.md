@@ -87,11 +87,16 @@ the service hosting it.
 Identity lives entirely in `--user-data-dir`: different directory = different
 install = different device = different token. Same directory twice and the
 second launch loses Chromium's singleton and exits (`process_singleton_win.cc`,
-`Lock file can not be created! Error code: 32` — a sharing violation, not
-damage). So the installs cannot be merged the way the spines can: a token
+`Lock file can not be created! Error code: 32` — a sharing violation, across
+sessions and users too). Not harmless: on 2026-09-07 a loser still reached
+`os_crypt` and re-keyed the profile's `Local State` before it quit, so the
+lockfile is a backstop, never the thing that keeps two instances apart. So the installs cannot be merged the way the spines can: a token
 belongs to an install.
 
-Run every one of them in session 0 as an nssm service, LocalSystem, **Auto**.
+Run every one of them in session 0 as an nssm service, LocalSystem, **Auto** —
+or as the desktop user (`setup\beeper-services-run-as-user.cmd`, `-Revert`), but
+only a service with its own `--user-data-dir`: one without would open that user's
+own window profile, a second instance of one device, so the script refuses it.
 
 **Auto, not Manual.** A service that inherits `Manual` from whatever it was
 renamed from leaves the node half-alive after a reboot: the spine up, one
@@ -138,6 +143,16 @@ With no `secondary` block, `primary` is both ear and mouth: the one-number shape
 **never** an ear — ingesting a second install of an account another connection
 already is would hear every message twice.
 
+**Or one profile for both (optional).** `setup\share-beeper-primary-profile.cmd`
+points `egpt-beeper-primary` at your own window's profile: one device, one token,
+no `primary_gui`. The window runs it while Beeper is open; the service runs it
+otherwise; never both. `setup\beeper-window.cmd` (logon, and the "Beeper (eGPT)"
+shortcut) stops the service before opening Beeper and starts it when Beeper
+exits; the service's NSSM Start/Pre hook refuses to start it while the window
+claims or runs the profile; `egpt-s0-identity` (SYSTEM) starts it after a
+logoff. So `egpt-beeper-primary` is **Stopped while your Beeper is open** — that
+is the shape, not a fault.
+
 One bridge is opened per distinct token.
 
 **No Beeper port.** Beeper takes the first free port from 23373, so the number
@@ -156,7 +171,8 @@ one profile, so there is no second profile to carry.
 Run it before saying yes.
 
 1. One Beeper service per account, named for its role (`egpt-beeper-primary`,
-   `egpt-beeper-secondary`), **Running** and **Auto**
+   `egpt-beeper-secondary`), **Running** and **Auto** (a primary that shares your
+   window's profile is Stopped while that window is open)
 2. One `egpt-daemon` logon task, and no running `egpt-daemon` service
 3. Exactly **one** spine live — two live is the failure, not the goal
 4. One `config.yaml`, one block per account under `primary` / `secondary`,

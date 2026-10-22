@@ -26,7 +26,7 @@ import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, 
 // LOCAL mouth below keys with the same primitive the peer link keys with; there is one definition
 // of "which of MY chats is that ONE real chat" and both transports ask it.
 import { crossAccountChatKey, LISTENING_REACTION, _msgTimestampMs } from '../bridges/beeper.mjs';
-import { createBeeperUpdate } from '../tools/beeper-update.mjs';
+import { createBeeperUpdate, holdLine } from '../tools/beeper-update.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { mergeAudit } from './audit-merge.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
@@ -1895,6 +1895,23 @@ export async function boot({
   // and ECONNREFUSED are all the same answer here (not a match), which is why a non-Beeper
   // listener inside the range is not an error. Returns a base_url or null; it never throws, and
   // it never logs a token VALUE — length only, because a token in a log is a token in a paste.
+  // AN INSTALL THAT STAYS GONE IS SAID, not discovered as silence (a stopped Beeper service, or one
+  // that can no longer log on after a password change): ONE line to log_to_group once a connection
+  // has answered on no port for INSTALL_GONE_MS, and one when it answers again.
+  const INSTALL_GONE_MS = 5 * 60_000;
+  const installGone = new Map();   // connection → { since, said }
+  const noteInstall = (name, url) => {
+    const g = installGone.get(name);
+    const say = (text) => Promise.resolve(logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`)).catch(() => {});
+    if (url) {
+      if (g?.said) say(`✓ Beeper connection '${name}' answers again (${url})`);
+      installGone.delete(name);
+    } else if (!g) installGone.set(name, { since: now(), said: false });
+    else if (!g.said && now() - g.since >= INSTALL_GONE_MS) {
+      g.said = true;
+      say(`⚠ Beeper connection '${name}' has answered on no port for ${Math.round((now() - g.since) / 60_000)} min — no install answers its token (Beeper not running, a service that can no longer log on, or a revoked token)`);
+    }
+  };
   const discoverBaseUrl = async (name, token) => {
     const urls = DISCOVERY_PORTS.map((p) => `http://127.0.0.1:${p}`);
     const results = await Promise.all(urls.map(async (url) => {
@@ -1902,6 +1919,7 @@ export async function boot({
       catch (e) { return { url, r: { ok: false, status: 0, error: e?.message ?? String(e) } }; }
     }));
     const hits = results.filter(({ r }) => r?.ok);   // Promise.all preserves ORDER ⇒ hits[0] is the lowest port
+    noteInstall(name, hits[0]?.url ?? null);
     if (!hits.length) {
       log.line?.(`[bridge] connection '${name}': NO install on 127.0.0.1:${DISCOVERY_PORTS[0]}-${DISCOVERY_PORTS[DISCOVERY_PORTS.length - 1]} answers this connection's token (${String(token).length} chars) — the install it was minted on is not running, or the token was revoked. Falling back to the bridge default; every reconnect asks again.`);
       return null;
@@ -2775,7 +2793,7 @@ export async function boot({
   async function announceAndExit(code, { force = false } = {}) {
     // A Beeper update in progress finishes first: its tool runs as this spine's child.
     if ((code === 42 || code === 43) && beeperUpdate?.busy()) {
-      log.line?.(`[drain] ${KIND_OF[code]} waits for the Beeper update in progress`);
+      log.line?.(`[drain] ${KIND_OF[code]} waits for the Beeper update or handover in progress`);
       beeperUpdate.idle().then(() => announceAndExit(code, { force })).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`));
       return;
     }
@@ -3784,6 +3802,12 @@ export async function boot({
         // limb is backing off, where this makes it re-listen NOW so the editor has something
         // to dial. Not a lifecycle command.
         if (isShellConnectMarker(line)) { shellPort.poke(); return; }
+        const hold = holdLine(line);   // Beeper handover (setup/beeper-window.ps1)
+        if (hold != null) {
+          const ok = await beeperUpdate?.hold(hold);
+          log.line?.(`[ingest] ${line} -> ${ok ? (hold ? 'held' : 'released') : 'refused'}`);
+          return;
+        }
         const code = lifecycleExit(line, {
           writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
         });

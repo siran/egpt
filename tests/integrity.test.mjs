@@ -600,11 +600,17 @@ describe('no production source launches Chrome on a debug port', () => {
 // Loopback CDP has no auth: a Beeper service serving it can be driven by every local account,
 // every boxed being included (closed live 2026-10-11).
 describe('no Session 0 Beeper service is installed with a debugger', () => {
-  it('install-beeper-s0-service.ps1 passes no --remote-debugging-port / --remote-allow-origins', () => {
-    const src = readFileSync(join(ROOT, 'setup/install-beeper-s0-service.ps1'), 'utf8');
-    const argLine = src.split('\n').find((l) => /^\$argLine\s*=/.test(l));
-    expect(argLine).toContain('--user-data-dir');
-    expect(argLine).not.toMatch(/--remote-debugging-(port|pipe)|--remote-allow-origins/);
+  it('the one flag line (beeper-desktop.ps1) passes no --remote-debugging-port / --remote-allow-origins, and every service writer uses it', () => {
+    const lib = readFileSync(join(ROOT, 'setup/beeper-desktop.ps1'), 'utf8');
+    const fn = lib.slice(lib.indexOf('function Get-BeeperServiceArgLine'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).toContain('--user-data-dir');
+    expect(body).not.toMatch(/--remote-debugging-(port|pipe)|--remote-allow-origins/);
+    for (const f of ['setup/install-beeper-s0-service.ps1', 'setup/share-beeper-primary-profile.ps1']) {
+      const code = readFileSync(join(ROOT, f), 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+      expect(code).toContain('Get-BeeperServiceArgLine');
+      expect(code).not.toMatch(/--remote-debugging-(port|pipe)|--remote-allow-origins/);
+    }
   });
 });
 

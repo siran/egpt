@@ -53,8 +53,30 @@ powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-primary   -To egp
 powershell -File setup\rename-beeper-s0-service.ps1 -From egpt-secondary -To egpt-beeper-secondary
 ```
 
-`setup\s0-identity-reconcile.ps1` finds these by **start mode**, not by name, so it
-keeps working across the rename either way.
+**One profile for the operator's own account (optional, reve).**
+`setup\share-beeper-primary-profile.cmd` (once, elevated, `-DryRun` / `-Revert`) points
+`egpt-beeper-primary` at the operator's own Beeper window profile, after a full backup beside it:
+one device, one token, no `primary_gui`. Then the window runs that profile while Beeper is open
+and the service runs it otherwise, never both:
+
+- `setup\beeper-window.cmd` (the logon Run value and the "Beeper (eGPT)" shortcut) claims the
+  profile, stops the service, opens Beeper once the service's Beeper has let go, and starts the
+  service again when Beeper exits (tray Quit; a hidden window still counts as open). Open Beeper
+  through it, not through Beeper's own shortcut.
+- The service's NSSM Start/Pre hook (`setup\s0-identity-reconcile.ps1 -PreStart`) refuses to start
+  it while Session 1 claims or runs the profile; the `egpt-s0-identity` task (SYSTEM, boot + every
+  2 min) starts it after a logoff. Nothing ever kills Beeper.
+- While the profile changes hands the spine's bridges hold (`/beeper-hold on|off` in the ingest
+  box, capped at 3 min), the same state `/update beeper` uses.
+
+**Beeper services as the desktop user (optional, any node).** `setup\beeper-services-run-as-user.cmd`
+(elevated, `-DryRun` / `-Revert`, `-ServiceName`) logs services on as you instead of LocalSystem:
+password asked in a dialog and checked first (never stored), `SeServiceLogonRight` granted (and
+removed on `-Revert` only if it added it), the profile backed up beside itself, then per service
+hold → stop → switch → start → wait for its token → release; one that does not answer goes back to
+LocalSystem. It refuses a service with no `--user-data-dir` (the primary until the one-profile
+conversion). If a later password change stops a service logging on (error 1069), the spine says
+so in log_to_group after 5 min on no port — through a connection that still works.
 
 ## Deploying
 

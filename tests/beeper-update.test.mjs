@@ -1,6 +1,6 @@
 // beeper-update.test.mjs — /update beeper and the Beeper update check (src/tools/beeper-update.mjs),
 // driven through fakes; the .ps1 plan and the service-permission SDDL on win32 (touching nothing).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine, startLine,
-  peerUpdating, lastJson, createBeeperUpdate,
+  peerUpdating, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
 } from '../src/tools/beeper-update.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { lifecycleExit } from '../src/spine/ingest.mjs';
@@ -139,15 +139,20 @@ describe('detection — the states, from structured facts only', () => {
 });
 
 // A service on fakes: every seam records into `calls`, in order.
-function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null } = {}) {
-  const calls = [], posts = [], edits = [];
+function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null, runs = [] } = {}) {
+  const calls = [], posts = [], edits = [], lines = [];
   let drained = null;
   const cfg = { node_name: node, beeper: { auto_update: { windows: { method } } } };
   const u = createBeeperUpdate({
     getConfig: () => cfg, platform, home, repoRoot: 'C:\\egpt',
     detect: async () => { calls.push('detect'); return det(); },
     dryRun: async (o) => { calls.push(`dryRun${o.restartOnly ? ':restartOnly' : ''}`); return plan; },
-    run: async (o) => { calls.push(`run${o.restartOnly ? ':restartOnly' : ''}`); if (runThrows) throw runThrows; return result ?? { ok: true, restartSec: 72, connections: [{ name: 'primary', status: 'ok' }, { name: 'secondary', status: 'ok' }] }; },
+    run: async (o) => {
+      calls.push(`run${o.restartOnly ? ':restartOnly' : ''}${o.closeAppOnly ? `:closeAppOnly:${o.waitSec}` : ''}${o.relaunchApp ? ':relaunchApp' : ''}`);
+      if (runThrows) throw runThrows;
+      const next = runs.shift();
+      if (next) return typeof next === 'function' ? next(o) : next;
+      return result ?? { ok: true, restartSec: 72, connections: [{ name: 'primary', status: 'ok' }, { name: 'secondary', status: 'ok' }] }; },
     drain: (fn) => { calls.push('drain'); drained = fn; },
     restartPending,
     beeperRestart: async (on) => { calls.push(`beeperRestart:${on}`); },
@@ -157,8 +162,9 @@ function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result
     hint: () => '/e update beeper',
     ownNames: () => new Set([node]),
     now: () => 0,
+    onLog: (m) => lines.push(m),
   });
-  return { u, calls, posts, edits, home, runDrain: async () => { await drained?.(); for (let i = 0; i < 5; i++) await flush(); } };
+  return { u, calls, posts, edits, lines, home, runDrain: async () => { await drained?.(); for (let i = 0; i < 5; i++) await flush(); } };
 }
 
 describe('the notice — ONE line per newly downloaded version, per node', () => {
@@ -320,6 +326,69 @@ describe('/update beeper — the flow', () => {
     expect(r.u.busy()).toBe(false);
   });
 
+  describe('the open app goes first, with every bridge still serving', () => {
+    const OPEN = { ok: true, flow: 'services', closeApp: true };
+    const HID = { ok: false, quit: false, step: 'close-app', error: 'the Beeper app hid instead of quitting', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] };
+    const QUIT = { ok: true, quit: true };
+    const ASK = '⏳ kg · Beeper 4.3.176 → 4.3.209: quit Beeper from the tray (Quit) and the update continues; nothing is stopped until then';
+
+    it('it only hides: ONE line asking for the tray Quit, the long wait, then the restart state and the run that relaunches it', async () => {
+      const r = rig({ plan: OPEN, runs: [HID, QUIT] });
+      await r.u.update();
+      await r.runDrain();
+      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'post:⏳ ', `run:closeAppOnly:${CLOSE_WAIT_SEC}`, 'beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
+      expect(r.posts.filter((p) => p.startsWith('⏳'))).toEqual([ASK]);
+      expect(quitLine('kg', '4.3.176', '4.3.209')).toBe(ASK);
+      expect(r.edits).toEqual([{ id: 'p0', t: '🔄 kg · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓ · secondary ✓' }]);
+      expect([CLOSE_TRY_SEC, CLOSE_WAIT_SEC]).toEqual([30, 570]);
+      expect(r.u.busy()).toBe(false);
+    });
+
+    it('it quits on WM_CLOSE: no tray line, straight on, and it is relaunched', async () => {
+      const r = rig({ plan: OPEN, runs: [QUIT] });
+      await r.u.update();
+      await r.runDrain();
+      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
+      expect(r.posts.some((p) => p.startsWith('⏳'))).toBe(false);
+    });
+
+    it('nobody quits it in time: today\'s refusal line, nothing stopped, no restart state', async () => {
+      const r = rig({ plan: OPEN, runs: [HID, HID] });
+      await r.u.update();
+      await r.runDrain();
+      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'post:⏳ ', `run:closeAppOnly:${CLOSE_WAIT_SEC}`, 'readLog', 'edit']);
+      expect(r.calls).not.toContain('beeperRestart:true');
+      expect(r.posts.filter((p) => p.startsWith('⏳'))).toEqual([ASK]);
+      expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.176 → 4.3.209 · FAILED at close-app: the Beeper app hid instead of quitting — quit Beeper from its tray icon (Quit), then update again');
+      expect(r.u.busy()).toBe(false);
+    });
+
+    it('the close step itself fails: that is the result, no tray line, no restart state', async () => {
+      const r = rig({ plan: OPEN, runs: [{ ok: false, step: 'tool', error: 'spawn powershell.exe ENOENT' }] });
+      await r.u.update();
+      await r.runDrain();
+      expect(r.calls).not.toContain('beeperRestart:true');
+      expect(r.posts.some((p) => p.startsWith('⏳'))).toBe(false);
+      expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.176 → 4.3.209 · FAILED at tool: spawn powershell.exe ENOENT');
+    });
+
+    it('a handover hold during the wait is refused; the update goes on when he quits', async () => {
+      let quit;
+      const r = rig({ plan: OPEN, runs: [HID, () => new Promise((res) => { quit = res; })] });
+      await r.u.update();
+      await r.runDrain();
+      expect(r.calls.at(-1)).toBe(`run:closeAppOnly:${CLOSE_WAIT_SEC}`);
+      expect(r.u.busy()).toBe(true);
+      expect(await r.u.hold(true)).toBe(false);
+      expect(r.lines).toContain('hold refused: an update is under way');
+      expect(r.calls).not.toContain('beeperRestart:true');
+      quit(QUIT);
+      for (let i = 0; i < 10; i++) await flush();
+      expect(r.calls.slice(-5)).toEqual(['beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
+      expect(r.u.busy()).toBe(false);
+    });
+  });
+
   it('a peer already restarting its Beeper: no restart here, one line saying so', async () => {
     const r = rig({ log: [{ id: 'x', text: '🔄 do · Beeper 4.3.176 → 4.3.209 · restarting for update… ⟦bu-do-1⟧', ts: 0 }] });
     await r.u.update();
@@ -389,6 +458,97 @@ describe('/update beeper — the flow', () => {
     const r = rig({ platform: 'linux' });
     expect(await r.u.update()).toBe('kg · Beeper updates are not implemented on linux yet');
     expect(r.calls).toEqual([]);
+  });
+});
+
+describe('the Beeper handover hold — /beeper-hold on|off through the ingest box', () => {
+  const restarts = (calls) => calls.filter((c) => c.startsWith('beeperRestart'));
+
+  it('holdLine parses exactly on / off; lifecycleExit ignores it', () => {
+    expect(holdLine('/beeper-hold on')).toBe(true);
+    expect(holdLine(' /beeper-hold off\n')).toBe(false);
+    for (const l of ['/beeper-hold', '/beeper-hold ON', '/beeper-hold on now', '/restart', '', null]) expect(holdLine(l)).toBe(null);
+    expect(lifecycleExit('/beeper-hold on')).toBe(null);
+    expect(lifecycleExit('/beeper-hold off')).toBe(null);
+  });
+
+  it('on then off: the restart state once each way, busy in between', async () => {
+    const r = rig();
+    expect(await r.u.hold(true)).toBe(true);
+    expect(r.u.busy()).toBe(true);
+    expect(await r.u.hold(false)).toBe(true);
+    expect(r.u.busy()).toBe(false);
+    expect(r.calls).toEqual(['beeperRestart:true', 'beeperRestart:false']);
+  });
+
+  it('a second hold while held is refused', async () => {
+    const r = rig();
+    await r.u.hold(true);
+    expect(await r.u.hold(true)).toBe(false);
+    expect(restarts(r.calls)).toEqual(['beeperRestart:true']);
+    expect(r.lines).toContain('hold refused: already held');
+    await r.u.hold(false);
+  });
+
+  it('refused during an update; off during an update leaves its restart state alone', async () => {
+    let open;
+    const gate = new Promise((res) => { open = res; });
+    const calls = [];
+    const u = createBeeperUpdate({
+      getConfig: () => ({ node_name: 'kg' }), platform: 'win32', home: tmp(), now: () => 0,
+      detect: async () => REVE(), dryRun: async () => ({ ok: true, flow: 'services' }),
+      run: async () => { calls.push('run'); await gate; return { ok: true }; },
+      drain: (fn) => fn(),
+      beeperRestart: async (on) => { calls.push(`beeperRestart:${on}`); },
+    });
+    await u.update();
+    for (let i = 0; i < 5; i++) await flush();
+    expect(calls).toEqual(['beeperRestart:true', 'run']);   // the update is mid-tool
+    expect(await u.hold(true)).toBe(false);
+    expect(await u.hold(false)).toBe(false);
+    expect(calls).toEqual(['beeperRestart:true', 'run']);
+    expect(u.busy()).toBe(true);
+    open();
+    await u.idle();
+    expect(calls).toEqual(['beeperRestart:true', 'run', 'beeperRestart:false']);
+    expect(u.busy()).toBe(false);
+  });
+
+  it('/update beeper while held refuses with the handover line and runs nothing; the auto check skips', async () => {
+    const r = rig({ method: 'auto' });
+    await r.u.hold(true);
+    expect(await r.u.update()).toBe('kg · a Beeper handover is under way');
+    await r.u.check();
+    expect(r.calls).not.toContain('dryRun');
+    expect(r.calls).not.toContain('drain');
+    expect(restarts(r.calls)).toEqual(['beeperRestart:true']);
+    await r.u.hold(false);
+  });
+
+  it('the cap releases a hold nobody released', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const r = rig();
+      await r.u.hold(true);
+      await vi.advanceTimersByTimeAsync(3 * 60_000 - 1);
+      expect(r.u.busy()).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(r.calls).toEqual(['beeperRestart:true', 'beeperRestart:false']);
+      expect(r.u.busy()).toBe(false);
+      expect(r.lines).toContain('hold released by its 180 s cap');
+      expect(await r.u.hold(false)).toBe(false);   // nothing left to release
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a failure entering the state clears it and refuses', async () => {
+    const calls = [];
+    const u = createBeeperUpdate({
+      getConfig: () => ({ node_name: 'kg' }), platform: 'win32', home: tmp(),
+      beeperRestart: async (on) => { calls.push(`beeperRestart:${on}`); if (on) throw new Error('bridge gone'); },
+    });
+    expect(await u.hold(true)).toBe(false);
+    expect(calls).toEqual(['beeperRestart:true', 'beeperRestart:false']);
+    expect(u.busy()).toBe(false);
   });
 });
 
@@ -492,6 +652,12 @@ describe.skipIf(process.platform !== 'win32')('beeper-update.ps1 -DryRun on a re
     expect(plan(state({ system: true }))).toMatchObject({ ok: false, step: 'identity' });
   });
 
+  it('-RelaunchApp: the app eGPT closed first comes back though it is not running now; -NoRelaunchGui still wins', { timeout: 30_000 }, () => {
+    expect(plan(state({ appRunning: false }), ['-RelaunchApp'])).toMatchObject({ ok: true, closeApp: false, relaunchApp: true });
+    expect(plan(state({ appRunning: false }))).toMatchObject({ ok: true, closeApp: false, relaunchApp: false });
+    expect(plan(state({ appRunning: false }), ['-RelaunchApp', '-NoRelaunchGui'])).toMatchObject({ relaunchApp: false });
+  });
+
   it('-RestartOnly needs no download', { timeout: 30_000 }, () => {
     expect(plan(state({ installed: '4.3.209', pending: null }), ['-RestartOnly'])).toMatchObject({ ok: true, install: false, from: '4.3.209', to: '4.3.209' });
   });
@@ -509,6 +675,34 @@ describe.skipIf(process.platform !== 'win32')('the service permission — one AC
     expect(fn(`Test-BeeperServiceAce '${granted}' '${SID}'`)).toBe('True');
     expect(fn(`Test-BeeperServiceAce '${NSSM_DEFAULT}' '${SID}'`)).toBe('False');
     expect(fn(`Remove-BeeperServiceAce '${granted}' '${SID}'`)).toBe(NSSM_DEFAULT);
+  });
+});
+
+// 2026-10-21 17:02: CloseMainWindow cannot reach a window hidden in the tray, so the tool killed
+// the operator's Beeper ("6 Beeper processes still up - terminating").
+describe('beeper-update.ps1 never kills Beeper', () => {
+  const src = readFileSync(TOOL, 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+  it('no Stop-Process, no CloseMainWindow; the app is closed (WM_CLOSE, hidden window included) BEFORE any service stops', () => {
+    expect(code).not.toMatch(/Stop-Process|\.Kill\(|CloseMainWindow/);
+    expect(code.indexOf('Close-BeeperApp ')).toBeGreaterThan(0);
+    expect(code.indexOf('Close-BeeperApp ')).toBeLessThan(code.indexOf('Stop-Service $svc'));
+    const lib = readFileSync(LIB, 'utf8');
+    const fn = lib.slice(lib.indexOf('function Close-BeeperApp('));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).toContain('Close-BeeperAppWindows');
+    expect(body).not.toMatch(/Stop-Process|\.Kill\(|CloseMainWindow/);
+  });
+  it('-CloseAppOnly answers before any plan, refusal or service is touched', () => {
+    const at = code.indexOf('if ($CloseAppOnly)');
+    expect(at).toBeGreaterThan(0);
+    expect(at).toBeLessThan(code.indexOf('Read-MachineState }'));
+    expect(at).toBeLessThan(code.indexOf('Stop-Service'));
+  });
+  it('an app that hides instead of quitting: refused at close-app, nothing stopped, and the line says what to do', () => {
+    expect(code).toMatch(/step = 'close-app'; error = 'the Beeper app hid instead of quitting'/);
+    expect(resultLine('kg', { from: '4.3.209', to: '4.3.229', result: { ok: false, step: 'close-app', error: 'the Beeper app hid instead of quitting', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] } }))
+      .toBe('🔄 kg · Beeper 4.3.209 → 4.3.229 · FAILED at close-app: the Beeper app hid instead of quitting — quit Beeper from its tray icon (Quit), then update again');
   });
 });
 
