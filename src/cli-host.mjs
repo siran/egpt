@@ -18,6 +18,7 @@ export const CLI_HOST_ENV = 'EGPT_CLI_HOST';
 const BUFFER_BYTES = 4 * 1024 * 1024;   // per session, while no spine holds it; partials are shed first
 const HELLO_MS = 60_000;                // a spine that never says cli:hello does not speak this protocol
 const STDERR_TAIL = 2_000;
+const EXIT_GRACE_MS = 5_000;            // 'close' after 'exit' — or never, when another process holds the stdio
 
 const parse = (line) => { try { return JSON.parse(line); } catch { return null; } };
 const userText = (ev) => (Array.isArray(ev?.message?.content) ? ev.message.content : []).filter((c) => c?.type === 'text').map((c) => c.text).join('');
@@ -91,12 +92,15 @@ export function createCliHost({ spawn = nodeSpawn, setPriority, log = () => {}, 
       procs.delete(hid);
       if (owned(rec)) tell({ t: 'cli:exit', hid, code: null, signal: null, error: String(e?.message ?? e) });
     });
-    child.on('close', (code, signal) => {
+    const gone = (code, signal) => {
       if (procs.get(hid) !== rec) return;
       procs.delete(hid);
       log(`cli-host: ${key} pid ${child.pid} exited (${signal ?? code})${owned(rec) ? '' : ` while no spine held it${rec.buffer.length ? ` — ${rec.buffer.length} buffered line(s) lost` : ''}`}`);
       if (owned(rec)) tell({ t: 'cli:exit', hid, code, signal });
-    });
+    };
+    child.on('close', gone);
+    // A sandbox launcher hands its stdio to the claude it starts, so its 'close' can never come.
+    child.on('exit', (code, signal) => { setTimeoutFn(() => gone(code, signal), EXIT_GRACE_MS)?.unref?.(); });
   }
 
   function write(rec, data) {

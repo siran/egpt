@@ -182,7 +182,7 @@ export function createWarmPool({
   // passed to the warm primitive (model, sessionId/resume, cwd, allowedTools,
   // confineToDirs, …). klass ∈ {system, conversation, sibling} selects the TTL;
   // `idleTtlMs` (optional) overrides that class TTL for this entry (-1 never, 0 always, N ms).
-  function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs, idleTtlMs } = {}) {
+  function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs, idleTtlMs, retried = false } = {}) {
     let e = _s.get(key);
     if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
     // SESSION-IDENTITY GUARD (operator 2026-06-21): a warm entry stays bound to
@@ -254,7 +254,12 @@ export function createWarmPool({
     // it takes effect on the NEXT _armIdle. null = no override (fall to the class TTL).
     if (idleTtlMs !== undefined) e.idleTtlMs = idleTtlMs;
     e.runs = (e.runs ?? 0) + 1;   // in flight + queued, read by pending()
-    const p = e.chain.then(() => _doTurn(key, message, onUpdate, timeoutMs ?? dispatchTimeoutMs));
+    // A session that never answered is already evicted (_doTurn): the same turn, once, on a fresh process.
+    const p = e.chain.then(() => _doTurn(key, message, onUpdate, timeoutMs ?? dispatchTimeoutMs)).catch((err) => {
+      if (!err?.unresponsive || retried) throw err;
+      onLog(`warm: ${key} never answered — the turn runs once more on a fresh process, same thread`);
+      return run(key, message, onUpdate, { brainOptions, klass, timeoutMs, idleTtlMs, retried: true });
+    });
     const settled = () => { e.runs--; };
     e.chain = p.then(settled, settled);   // keep the per-key chain alive across failures
     return p;

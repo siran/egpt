@@ -90,6 +90,15 @@ describe('warm-cli-session — resident multi-turn', () => {
     s.close();
   });
 
+  it('close() mid-turn rejects the turn, even from a process that never closes (evicted dead)', async () => {
+    const f = fakeClaude({ hang: true });
+    const s = createWarmCliSession({ spawn: f.spawn });
+    const pr = s.turn('X');
+    await new Promise((r) => setImmediate(r));
+    s.close();
+    await expect(pr).rejects.toThrow(/closed mid-turn/);
+  });
+
   it('close() ends the process and refuses further turns', async () => {
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn });
@@ -119,7 +128,7 @@ describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)
   it('writes ONE user line to the SAME stdin, in the same wire format a turn uses', async () => {
     const f = fakeClaude({ hang: true });                 // hang: the turn stays in flight
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await new Promise((r) => setImmediate(r));
     expect(s.inject('ACTUALLY DO X')).toBeTruthy();
     expect(f.calls).toEqual(['ORIGINAL', 'ACTUALLY DO X']);   // parsed by the fake as a user msg
@@ -159,7 +168,7 @@ describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)
   it('false on a CLOSED session', async () => {
     const f = fakeClaude({ hang: true });
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await new Promise((r) => setImmediate(r));
     s.close();
     expect(s.inject('x')).toBe(false);
@@ -168,7 +177,7 @@ describe('warm-cli-session — inject (steer the live turn, operator 2026-08-30)
   it('false — never a throw — when the stdin write itself fails', async () => {
     const f = fakeClaude({ hang: true });
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await new Promise((r) => setImmediate(r));
     f.getProc().stdin.write = () => { throw new Error('EPIPE'); };
     expect(s.inject('x')).toBe(false);                     // swallowed, reported as false

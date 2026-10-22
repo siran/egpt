@@ -147,6 +147,10 @@ const UNREADABLE_LOG_CAP = 5;
 // none is coming and a waiting turn goes ahead.
 const SELF_TURN_START_MS = 5_000;
 
+// A written turn is answered on stdout within seconds (its replay, init; a cold boxed spawn + --resume
+// measured ~13s on kg). Nothing at all past this: nobody reads the pipe — the pool retries once, fresh.
+const FIRST_EVENT_MS = 120_000;
+
 // 60 chars. The rendered text is a WhatsApp reply, and an agentic turn emits DOZENS of
 // tool calls — the budget is paid once per call, so it is a signpost ("which file? which
 // host?"), not a payload. 60 keeps `Bash(<60>)` inside ~70 columns, about one wrapped
@@ -396,6 +400,7 @@ export function createWarmCliSession(options = {}) {
         }
         continue;
       }
+      if (pending) pending.heard = true;
       // Capture the (possibly freshly-minted) session id, first-wins.
       if (typeof ev.session_id === 'string' && !sessionId) sessionId = ev.session_id;
       if (ev.type === 'control_response') {
@@ -635,8 +640,11 @@ export function createWarmCliSession(options = {}) {
       if (closed) throw new Error('warm-cli: session closed');
       if (!proc) spawnProc();
       return new Promise((resolve, reject) => {
-        pending = { resolve, reject, onUpdate, acc: '', msgBreak: false, verboseBlocks: [], settled: false, openerText: String(message ?? ''), openerReplayed: false, injections: [] };
+        const p = pending = { resolve, reject, onUpdate, acc: '', msgBreak: false, verboseBlocks: [], settled: false, openerText: String(message ?? ''), openerReplayed: false, injections: [] };
         try { proc.stdin.write(userLine(message)); } catch (e) { failPending(e); }
+        setTimeout(() => {
+          if (pending === p && !p.heard) failPending(Object.assign(new Error(`claude: no output ${FIRST_EVENT_MS / 1000}s after the turn was written — the process is not answering`), { unresponsive: true }));
+        }, FIRST_EVENT_MS).unref?.();
       });
     },
     // STEER the turn that is ALREADY streaming (operator 2026-08-30 — see the measurement
@@ -700,6 +708,7 @@ export function createWarmCliSession(options = {}) {
       link?.revoke();
       closed = true;
       settleInjections(pending, 'the session was closed before the CLI ingested it');
+      failPending(new Error('warm-cli: the session was closed mid-turn'));   // a dead process never says so itself
       endSelfTurn();
       try { proc?.stdin?.end(); } catch { /* already closing */ }
       try { proc?.kill?.(); } catch { /* */ }

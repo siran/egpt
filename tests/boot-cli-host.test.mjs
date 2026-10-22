@@ -16,13 +16,23 @@ import { createCliHost, connectCliHost, CLI_HOST_ENV } from '../src/cli-host.mjs
 import { createWarmCliSession } from '../src/warm-cli-session.mjs';
 import { ipcPair, fakeClaude } from './fake-claude-cli.mjs';
 
+// The fake claudes' pids (71xx) answer the liveness probe as alive, unless named here: pid → the code it throws.
+const probe = new Map();
+const realKill = process.kill;
+
 let boot, emptyState, ensureContact;
 beforeAll(async () => {
   await fs.mkdir(`${_PRIVATE_HOME}/state`, { recursive: true });
   ({ boot } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
+  vi.spyOn(process, 'kill').mockImplementation((pid, sig) => {
+    if (sig !== 0 || !(pid >= 7100 && pid < 7200)) return realKill.call(process, pid, sig);
+    if (probe.has(pid)) throw Object.assign(new Error(`kill ${probe.get(pid)}`), { code: probe.get(pid) });
+    return true;
+  });
 });
 afterAll(async () => {
+  vi.restoreAllMocks();
   delete process.env.EGPT_HOME;
   try { await fs.rm(_PRIVATE_HOME, { recursive: true, force: true }); } catch {}
 });
@@ -151,4 +161,31 @@ describe('boot — the daemon holds the sessions across a spine restart', () => 
     expect(d.spawns[0].child.killed).toBe(false);
     one.app.stop();
   });
+});
+
+describe('boot — a held session whose process is gone is not adopted', () => {
+  // 7101: odd, so never a live Windows pid — the ESRCH tasklist fallback agrees.
+  for (const [code, adopted] of [['ESRCH', false], ['EPERM', true]]) {
+    it(`${code}: ${adopted ? 'another account\'s process is alive — adopted' : 'dropped once, the next turn spawns fresh on --resume of the same thread'}`, async () => {
+      const d = daemon();
+      const one = await d.spine();
+      await one.say('e, hola');
+      await vi.waitFor(() => expect(finals(one.spy).some((f) => f.includes('echo:'))).toBe(true), { timeout: 5000 });
+      one.app.stop();
+      one.pair.drop();
+      d.spawns[0].child.pid = 7101;
+      probe.set(7101, code);
+      try {
+        const two = await d.spine();
+        await vi.waitFor(() => expect(d.lines.some((l) => /\[cli-host\] (adopted|dropping held)/.test(l))).toBe(true), { timeout: 5000 });
+        await two.say('e, sigues?');
+        await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('sigues?'))).toBe(true), { timeout: 5000 });
+        expect(d.lines.filter((l) => l.includes('[cli-host] dropping held')).length).toBe(adopted ? 0 : 1);
+        expect(d.lines.some((l) => l.includes('[cli-host] adopted'))).toBe(adopted);
+        expect(d.spawns).toHaveLength(adopted ? 1 : 2);
+        if (!adopted) expect(d.spawns[1].args).toEqual(expect.arrayContaining(['--resume', 'sess-1']));
+        two.app.stop();
+      } finally { probe.delete(7101); }
+    });
+  }
 });

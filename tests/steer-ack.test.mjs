@@ -79,7 +79,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   it('asks the CLI to acknowledge injected lines at all (--replay-user-messages)', async () => {
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
     expect(f.argv).toContain('--replay-user-messages');
     // …beside the streaming input format it only works with.
@@ -90,7 +90,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   it('THE JOYCE SHAPE: the write lands on a live pipe nothing is reading — and that is NOT an ack', async () => {
     const f = fakeClaude({ consuming: false });        // alive, idle, never consumes
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
 
     const handed = s.inject('are you there?');
@@ -106,7 +106,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   it('the ack resolves ok ONLY when the CLI replays the line back (ingested into the live turn)', async () => {
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
 
     const handed = s.inject('actually do X');
@@ -140,7 +140,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   it("the CLI's own replay of the TURN's opening line never acks an injection that happens to match", async () => {
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ok');
+    s.turn('ok').catch(() => {});
     await tick();
     f.replay('ok');                                    // the opener coming back — not an ack
     await flush();
@@ -164,7 +164,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
     const logs = [];
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn, onLog: (m) => logs.push(m) });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
     for (let i = 0; i < 8; i++) f.getProc().stdout.emit('data', `{"type":"result" TRUNCATED ${i}\n`);
     await flush();
@@ -181,7 +181,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
     const logs = [];
     const f = fakeClaude();
     const s = createWarmCliSession({ spawn: f.spawn, onLog: (m) => logs.push(m) });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
     f.getProc().stdout.emit('data', '{"input":{"command":"curl -u admin:hunter2 https://radio\n');
     await flush();
@@ -216,7 +216,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   it('closing a session with an un-ingested injection says so instead of leaving it hanging', async () => {
     const f = fakeClaude({ consuming: false });
     const s = createWarmCliSession({ spawn: f.spawn });
-    s.turn('ORIGINAL');
+    s.turn('ORIGINAL').catch(() => {});
     await tick();
     const handed = s.inject('swallowed');
     let acked = null;

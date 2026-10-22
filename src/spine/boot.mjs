@@ -33,6 +33,7 @@ import { createWarmPool } from '../warm-sessions.mjs';
 import { createBrainSession } from '../brain-session.mjs';
 import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-session.mjs';
 import { connectCliHost } from '../cli-host.mjs';
+import { defaultIsAlive } from '../daemon-singleton.mjs';
 import { raiseSelfToNormal } from '../process-priority.mjs';
 import { readConfigSync, configContentHashSync } from '../tools/config-io.mjs';
 import { restartKeysChanged, changedKeys } from './config-swap.mjs';
@@ -3720,6 +3721,7 @@ export async function boot({
       const m = h.meta ?? {};
       const [being, , surface, ...slug] = String(h.key ?? '').split(':');
       if (!m.opened || pool.has(h.key)) { log.line?.(`[cli-host] ending held ${h.key} pid ${h.pid} — ${m.opened ? 'the key is already open' : 'nothing to adopt it with'}`); cliHost.kill(h.hid); continue; }
+      if (!defaultIsAlive(h.pid)) { log.line?.(`[cli-host] dropping held ${h.key} pid ${h.pid} — its process is gone`); cliHost.kill(h.hid); continue; }
       try {
         const a = await cliHost.adopt(h.hid);
         const link = m.link && beingLink.forBeing({ being, surface, slug: slug.join(':'), boxed: m.opened.sandboxed === true });
