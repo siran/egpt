@@ -16,7 +16,7 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -4742,6 +4742,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
       jump: (ms) => { t += ms; },
       now: () => t,
       recorded: (needle) => [...io.files.values()].some((v) => v.includes(needle)),
+      count: (needle) => [...io.files.values()].reduce((n, v) => n + v.split(needle).length - 1, 0),
       resumes: () => lines.filter((l) => /resumed after/.test(l)),
     };
   }
@@ -4813,6 +4814,99 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
       await waitFor(() => node.turns.some((m) => m.includes('¿se cortó?')));
       expect(node.resumes()).toEqual([]);
     } finally { node.app.stop(); }
+  });
+
+  // A RESTART (operator 2026-10-21, see the describe below): the previous spine beat alive.txt a
+  // minute ago; a message said in between, delivered when the new bridge connects, is answered
+  // through the ordinary intake and recorded once, however often Beeper hands it over.
+  it('REPRODUCE-FIRST (the whole node, a restart): a message said while the spine restarted is answered and recorded once', BOOTS_A_NODE, async () => {
+    const beat = join(EGPT_HOME, 'state', 'alive.txt');
+    mkdirSync(dirname(beat), { recursive: true });
+    writeFileSync(beat, 'beat');
+    const lastBeat = Date.now() - 60_000;
+    utimesSync(beat, lastBeat / 1000, lastBeat / 1000);
+    let node;
+    try {
+      node = await bootDo();
+      const gap = said(ID('restart'), '@e ¿sigues ahí? durante el reinicio', lastBeat + 30_000);
+      fake.emit(gap);
+      await waitFor(() => node.turns.some((m) => m.includes('durante el reinicio')));
+      fake.emit(gap);                                                    // Beeper hands it over again
+      fake.emit(said(ID('after'), '@e listo', Date.now()));
+      await waitFor(() => node.turns.some((m) => m.includes('listo')));
+      expect(node.turns.filter((m) => m.includes('durante el reinicio'))).toHaveLength(1);
+      expect(node.count('durante el reinicio')).toBe(1);
+    } finally { node?.app.stop(); rmSync(beat, { force: true }); }
+  });
+});
+
+// ═══ A RESTART IS NOT AN OUTAGE (operator 2026-10-21) ═════════════════════════════════════════════
+//
+// "messages sent shouldn't be lost by eGPT during a restart. beeper delivers on first connection."
+// reve, 2026-10-19 18:37 (a deploy): last alive beat 18:36:50Z, /upgrade exit 18:37:42Z, bridge start
+// 18:37:57Z — and Diego Pérez's 18:37:45Z message, delivered on connect, was backfilled as backlog
+// because the cutoff was bridge start. The previous spine's last alive beat (state/alive.txt mtime)
+// is the last moment the node surely ingested; within the wake window it is the cutoff.
+describe('a restart is not an outage — the backlog cutoff is the last alive beat', () => {
+  const lastBeat = (msAgo) => {
+    const at = Date.now() - msAgo;
+    const p = join(stateDir, 'alive.txt');
+    writeFileSync(p, 'beat');
+    utimesSync(p, at / 1000, at / 1000);
+    return at;
+  };
+
+  it('REPRODUCE-FIRST: stamped after the last beat and delivered on connect → answered; stamped before it → backlog', async () => {
+    const beat = lastBeat(60_000);
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'durante el reinicio', timestamp: beat + 30_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'antes del reinicio', timestamp: beat - 60_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'de la semana pasada', timestamp: beat - 7 * 86_400_000 })] });
+    await waitFor(() => incoming.length === 3);
+    expect(incoming.find((i) => i.text === 'durante el reinicio').from.backlog).toBe(false);
+    expect(incoming.find((i) => i.text === 'antes del reinicio').from.backlog).toBe(true);
+    expect(incoming.find((i) => i.text === 'de la semana pasada').from.backlog).toBe(true);
+  });
+
+  it('a long outage keeps bridge start: a last beat older than the wake window moves nothing', async () => {
+    lastBeat(2 * 3600_000);
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'hace un minuto', timestamp: Date.now() - 60_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'ahora' })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.text === 'hace un minuto').from.backlog).toBe(true);
+    expect(incoming.find((i) => i.text === 'ahora').from.backlog).toBe(false);
+  });
+
+  it('dedup holds: what the previous spine handled is not answered again; a gap message handed over twice is answered once', async () => {
+    const first = await startBridge();
+    const handled = liveMsg({ text: 'ya atendido' });
+    fake.emit({ type: 'message.upserted', entries: [handled] });
+    await waitFor(() => first.incoming.length === 1);
+    first.bridge.stop();
+
+    lastBeat(30_000);
+    const second = await startBridge();
+    const gap = liveMsg({ text: 'durante el reinicio', timestamp: Date.now() - 20_000 });
+    fake.emit({ type: 'message.upserted', entries: [handled] });
+    fake.emit({ type: 'message.upserted', entries: [gap] });
+    fake.emit({ type: 'message.upserted', entries: [gap] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => second.incoming.some((i) => i.text === 'sentinel'));
+    expect(second.incoming.filter((i) => i.text === 'ya atendido')).toHaveLength(0);
+    expect(second.incoming.filter((i) => i.text === 'durante el reinicio').map((i) => i.from.backlog)).toEqual([false]);
+  });
+
+  it('a wake after the restart still moves the cutoff up to the resume, less the wake window', async () => {
+    lastBeat(60_000);
+    let resumed = null;
+    const { incoming } = await startBridge({ resumedAt: () => resumed });
+    resumed = Date.now() + 2 * 3600_000;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'durante el sueño', timestamp: resumed - 20 * 60_000 })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'en la siesta', timestamp: resumed - 10 * 60_000 })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.text === 'durante el sueño').from.backlog).toBe(true);
+    expect(incoming.find((i) => i.text === 'en la siesta').from.backlog).toBe(false);
   });
 });
 

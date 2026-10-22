@@ -23,7 +23,7 @@
 //     Beeper's mute flag (a muted chat never acks). The verdict defaults to
 //     NEVER surface here, so a bridge with no host wired can never announce
 //     egpt — the host decides the policy.
-//   - Backlog gate: messages older than bridge start (minus holdGraceMs)
+//   - Backlog gate: messages older than the cutoff (minus holdGraceMs)
 //     are marked seen but never dispatched — same hold-on-reconnect
 //     semantic as the baileys/TG bridges. Without it, a Beeper replay
 //     after restart would re-answer old messages (and egpt's own echoed
@@ -64,7 +64,7 @@ import { mediaKind, MEDIA_LINE } from '../media-kind.mjs';
 import { sha256Hex } from '../tools/decode-once.mjs';
 import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -103,7 +103,8 @@ const CREATE_GROUP_POLL_MS = 500;
 // wakes reve every ~5 min for exactly that. Node do, 2026-09-27: a 35-hour sleep must NOT be
 // answered message by message on waking. Fifteen minutes serves both — a wake-duty nap is shorter,
 // so everything said during one is still answered, while a night's traffic is backfilled, never
-// dispatched. A constant, not a knob.
+// dispatched. A constant, not a knob. It also bounds a restart (operator 2026-10-21): a gap since the
+// last alive beat up to this long is answered (the cutoff, below).
 const WAKE_ANSWER_WINDOW_MS = 15 * 60_000;
 // 🎧 THE LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
 // remove reaction when done"). Transcription runs HERE, in the bridge, before the spine ever sees
@@ -750,7 +751,19 @@ export async function startBeeperBridge(opts = {}) {
   // THE BACKLOG CUTOFF: bridge start, and — since a node that slept is not a node that just started
   // (2026-09-27) — moved forward to the moment the process resumed, less the wake window (the gate,
   // below). One cutoff.
+  // A RESTART IS NOT AN OUTAGE (operator 2026-10-21): when the previous spine's last alive beat
+  // (state/alive.txt mtime) is within the wake window of bridge start, the cutoff is that beat, so
+  // what was said during the restart and delivered on connect is answered; dedup covers what that
+  // spine already took. An older beat (a sleep, a node that was off) leaves bridge start.
   let backlogCutoffMs = Date.now();
+  try {
+    const beat = statSync(join(stateDir, 'alive.txt')).mtimeMs;
+    const gap = backlogCutoffMs - beat;
+    if (gap > 0 && gap <= WAKE_ANSWER_WINDOW_MS) {
+      backlogCutoffMs = beat;
+      onLog(`beeper: backlog cutoff = the last alive beat ${new Date(beat).toISOString()}, ${Math.round(gap / 1000)}s before bridge start — what was said during the restart is answered`);
+    }
+  } catch (e) { if (e?.code !== 'ENOENT') onLog(`beeper: alive.txt unreadable, backlog cutoff stays bridge start — ${e?.message ?? e}`); }
 
   // BEEPER RESTARTING FOR UPDATE (operator 2026-10-19; /update beeper, src/tools/beeper-update.mjs):
   // the one state this bridge holds while the update tool restarts Beeper. Set: every REST call
