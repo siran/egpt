@@ -247,6 +247,25 @@ Agent types are resolved across layers, most-specific winning: `src/brains`
 conversation resolves it FRESH every turn, so a repoint reaches all of them on
 their very next turn (there is no per-conversation freeze).
 
+### Templates
+
+These text keys take `{word}` variables. Only the words listed are filled in;
+any other `{word}` stays as written, so a typo shows. `split.placeholder` takes
+none. The list is `TEMPLATES` in `src/tools/template.mjs`; a test keeps it in
+step with the code.
+
+| Key | Variables | Example |
+|---|---|---|
+| `group_title` | `{group}` the original chat's name, `{name}` the name typed after join/split (none: 5 random letters) | `{group}-{name}` → `SI+Familia-viaje` |
+| `join.placeholder` | `{name}` the join name, `{title}` the new group's title, `{group}` the original chat's name, `{by}` who typed the command, `{handle}` the handle it was typed to | `joined {name}: /{handle} join {name}` → `joined viaje: /e join viaje` |
+| `join.exists` | as `join.placeholder`; `{by}` = who made that group | `ask {by} to add you` → `ask An to add you` |
+| `join.limit` | as `join.placeholder`; `{name}` = the sender's groups here | `you have {name}` → `you have viaje, cine` |
+| `join.opener`, `split.opener` | `{group}` the original chat's name, `{handle}` the handle the command was typed to | `Side-room of {group}` → `Side-room of Familia` |
+| `send.origin_template` | `{group}` the side group's name | `↪ from {group}: ` → `↪ from SI+Familia-viaje: ` |
+| `compaction.handoff_prompt`, `compaction.welcome` | `{agent}` the being's handle, `{YYMMDD-HHMM}` the local time of the warning | `handoffs/{agent}.{YYMMDD-HHMM}.md` → `handoffs/e.261021-2030.md` |
+| `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
+| `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
+
 ---
 
 ## 3. Heartbeats + textecutables

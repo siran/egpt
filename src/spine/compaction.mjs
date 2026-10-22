@@ -31,6 +31,7 @@
 // THIS DECISION CAN BE REVISITED.
 import { join, isAbsolute } from 'node:path';
 import { dueForCompaction, criticallyOver, compactionPolicy, compactionRatio, positiveOrNull } from '../tools/compact-being.mjs';
+import { fill } from '../tools/template.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
 // THE WARN GAP (operator 2026-10-08): the WARN threshold sits this fraction of the window BELOW the
@@ -92,7 +93,7 @@ export function createCompaction({
   // 2026-10-04); {YYMMDD-HHMM} → the stamp frozen at warn. A non-string (the key unset) yields '' so
   // the caller SKIPS the gesture — today's behaviour, byte-for-byte. A blank/whitespace string is
   // treated as unset for the same reason.
-  const resolveTpl = (tpl, agent, stamp) => (typeof tpl === 'string' && tpl.trim()) ? tpl.replaceAll('{agent}', agent).replaceAll('{YYMMDD-HHMM}', stamp) : '';
+  const resolveTpl = (tpl, agent, stamp) => (typeof tpl === 'string' && tpl.trim()) ? fill(tpl, { agent, 'YYMMDD-HHMM': stamp }) : '';
   // No turn in flight or queued on the warm key, and no live background task.
   const idle = (key) => !pool.busy?.(key) && !(pool.pending?.(key) > 0) && !(pool.background?.(key)?.length > 0);
   const pending = new Map();          // warm key -> timer handle
@@ -149,7 +150,7 @@ export function createCompaction({
       : (typeof raw === 'string' && raw.trim()) ? raw : '';
     if (!tpl) return '';
     const percent = window > 0 ? Math.round((tokens / window) * 100) : 0;
-    return tpl.replaceAll('{agent}', agent).replaceAll('{percent}', String(percent)).replaceAll('{path}', path);
+    return fill(tpl, { agent, percent, path });
   };
   // THE CRITICAL RATIO (operator 2026-09-14: "10 minutes of quiet or a critical .9"). The
   // cooling wait exists so a compact lands in a gap between turns instead of mid-exchange --

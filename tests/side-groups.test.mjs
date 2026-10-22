@@ -553,6 +553,13 @@ describe('the automatic group: made on the primary with Rodz + every member of t
     expect(h.calls.post[0].text).toContain(TITLE);
   });
 
+  it('its opener text: {group} the chat\'s name, {handle} the persona\'s', async () => {
+    const h = harness({ state: seedState({ entry: AUTOMATIC }) });
+    const b = buildSpine(h);
+    await say(b.spine, ASK);
+    expect(h.calls.post[0].text).toBe(`🔗 Side-room of ${TITLE} — same agents, same conversation. Reply /e send to a message to copy it back to the original chat.`);
+  });
+
   // Live 2026-10-19 09:10: the opener's send was DROPPED and the log still said "opener posted".
   it('REPRODUCE: an opener the primary\'s send refuses is logged as NOT posted and reported once — never "posted"', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }), postResult: () => null, copyArrives: false });

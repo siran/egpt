@@ -256,6 +256,7 @@ import { NODE_FILE } from './config-resolver.mjs';
 // the `agent:` turn path reuses them from there rather than owning a second copy (operator
 // 2026-08-22: an .x.md script must read identically whichever surface interprets it).
 import { framePrompt, isTextecutable } from '../tools/textecute.mjs';
+import { fill } from '../tools/template.mjs';
 // THE wake vocabulary (router.mjs) — `agent:` is a HANDLE, so it resolves through the SAME scan a
 // typed @mention goes through. `addressed` over a single already-extracted token is the house
 // single-token lookup (src/spine/mesh.mjs's findAgentByToken does exactly this for an envelope's
@@ -770,7 +771,7 @@ export function createHeartbeatLoader({
       let posted = '';
       if (!failure && post) {
         const out = stdout.trim();
-        const text = post.replaceAll('{stdout}', out);
+        const text = fill(post, { stdout: out });
         if (!out) failure = 'empty stdout — nothing posted';
         else if (typeof dispatchPost !== 'function') failure = 'no post dispatcher wired — boot injects dispatchPost';
         else {

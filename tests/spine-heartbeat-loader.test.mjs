@@ -4,7 +4,7 @@
 // readonly.yaml materialization, and the command action (shell spawn with entity
 // cwd + pump-stats env, overlap guard, non-zero exit only logs). All fakes — the
 // loader never touches the real profile.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -15,6 +15,14 @@ import { readRoomConfig } from '../src/rooms-file.mjs';
 import { createHeartbeats } from '../src/spine/heartbeats.mjs';   // the REAL cadence registry, for the no-per-tick-spam lock
 import { framePrompt } from '../src/tools/textecute.mjs';
 import { GIT_BASH_CANDIDATES } from '../src/sandbox-cli-session.mjs';
+import { TEMPLATES } from '../src/tools/template.mjs';
+
+// The variables each fill call was handed, by template text: checked against TEMPLATES.
+const filled = vi.hoisted(() => new Map());
+vi.mock('../src/tools/template.mjs', async (real) => {
+  const t = await real();
+  return { ...t, fill: (tpl, vars) => (filled.set(tpl, Object.keys(vars).sort()), t.fill(tpl, vars)) };
+});
 
 // ── fakes ───────────────────────────────────────────────────────────────────
 function makeFakeChild() {
@@ -1372,6 +1380,19 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
       'whatsapp/primes:prime: fire command — node prime.js',
       'whatsapp/primes:prime: ok in 0ms — posted: Hola muchachas y muchachos, el primo del día es 1637',
     ]);
+  });
+
+  it('{stdout} is its one variable, as TEMPLATES documents; an unknown {x} stays as written', async () => {
+    filled.clear();
+    const h = build({ frequency: '24h', command: 'node prime.js', post: '{x} {stdout}' });
+    await h.start();
+    h.beat()();
+    const child = h.calls[0].child;
+    child.stdout.emit('data', '1637\n');
+    child.emit('close', 0);
+    await flush();
+    expect(h.posts.map((p) => p.text)).toEqual(['🫀 prime', '{x} 1637']);
+    expect(filled.get('{x} {stdout}')).toEqual(Object.keys(TEMPLATES['heartbeats.<name>.post']).sort());
   });
 
   it('waits for close, not exit: stdout that lands after exit is still in the post', async () => {

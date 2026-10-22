@@ -46,6 +46,7 @@ import { sanitizeName, sanitizeSlug } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf } from '../tools/compact-being.mjs';
+import { fill } from '../tools/template.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
@@ -3173,7 +3174,7 @@ export function createCommands({
   // The prefix once: a title already starting with it (any case, e.g. a /join inside "SI+EduWeb") keeps its own.
   const sidePrefixed = (title) => (String(title).toLowerCase().startsWith(SIDE_GROUP_PREFIX.toLowerCase()) ? String(title) : SIDE_GROUP_PREFIX + title);
   const groupTitleOf = (groupName, name) =>
-    sidePrefixed(groupTitleTpl().replaceAll('{group}', String(groupName ?? '')).replaceAll('{name}', String(name ?? '')));
+    sidePrefixed(fill(groupTitleTpl(), { group: groupName, name }));
   // A discreet side group from the retired phrase triggers, made before the `discreet` flag: its title's
   // {name} slot holds a random 5-hex token (plus the " HHMM-MMDDYYYY" suffix older titles carry). A typed 5-hex name also matches; that only drops the prefix.
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -3186,8 +3187,7 @@ export function createCommands({
   // config.join.opener / config.split.opener ({group}=parent chat title, {handle}=the being's), with the
   // built-in fallback — the message posted into the new side-group so it surfaces in Beeper (postOpener).
   const openerOf = (block, dflt, groupName, ev = null) =>
-    ((block && typeof block.opener === 'string' && block.opener.trim()) ? block.opener : dflt)
-      .replaceAll('{group}', String(groupName ?? '')).replaceAll('{handle}', handleOf(ev));
+    fill((block && typeof block.opener === 'string' && block.opener.trim()) ? block.opener : dflt, { group: groupName, handle: handleOf(ev) });
   // A nameless /join or /split's {name} (operator 2026-10-19): 5 random lowercase letters/digits. Never
   // all hex: that is a retired discreet group's shape (titleLooksDiscreet).
   const randomName = () => {
@@ -3304,7 +3304,6 @@ export function createCommands({
   // ── /join shared by C's members (operator 2026-10-16) ──
   // The name key is case- and space-insensitive, so `/join Emely` finds `/join emely`'s room.
   const joinNameKey = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-  const fillVars = (tpl, vars) => Object.entries(vars).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, String(v ?? '')), tpl);
   const joinExistsOf = (block) => (block && typeof block.exists === 'string' && block.exists.trim()) ? block.exists : JOIN_EXISTS_DEFAULT;
   const joinLimitOf = (block) => (block && typeof block.limit === 'string' && block.limit.trim()) ? block.limit : JOIN_LIMIT_DEFAULT;
   // C's live /join room for a name: an alias of C (never a legacy `super: true` one) carrying join_name, or,
@@ -3447,7 +3446,7 @@ export function createCommands({
     const joinName = forkNameOf(ev.body);
     const baseTitle = groupTitleOf(cTitle, joinName);
     const vars = (title) => ({ name: joinName, title, group: cTitle, by: ev.senderName ?? '', handle: handleOf(ev) });
-    const placeholder = (title) => fillVars(placeholderOf(cfg().join, JOIN_PLACEHOLDER_DEFAULT), vars(title));
+    const placeholder = (title) => fill(placeholderOf(cfg().join, JOIN_PLACEHOLDER_DEFAULT), vars(title));
     // Our own message is edited in place; anyone else's is not ours to edit, so it gets a reply.
     const announce = (text) => (ev.isSender ? forkBridge.editMessage(ev.chatId, ev.msgId, text) : send?.(ev.chatId, text));
 
@@ -3467,7 +3466,7 @@ export function createCommands({
           await announce(placeholder(baseTitle));
           return `already in ${hit.chatId} ("${joinName}")`;
         }
-        await send?.(ev.chatId, fillVars(joinExistsOf(cfg().join), { ...vars(baseTitle), by: hit.entry.join_by ?? 'the operator' }));
+        await send?.(ev.chatId, fill(joinExistsOf(cfg().join), { ...vars(baseTitle), by: hit.entry.join_by ?? 'the operator' }));
         return `"${joinName}" exists (${hit.chatId}) — the sender is not in it and cannot be added from here`;
       }
     }
@@ -3478,7 +3477,7 @@ export function createCommands({
       const mine = await sendersRoomsOf(state0, surface, contact.jid, ev.senderId);
       if (mine.length >= cap) {
         const names = mine.map((r) => r.entry.join_name ?? r.entry.transcript ?? r.chatId).join(', ');
-        await send?.(ev.chatId, fillVars(joinLimitOf(cfg().join), { ...vars(baseTitle), name: names }));
+        await send?.(ev.chatId, fill(joinLimitOf(cfg().join), { ...vars(baseTitle), name: names }));
         return `refused — the sender already has ${mine.length} side-room(s) here (member_cap ${cap})`;
       }
     }
@@ -3630,7 +3629,7 @@ export function createCommands({
       const stored = side.aliasOf ? side.transcript : side.pushedName;
       const sideTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || stored || null;
       const discreet = side.discreet === true || [sideTitle, stored].some(titleLooksDiscreet);
-      if (sideTitle && (origin === 'always' || !discreet)) prefix = originTpl.replaceAll('{group}', sideTitle);
+      if (sideTitle && (origin === 'always' || !discreet)) prefix = fill(originTpl, { group: sideTitle });
     }
     const pbf = String(cfg().send?.post_back_from ?? '').trim().toLowerCase();
     // A member's /send (operator 2026-10-18) is said by the mouth, signed: only the operator's posts as him.

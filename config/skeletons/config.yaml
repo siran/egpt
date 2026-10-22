@@ -257,6 +257,23 @@ networks:
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [join, split, send, end]
 
+# --- Side-group texts (/join, /split, /send) ---------------------------------
+# All optional; unset = the text shown. Each {word} listed is filled in; any other
+# {word} stays as written. Every template key: MANUAL.md "Templates".
+# group_title: "{group}-{name}"   # after "SI+". {group} the original chat's name, {name} the name typed after join/split (none: 5 random letters)
+# join:
+#   # what the /join message becomes. {name} the join name, {title} the new group's title, {group} the original chat's name, {by} who typed it, {handle} the handle it was typed to
+#   placeholder: "🔗 joined group {name}. You can join too: send /{handle} join {name}"
+#   exists: "🔗 group {name} already exists. Ask {by} to add you."   # as placeholder; {by} = who made that group
+#   limit: "🔗 you already have group {name} here."                   # as placeholder; {name} = the sender's groups here
+#   # the first message in the new group. {group} the original chat's name, {handle} the handle the command was typed to
+#   opener: "🔗 Side-room of {group} — same agents, same conversation. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."
+# split:
+#   placeholder: "🍴🤖 ..."   # used as written, no {words}
+#   opener: "🍴 Fork of {group} — a diverging copy: same agents, its own thread from here. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."   # as join.opener
+# send:
+#   origin_template: "↪ from {group}:\n"   # the line before a relayed message. {group} the side group's name
+
 # --- Dispatch: global E-routing knobs ----------------------------------------
 # E is a sibling, not a network, so these live OUTSIDE the transport blocks.
 # Per-chat modes live in each conversation (set via /e auto <mode> <chat>); these
@@ -356,7 +373,7 @@ turn_timeout_ms: 600000
 #   # appended AFTER the re-fed identity on the first post-compact turn:
 #   welcome: "hi, you have just been compacted. please read your handoff at handoffs/{agent}.handoff.md and continue where you left off."
 # The PRE-COMPACTION admin notice, posted ONCE at the WARN threshold (top-level, not under compaction).
-# {agent}/{percent}/{path} are resolved; unset falls back to this same default; blank disables it.
+# {agent} the being's handle, {percent} how full the conversation is, {path} the handoff file; unset falls back to this same default; blank disables it.
 # compaction_warn_notice: "the conversation is at {percent}%, handoff being written, compaction next. you can read the handoff here: {path}"
 # loop_guard:                         # both loop limits, one block (config/config-schema.mjs: loop_guard)
 #   inbound: { turns: 6, window: 2 }    # loop-breaker, two triggers: RATE (N non-human turns within `window` MINUTES) and REPETITION (the same line 3× in 10 min, or A,B,A,B). A human msg resets both; a pause is announced in the chat with `resume`. -1 turns = off, -1 window = pure consecutive count

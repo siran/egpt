@@ -1,9 +1,18 @@
 // Auto-compaction service: after a cooling period following the last bot turn in a
 // conversation, /compact its warm session (native, in place) if it's over ratio.
 // Manual scheduler + fake pool + injected dueFor — no timers, no session files.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { createCompaction } from '../src/spine/compaction.mjs';
+import { TEMPLATES } from '../src/tools/template.mjs';
+
+// The variables each fill call was handed, by template text: checked against TEMPLATES.
+const filled = vi.hoisted(() => new Map());
+vi.mock('../src/tools/template.mjs', async (real) => {
+  const t = await real();
+  return { ...t, fill: (tpl, vars) => (filled.set(tpl, Object.keys(vars).sort()), t.fill(tpl, vars)) };
+});
+const documented = (key) => Object.keys(TEMPLATES[key]).sort();
 import { createWarmPool } from '../src/warm-sessions.mjs';
 
 function makeScheduler() {
@@ -412,6 +421,20 @@ describe('compaction: one handoff path for prompt, notice and welcome', () => {
     expect(r.prompt).toBe('write handoffs/e.handoff.md now');
     expect(r.notice).toBe(`read it here: ${join('/c', 'handoffs/e.handoff.md')}`);
     expect(r.welcome).toBe('read handoffs/e.handoff.md');
+  });
+
+  it('every variable of each key; an unknown {x} stays as written; the call sites pass what TEMPLATES documents', async () => {
+    filled.clear();
+    const r = await run({
+      compaction: { handoff_prompt: '{agent}|{YYMMDD-HHMM}|{x} handoffs/{agent}.md', welcome: '{agent}|{YYMMDD-HHMM}|{x}', compact_after_handoff: false },
+      compaction_warn_notice: '{agent}|{percent}|{path}|{x}',
+    });
+    expect(r.prompt).toBe('e|261017-2221|{x} handoffs/e.md');
+    expect(r.notice).toBe(`e|18|${join('/c', 'handoffs/e.md')}|{x}`);
+    expect(r.welcome).toBe('e|261017-2221|{x}');
+    expect(filled.get('{agent}|{YYMMDD-HHMM}|{x} handoffs/{agent}.md')).toEqual(documented('compaction.handoff_prompt'));
+    expect(filled.get('{agent}|{YYMMDD-HHMM}|{x}')).toEqual(documented('compaction.welcome'));
+    expect(filled.get('{agent}|{percent}|{path}|{x}')).toEqual(documented('compaction_warn_notice'));
   });
 });
 

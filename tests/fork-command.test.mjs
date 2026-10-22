@@ -34,6 +34,15 @@ import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContac
 import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { encodeNodeSignature, encodeChatCanary } from '../src/node-signature.mjs';
 import { Room } from '../src/room-core.mjs';
+import { TEMPLATES } from '../src/tools/template.mjs';
+
+// The variables each fill call was handed, by template text: checked against TEMPLATES.
+const filled = vi.hoisted(() => new Map());
+vi.mock('../src/tools/template.mjs', async (real) => {
+  const t = await real();
+  return { ...t, fill: (tpl, vars) => (filled.set(tpl, Object.keys(vars).sort()), t.fill(tpl, vars)) };
+});
+const documented = (key) => Object.keys(TEMPLATES[key]).sort();
 
 const C_CHAT = '!chatC';
 // createGroup returns the FULL matrix id; the spine keys every conversation by the SHORT id
@@ -1180,5 +1189,62 @@ describe('resolveSecondaryParticipantId — the two config.beeper phones, non-se
   });
   it('normalizes phone shapes (digits-only compare) when excluding self', () => {
     expect(resolveSecondaryParticipantId(beeperCfg('+1 (646) 821-7865', RODZ), ['16468217865'])).toBe(RODZ);
+  });
+});
+
+// ── each template key with every variable it takes; an unknown {x} stays as written ────────────────
+describe('templates — every variable of each key, today\'s exact text; the call sites pass what TEMPLATES documents', () => {
+  beforeEach(() => filled.clear());
+  const ALL = '{name}|{title}|{group}|{by}|{handle}|{x}';
+  const MEMBER = '@whatsapp_lid-777000:beeper.local';
+  const roster = async () => ({ type: 'group', participants: { items: [{ id: '@an:beeper.com', isSelf: true, phoneNumber: AN }, { id: RODZ_USER_ID, phoneNumber: RODZ }] } });
+  const op = (body, over = {}) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', senderName: 'An', isSender: true, raw: { chatType: 'group' }, body, ...over });
+  const member = (body) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'm7', chatName: 'Proyecto X', senderId: MEMBER, senderName: 'Emely', isSender: false, raw: { chatType: 'group' }, body });
+  const texts = (join = {}, rest = {}) => ({ ...cfg(), group_title: '<{group}|{name}|{x}>', join: { placeholder: ALL, opener: '{group}|{handle}|{x}', ...join }, split: { placeholder: '{name}|{x}', opener: '{group}|{handle}|{x}' }, ...rest });
+  const title = (name) => `SI+<Proyecto X|${name}|{x}>`;
+
+  it('group_title, join.placeholder, join.opener', async () => {
+    const { cmds, calls } = harness({ config: texts() });
+    await cmds.run(op('/join viaje'));
+    expect(calls.create[0].title).toBe(title('viaje'));
+    expect(calls.edit[0].text).toBe(`viaje|${title('viaje')}|Proyecto X|An|e|{x}`);
+    expect(calls.post[0].text).toBe('Proyecto X|e|{x}');
+    expect(filled.get('<{group}|{name}|{x}>')).toEqual(documented('group_title'));
+    expect(filled.get(ALL)).toEqual(documented('join.placeholder'));
+    expect(filled.get('{group}|{handle}|{x}')).toEqual(documented('join.opener'));
+  });
+
+  it('join.exists: {by} is who made the group', async () => {
+    const { cmds, sent } = harness({ config: texts({ exists: ALL }), chatRaw: roster });
+    await cmds.run(op('/join viaje'));
+    await cmds.run(member('/join viaje'));
+    expect(sent).toEqual([{ chatId: C_CHAT, text: `viaje|${title('viaje')}|Proyecto X|An|e|{x}` }]);
+    expect(filled.get(ALL)).toEqual(documented('join.exists'));
+  });
+
+  it('join.limit: {name} lists the member\'s rooms', async () => {
+    const { cmds, sent } = harness({ config: texts({ limit: ALL, member_cap: 1 }), chatRaw: roster });
+    await cmds.run(member('/join emely'));
+    await cmds.run(member('/join nue11'));
+    expect(sent.at(-1)).toEqual({ chatId: C_CHAT, text: `emely|${title('nue11')}|Proyecto X|Emely|e|{x}` });
+    expect(filled.get(ALL)).toEqual(documented('join.limit'));
+  });
+
+  it('split.opener; split.placeholder is used as written', async () => {
+    seedSourceThreads('e');
+    const { cmds, calls } = harness({ config: texts() });
+    await cmds.run(op('/split viaje'));
+    expect(calls.create[0].title).toBe(title('viaje'));
+    expect(calls.edit[0].text).toBe('{name}|{x}');
+    expect(calls.post[0].text).toBe('Proyecto X|e|{x}');
+    expect(filled.get('{group}|{handle}|{x}')).toEqual(documented('split.opener'));
+  });
+
+  it('send.origin_template', async () => {
+    const h = harness({ config: texts({}, { group_title: '{group}-{name}', send: { origin_template: '{group}|{x} ' } }), rooms: roomWith(JOIN_CHAT) });
+    await h.cmds.run(op('/join nue11', { chatName: 'EduWeb' }));
+    await h.cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send', isSender: true });
+    expect(h.calls.post.filter((p) => p.chatId === C_CHAT)[0].text).toBe('SI+EduWeb-nue11|{x} la respuesta elegida');
+    expect(filled.get('{group}|{x} ')).toEqual(documented('send.origin_template'));
   });
 });

@@ -1,43 +1,24 @@
-// tools/template.mjs — shared command prompt template loader
-//
-// Templates live in <egpt-root>/commands/<name>.md (shipped default) or
-// ~/.egpt/commands/<name>.md (user override, takes priority).
-//
-// Format:
-//   ---
-//   command: <name>
-//   ---
-//   Body text with {{variable}} substitutions.
+// tools/template.mjs — THE fill for every text template a user writes in config: {var} → its value.
 
-import { readFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { EGPT_HOME } from '../egpt-home.mjs';   // profile-aware: EGPT_HOME selects the node
+const CHAT = "the original chat's name";
+const HANDLE = 'the handle the command was typed to';
+const JOIN = { name: 'the name typed after join (none: 5 random letters)', title: "the new group's title", group: CHAT, by: 'who typed the command', handle: HANDLE };
+const STAMP = { agent: "the being's handle", 'YYMMDD-HHMM': 'the local time of the warning' };
 
-const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'commands');
+// Each template key → its variables, in plain words. Docs: config/skeletons/config.yaml, MANUAL.md.
+export const TEMPLATES = {
+  group_title: { group: CHAT, name: 'the name typed after join or split (none: 5 random letters)' },
+  'join.placeholder': JOIN,
+  'join.exists': { ...JOIN, by: 'who made that group' },
+  'join.limit': { ...JOIN, name: "the sender's groups here, comma-separated" },
+  'join.opener': { group: CHAT, handle: HANDLE },
+  'split.opener': { group: CHAT, handle: HANDLE },
+  'send.origin_template': { group: "the side group's name" },
+  'compaction.handoff_prompt': STAMP,
+  'compaction.welcome': STAMP,
+  compaction_warn_notice: { agent: "the being's handle", percent: 'how full the conversation is', path: 'the handoff file' },
+  'heartbeats.<name>.post': { stdout: "the command's output, trimmed" },
+};
 
-// Load a template by command name. Returns { path, body } or null.
-export async function loadTemplate(cmdName) {
-  const userPath = join(EGPT_HOME, 'commands', `${cmdName}.md`);
-  const appPath  = join(COMMANDS_DIR, `${cmdName}.md`);
-  for (const p of [userPath, appPath]) {
-    try {
-      const raw = await readFile(p, 'utf8');
-      const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
-      return { path: p, body };
-    } catch {}
-  }
-  return null;
-}
-
-// Replace {{key}} placeholders with values from vars.
-export function applyTemplate(body, vars) {
-  return body.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
-}
-
-// Load template and apply vars in one step. Returns { text, path } or null.
-export async function buildCommandPrompt(cmdName, vars) {
-  const tpl = await loadTemplate(cmdName);
-  if (!tpl) return null;
-  return { text: applyTemplate(tpl.body, vars), path: tpl.path };
-}
+// Only known variables are filled; an unknown {x} stays as written, so a typo shows.
+export const fill = (tpl, vars) => tpl.replace(/\{([\w-]+)\}/g, (m, k) => (Object.hasOwn(vars, k) ? String(vars[k] ?? '') : m));

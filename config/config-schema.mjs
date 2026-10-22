@@ -3216,13 +3216,13 @@ export const CONFIG_SCHEMA = {
                    to; no braces → used as-is. Unset → a built-in default naming the group and the
                    command to join it.
       exists:      the reply when /join <name> matches a live side-room of this chat the sender is not
-                   in (no second group is created; the Desktop API cannot add a member). {name} {by}
-                   ({by} = who made it). Unset → a built-in default.
+                   in (no second group is created; the Desktop API cannot add a member). placeholder's
+                   variables ({by} = who made it). Unset → a built-in default.
       member_cap:  how many live side-rooms ONE non-operator may hold per chat (rooms they made or are
                    in; /end-ed and deleted rooms do not count). A number. DEFAULT -1 = unlimited; N >= 1
                    = at most N, every create being the operator's own WhatsApp account. The operator is
                    never capped. (operator 2026-10-16)
-      limit:       the reply when member_cap is reached; {name} lists that member's rooms. Unset → a
+      limit:       the reply when member_cap is reached; placeholder's variables, {name} lists that member's rooms. Unset → a
                    built-in default.
       opener:      the one message posted by the primary into the new group right after it is created, so
                    the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
@@ -3259,7 +3259,8 @@ export const CONFIG_SCHEMA = {
       opener:      the one message posted by the primary into the new group right after it is created, so
                    the otherwise-empty group surfaces in Beeper (Beeper hides chats with no messages).
                    Rodz's copy of it tells the node Rodz's own room for the group, by id.
-                   A {group} template ({group} = the parent chat's title). Unset → a small built-in
+                   A template: {group} = the parent chat's title, {handle} = the handle the command
+                   was typed to. Unset → a small built-in
                    default.
   `,
 
