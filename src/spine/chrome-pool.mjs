@@ -67,7 +67,9 @@ export const isSafeGroupName = (g) => typeof g === 'string' && g !== '' && sanit
 //   • group — the one group listing the name (compared as sanitizeSlug(listed)); unlisted → `shared`.
 //     Listed in two groups, or in a group whose name is not a safe path segment → null (no browser)
 //     plus `why`. Never a silent pick.
-export function chromeConversationOf(entry = {}, groups = {}) {
+//   • unlisted with a parent (parentOf(entry): a /split's parent_chat entry) → the parent's group,
+//     bounded hops. /end drops the split's entry, which ends the inheritance (operator 2026-10-21).
+export function chromeConversationOf(entry = {}, groups = {}, parentOf = () => null, hops = 8) {
   const path = String(entry?.conversation_path ?? '').replace(/\\/g, '/');
   const key = (path ? basename(path) : '') || entry?.slug || '';
   const name = key.replace(/-\d{10}$/, '');
@@ -75,6 +77,8 @@ export function chromeConversationOf(entry = {}, groups = {}) {
     .filter(([, members]) => name && [].concat(members ?? []).some((m) => sanitizeSlug(m) === name))
     .map(([g]) => g);
   if (hits.length > 1) return { key, name, group: null, why: `"${name}" is listed in browser groups ${hits.join(', ')}` };
+  const parent = !hits.length && hops > 0 ? parentOf(entry) : null;
+  if (parent) return { ...chromeConversationOf(parent, groups, parentOf, hops - 1), key, name };
   const group = hits[0] ?? SHARED_GROUP;
   if (!isSafeGroupName(group)) return { key, name, group: null, why: `browser group "${group}" is not a safe profile dir name` };
   return { key, name, group };

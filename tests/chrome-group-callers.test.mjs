@@ -9,6 +9,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createCommands, CHROME_BRAIN_PROFILE, loginProfilePathOf } from '../src/spine/commands.mjs';
 import { createRoomRelay } from '../src/spine/room-relay.mjs';
+import { createBeingLink } from '../src/spine/being-link.mjs';
+import { chatIdForEntity } from '../src/spine/boot.mjs';
+import { dropContact } from '../src/conversations-state.mjs';
 import { fakePipeChrome } from './fake-pipe-chrome.mjs';
 
 const MB = 1024 * 1024;
@@ -79,6 +82,68 @@ describe('browserConversationOf — THE resolver every browser caller routes thr
   it('no registry wired (standalone construction) → null, the conversation-less brain path', async () => {
     const { cmds } = build({ state: null });
     expect(await cmds.browserConversationOf('whatsapp', '!admin')).toBe(null);
+  });
+});
+
+// The live case (operator 2026-10-21): a /split of "eGPT Rodz Lulu An" (brain) is its own entry with
+// parent_chat; a /join of it is an alias.
+const SPLIT_KEY = 'SI+eGPT Rodz Lulu An-lulu-amazon-2610220339';
+const SPLIT_STATE = { contacts: { ...STATE.contacts, whatsapp: {
+  ...STATE.contacts.whatsapp,
+  '!lulu': { slug: 'eGPT Rodz Lulu An-2609201419', conversation_path: '.egpt/conversations/whatsapp/eGPT Rodz Lulu An-2609201419' },
+  '!split': { slug: SPLIT_KEY, conversation_path: `.egpt/conversations/whatsapp/${SPLIT_KEY}`, parent_chat: '!lulu' },
+  '!split2': { slug: 'SI+lulu-amazon-cart-2610220400', conversation_path: '.egpt/conversations/whatsapp/SI+lulu-amazon-cart-2610220400', parent_chat: '!split' },
+  '!orphan': { slug: 'Reinie fork-2610220339', conversation_path: '.egpt/conversations/whatsapp/Reinie fork-2610220339', parent_chat: '!reinie' },
+  '!join': { aliasOf: '!lulu', transcript: 'eGPT Rodz Lulu An-gnossis', join_name: 'gnossis', join_by: 'An', mouth_chat: '!mouth' },
+} } };
+
+describe('a /split inherits its parent\'s browser group; /end ends it', () => {
+  // boot's being-link wiring: the being's slug → its chat (chatIdForEntity) → browserConversationOf.
+  const beingGroup = async (state, slug, groups) => {
+    const { cmds } = build({ state, groups });
+    const started = [];
+    const link = createBeingLink({
+      port: 1, clientPath: 'C:/x/ask-spine.mjs',
+      startBrowser: async (c) => { started.push(c); return { ok: true }; },
+      conversationOf: async (who) => cmds.browserConversationOf(who.surface, chatIdForEntity(state, `${who.surface}/${who.slug}`)?.chatId ?? who.slug),
+    });
+    await link.ask({ being: 'e', surface: 'whatsapp', slug, boxed: true }, { ask: 'browser', action: 'start', extra: [] });
+    return started[0]?.group;
+  };
+
+  it('split → the parent\'s group under its own key/name, through the commands resolver and the being link', async () => {
+    const { cmds } = build({ state: SPLIT_STATE });
+    expect(await cmds.browserConversationOf('whatsapp', '!split')).toEqual({ key: SPLIT_KEY, name: 'SI+eGPT Rodz Lulu An-lulu-amazon', group: 'brain' });
+    expect((await cmds.browserConversationOf('whatsapp', '!split2')).group).toBe('brain');
+    expect(await beingGroup(SPLIT_STATE, SPLIT_KEY)).toBe('brain');
+  });
+
+  it('the split listed explicitly → that group', async () => {
+    const groups = { ...GROUPS, amazon: ['SI+eGPT Rodz Lulu An-lulu-amazon'] };
+    const { cmds } = build({ state: SPLIT_STATE, groups });
+    expect((await cmds.browserConversationOf('whatsapp', '!split')).group).toBe('amazon');
+    expect(await beingGroup(SPLIT_STATE, SPLIT_KEY, groups)).toBe('amazon');
+  });
+
+  it('parent unlisted → shared', async () => {
+    const { cmds } = build({ state: SPLIT_STATE });
+    expect((await cmds.browserConversationOf('whatsapp', '!orphan')).group).toBe('shared');
+  });
+
+  it('after /end (mapping dropped) or with no parent_chat → shared again', async () => {
+    const ended = dropContact(SPLIT_STATE, 'whatsapp', '!split');
+    expect((await build({ state: ended }).cmds.browserConversationOf('whatsapp', '!split')).group).toBe('shared');
+    expect(await beingGroup(ended, SPLIT_KEY)).toBe('shared');
+    const { parent_chat, ...unparented } = SPLIT_STATE.contacts.whatsapp['!split'];
+    const plain = { contacts: { whatsapp: { ...SPLIT_STATE.contacts.whatsapp, '!split': unparented } } };
+    expect((await build({ state: plain }).cmds.browserConversationOf('whatsapp', '!split')).group).toBe('shared');
+  });
+
+  it('a /join alias, by its own chat id, resolves to the parent\'s conversation; after /end → shared', async () => {
+    const { cmds } = build({ state: SPLIT_STATE });
+    expect(await cmds.browserConversationOf('whatsapp', '!join')).toEqual({ key: 'eGPT Rodz Lulu An-2609201419', name: 'eGPT Rodz Lulu An', group: 'brain' });
+    const ended = dropContact(SPLIT_STATE, 'whatsapp', '!join');
+    expect((await build({ state: ended }).cmds.browserConversationOf('whatsapp', '!join')).group).toBe('shared');
   });
 });
 
@@ -283,6 +348,9 @@ describe('boot wires the heartbeat and the room relay through the ONE resolver (
   const BOOT_SRC = readFileSync(join(REPO, 'src', 'spine', 'boot.mjs'), 'utf8');
   it('a browser: true beat starts its conversation\'s group Chrome', () => {
     expect(BOOT_SRC).toMatch(/startBrowser: async \(ns\) =>[^\n]*commands\.startBrowser\(await commands\.browserConversationOf\(/);
+  });
+  it('a being\'s browser asks resolve its chat through browserConversationOf', () => {
+    expect(BOOT_SRC).toMatch(/conversationOf: async \(who\) => commands\.browserConversationOf\(who\.surface, chatIdForEntity\(await _loadState\(\), `\$\{who\.surface\}\/\$\{who\.slug\}`\)\?\.chatId \?\? who\.slug\)/);
   });
   it('the relay drives the room\'s group Chrome via commands.chatChromeOf', () => {
     expect(BOOT_SRC).toMatch(/streamFromTab: async \(o, ev\) =>/);

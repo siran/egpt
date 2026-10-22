@@ -175,3 +175,33 @@ describe('chromeConversationOf() — the live registry shape', () => {
     expect(chromeConversationOf({ ...at('Reinie Alvino-2607150057'), pushedName: 'eGPT Admin' }, GROUPS).group).toBe('shared');
   });
 });
+
+// A /split is its own conversation (own conversation_path) whose parent_chat names the chat it forked.
+describe('chromeConversationOf() — an unlisted split inherits its parent\'s group (operator 2026-10-21)', () => {
+  const PARENT = at('eGPT Rodz Lulu An-2609201419');
+  const SPLIT = { ...at('SI+eGPT Rodz Lulu An-lulu-amazon-2610220339'), parent_chat: '89xiqJ8w1iDuKtD4a5BY' };
+  const DEEPER = { ...at('SI+lulu-amazon-cart-2610220400'), parent_chat: 'split' };
+  const parentOf = (e) => ({ '89xiqJ8w1iDuKtD4a5BY': PARENT, split: SPLIT })[e.parent_chat] ?? null;
+
+  it('unlisted split → the parent\'s group, under its own key and name; a split of a split too', () => {
+    expect(chromeConversationOf(SPLIT, GROUPS, parentOf)).toEqual({ key: 'SI+eGPT Rodz Lulu An-lulu-amazon-2610220339', name: 'SI+eGPT Rodz Lulu An-lulu-amazon', group: 'brain' });
+    expect(chromeConversationOf(DEEPER, GROUPS, parentOf).group).toBe('brain');
+  });
+
+  it('the split listed explicitly → its own group; listed twice → the refusal, parent not consulted', () => {
+    expect(chromeConversationOf(SPLIT, { ...GROUPS, amazon: ['SI+eGPT Rodz Lulu An-lulu-amazon'] }, parentOf).group).toBe('amazon');
+    const d = chromeConversationOf(SPLIT, { ...GROUPS, a: ['SI+eGPT Rodz Lulu An-lulu-amazon'], b: ['SI+eGPT Rodz Lulu An-lulu-amazon'] }, parentOf);
+    expect(d.group).toBe(null);
+    expect(d.why).toMatch(/a, b/);
+  });
+
+  it('parent unlisted → shared; no parent (dropped by /end) → shared', () => {
+    expect(chromeConversationOf(SPLIT, GROUPS, () => at('Reinie Alvino-2607150057')).group).toBe('shared');
+    expect(chromeConversationOf(SPLIT, GROUPS, () => null).group).toBe('shared');
+    expect(chromeConversationOf(SPLIT, GROUPS).group).toBe('shared');
+  });
+
+  it('a parent cycle is bounded → shared', () => {
+    expect(chromeConversationOf(SPLIT, GROUPS, () => SPLIT).group).toBe('shared');
+  });
+});

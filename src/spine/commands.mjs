@@ -1203,12 +1203,14 @@ export function createCommands({
   }
 
   // THE BROWSER-GROUP RESOLVER (every spine-side browser caller): chat → registry row (none → fixed slug; a room's
-  // id IS its slug) → chromeConversationOf over browsers.yaml, fresh. No registry → null (brain); failed read → group null.
+  // id IS its slug) → chromeConversationOf over browsers.yaml, fresh; an unlisted /split → its parent_chat's group.
+  // No registry → null (brain); failed read → group null.
   async function browserConversationOf(surface, chatId) {
     if (!loadState) return null;
     try {
-      const entry = getContact(await loadState(), surface, chatId)?.entry ?? { slug: fixedSlugFor(surface, chatId) };
-      return chromeConversationOf(entry, await browserGroups());
+      const state = await loadState();
+      const entry = getContact(state, surface, chatId)?.entry ?? { slug: fixedSlugFor(surface, chatId) };
+      return chromeConversationOf(entry, await browserGroups(), (e) => getContact(state, surface, e.parent_chat)?.entry);
     } catch (e) { return { key: '', name: '', group: null, why: `browser group lookup failed — ${e?.message ?? e}` }; }
   }
 
