@@ -12,6 +12,8 @@
 # stored, logged or put on a command line), SeServiceLogonRight (recorded when this added it), and
 # per service: hold the spine, stop, back the profile up beside it, log on as the user, start, wait
 # for its token to answer. One that does not come back goes back to LocalSystem by itself.
+# Run it again later for a service that could not switch yet (the primary, after the one-profile
+# conversion): switched ones are skipped untouched, new ones join the same record, -Revert undoes all.
 #
 #   beeper-services-run-as-user.cmd [-DryRun] [-Revert] [-ServiceName egpt-beeper-secondary]
 #   -StateFile <json>   plan from a recorded machine, not this one (tests); implies -DryRun
@@ -38,7 +40,7 @@ $ProgressPreference = 'SilentlyContinue'
 # One service: switch, skip or refuse, and why. Pure.
 function Get-RunAsRow($v, [string] $User) {
   $row = [ordered]@{ service = $v.name; action = 'refuse'; reason = $null }
-  if ((Split-BeeperAccount $v.account).account -ieq (Split-BeeperAccount $User).account) { $row.action = 'skip'; $row.reason = "already runs as $User"; return $row }
+  if ((Split-BeeperAccount $v.account).account -ieq (Split-BeeperAccount $User).account) { $row.action = 'skip'; $row.reason = "already runs as $User - no stop, no backup"; return $row }
   $row.reason = if ($v.account -ne 'LocalSystem') { "runs as $($v.account); only LocalSystem is switched" }
     elseif (-not $v.udd) { "no --user-data-dir: as $User it would open $User's own default profile, the one your Beeper window runs - two instances of one device. Convert it first (share-beeper-primary-profile.cmd)" }
     elseif (-not $v.uddExists) { "its profile is not there: $($v.udd)" }
@@ -60,15 +62,23 @@ function Get-RunAsPlan($s, [bool] $Revert) {
     $steps += "logon right: remove $BeeperServiceLogonRight from $($s.record.user): $([bool]$s.record.rightAdded) (only what this script added)"
     return [ordered]@{ ok = $true; revert = $true; rows = @(); steps = $steps }
   }
-  if ($s.record) { return & $refuse 'record' "already recorded at $($s.recordPath)" 'run with -Revert first' }
+  # A later run (a record already there) switches what is still LocalSystem and adds it to the record.
   $rows = @($s.services | ForEach-Object { Get-RunAsRow $_ $s.user })
   $switch = @($rows | Where-Object { $_.action -eq 'switch' })
-  if (-not $switch.Count) { $p = & $refuse 'nothing' 'no service can be switched' $null; $p.rows = $rows; return $p }
+  if (-not $switch.Count) {
+    if (@($rows | Where-Object { $_.action -eq 'refuse' }).Count) { $p = & $refuse 'nothing' 'no service can be switched now' $null; $p.rows = $rows; return $p }
+    return [ordered]@{ ok = $true; revert = $false; nothing = $true; rows = $rows; steps = @() }
+  }
   $right = if ($null -eq $s.rightHeld) { 'checked when it runs (elevated)' } else { [string](-not $s.rightHeld) }
   $steps = @(
     "credential: ask for $($s.user)'s password (a dialog; never stored, logged or put on a command line), check it with a service logon before anything changes",
     "logon right: grant $BeeperServiceLogonRight to $($s.user): $right (recorded, so -Revert removes only what this added)")
-  $steps += @($switch | ForEach-Object { "$($_.service): hold the spine, stop, back up its profile beside it, log on as $($s.user), start, wait for its token (else back to LocalSystem), release" })
+  foreach ($r in $switch) {
+    $st = [string]($s.services | Where-Object { $_.name -eq $r.service } | Select-Object -First 1).state
+    $steps += if ($st -eq 'Running') { "$($r.service): hold the spine, stop, back up its profile beside it, log on as $($s.user), start, wait for its token (else back to LocalSystem), release" }
+      else { "$($r.service): back up its profile beside it, log on as $($s.user), leave it $st as it is" }
+  }
+  if ($s.record) { $steps += "record: add to $($s.recordPath), keeping what is there (-Revert undoes every service in it)" }
   return [ordered]@{ ok = $true; revert = $false; rows = $rows; steps = $steps }
 }
 
@@ -101,7 +111,7 @@ function Read-RunAsState {
     $v.hasToken = $tokens.ContainsKey($v.connection)
     if ($v.uddExists) {
       $v.lockHeld = Test-BeeperLockHeld $udd
-      if ($v.account -eq 'LocalSystem') {
+      if ($v.account -eq 'LocalSystem' -and -not ($v.state -ne 'Running' -and $v.lockHeld)) {   # a profile the window holds is refused anyway
         $gaps = @(Get-BeeperAclGaps $udd $UserSid)
         $v.aclGaps = $gaps.Count; if ($gaps.Count) { $v.firstGap = $gaps[0] }
         $v.profileMB = [Math]::Round(((Get-ChildItem -LiteralPath $udd -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB), 0)
@@ -138,6 +148,7 @@ if (-not $plan.ok) {
 }
 $i = 0
 foreach ($line in $plan.steps) { $i++; Say "$i $line" }
+if ($plan.nothing) { Say "nothing to do: every eligible service already runs as $($state.user)"; Done ([ordered]@{ ok = $true; nothing = $true; rows = $plan.rows }) }
 if ($DryRun) { Say '-DryRun: nothing changed'; Done ([ordered]@{ ok = $true; dryRun = $true; revert = $plan.revert; rows = $plan.rows; steps = $plan.steps }) }
 
 # --- the machinery ---------------------------------------------------------------------------
@@ -210,7 +221,13 @@ try {
   $verdict = Test-BeeperCredential $cred
   if (-not $verdict.ok) { Say "$($verdict.message) - nothing changed"; Done ([ordered]@{ ok = $false; step = 'credential'; error = $verdict.message }) 1 }
 
+  # A later run adds to the record: each service keeps the values its first switch recorded, and
+  # rightAdded stays what the first run found (true only if this script ever added the right).
   $record = [ordered]@{ at = (Get-Date).ToString('o'); user = $UserName; sid = $UserSid; rightAdded = $false; services = [ordered]@{} }
+  if ($state.record) {
+    $record.at = $state.record.at; $record.rightAdded = [bool]$state.record.rightAdded
+    foreach ($p in $state.record.services.PSObject.Properties) { $record.services[$p.Name] = $p.Value }
+  }
   if (-not (Test-BeeperServiceLogonRight $UserSid)) {
     Set-BeeperServiceLogonRight $UserSid
     $record.rightAdded = $true
@@ -225,9 +242,9 @@ try {
     $v = $state.services | Where-Object { $_.name -eq $row.service } | Select-Object -First 1
     $res = Switch-Service $v $cred -Backup
     if ($res.ok) {
-      $record.services[$v.name] = [ordered]@{ previous = 'LocalSystem'; backup = $res.backup; backupMB = $res.backupMB }
+      if (-not $record.services.Contains($v.name)) { $record.services[$v.name] = [ordered]@{ previous = 'LocalSystem'; backup = $res.backup; backupMB = $res.backupMB } }
       Save-Record $record
-      Say "$($v.name): up as $UserName$(if ($res.port) { " on port $($res.port)" })"
+      Say "$($v.name): $(if ($res.port) { "up as $UserName on port $($res.port)" } else { "logs on as $UserName, left $($v.state)" })"
     } else {
       $failed++
       Say "$($v.name) did not answer as $UserName in 90 s - putting it back on LocalSystem"

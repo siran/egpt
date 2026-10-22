@@ -60,8 +60,31 @@ Describe 'Get-RunAsPlan' {
     $p.step | Should Be 'nothing'
     @($p.rows).Count | Should Be 1
   }
-  It 'a record already there: -Revert first' {
-    (Get-RunAsPlan (New-State @((New-Svc)) @{ record = [pscustomobject]@{ a = 1 } }) $false).step | Should Be 'record'
+  It 'a later run (record there): skips the switched one untouched, switches the primary and adds it to the record' {
+    $rec = [pscustomobject]@{ user = '.\an'; rightAdded = $true; services = [pscustomobject]@{ 'egpt-beeper-secondary' = [pscustomobject]@{ backup = 'C:\s.backup-1' } } }
+    $primary = New-Svc @{ name = 'egpt-beeper-primary'; connection = 'primary'; udd = 'C:\Users\an\AppData\Roaming\BeeperTexts'; state = 'Stopped'; lockHeld = $false; shared = $true; profileMB = 1753 }
+    $p = Get-RunAsPlan (New-State @($primary, (New-Svc @{ account = '.\an' })) @{ record = $rec }) $false
+    $p.ok | Should Be $true
+    ($p.rows | ForEach-Object { "$($_.service)=$($_.action)" }) -join ',' | Should Be 'egpt-beeper-primary=switch,egpt-beeper-secondary=skip'
+    $p.rows[1].reason | Should Be 'already runs as .\an - no stop, no backup'
+    $p.steps[2] | Should Be 'egpt-beeper-primary: back up its profile beside it, log on as .\an, leave it Stopped as it is'
+    $p.steps[-1] | Should Match '^record: add to .*keeping what is there'
+  }
+  It 'reve with the window open: the secondary skipped, the primary refused only because the window holds it' {
+    $rec = [pscustomobject]@{ user = '.\an'; rightAdded = $true; services = [pscustomobject]@{ 'egpt-beeper-secondary' = [pscustomobject]@{ backup = 'b' } } }
+    $primary = New-Svc @{ name = 'egpt-beeper-primary'; connection = 'primary'; udd = 'C:\Users\an\AppData\Roaming\BeeperTexts'; state = 'Stopped'; lockHeld = $true; shared = $true }
+    $p = Get-RunAsPlan (New-State @($primary, (New-Svc @{ account = '.\an' })) @{ record = $rec }) $false
+    $p.ok | Should Be $false
+    $p.step | Should Be 'nothing'
+    $p.rows[0].reason | Should Match '^your Beeper window holds its profile: quit Beeper from the tray first'
+    $p.rows[1].action | Should Be 'skip'
+  }
+  It 'every eligible service already switched: nothing to do, not a refusal' {
+    $rec = [pscustomobject]@{ user = '.\an'; rightAdded = $false; services = [pscustomobject]@{ a = 1 } }
+    $p = Get-RunAsPlan (New-State @((New-Svc @{ account = '.\an' }), (New-Svc @{ name = 'egpt-beeper-primary'; account = 'reve\an' })) @{ record = $rec }) $false
+    $p.ok | Should Be $true
+    $p.nothing | Should Be $true
+    @($p.steps).Count | Should Be 0
   }
   It 'revert: every recorded service back to LocalSystem, and the right removed only when this added it' {
     (Get-RunAsPlan (New-State @()) $true).step | Should Be 'record'
