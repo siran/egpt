@@ -95,7 +95,7 @@ describe('spine pipe', () => {
   });
 
   // contract 4.1
-  // contract 1
+  // contract 1.1
   // contract 5.1
   it('round-trips a message: bridge in → brain → bridge out, logged + recorded', async () => {
     const { spine, bridge, brain, transcript, store } = build();

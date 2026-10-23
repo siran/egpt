@@ -127,7 +127,7 @@ function memIo() {
 }
 
 describe('boot()', () => {
-  // contract 1
+  // contract 1.1
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
