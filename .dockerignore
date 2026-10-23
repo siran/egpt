@@ -1,0 +1,5 @@
+node_modules
+.git
+extension/dist
+extension/dist-firefox
+coverage

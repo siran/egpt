@@ -1,0 +1,4 @@
+#!/bin/sh
+# screen-click X Y  - left-click at screen coordinates
+[ $# -eq 2 ] || { echo "usage: screen-click X Y" >&2; exit 2; }
+xdotool mousemove "$1" "$2" click 1

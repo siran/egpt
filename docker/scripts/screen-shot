@@ -1,0 +1,4 @@
+#!/bin/sh
+# screen-shot [file]  - PNG of the virtual screen (default /tmp/screen.png)
+out=${1:-/tmp/screen.png}
+import -display "${DISPLAY:-:99}" -window root "$out" && echo "$out"

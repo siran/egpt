@@ -1,0 +1,4 @@
+#!/bin/sh
+# screen-key KEY...  - press keys, e.g. Return, Tab, ctrl+v
+[ $# -ge 1 ] || { echo "usage: screen-key KEY..." >&2; exit 2; }
+xdotool key "$@"

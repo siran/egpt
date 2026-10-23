@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  eGPT node - one EC2 instance (Auto Scaling group of exactly 1) running the
+  egpt container with Beeper Desktop inside. State lives on a separate EBS
+  volume that is reattached when the instance is replaced, so logins survive.
+  No inbound ports: access is through SSM Session Manager.
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: Full ECR image URI, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/egpt:2986f488
+  InstanceType:
+    Type: String
+    Default: t3.medium
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 20
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  # --- Network: its own VPC, one public subnet, no NAT (saves ~$32/month) ---
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: egpt }]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: egpt }]
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: egpt-public }]
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: egpt }]
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  SubnetRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref Subnet, RouteTableId: !Ref RouteTable }
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: egpt node - no inbound, all outbound
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags: [{ Key: Name, Value: egpt }]
+
+  # --- State: logins for Beeper, egpt, Claude. Kept if the stack is deleted. ---
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: gp3
+      Encrypted: true
+      Tags: [{ Key: Name, Value: egpt-data }]
+
+  VncPassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: egpt/vnc-password
+      Description: Password for the VNC screen used for Beeper logins
+      GenerateSecretString: { PasswordLength: 20, ExcludePunctuation: true }
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /egpt/node
+      RetentionInDays: 30
+
+  # --- Instance permissions: SSM, pull from ECR, attach its own data disk ---
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: egpt-node
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow   # only this stack's data disk can be attached
+                Action: ec2:AttachVolume
+                Resource:
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:volume/${DataVolume}
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Effect: Allow
+                Action: ec2:DescribeVolumes
+                Resource: "*"
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref VncPassword
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub ${LogGroup.Arn}:*
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref InstanceRole] }
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        SecurityGroupIds: [!Ref SecurityGroup]
+        MetadataOptions: { HttpTokens: required, HttpPutResponseHopLimit: 2 }
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeSize: 30, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: [{ Key: Name, Value: egpt-node }]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee /var/log/egpt-boot.log) 2>&1
+            dnf install -y docker
+            systemctl enable --now docker
+
+            TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+            IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+            # Attach the data disk. A replaced instance may still hold it for a
+            # minute, so keep trying until it is free.
+            VOL=${DataVolume}
+            for i in $(seq 60); do
+              aws ec2 attach-volume --region ${AWS::Region} --volume-id $VOL --instance-id $IID --device /dev/sdf && break
+              sleep 10
+            done
+            DEV=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${!VOL//-/}
+            for i in $(seq 60); do [ -e "$DEV" ] && break; sleep 2; done
+            blkid "$DEV" || mkfs.ext4 -L egpt-data "$DEV"
+            mkdir -p /data
+            echo "LABEL=egpt-data /data ext4 defaults,nofail 0 2" >> /etc/fstab
+            mount /data
+            mkdir -p /data/egpt /data/beeper /data/claude
+            chown -R 1000:1000 /data/egpt /data/beeper /data/claude
+
+            VNC=$(aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${VncPassword} --query SecretString --output text)
+            aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+            docker pull ${ImageUri}
+            docker run -d --name egpt --restart unless-stopped --shm-size 1g \
+              -e VNC_PASSWORD="$VNC" \
+              -p 127.0.0.1:5900:5900 \
+              -v /data/egpt:/home/egpt/.egpt \
+              -v /data/beeper:/home/egpt/.config/BeeperTexts \
+              -v /data/claude:/home/egpt/.claude \
+              --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
+              --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=egpt \
+              ${ImageUri}
+
+  NodeGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: DefaultRoute
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier: [!Ref Subnet]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      HealthCheckType: EC2
+      Tags:
+        - { Key: Name, Value: egpt-node, PropagateAtLaunch: true }
+
+Outputs:
+  DataVolumeId:
+    Value: !Ref DataVolume
+  VncPasswordSecret:
+    Value: !Ref VncPassword
+  LogGroup:
+    Value: !Ref LogGroup

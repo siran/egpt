@@ -1,0 +1,4 @@
+#!/bin/sh
+# screen-type TEXT  - type text into the focused field
+[ $# -ge 1 ] || { echo "usage: screen-type TEXT" >&2; exit 2; }
+xdotool type --delay 40 -- "$*"
