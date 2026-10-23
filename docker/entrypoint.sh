@@ -4,6 +4,9 @@
 set -u
 log() { echo "[entrypoint] $*"; }
 
+REPO=$HOME/src/egpt
+REPO_URL=${EGPT_REPO_URL:-https://github.com/siran/egpt.git}
+
 # Virtual screen + a minimal window manager so Beeper's windows behave.
 rm -f /tmp/.X99-lock
 Xvfb :99 -screen 0 1440x900x24 -nolisten tcp &
@@ -19,10 +22,20 @@ else
   log "VNC disabled (set VNC_PASSWORD to enable)"
 fi
 
+# First boot: the eGPT checkout on its volume. /upgrade pulls it later.
+if [ ! -d "$REPO/.git" ]; then
+  log "cloning $REPO_URL (main) into $REPO"
+  git clone --branch main "$REPO_URL" "$REPO" || { log "clone failed"; exit 1; }
+fi
+if [ ! -d "$REPO/node_modules" ]; then
+  log "npm ci in $REPO"
+  (cd "$REPO" && npm ci && npm cache clean --force) || { log "npm ci failed"; exit 1; }
+fi
+
 # First boot: seed the profile config from the shipped skeleton.
 if [ ! -f "$EGPT_HOME/config/config.yaml" ]; then
   mkdir -p "$EGPT_HOME/config"
-  cp /opt/egpt/config/skeletons/config.yaml "$EGPT_HOME/config/config.yaml"
+  cp "$REPO/config/skeletons/config.yaml" "$EGPT_HOME/config/config.yaml"
   log "seeded $EGPT_HOME/config/config.yaml - fill in beeper.main.token"
 fi
 
@@ -37,6 +50,6 @@ keep_running() {  # name, command...
 keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
   --disable-gpu >/tmp/beeper.log 2>&1 &
 
-cd /opt/egpt
+cd "$REPO"
 keep_running egpt node egpt-daemon.mjs &
 wait
