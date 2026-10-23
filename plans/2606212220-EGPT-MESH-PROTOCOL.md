@@ -3,7 +3,7 @@
 Status: **live** — `src/mesh/relay.mjs`. This is the wire format: the bytes a
 relayed message is made of. Routing/topology design is `docs/BEING-MESH.md`; the
 mesh law is [`GENOME.md`](GENOME.md) §11; the behavior list is
-[`CONTRACTS.md`](CONTRACTS.md) §15.
+[`CONTRACTS.md`](../CONTRACTS.md) §15.
 
 
 ## The analogy: TCP over Beeper
