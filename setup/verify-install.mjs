@@ -40,6 +40,16 @@ export function isUnderDir(child, parent) {
   return c === d || c.startsWith(d + '/');
 }
 
+// Boot's persona rule (src/spine/boot.mjs personaOf): exactly one agent with `default: true`; no name is magic.
+export function personaCheck(agents) {
+  const names = Object.entries(agents ?? {})
+    .filter(([, a]) => a && typeof a === 'object' && !Array.isArray(a) && a.default === true)
+    .map(([name]) => name);
+  if (names.length === 1) return ['ok', `config: parses, persona agent '${names[0]}' (default: true)`];
+  if (!names.length) return ['fail', 'config: no agent has `default: true` — boot needs exactly one persona (fatal boot)'];
+  return ['fail', `config: ${names.length} agents have \`default: true\` (${names.join(', ')}) — boot allows exactly one (fatal boot)`];
+}
+
 export function expectedLogsDir(egptHome) { return join(egptHome, 'config', 'logs'); }
 
 // The RETIRED old-layout paths — flagged if any is present in the new profile.
@@ -189,13 +199,7 @@ export function runChecks({ egptHome, out = console.log } = {}) {
     try { cfg = YAML.parse(readFileSync(cfgPath, 'utf8')); } catch (e) { perr = e; }
     if (perr) add('fail', `config: ${cfgPath} FAILED to parse — ${perr.message}`);
     else if (!cfg?.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) add('fail', 'config: no agents block (fatal boot)');
-    else {
-      const hasPersona = Object.entries(cfg.agents).some(([name, a]) =>
-        a && typeof a === 'object' && !Array.isArray(a) &&
-        [name, ...(Array.isArray(a.handles) ? a.handles : [])].map((h) => String(h).toLowerCase()).some((h) => h === 'e' || h === 'egpt'));
-      if (hasPersona) add('ok', 'config: parses, agents block has a persona entry');
-      else add('fail', 'config: agents block has NO persona entry (name/handles incl. e/egpt) — fatal boot');
-    }
+    else add(...personaCheck(cfg.agents));
   }
   for (const [label, p] of [
     ['config/conversations.yaml', join(egptHome, 'config', 'conversations.yaml')],
