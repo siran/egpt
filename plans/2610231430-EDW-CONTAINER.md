@@ -49,7 +49,7 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
    → verify: ed answers when named and has the history; E is unaffected.
 4. **Per-conversation Unix user + chroot wall**, then `access_level: all`.
    → verify: a test shows that, from a being's Bash, config.yaml, the Beeper profile and other conversations cannot be read.
-5. **AWS**: later.
+5. **AWS**: later, its own step; everything stays local until then. No CloudFormation (operator 10-23: "we can just script our way to build, push, run image"). The template the operator drafted on 10-19 was removed and is still in da18640.
 6. **Number switch:** EduWeb's number signs into EDW, SI+EduWeb is re-linked to its new chat id, and E steps back.
    → verify: the group continues and ed has the history.
 
