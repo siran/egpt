@@ -145,7 +145,8 @@ export function slugTranscriptPath(surface, slug) {
 // logs may carry no front matter of their own). The alias roll is WALLED OFF in its own try/catch:
 // the main roll and this function's return (the main dest, or null) are byte-identical to before
 // for every caller — a side-room that can't be filed is left behind, never failing the main roll.
-export async function rollTranscript(surface, slug, { io = {} } = {}) {
+// `keep` (2026-10-23): thread ids the file must NOT roll away from — another being's live thread.
+export async function rollTranscript(surface, slug, { io = {}, keep = null } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const renameFn = io.rename ?? rename;
@@ -158,6 +159,7 @@ export async function rollTranscript(surface, slug, { io = {} } = {}) {
     const head = parseFrontMatter(text ?? '');
     const id = sanitizeSlug(head.thread_id ?? '');
     if (!id) return null;                                                  // un-stamped → the guard
+    if (keep?.has(String(head.thread_id))) return null;                    // names another being's live thread
     const taken = async (p) => { try { return (await readFileFn(p, 'utf8')) != null; } catch { return false; } };
     // Pick a never-clobbering archive path for `<base>.md`: a taken name takes the next `-N`
     // suffix; 99 archives of one base → null (leave it alone). ONE picker, so the main file and
@@ -1167,7 +1169,6 @@ export function getBeing(state, surface, jid, being) {
     jid: c.jid, slug: c.slug, surface, being,
     present:            !!b,
     mode:               _beingBlock(alias ?? {}, being)?.mode ?? b?.mode ?? null,
-    send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? null,
     // PER-CONVERSATION allowed_paths OVERRIDE (operator 2026-10-01, /fork's read-only grant). Same
     // shape as config.yaml's agents.<being>.allowed_paths — a { path: grant } map where a grant
@@ -1276,8 +1277,8 @@ export function getBeing(state, surface, jid, being) {
   };
 }
 
-// A conversation entry's OWN default being: the first `agents.<being>` block carrying `default: true`
-// (the config registry's persona marker, one tier more specific). null = the node persona.
+// A conversation entry's OWNER: the first `agents.<being>` block carrying `default: true` (a
+// stranger there reaches only it — router.mjs). null = no owner. There is no node default agent.
 export function defaultBeingOf(entry) {
   const agents = _obj(_obj(entry)?.agents) ?? {};
   return Object.keys(agents).find((b) => _obj(agents[b])?.default === true) ?? null;

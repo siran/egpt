@@ -38,7 +38,7 @@ const headOf = (id) => `An@[${CHAT_NAME}].wa (08:07) #${id}: `;   // what identi
 const HEAD = headOf('4709');                                 // the operator's own message id
 // The persona as the live node declares it: the KEY is the being-id, the HANDLES are the address
 // set, and `perro` is a SPOKEN-only alias (voice_handles — no '@', start of the transcript).
-const AGENTS = { e: { default: true, handles: ['e', 'egpt'], voice_handles: ['perro'] } };
+const AGENTS = { e: { handles: ['e', 'egpt'], voice_handles: ['perro'] } };
 
 function fakeBridge() {
   let cb = null;
@@ -62,21 +62,21 @@ function fakeTranscript() {
   };
 }
 
-// `addressedReplies` mirrors the live gate: send_to_egpt:'mode', so a turn runs only on a message
-// this being would answer. The default (every test but the accum one) answers everything, which
-// is the simplest shape for asserting the prompt.
-// `sendToEgpt`, `mesh`, `timers` and `rng` are the seams the three doors at the bottom of this
-// file need: a paused chat that still READS (send_to_egpt: 'always'), a mesh target's forward,
-// and the auto dwell's randomized pre-turn timer. Every caller above passes none of them and
-// builds exactly the spine it always did.
-function build({ mode = 'mention', agents = AGENTS, mayReply = () => true, brain = fakeBrain(), sendToEgpt = 'mode', mesh = null, timers = null, rng = null } = {}) {
+// `mayReply` mirrors the live gate: a turn runs only on a message this being would answer. The
+// default (every test but the accum one) answers everything, which is the simplest shape for
+// asserting the prompt. `mode` is also the router's node default, so an unnamed line reaches the
+// being only when it is on/auto.
+// `mesh`, `timers` and `rng` are the seams the doors at the bottom of this file need: a mesh
+// target's forward and the auto dwell's randomized pre-turn timer. Every caller above passes none
+// of them and builds exactly the spine it always did.
+function build({ mode = 'mention', agents = AGENTS, mayReply = () => true, brain = fakeBrain(), mesh = null, timers = null, rng = null } = {}) {
   const bridge = fakeBridge();
   const transcript = fakeTranscript();
   const spine = createSpine({
     bridge, brain,
     identity: createIdentity({ now: () => T }),
-    router: createRouter({ getAgents: () => agents, defaultBeing: 'e' }),
-    gating: { async decide(_being, ev) { return { mode, receives: true, mayReply: mayReply(ev), sendToEgpt }; }, surfaces: () => true },
+    router: createRouter({ getAgents: () => agents, getConfig: () => ({ dispatch: { auto_default_mode: mode } }) }),
+    gating: { async decide(_being, ev) { return { mode, receives: true, mayReply: mayReply(ev) }; }, surfaces: () => true },
     sender: fakeSender(bridge), transcript, heartbeats: { runDue() {} },
     readTranscript: async () => transcript.text,
     clock: { now: () => T },
@@ -131,7 +131,7 @@ describe('LOCKS — what must NOT move', () => {
   });
 
   it('a message addressing nobody is untouched', async () => {
-    const { bridge, brain } = build();
+    const { bridge, brain } = build({ mode: 'on' });
     await bridge.emit(msg('las celulas de la piel se renuevan', { atEStart: false, atEAnywhere: false }));
     expect(promptOf(brain)).toBe(`${HEAD}las celulas de la piel se renuevan`);
   });
@@ -157,7 +157,7 @@ describe('a VOICE handle strips on the same rule', () => {
   });
 
   it('a spoken alias MID-transcript woke nobody, so nothing is stripped either', async () => {
-    const { bridge, brain } = build();
+    const { bridge, brain } = build({ mode: 'on' });
     await bridge.emit(msg('(voice transcription, 8s) tengo un perro grande', { isTranscriptFromVoice: true, atEStart: false, atEAnywhere: false }));
     expect(promptOf(brain)).toBe(`${HEAD}(voice transcription, 8s) tengo un perro grande`);
   });
@@ -204,7 +204,7 @@ describe('mode: accum — the stripped trigger, the untouched context', () => {
 describe('the router carries the matched handle out', () => {
   it('addressed() reports the token, and targetFor turns a START hit into the target `address`', async () => {
     expect(addressed('e e', AGENTS)).toEqual([{ name: 'e', agent: AGENTS.e, token: 'e', atStart: true, anywhere: true }]);
-    const router = createRouter({ getAgents: () => AGENTS, defaultBeing: 'e' });
+    const router = createRouter({ getAgents: () => AGENTS, getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }) });
     expect(await router.resolve({ body: 'egpt hola', mention: {} })).toMatchObject({ being: 'e', address: 'egpt' });
     expect(await router.resolve({ body: 'dile a @e algo', mention: {} })).toMatchObject({ being: 'e', address: null });
     expect(await router.resolve({ body: 'hola gente', mention: {} })).toMatchObject({ being: 'e', address: null });
@@ -280,9 +280,9 @@ function steeringBrain() {
 
 // Open a live turn on the conversation, then deliver `second` INTO it. Returns what the pool
 // would have written to the live session.
-async function steerInto(second, from = {}) {
+async function steerInto(second, from = {}, opts = {}) {
   const brain = steeringBrain();
-  const { bridge } = build({ brain });
+  const { bridge } = build({ brain, ...opts });
   const first = bridge.emit(msg('e dame una opinion', { msgKey: 'm1' }));   // hangs inside brain.turn
   await flush();
   expect(brain.calls).toHaveLength(1);                                     // …so a turn really is live
@@ -310,7 +310,7 @@ describe('REPRODUCE — the STEER path feeds the being its own wake word', () =>
 
 describe('LOCKS — the steer path keeps everything else', () => {
   it('a steer that was never addressed is unchanged — the RAW dispatch line, head and all', async () => {
-    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false });
+    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false }, { mode: 'on' });
     expect(brain.steered).toEqual([`${headOf('m2')}también revisa X`]);
   });
 
@@ -324,7 +324,7 @@ describe('LOCKS — the steer path keeps everything else', () => {
   // who hailed it, where and when, AND leaving the handle on. Nothing addressed ⇒ `ev` itself
   // goes down, so the head survives.
   it('the un-addressed steer still carries its dispatch HEAD (never the bare body)', async () => {
-    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false });
+    const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false }, { mode: 'on' });
     expect(brain.steered[0]).toContain('An@[');
     expect(brain.steered[0]).toContain('#m2');
     expect(brain.steered[0]).not.toBe('también revisa X');
@@ -357,7 +357,7 @@ describe('LOCKS — the steer path keeps everything else', () => {
 //      into this conversation's CYCLE and fires ONE burst turn when the dwell expires, prompted
 //      with the drained cycle verbatim. The line went into the cycle raw.
 //   3. THE CONTEXT TURN — `send_to_egpt: always` in a chat the being may not reply in. It runs to
-//      stay current, prompted with the event itself.
+//      stay current, prompted with the event itself. (Retired 2026-10-23 with the context turn.)
 //
 // The strip is the SAME one, reached the same way: the router's `address` on the target, and
 // `withoutAddress` through the spine's `triggerFor`/`addressedBody`. Nothing re-scans a body.
@@ -366,7 +366,7 @@ describe('LOCKS — the steer path keeps everything else', () => {
 // `@don …` to a MESH target — `{ being: null, mesh: {…}, address: 'don' }` — and the spine
 // forwards it instead of running a local turn.
 const RELAY_AGENTS = {
-  e: { default: true, handles: ['e', 'egpt'] },
+  e: { handles: ['e', 'egpt'] },
   don: { relay_channel: 'egpt-mesh-kg-mo', to: 'don.mo' },
 };
 function fakeMesh() {
@@ -489,26 +489,6 @@ describe('REPRODUCE — the AUTO DWELL burst hands the being its own handle', ()
   });
 });
 
-describe('REPRODUCE — the CONTEXT TURN hands the being its own handle', () => {
-  // send_to_egpt: 'always' in a chat the being may NOT reply in: it runs to stay current, with no
-  // UI and a recorded-but-unsent reply. It prompted with the raw event.
-  it('a paused-but-read chat prompts WITHOUT the handle', async () => {
-    const brain = fakeBrain();
-    const { bridge } = build({ brain, mayReply: () => false, sendToEgpt: 'always' });
-    await bridge.emit(msg('e dame una opinion'));
-    expect(brain.calls).toHaveLength(1);
-    expect(promptOf(brain)).toBe(`${HEAD}dame una opinion`);   // ← was `${HEAD}e dame una opinion`
-  });
-
-  it('an UNADDRESSED message in the same chat is unchanged, and the record stays raw either way', async () => {
-    const brain = fakeBrain();
-    const { bridge, transcript } = build({ brain, mayReply: () => false, sendToEgpt: 'always' });
-    await bridge.emit(msg('las celulas de la piel se renuevan', { atEStart: false, atEAnywhere: false }));
-    expect(promptOf(brain)).toBe(`${HEAD}las celulas de la piel se renuevan`);
-    expect(transcript.text.split('\n\n')[0]).toBe(`${HEAD}las celulas de la piel se renuevan`);
-  });
-});
-
 // ── AND WHAT THE FAR MODEL IS ACTUALLY HANDED ────────────────────────────────────────────────
 //
 // The wire assertions above are only half the question. The RESPONDER used to do its own rewrite
@@ -622,7 +602,7 @@ describe('REPRODUCE — end to end, what the FAR being is handed', () => {
 // origin uses, handed the token it matched — not a rescan, and not the unanchored MENTION_RE scan
 // deleted in 38cf057, which is still gone.
 const OPEN_RELAY_AGENTS = {
-  e: { default: true, handles: ['e', 'egpt'] },
+  e: { handles: ['e', 'egpt'] },
   don: { relay_channel: 'egpt-mesh-kg-mo' },          // no `to:` — the far end self-selects
 };
 // Origin → wire → far node, open-channel: the envelope leaves with an EMPTY `to:`.
@@ -686,7 +666,7 @@ describe('REPRODUCE — an open-channel forward keeps the handle, and the RESPON
   // stated here rather than assumed — a fully addressed list strips, and ONE open path keeps the
   // handle for the whole envelope (an addressed path that gets it is degraded; an open path that
   // loses it is undeliverable). kg's live `carol` is the all-addressed shape.
-  const multipath = (paths) => ({ e: { default: true, handles: ['e'] }, carol: { handles: ['carol'], paths } });
+  const multipath = (paths) => ({ e: { handles: ['e'] }, carol: { handles: ['carol'], paths } });
   it('MULTIPATH, every path addressed: strips, exactly like the scalar addressed case', async () => {
     const mesh = fakeMesh();
     const { bridge } = build({ agents: multipath([{ p1: { relay_channel: 'rodz1', to: 'don.mo' } }, { p2: { relay_channel: 'rodz2', to: 'don.mo' } }]), mesh });

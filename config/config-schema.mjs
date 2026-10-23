@@ -506,11 +506,12 @@ export const CONFIG_SCHEMA = {
       auto_default_mode
         ENUM: "on" | "auto" | "mute" | "mention-direct" | "mention" | "accum" | "off"
         DEFAULT: "mention"
-        The NODE-WIDE default reply mode: the persona's mode in any chat that
-        sets none, and the last rung under the per-agent agents.<name>.mode
-        (operator 2026-07-25). Set via /agents auto <mode> <handle>.
-        It reaches the PERSONA only — every other agent defaults to "mention" —
-        so setting "accum" here does not make N siblings replay the gap.
+        The NODE-WIDE default reply mode: EVERY agent's mode in any chat where
+        neither the conversation nor the agent's own agents.<name>.mode says
+        one (src/spine/gating.mjs resolveMode). Set per chat via /agents auto
+        <mode> <handle>. There is no default agent (2026-10-22): "on" or "auto"
+        here means every agent answers every line in every chat the node
+        hears — boot warns about it.
       address_without_at
         Boolean. DEFAULT: true
         May a BARE handle OPENING a message address its agent — "d hola",
@@ -523,7 +524,7 @@ export const CONFIG_SCHEMA = {
         It switches ONLY the bare form. The '@' form is untouched in both
         states, unicode word boundary included.
         Read once at boot and handed to BOTH callers of the one mention matcher
-        (src/auto-mode.mjs mentionHits): the beeper + shell limbs' persona gate
+        (src/auto-mode.mjs mentionHits): the beeper + shell limbs' mention flag
         (mentionStatus) and the agent registry (src/spine/router.mjs addressed).
       default_node
         RETIRED (2026-10-19), ignored: a command names its being ("/e tabs"), and that
@@ -534,30 +535,24 @@ export const CONFIG_SCHEMA = {
         A NEW 1:1 (no conversations.yaml entry yet) arriving on that connection
         from a sender on NO allowed_users list (networks.*, agents.*.
         conversation_defaults; "*" names nobody) is created with
-        agents.<agent>.default: true. That conversation's unaddressed lines go
-        to the agent instead of the persona, and its stranger reaches that agent
-        only (other handles are dropped). Mode is the agent's own
-        agents.<agent>.mode — quote "on". Groups, existing chats, known senders,
+        agents.<agent>: { default: true, mode: on } — its OWNER, answering
+        every line, and its stranger reaches that agent only (other handles are
+        dropped). Do not set the agent's own agents.<agent>.mode to "on": that
+        applies in every chat the node hears. Groups, existing chats, known senders,
         our own sends: untouched. See src/spine/router.mjs strangerAgentFor.
       send_to_egpt
-        ENUM: "always" | "mode"
-        DEFAULT: "mode"
-        The GLOBAL send_to_egpt default: whether the persona stays in a chat's
-        context even when it will not reply. A per-conversation override still
-        lives in conversations.yaml
-        (contacts.<surface>[<id>].<being>.send_to_egpt) and WINS over this
-        global.
+        RETIRED (2026-10-23), ignored: an agent runs a turn only when it may
+        reply; "accum" hands it the context it was not handed in between.
     Per-chat modes live in each conversation entry, PER AGENT
     (contacts.<surface>[<id>].<being>.mode, or the entry's agents.<name>.mode
     override, via /agents auto <mode> <handle>). There is no flat entry-level mode —
     getBeing() has had no flat fallback since 2026-07-10.
     Paste-ready reference: config/skeletons/conversations.yaml.
 
-    BACK-COMPAT: each of these three reads falls back to its legacy home in the
+    BACK-COMPAT: each of these two reads falls back to its legacy home in the
     whatsapp block — so an un-migrated config is unchanged (src/spine/gating.mjs):
       auto_paused        <- whatsapp.auto_e_paused
       auto_default_mode  <- whatsapp.auto_e_default
-      send_to_egpt       <- whatsapp.send_to_egpt
   `,
   whatsapp: `
     Beeper-transport bridge config — network-agnostic; the "whatsapp" name is
@@ -1550,11 +1545,12 @@ export const CONFIG_SCHEMA = {
   `,
   agents: `
     Unified agent registry (operator 2026-07-02, new-config-only) — the ONE
-    block for the persona identity + local beings + mesh addressing.
+    block for local beings + mesh addressing.
 
-    REQUIRED: boot fails without an agents block, and exactly ONE agent must
-    carry  default: true  (the persona — operator 2026-07-10; boot is FATAL on
-    zero or more than one).
+    REQUIRED: boot fails without an agents block. There is NO default agent
+    (operator 2026-10-22): every agent whose mode in a chat is on/auto takes
+    every line there, a named one takes it by its own mode, nobody on and
+    nobody named → recorded, no reply.
 
     A map of canonical name -> the fields below.
 
@@ -1707,10 +1703,9 @@ export const CONFIG_SCHEMA = {
         Display label the bridge stamps as "<body_emoji> <name>: <reply>".
         DEFAULT: the map key.
       default
-        Boolean; marks THE persona — EXACTLY ONE agent per node — the agent that
-        answers un-@mentioned messages and terminates relay chains resolving to
-        it. Its MAP KEY is the persona being-id that keys warm sessions /
-        threads / transcripts.
+        RETIRED (2026-10-22), ignored — boot logs one line per agent carrying it.
+        (A conversation's OWN agents.<name>.default: true in conversations.yaml
+        is a different thing: that chat's owner; see heartbeats.)
       heartbeats
         OPTIONAL Boolean (operator 2026-10-15). false = a conversation whose
         own default agent this is (conversations.yaml agents.<name>.default:
@@ -1734,8 +1729,8 @@ export const CONFIG_SCHEMA = {
 
         'mute' (operator 2026-10-16) is LOG ONLY: the chat is recorded like
         any non-off mode (transcript, media, voice), but the agent runs no
-        turn at all - not even when an allowed user calls it by handle, and
-        send_to_egpt: always does not apply. 'off' records nothing.
+        turn at all - not even when an allowed user calls it by handle.
+        'off' records nothing.
 
         'accum' (operator 2026-07-26) GATES EXACTLY LIKE 'mention' — same
         answer for every mention state — and additionally PROMPTS the turn it
@@ -1746,6 +1741,7 @@ export const CONFIG_SCHEMA = {
         everything in between never reaches it — the 2026-07-26 incident, an
         un-@mentioned message about skin cells then "@e da una opinión bien
         fundamentada", answered from the topic of twenty minutes earlier.
+        (send_to_egpt itself is retired, 2026-10-23.)
         ⚠ THE NAME IS REUSED, THE MECHANISM IS NOT: the ORIGINAL accum (retired
         2026-07-01) buffered a chat's bursts and flushed the batch once per
         heartbeat. This one does NOT batch, does NOT touch the heartbeat and
@@ -1762,9 +1758,11 @@ export const CONFIG_SCHEMA = {
         the SAME chat — e.g.  e: {mode: mention}  answers a mid-sentence @e
         while  don: {mode: mention-direct}  stays silent unless named at the
         head. Applies to a RELAY agent too: a mesh target is gated as its OWN
-        agent, no longer as the persona.
-        DEFAULT: absent ⇒ dispatch.auto_default_mode for the persona, "mention"
-        for every other agent.
+        agent.
+        DEFAULT: absent ⇒ dispatch.auto_default_mode, for every agent alike.
+        ⚠ It applies in EVERY chat the node hears: "on"/"auto" here means this
+        agent answers every line everywhere (boot warns). Set those per
+        conversation instead.
         OVERRIDABLE PER CONVERSATION in conversations.yaml under the entry's
         agents: block — contacts.<surface>[<id>].agents.<name>.mode — which
         layers over the entry's existing <name>: block field-by-field, so an
@@ -1983,13 +1981,11 @@ export const CONFIG_SCHEMA = {
       open-channel (the being's owner on the other end answers). The reply
       mirrors home the way it came.
 
-    THE PERSONA AGENT (the one with default: true, operator 2026-07-10) is the
-    persona identity source (label = its name, emoji = its body_emoji); routing
-    to it yields its MAP KEY as the being-id, which keys warm sessions / threads
-    / transcripts — no hardcoded e/egpt anywhere, so renaming the key is a NEW
-    identity, resetting that agent's warm session + threads. The persona's
-    fresh-conversation default brain comes from its configuration (else the
-    shipped "egpt" type).
+    EVERY AGENT is its own identity source (label = its name, emoji = its
+    body_emoji); routing to it yields its MAP KEY as the being-id, which keys
+    warm sessions / threads / transcripts — no hardcoded e/egpt anywhere, so
+    renaming the key is a NEW identity, resetting that agent's warm session +
+    threads. There is no default agent (2026-10-22).
 
     CONFINEMENT (2026-07-02): a type file's allowed_tools value sets the honest
     contract — the norm is to list tools explicitly.

@@ -55,7 +55,7 @@ function streamingBridge() {
 // reply mode here.
 function node(name, { entry = {}, mode = 'mention' } = {}) {
   const { role, being, handles } = NODES[name];
-  const agents = { [being]: { default: true, handles } };
+  const agents = { [being]: { handles } };
   const config = {
     beeper: { primary: { phone: AN }, secondary: { phone: RODZ } },
     node_name: name, node_role: role, group_title: '{group}-{name}', agents, dispatch: { auto_default_mode: mode },
@@ -71,7 +71,6 @@ function node(name, { entry = {}, mode = 'mention' } = {}) {
     send: async () => {},
     loadState: async () => st,
     writeState: async (s) => { st = s; calls.writes.push(s); },
-    defaultKey: being,
     forkBridge: {
       editMessage: async () => true,
       createGroup: async (opts, o = {}) => { calls.create.push({ title: opts.title, via: o.via ?? null }); return { success: true, chatID: `!${name}-side${++made}:beeper.local` }; },
@@ -93,12 +92,12 @@ function node(name, { entry = {}, mode = 'mention' } = {}) {
     bridge,
     brain: { async turn(b, ev) { calls.brain.push({ being: b, chatId: ev.chatId }); return { text: 'ok' }; } },
     identity: createIdentity({ now: () => 1000 }),
-    router: createRouter({ getAgents: () => agents, defaultBeing: being }),
-    gating: createGating({ getConfig: () => config, loadState: async () => st, defaultKey: being, sideGroupFor: (ev, o) => cmds.autoSideGroup(ev, o) }),
-    commands: cmds, sender: createSender({ bridge, defaultKey: being }), transcript: { async log() {} }, heartbeats: { runDue() {} },
+    router: createRouter({ getAgents: () => agents, getConfig: () => config }),
+    gating: createGating({ getConfig: () => config, loadState: async () => st, sideGroupFor: (ev, o) => cmds.autoSideGroup(ev, o) }),
+    commands: cmds, sender: createSender({ bridge }), transcript: { async log() {} }, heartbeats: { runDue() {} },
     mesh: { isEnvelope: () => false, async handle() {} },
     fromThisNode: (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === name,
-    isSelfChat: () => false, clock: { now: () => 1000 }, defaultBeing: being, turnTimeoutMs: 0,
+    isSelfChat: () => false, clock: { now: () => 1000 }, turnTimeoutMs: 0,
   });
   const say = (body, over = {}) => {
     const { atEStart, atEAnywhere } = mentionStatus(body, handles);

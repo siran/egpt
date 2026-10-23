@@ -142,7 +142,7 @@ const BEING_BACKLOG_MAX = 64 * 1024 * 1024;
  * @param {object} opts
  * @param {number} [opts.port]                the port to SERVE (default 23475; tests pass 0 for an ephemeral port)
  * @param {typeof WSS} [opts.WebSocketServer] INJECTION SEAM — the `ws` server constructor (default the real import; tests pass a fake so NO real socket opens)
- * @param {string[]} [opts.wakeWords]         the persona's wake-word set (its declared handles, else its map key — router.mjs wakeTokens), SAME set boot hands the beeper bridge. Undefined → mentionStatus' built-in e/egpt defaults.
+ * @param {string[]} [opts.wakeWords]         the node's wake set (every agent's tokens — boot), SAME set boot hands the beeper bridge: the mention flag only. Undefined → nothing matches.
  * @param {boolean} [opts.addressWithoutAt]   the node's dispatch.address_without_at (DEFAULT true): may a BARE leading handle ("d hola") address, or is the '@' required? Rides beside wakeWords into the SAME mentionStatus call — the same value boot hands the beeper bridge and the router.
  * @param {string} [opts.bridgeSignatureOpen]  per-NODE outer wrap layer — the SAME value boot hands the beeper bridge, so a shell reply's wrap matches the Beeper wrap. Default ''.
  * @param {string} [opts.bridgeSignatureClose]

@@ -67,7 +67,7 @@ const LIVE_BEEPER = () => ({
   primary_gui: { account: 'anrodz42@example.com', token: T_GUI },   // SAME account, SECOND install
 });
 
-const AG = () => ({ egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } });
+const AG = () => ({ egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } });
 
 // Complete in-memory fs seam — same shape as tests/single-account-node.test.mjs.
 function memIo() {
@@ -224,7 +224,7 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
   it('per-agent use: moves the MOUTH and never the ear', async () => {
     const { byConnection, replies, app } = await bootWith({
       agents: {
-        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'] },
         gui: { configuration: 'egpt', handles: ['gui'], use: 'primary_gui', conversation_defaults: { access_level: 'regular' } },
       },
       beeper: LIVE_BEEPER(),
@@ -244,7 +244,7 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
   it('beeper_connection is still an alias for use:', async () => {
     const { byConnection, replies, app } = await bootWith({
       agents: {
-        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'] },
         gui: { configuration: 'egpt', handles: ['gui'], beeper_connection: 'primary_gui', conversation_defaults: { access_level: 'regular' } },
       },
       beeper: LIVE_BEEPER(),
@@ -257,7 +257,7 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
   it('use: WINS over beeper_connection when an agent carries both', async () => {
     const { byConnection, replies, app } = await bootWith({
       agents: {
-        egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+        egpt: { configuration: 'egpt', handles: ['e', 'egpt'] },
         gui: { configuration: 'egpt', handles: ['gui'], use: 'primary_gui', beeper_connection: 'primary', conversation_defaults: { access_level: 'regular' } },
       },
       beeper: LIVE_BEEPER(),
@@ -291,7 +291,9 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
   // No new concept, and no parallel one.
   it('owner_node naming THIS node claims a connection as an ear, and several may be claimed', async () => {
     const { byConnection, dialled, replies, app } = await bootWith({
-      agents: AG(),
+      // mode on: the connection gate hands a named @e to egpt's own ear only, so a being taken by
+      // its mode is what answers on BOTH ears.
+      agents: { egpt: { ...AG().egpt, mode: 'on' } },
       beeper: {
         primary: { account: 'an@example.com', token: T_PRIMARY, owner_node: 'kg' },
         secondary: { account: 'rodz@example.com', token: T_SECONDARY, owner_node: 'kg' },

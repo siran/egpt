@@ -134,7 +134,7 @@ const OPENER_SPLIT = '🍴 bifurcación de {group}';
 const GROUP_TITLE = 'egpt {name} de {group}';
 function cfg({ node_name = 'kg', node_role = 'primary', texts = true, send, peer_nodes } = {}) {
   return {
-    ...beeperCfg(AN, RODZ), node_name, node_role,
+    ...beeperCfg(AN, RODZ), node_name, node_role, agents: { e: {} },
     ...(peer_nodes ? { peer_nodes } : {}),
     ...(texts ? { group_title: GROUP_TITLE, join: { placeholder: PLACEHOLDER_JOIN, opener: OPENER_JOIN }, split: { placeholder: PLACEHOLDER_SPLIT, opener: OPENER_SPLIT } } : {}),
     ...(send ? { send } : {}),
@@ -184,7 +184,6 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     writeState: async (s) => { st = s; },
     resolveConvRoom: async (_surface, chatId) => rooms.get(chatId) ?? null,
     jsonlStoreRoot: STORE,
-    defaultKey: 'e',
     forkBridge,
     onLog: (m) => logs.push(m),
   });
@@ -386,7 +385,7 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     const cmds = createCommands({
       getConfig: () => cfg(), send: async () => {},
       loadState: async () => st, writeState: async (s) => { st = s; },
-      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, defaultKey: 'e', forkBridge, io, onLog: (m) => logs.push(m),
+      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, forkBridge, io, onLog: (m) => logs.push(m),
     });
     await cmds.run({ ...EV });
     expect(logs.some((l) => /thread copy for e.*failed/i.test(l))).toBe(true);

@@ -31,7 +31,7 @@ import { createRoomRelay } from '../src/spine/room-relay.mjs';
 // the peer account (do, on the second Beeper account "Rodz") is not a participant. Plus the
 // shell-pinned relay whose whole reason to exist is that `do` hears @don itself on Beeper.
 const KG = {
-  egpt: { default: true, handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+  egpt: { handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
   don: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do', surface: 'shell' },
 };
 const PEER = '+13472576794';
@@ -80,19 +80,18 @@ async function tunnelled(ev) {
 describe('REPRODUCE-FIRST — one message, two turns', () => {
   it("the ROSTER gate asks the GROUP the message arrived in, not the room's absence", async () => {
     const { asked, isPresent } = presenceSeam();
-    const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt', isPresent });
+    const router = createRouter({ getAgents: () => KG, isPresent });
 
     // 1. The genuine arrival in the group: the peer IS there, so the fallback token stays its
     //    owner's and kg's E is NOT woken. (This half already worked — it is the control.)
     const direct = await router.resolve(inGroup());
-    expect(direct.being).toBe('egpt');                          // the un-addressed fall-through…
-    expect(direct.mention.atEAnywhere).toBe(false);             // …NOT the fallback's wake
+    expect(direct.targets).toEqual([]);                         // NOT the fallback's wake
 
     // 2. The tunnelled copy of that SAME message. On HEAD the room short-circuits to "absent" and
-    //    the fallback fires, handing the gate atEAnywhere:true — the second turn.
+    //    the fallback fires, waking E — the second turn.
     const { ev } = await tunnelled(inGroup());
     const viaRoom = await router.resolve(ev);
-    expect(viaRoom.mention.atEAnywhere).toBe(false);
+    expect(viaRoom.targets).toEqual([]);
     // …and BOTH resolves asked about the GROUP, with the group's surface — never room/acim
     // (the presence cache is per resolve() call, so two calls make two lookups).
     expect(asked).toEqual([
@@ -103,18 +102,16 @@ describe('REPRODUCE-FIRST — one message, two turns', () => {
 
   it('a SHELL-PINNED agent does not match a message that arrived on WhatsApp', async () => {
     const { isPresent } = presenceSeam();
-    const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt', isPresent });
+    const router = createRouter({ getAgents: () => KG, isPresent });
     const { ev } = await tunnelled(inGroup('@don ¿estás?'));
     // The turn still RUNS in the room…
     expect(ev.surface).toBe(SHELL_SURFACE);
     expect(ev.chatId).toBe(ROOM);
     // …but @don's `surface: shell` pin is measured against WHATSAPP, where it does not apply, so
-    // the message falls through to the persona instead of being relayed to do a second time.
+    // the message reaches nobody instead of being relayed to do a second time.
     expect(ev.origin).toEqual({ surface: 'whatsapp', chatId: GROUP, chatName: 'perrito traducciones' });
     const r = await router.resolve(ev);
-    expect(r.targets).toHaveLength(1);
-    expect(r.being).toBe('egpt');
-    expect(r.mesh).toBeUndefined();
+    expect(r.targets).toEqual([]);
   });
 });
 
@@ -141,7 +138,7 @@ describe('the tunnel carries the origin, and nothing else changes', () => {
     // The case the shortcut exists for (operator 2026-08-31): a `~/.egpt/rooms/<name>` conversation
     // is not a Beeper chat, so the peer account provably is not in it. Must stay a DEFINITE absence.
     const { asked, isPresent } = presenceSeam();
-    const router = createRouter({ getAgents: () => KG, defaultBeing: 'egpt', isPresent });
+    const router = createRouter({ getAgents: () => KG, isPresent });
     const ev = identity.build({ body: '@e can you please…', from: { network: 'shell', chatId: 'lobby', chatName: 'lobby', userId: 'u-an' } });
     const r = await router.resolve(ev);
     expect(r.mention.atEAnywhere).toBe(true);      // woken by the fallback, no lookup at all
@@ -173,7 +170,7 @@ describe('REPRODUCE-FIRST — a tunnelled VOICE NOTE is still a voice note', () 
 
   it('the spoken alias wakes ken through the tunnel, exactly as it does on the genuine arrival', async () => {
     const { isPresent } = presenceSeam();
-    const router = createRouter({ getAgents: () => WITH_KEN, defaultBeing: 'egpt', isPresent });
+    const router = createRouter({ getAgents: () => WITH_KEN, isPresent });
 
     // 1. THE CONTROL — the genuine arrival in the group. This half has always worked.
     const direct = spokenInGroup();
@@ -196,11 +193,11 @@ describe('REPRODUCE-FIRST — a tunnelled VOICE NOTE is still a voice note', () 
     expect(payload.from.isTranscriptFromVoice).toBe(false);
     expect(ev.isVoice).toBe(false);
     // …and with no voice turn there is no spoken wake: `rey` in prose reaches nobody.
-    const router = createRouter({ getAgents: () => WITH_KEN, defaultBeing: 'egpt', isPresent: presenceSeam().isPresent });
+    const router = createRouter({ getAgents: () => WITH_KEN, isPresent: presenceSeam().isPresent });
     const { ev: prose } = await tunnelled(identity.build({
       body: 'rey, mirá esto', from: { network: 'whatsapp', chatId: GROUP, chatName: 'perrito traducciones', userId: 'u-x', senderName: 'Vero', msgKey: 'g2' },
     }));
-    expect((await router.resolve(prose)).being).toBe('egpt');
+    expect((await router.resolve(prose)).targets).toEqual([]);
   });
 });
 
@@ -216,7 +213,7 @@ describe('BYTE-IDENTICAL — a conversation in no room (no `origin`)', () => {
     ];
     const run = async () => {
       const { asked, isPresent } = presenceSeam();
-      const router = createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt', isPresent });
+      const router = createRouter({ getAgents: () => AGENTS, isPresent });
       const out = [];
       for (const ev of cases) out.push(await router.resolve(ev));
       return { out, asked };
@@ -226,10 +223,10 @@ describe('BYTE-IDENTICAL — a conversation in no room (no `origin`)', () => {
     // the pre-change one. Locked field by field rather than by re-running the old code.
     expect(cases.every((c) => c.origin === null)).toBe(true);
     expect(a.out.map((r) => [r.being, r.mesh?.being ?? null])).toEqual([
-      ['wren', null], [null, 'tg'], ['egpt', null], ['egpt', null], ['egpt', null],
+      ['wren', null], [null, 'tg'], [null, null], [null, null], [null, null],
     ]);
     // @e in a whatsapp 1:1 → the guard ran against THAT chat and got `null` (unknown) → silent.
     expect(a.asked).toEqual([{ identity: PEER, surface: 'whatsapp', chatId: '!c3' }]);
-    expect(a.out[3].mention.atEAnywhere).toBe(false);
+    expect(a.out[3].targets).toEqual([]);
   });
 });

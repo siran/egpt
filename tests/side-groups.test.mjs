@@ -53,7 +53,7 @@ const PEPE = '@whatsapp_lid-pepe7:beeper.local';
 
 const cfg = ({ node_role = 'primary', secondary = true, extra = {} } = {}) => ({
   beeper: { primary: { phone: AN }, ...(secondary ? { secondary: { phone: RODZ } } : {}) },
-  node_name: 'kg', node_role, group_title: '{group}-{name}', admin_channel: ADMIN, ...extra,
+  node_name: 'kg', node_role, group_title: '{group}-{name}', admin_channel: ADMIN, agents: AGENTS, ...extra,
 });
 
 function seedState({ entry = {} } = {}) {
@@ -109,7 +109,6 @@ function harness({ config = cfg(), state, chatRaw = async () => LIVE, created = 
     send: async (chatId, text) => sent.push({ chatId, text }),
     loadState: async () => st,
     writeState: async (s) => { st = s; },
-    defaultKey: 'e',
     forkBridge,
     reportUndelivered: async (o) => { calls.lost.push(o); return true; },
     onLog: (m) => logs.push(m),
@@ -373,7 +372,7 @@ describe('/send and /end work for whoever is in the side group', () => {
 // ── 3. reply_in_side_group ───────────────────────────────────────────────────────────────────────
 // The real spine, the real gating (its side-group seam wired to the real commands), the real sender
 // over a fake streaming bridge.
-const AGENTS = { e: { default: true, handles: ['e'] } };
+const AGENTS = { e: { handles: ['e'] } };
 const SIG = encodeNodeSignature('kg', 'e');
 function streamingBridge() {
   const streams = [], sent = [];
@@ -397,15 +396,15 @@ function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 
   const brain = { calls: [], async turn(being, ev, onPartial) { this.calls.push({ being, chatId: ev.chatId }); for (const p of partials) onPartial?.(...(Array.isArray(p) ? p : [p])); return { text: typeof reply === 'function' ? reply() : reply }; } };
   const bridge = streamingBridge();
   const notes = [];
-  const config = { ...h.config, agents: AGENTS, dispatch: { auto_default_mode: mode } };
+  const config = { ...h.config, dispatch: { auto_default_mode: mode } };
   const spine = createSpine({
     bridge, brain, identity: createIdentity({ now: () => 1000 }),
-    router: createRouter({ getAgents: () => AGENTS, defaultBeing: 'e' }),
-    gating: createGating({ getConfig: () => config, loadState: async () => h.getState(), defaultKey: 'e', sideGroupFor: (ev, o) => h.cmds.autoSideGroup(ev, o) }),
-    commands: h.cmds, sender: createSender({ bridge, defaultKey: 'e', onLog: (m) => notes.push(m) }), actions, transcript: { async log() {} }, heartbeats: { runDue() {} },
+    router: createRouter({ getAgents: () => AGENTS, getConfig: () => config }),
+    gating: createGating({ getConfig: () => config, loadState: async () => h.getState(), sideGroupFor: (ev, o) => h.cmds.autoSideGroup(ev, o) }),
+    commands: h.cmds, sender: createSender({ bridge, onLog: (m) => notes.push(m) }), actions, transcript: { async log() {} }, heartbeats: { runDue() {} },
     mesh: { isEnvelope: () => false, async handle() {} },
     fromThisNode: (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === node,
-    isSelfChat: () => false, clock: { now: () => 1000 }, defaultBeing: 'e', turnTimeoutMs: 0,
+    isSelfChat: () => false, clock: { now: () => 1000 }, turnTimeoutMs: 0,
     ...(timers ? { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout } : {}),
   });
   // Every message the being's replies opened, in order: the chat it went to and what it quotes.

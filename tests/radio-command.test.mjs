@@ -641,7 +641,7 @@ describe('/radio say <text> — uploads through the SAME uploader/gate the voice
 
   it('not joined — refuses with the exact string, never uploads', async () => {
     const { cmds, sent, uploadCalls } = harness({
-      config: { node_name: 'kg', radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
+      config: { node_name: 'kg', agents: KG_AGENTS, radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } },
     });
     await cmds.run({ ...self, senderId: '16468217865', body: '/radio say hola' });
     expect(sent[0].text).toBe('not relaying — /e radio join <radio> first');

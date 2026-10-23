@@ -26,7 +26,7 @@ const ev = (body, extra = {}) => ({
 // a MULTIPATH relay (`carol`, keyed carol and addressed @maria — the whole point of the map
 // shape), a surface-pinned relay, and one carrying an INERT `enabled` key.
 const AGENTS = {
-  egpt:  { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },
+  egpt:  { configuration: 'sonnet-high', handles: ['e', 'egpt'] },
   don:   { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do' },
   wren:  { configuration: 'sonnet-high' },
   carol: { handles: ['maria'], paths: [{ path1: { relay_channel: 'rodz1', network: 'whatsapp' } }, { path2: { relay_channel: 'egpt-mesh' } }] },
@@ -34,7 +34,7 @@ const AGENTS = {
   off:   { configuration: 'sonnet-high', enabled: false },
   _note: 'a comment key, never routable',
 };
-const arouter = createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt' });
+const arouter = createRouter({ getAgents: () => AGENTS });
 
 describe('REPRODUCE-FIRST — the two live failures', () => {
   it('`@e and @don you here?` addresses BOTH — a local being AND a mesh target from one message', async () => {
@@ -55,13 +55,13 @@ describe('REPRODUCE-FIRST — the two live failures', () => {
 
   it('an @agent inside a CODE FENCE addresses NOBODY (the protection 47caf19 gave the persona)', async () => {
     const fenced = await arouter.resolve(ev('mira:\n```yaml\nagents: { don: relay }   # @don is the relay\n```\n'));
-    expect(fenced.targets).toHaveLength(1);
-    expect(fenced.being).toBe('egpt');      // falls through to the default agent
+    expect(fenced.targets).toEqual([]);
+    expect(fenced.being).toBeNull();
     expect(fenced.mesh).toBeUndefined();
     // …and an inline code span too
     const inline = await arouter.resolve(ev('`@don` is how you reach him'));
     expect(inline.mesh).toBeUndefined();
-    expect(inline.being).toBe('egpt');
+    expect(inline.being).toBeNull();
   });
 });
 
@@ -109,20 +109,11 @@ describe('addressed() — ONE matcher over the whole addressable set', () => {
 });
 
 describe('LOCKS — every current resolve() semantic survives the fan-out', () => {
-  it('a bare message with no @mention still reaches the default agent, ev.mention untouched', async () => {
-    const m = { atEStart: false, atEAnywhere: false, replyToBot: true };
-    const r = await arouter.resolve(ev('hola que tal', { mention: m }));
-    expect(r.being).toBe('egpt');
-    expect(r.mesh).toBeUndefined();
-    expect(r.mention).toBe(m);
-    expect(r.targets).toHaveLength(1);
-  });
-
-  it('the DEFAULT agent keeps ev.mention; every other addressed agent carries its OWN REAL flags', async () => {
-    const m = { atEStart: true, atEAnywhere: true, replyToBot: false };
+  it('every addressed agent carries its OWN REAL flags — e too, never ev.mention', async () => {
+    const m = { atEStart: true, atEAnywhere: true, replyToBot: true };
     const r = await arouter.resolve(ev('@e and @wren and @don', { mention: m }));
     expect(r.targets.map((t) => t.being)).toEqual(['egpt', 'wren', null]);
-    expect(r.targets[0].mention).toBe(m);                                                    // persona: bridge-computed, untouched
+    expect(r.targets[0].mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
     // NOT a blanket constant (operator 2026-07-25: "respect the mode, if it's mention-direct not
     // the same as mention"): both are named MID-SENTENCE, so atEStart is honestly false.
     expect(r.targets[1].mention).toEqual({ atEStart: false, atEAnywhere: true, replyToBot: false });
@@ -155,8 +146,8 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
   it('…and by its map KEY it routes NOTHING — declared handles are the complete wake list', async () => {
     const r = await arouter.resolve(ev('@carol hola'));
     expect(r.mesh).toBeUndefined();
-    expect(r.being).toBe('egpt');                        // falls through to the persona
-    expect(r.targets).toHaveLength(1);
+    expect(r.being).toBeNull();
+    expect(r.targets).toEqual([]);
   });
 
   it('a surface-PINNED agent is addressed only on its pinned surface — off it, it is not a target at all', async () => {
@@ -165,16 +156,16 @@ describe('LOCKS — every current resolve() semantic survives the fan-out', () =
     expect((await arouter.resolve(ev('@pinned hi', { surface: SHELL_SURFACE }))).mesh).toEqual({ being: 'pinned', route: { room_id: 'shell-only' } });
     const off = await arouter.resolve(ev('@pinned hi', { surface: 'whatsapp' }));
     expect(off.mesh).toBeUndefined();
-    expect(off.being).toBe('egpt');
-    expect(off.targets).toHaveLength(1);
+    expect(off.being).toBeNull();
+    expect(off.targets).toEqual([]);
     // and it does not swallow the OTHER agents addressed in the same message
     const mixed = await arouter.resolve(ev('@pinned and @don', { surface: 'whatsapp' }));
     expect(mixed.targets.map((t) => t.mesh?.being)).toEqual(['don']);
   });
 
-  it('an unknown @token alone still falls through to the default agent', async () => {
-    expect((await arouter.resolve(ev('@nobody hi'))).being).toBe('egpt');
-    expect((await arouter.resolve(ev('@_note hi'))).being).toBe('egpt');
+  it('an unknown @token alone reaches nobody (no default agent)', async () => {
+    expect((await arouter.resolve(ev('@nobody hi'))).targets).toEqual([]);
+    expect((await arouter.resolve(ev('@_note hi'))).targets).toEqual([]);
   });
 });
 
@@ -203,7 +194,6 @@ function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = 
     bridge, brain, mesh, transcript,
     identity: { build: (m) => ({ ...m }) },
     router,
-    defaultBeing: 'egpt',
 
     // `mode` runs the REAL mode semantics (auto-mode.replyAllowed) over whatever mention each
     // target was handed — the seam that proves the fan-out feeds honest per-agent flags into
@@ -212,8 +202,8 @@ function fanoutSpine({ router = arouter, mayReply = true, mode = null, gating = 
     // each agent to resolve its OWN mode. Without either: a flat mayReply.
     gating: gating ?? {
       async decide(being, e, mention) {
-        if (!mode) return { mode: 'on', receives: true, mayReply, sendToEgpt: 'mode' };
-        return { mode, receives: mode !== 'off', mayReply: replyAllowed(mode, mention ?? {}), sendToEgpt: 'mode' };
+        if (!mode) return { mode: 'on', receives: true, mayReply };
+        return { mode, receives: mode !== 'off', mayReply: replyAllowed(mode, mention ?? {}) };
       },
       surfaces: (d) => d.mayReply,
     },
@@ -247,10 +237,10 @@ describe('spine — FAN OUT to every addressed agent', () => {
     expect(transcript.entries[0].r).toBeUndefined();     // …and it is the FIRST thing written
   });
 
-  it('LOCK: a bare message still runs exactly the default agent, once', async () => {
+  it('LOCK: a bare message runs nobody — no default agent', async () => {
     const { spine, brain, mesh } = fanoutSpine();
     await spine.handleInbound({ ...MSG, body: 'just a normal message' });
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    expect(brain.calls).toEqual([]);
     expect(mesh.forwarded).toHaveLength(0);
   });
 
@@ -269,8 +259,6 @@ describe('spine — FAN OUT to every addressed agent', () => {
   // mode, if it's mention-direct not the same as mention. nothing has changed"). The flags are
   // real per agent, so the EXISTING mode vocabulary keeps its meaning: fanning out must not turn
   // a mention-direct chat into a mention chat for the agents named after the first word.
-  // (the persona's own flags still ride in on ev.mention — the bridge computes them from its
-  //  wake words, by the SAME rules; only the other agents' flags come from the router's matcher)
   const AT_HEAD = { atEStart: true, atEAnywhere: true, replyToBot: false };
   const MID     = { atEStart: false, atEAnywhere: true, replyToBot: false };
 
@@ -311,11 +299,11 @@ describe('spine — FAN OUT to every addressed agent', () => {
 // gate now asks for THAT agent's mode. Real gating service, real config: the modes below are the
 // per-agent rung, nothing per-conversation.
 describe('spine — a RELAY target is gated as its OWN agent', () => {
-  const gatingWith = (agents) => createGating({ getConfig: () => ({ agents }), loadState: null, defaultKey: 'egpt' });
+  const gatingWith = (agents) => createGating({ getConfig: () => ({ agents }), loadState: null });
   const MID_M = { atEStart: false, atEAnywhere: true, replyToBot: false };
 
   it('e:mention + don:mention-direct — a MID-SENTENCE @don stays silent while the MID-SENTENCE @e answers', async () => {
-    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
+    const gating = gatingWith({ egpt: { mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
     const { spine, brain, mesh } = fanoutSpine({ gating });
     await spine.handleInbound({ ...MSG, body: 'oye @e y @don, ¿están?', mention: MID_M });
     expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);   // e is 'mention' → mid-sentence is enough
@@ -323,7 +311,7 @@ describe('spine — a RELAY target is gated as its OWN agent', () => {
   });
 
   it('…and with @don at the HEAD of the same chat, don wakes and e still answers', async () => {
-    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
+    const gating = gatingWith({ egpt: { mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mention-direct' } });
     const { spine, brain, mesh } = fanoutSpine({ gating });
     await spine.handleInbound({ ...MSG, body: '@don y @e, ¿están?', mention: MID_M });
     expect(mesh.forwarded).toHaveLength(1);
@@ -331,7 +319,7 @@ describe('spine — a RELAY target is gated as its OWN agent', () => {
   });
 
   it('the PRIMARY target too: a muted relay agent is not forwarded even when named at the head', async () => {
-    const gating = gatingWith({ egpt: { default: true, mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mute' } });
+    const gating = gatingWith({ egpt: { mode: 'mention' }, don: { relay_channel: 'egpt-mesh-do-kg', mode: 'mute' } });
     const { spine, brain, mesh } = fanoutSpine({ gating });
     await spine.handleInbound({ ...MSG, body: '@don ping', mention: { atEStart: false, atEAnywhere: false, replyToBot: false } });
     expect(mesh.forwarded).toHaveLength(0);

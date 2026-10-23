@@ -1,6 +1,6 @@
 // Locks the dispatch: consolidation (operator 2026-07-10): the persona routing
 // globals moved OUT of the whatsapp transport block into `dispatch:` —
-// auto_default_mode, auto_paused, and the new send_to_egpt global default. Each
+// auto_default_mode and auto_paused. Each
 // read in src/spine/gating.mjs is canonical-with-legacy-fallback
 // (`c.dispatch?.<k> ?? c.whatsapp?.<legacy>`), so deploying onto a legacy-shaped
 // config is a NO-OP and a migrated config reads the same value from the new home.
@@ -10,7 +10,7 @@ import { emptyState, ensureContact, recordThread, patchBeing, aliasContact, getC
 
 // No loadState → no per-conversation view (beingView returns null), so decide()
 // resolves purely from config: exactly the GLOBAL-default path we want to lock.
-const mkGating = (config) => createGating({ getConfig: () => config, loadState: null, defaultKey: 'e' });
+const mkGating = (config) => createGating({ getConfig: () => config, loadState: null });
 const ev = { surface: 'whatsapp', chatId: '!r:beeper.com', kind: 'message' };
 
 describe('gating dispatch: — auto_default_mode (canonical) with whatsapp.auto_e_default fallback', () => {
@@ -42,18 +42,7 @@ describe('gating dispatch: — auto_paused (canonical) with whatsapp.auto_e_paus
   });
 });
 
-describe('gating dispatch: — send_to_egpt global default (canonical) with whatsapp.send_to_egpt fallback', () => {
-  it('canonical dispatch.send_to_egpt is the global default', async () => {
-    expect((await mkGating({ dispatch: { send_to_egpt: 'always' } }).decide('e', ev)).sendToEgpt).toBe('always');
-  });
-  it('legacy whatsapp.send_to_egpt is still honored when dispatch is absent (back-compat)', async () => {
-    expect((await mkGating({ whatsapp: { send_to_egpt: 'always' } }).decide('e', ev)).sendToEgpt).toBe('always');
-  });
-  it('canonical wins when both are present', async () => {
-    const g = mkGating({ dispatch: { send_to_egpt: 'mode' }, whatsapp: { send_to_egpt: 'always' } });
-    expect((await g.decide('e', ev)).sendToEgpt).toBe('mode');
-  });
-
+describe('gating dispatch: — every being follows the node default mode', () => {
   // PHASE 2 (operator 2026-08-14, "remove the concept of siblings"): the default-gate
   // asymmetry (`being === defaultKey ? ... : 'mention'`) is gone from defaultMode — every
   // being's un-configured default now resolves the SAME way.
@@ -68,19 +57,6 @@ describe('gating dispatch: — send_to_egpt global default (canonical) with what
   it('REGRESSION: absent dispatch/whatsapp default → every being still falls back to \'mention\' (today\'s ultimate fallback, unchanged)', async () => {
     expect((await mkGating({}).decide('wren', ev)).mode).toBe('mention');
     expect((await mkGating({}).decide('e', ev)).mode).toBe('mention');
-  });
-
-  it('the PER-CONVERSATION override still beats the dispatch global (precedence unchanged)', async () => {
-    let state = emptyState();
-    state = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' }).state;
-    state.contacts.whatsapp['!room:beeper.com'].agents = { e: { mode: 'on', send_to_egpt: 'always' } };
-    const g = createGating({
-      getConfig: () => ({ dispatch: { send_to_egpt: 'mode', auto_default_mode: 'on' } }),
-      loadState: async () => state,
-      defaultKey: 'e',
-    });
-    const d = await g.decide('e', { surface: 'whatsapp', chatId: '!room:beeper.com', kind: 'message' });
-    expect(d.sendToEgpt).toBe('always');   // bv.send_to_egpt override, not the dispatch 'mode' global
   });
 });
 
@@ -135,7 +111,7 @@ describe('gating — a legacy super alias is a plain alias', () => {
   st = patchBeing(st, 'whatsapp', MAIN, 'e', { mode: 'mention' });
   st = aliasContact(st, 'whatsapp', SUPER, getContact(st, 'whatsapp', MAIN).jid, { transcript: 'main-super', super: true });
   const config = { super_chats: { triggers: ['SI chat'], mode: 'on' }, agents: { codex: { mode: 'off' } } };
-  const g = createGating({ getConfig: () => config, loadState: async () => st, defaultKey: 'e' });
+  const g = createGating({ getConfig: () => config, loadState: async () => st });
 
   it('inherits the origin mode; super_chats.mode is not read', async () => {
     const d = await g.decide('e', evIn(SUPER));
@@ -150,7 +126,7 @@ describe('gating — a legacy super alias is a plain alias', () => {
   it('decide names no reply target and no SI reaction, from either chat', async () => {
     for (const chatId of [MAIN, SUPER]) {
       const d = await g.decide('e', evIn(chatId));
-      expect(Object.keys(d).sort()).toEqual(['mayReply', 'mode', 'receives', 'sendToEgpt']);
+      expect(Object.keys(d).sort()).toEqual(['mayReply', 'mode', 'receives']);
     }
   });
 });

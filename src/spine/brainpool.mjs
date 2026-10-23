@@ -26,7 +26,7 @@
 // the brains registry, never frozen into readonly. Every one gets the kickoff feed for
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
-import { slugDir, getBeing, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, recordAgentTurn, turnUser, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, getContact, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, recordAgentTurn, turnUser, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
@@ -294,20 +294,16 @@ async function defaultLoadManifest(getConfig) {
 
 // The persona agent's KEY, its ENTRY and its `configuration` (config.yaml's `agents:` block) —
 // the def a persona conversation runs on, as a type-file name OR an inline map — or nulls when no
-// default agent is declared. The persona is the
-// single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-only
+// such agent is declared. `being` names the agent (2026-10-22: there is no default agent); new-config-only
 // (operator 2026-07-02): reads `configuration`, never the retired `type` back-read. Pure, given
 // getConfig. The KEY comes back too so brains.resolve can NAME the agent when a `configuration`
 // is unusable — an error that says which agent is misconfigured is the whole point of it being
 // loud. The ENTRY comes back for the personality ladder below, which reads an AGENT-LEVEL
 // `personality:` that lives on the entry and not on the def (operator 2026-09-10).
-function personaAgentConfigurationFrom(getConfig) {
-  const agents = (getConfig?.() ?? {}).agents ?? {};
-  for (const [key, a] of Object.entries(agents)) {
-    if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-    if (a.default === true) return { key, agent: a, configuration: a.configuration ?? null };
-  }
-  return { key: null, agent: null, configuration: null };
+function personaAgentConfigurationFrom(getConfig, being) {
+  const a = ((getConfig?.() ?? {}).agents ?? {})[being];
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return { key: null, agent: null, configuration: null };
+  return { key: being, agent: a, configuration: a.configuration ?? null };
 }
 
 // ── THE PERSONALITY LADDER, in ONE place (operator 2026-09-10) ────────────────────────────────
@@ -346,8 +342,8 @@ const personalityFor = (agent, def) => agent?.personality ?? def?.personality ??
 // SAME way instead of re-deriving a second one (name-the-existing-thing). /e access is
 // retired (2026-08-15) — /agents' own status/access_level views resolve through
 // resolveBeingDef instead, since they must cover any being, not just the persona.
-export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode' } = {}) {
-  const { key, agent, configuration } = personaAgentConfigurationFrom(getConfig);
+export function resolveDefaultBrainDef({ getConfig = () => ({}), brains = null, convDir, brainType = 'ccode', being = null } = {}) {
+  const { key, agent, configuration } = personaAgentConfigurationFrom(getConfig, being);
   // The persona's personality reads the SAME ladder every other being's does (personalityFor,
   // operator 2026-09-10). OVERLAID, not shaped: this returns the def RAW — /status prints its
   // `name`, and running it through shapeDef would start printing the agent entry's name instead —
@@ -683,7 +679,6 @@ export function createBrainPool({
   contacts,                          // the shared contact-resolver (createContacts) — slug + rename self-heal
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
-  defaultKey = 'e',                  // the DEFAULT agent's id (its map key), injected by boot from the single `default:true` agent — never assume 'e' (operator 2026-07-10); all it still gates is the deterministic model/effort floor below
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
   isOverflow = isContextOverflowError,
@@ -727,6 +722,13 @@ export function createBrainPool({
   recordTurn = recordAgentTurn,     // (surface, chatId, being, turn, {io}) — agent usage stats, one call per turn
   onLog = () => {},
 } = {}) {
+  // The live threads of the OTHER beings in a conversation — the threads its shared transcript must
+  // not roll out from under (see THE ROLL in turn()). An unreadable state keeps nothing back.
+  async function liveThreadsBesides(being, scope) {
+    let entry = null;
+    try { entry = getContact(await loadState(), scope.surface, scope.chatId)?.entry; } catch { entry = null; }
+    return new Set(Object.entries(entry?.agents ?? {}).filter(([b]) => b !== being).map(([, v]) => v?.threadId).filter(Boolean).map(String));
+  }
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
   if (typeof contacts?.resolve !== 'function') throw new Error('createBrainPool: contacts (createContacts) is required');
   if (typeof loadState !== 'function' || typeof writeState !== 'function') throw new Error('createBrainPool: loadState + writeState are required');
@@ -1131,38 +1133,22 @@ export function createBrainPool({
       // `configuration` is this conversation's own (resolveConv) — null where it states none.
       const rawDef = resolveBeingDef(being, convDir, { getConfig, brains, brainType, configuration, convAllowedPaths: allowedPaths, onLog });
       let def = rawDef.dangerously_skip_permissions === true ? rawDef : coerceAllowedTools(rawDef);   // 'all' → explicit list (rejected)
-      let runModel, runEffort;
-      if (being === defaultKey) {
-        // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
-        // make it deterministic"): the persona's RUN must carry CONCRETE model/effort, never
-        // null. A type def that omits either falls back to the module constants — logged so a
-        // mis-specified type is visible. This is the ONE asymmetry defaultKey still gates:
-        // another agent's model/effort stay exactly as configured (may be unset — it can
-        // legitimately inherit the CLI login default, or be a local engine that has no
-        // notion of either).
-        if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — using deterministic fallback`);
-        runModel = def.model ?? DETERMINISTIC_MODEL;
-        runEffort = def.effort ?? DETERMINISTIC_EFFORT;
-        // THE ROLL (operator 2026-07-25: "there must be a new transcript if thread-id
-        // changes"). This is the moment the thread changes, whatever changed it (a deleted
-        // threadId, /e reset, a dead session), and it is BEFORE the new thread writes a line.
-        // Keyed on the transcript's OWN front matter, so a file that names no thread — a
-        // brand-new conversation, or a retry after a turn that threw before recordThread — is
-        // left alone. Never throws by contract. PERSONA-ONLY, deliberately NOT generalized by
-        // phase 2 (operator 2026-08-14 investigation): transcript.md is ONE FILE PER
-        // CONVERSATION FOLDER (Room.transcriptPath), shared by every resident being, not
-        // per-being. Rolling it archives (and blanks) that ONE shared file — safe when it is
-        // this conversation's only resident, but a SECOND resident being's own fresh-thread
-        // event (e.g. its first-ever message here, while the persona is mid-thread) would
-        // archive the persona's still-live transcript out from under it: accum-mode's
-        // contextSinceLastTurn gap-fill and the quoted-message lookup (transcript-
-        // log.mjs) both read this one file, and a resumed CLI session's own history is NOT
-        // what would be lost — the shared file's un-resumed record (what every OTHER being
-        // and every human said since each being's own last turn) is. Left exactly as today.
-        if (fresh) await rollTranscript(scope.surface, slug, { io });
-      } else {
-        runModel = def.model; runEffort = def.effort;
-      }
+      // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
+      // make it deterministic"): a ccode being's RUN carries CONCRETE model/effort, never null — every
+      // being alike since there is no default agent (2026-10-22). A type def that omits either falls
+      // back to the module constants, logged so a mis-specified type is visible. A local engine
+      // (llama, pi, codex) keeps exactly what it configures: it may have no notion of either.
+      const ccode = (def.type ?? brainType) === 'ccode';
+      if (ccode && (def.model == null || def.effort == null)) onLog(`type ${def.name} omits model/effort — using deterministic fallback`);
+      const runModel = ccode ? (def.model ?? DETERMINISTIC_MODEL) : def.model;
+      const runEffort = ccode ? (def.effort ?? DETERMINISTIC_EFFORT) : def.effort;
+      // THE ROLL (operator 2026-07-25: "there must be a new transcript if thread-id changes"; keyed
+      // 2026-10-23 on the thread the transcript NAMES). transcript.md is ONE file per conversation,
+      // shared by every resident being, and its front matter names the last thread minted here. It
+      // rolls when this being starts a fresh thread and the named thread is the one being replaced —
+      // never while it names ANOTHER being's live thread, whose un-resumed record (accum's gap, the
+      // quoted-message lookup) would be archived out from under it. Never throws by contract.
+      if (fresh) await rollTranscript(scope.surface, slug, { io, keep: await liveThreadsBesides(being, scope) });
       meter.model = runModel ?? null;
       // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, was /e access all|regular; phase 2, same
       // day: no longer persona-only — every being's OWN accessLevel, read per-being above via

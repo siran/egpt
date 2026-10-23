@@ -33,17 +33,16 @@
 //      account is in it yielded NONE. FIXED 2026-09-07 — the fanout now asks every connection and
 //      the one that has the chat answers. The four cases below are the contract.
 //
-//   2. ⚠️ STILL A HAZARD, deliberately locked as one: an UNCONDITIONAL declared handle answers
-//      once per connection — two messages from the node for one message from a person. Nothing
-//      above fixes that, and nothing can: the handle says "wake, always". boot warns about it at
-//      startup (src/spine/boot.mjs, "wakes on 2 connections"); see THE HAZARD below.
+//   2. An UNCONDITIONAL declared handle answered once per connection. The connection gate
+//      (router.mjs, 2026-09-08) arbitrates the two arrivals; the persona escaped it by
+//      fall-through until there was no persona (2026-10-22). Now answered ONCE, on its own ear.
 //
 //   3. Recorded in passing here, FIXED 2026-09-11: outbound was per-BEING and not per-arrival, so
 //      a reply to a message heard on one connection was posted on the addressed being's own
 //      connection — a chat id the other account may not even have. A locally placed reply now goes
 //      back out the connection that heard it whenever the being's own is a different Beeper
 //      account (src/spine/boot.mjs outboundConnectionFor; the rule is
-//      tests/reply-follows-the-arrival.test.mjs). THE HAZARD below shows both halves.
+//      tests/reply-follows-the-arrival.test.mjs).
 //
 // WHAT THE FAKE DESKTOPS MODEL, and why each is a measured fact and not an assumption:
 //   · one real group is a DIFFERENT chatId per account — src/bridges/beeper.mjs
@@ -197,7 +196,7 @@ const NODE = (persona, { use = 'main' } = {}) => ({
     secondary: { account: 'rodz@example.com', token: SECONDARY, owner_node: 'kg' },
   },
   agents: {
-    egpt: { configuration: 'egpt', default: true, ...persona },
+    egpt: { configuration: 'egpt', ...persona },
     mouth: { configuration: 'egpt', handles: [], beeper_connection: use === 'main' ? 'secondary' : 'main' },
   },
 });
@@ -251,8 +250,9 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
   // The precondition every case below rests on. Two connections, both real (not outbound-only),
   // and the spine registered inbound on BOTH — otherwise "arrives twice" is not even possible and
   // nothing here would be measuring what it claims to.
+  // mode on: the connection gate wakes @ken only on egpt's own ear (main); its mode takes this line.
   it('holds both connections, and an inbound on EITHER reaches the spine', async () => {
-    const { app, byConnection, replies } = await bootWith(MERGED_UNGUARDED());
+    const { app, byConnection, replies } = await bootWith(NODE({ handles: ['king', 'ken'], mode: 'on' }));
     expect(Object.keys(byConnection).sort()).toEqual(['main', 'secondary']);
 
     await deliver(byConnection.secondary, SHARED_ON_SECONDARY, '@ken hola', { atE: true });
@@ -282,6 +282,7 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
     const config = MERGED_UNGUARDED();
     config.beeper.spare = { account: 'spare@example.com', token: 'TOK-spare' };   // declared, claimed by nobody
     delete config.agents.mouth;                 // …and nobody SPEAKS on `secondary` any more either
+    config.agents.egpt.mode = 'on';             // its mode, not @ken, takes a line on the non-own ear
     const { app, built, byConnection, replies, lines } = await bootWith(config);
 
     // `spare` is never dialled. `secondary` still is — it is a declared EAR, and that no longer
@@ -353,25 +354,16 @@ describe('ONE spine, TWO connections — the merged-config shape (operator 2026-
     app.stop();
   });
 
-  // ── THE HAZARD, VISIBLE ──────────────────────────────────────────────────────────────────
-  // One `@ken` in one real group, delivered on both connections because that is what the group
-  // IS to this node. With an unconditional declared handle nothing decides between them.
-  it('THE HAZARD: an unconditional declared handle answers ONCE PER CONNECTION', async () => {
+  // ── THE FORMER HAZARD ────────────────────────────────────────────────────────────────────
+  // One `@ken` in one real group, delivered on both connections. The two answers came from the
+  // persona fall-through, which skipped the connection gate; with no persona, the gate decides.
+  it('an unconditional declared handle is answered ONCE, on its own ear', async () => {
     const { app, byConnection, replies } = await bootWith(MERGED_UNGUARDED());
 
     await deliver(byConnection.main, SHARED_ON_MAIN, '@ken hola', { atE: true });
     await deliver(byConnection.secondary, SHARED_ON_SECONDARY, '@ken hola', { atE: true });
 
-    // ONE message, typed once, by one person, in one group. TWO answers.
-    // …and note the SECOND line: it read `main:${SHARED_ON_SECONDARY}` until 2026-09-11 — outbound
-    // was per-BEING and not per-arrival, so the reply to RODZ'S room was posted on AN's connection,
-    // a chat id An's account does not have. NODE-SHAPE.md's "answers on whichever one heard the
-    // message" is now true (src/spine/boot.mjs outboundConnectionFor). The DOUBLE ANSWER is what
-    // this case is still about, and it is untouched: two ears, an unconditional handle, two turns.
-    expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([
-      `main:${SHARED_ON_MAIN}`,
-      `secondary:${SHARED_ON_SECONDARY}`,
-    ]);
+    expect(replies().map((r) => `${r.connection}:${r.chatId}`)).toEqual([`main:${SHARED_ON_MAIN}`]);
 
     app.stop();
   });

@@ -338,6 +338,7 @@ async function startBridge(extra = {}) {
     transcribe: async () => 'fake transcript',
     onLog: (m) => { if (/failed|DROPPED|error/i.test(m)) console.error('[BRIDGELOG]', m); },
     postsBackDelayMs: 0,   // tests assert the 👂 gate synchronously; debounce timing is covered in incoming-media.test.mjs
+    wakeWords: EW,         // what boot hands a node whose beings answer to e/egpt (the bridge itself has no default)
     ...extra,
   });
   bridges.push(bridge);
@@ -375,6 +376,7 @@ function voiceAtt(bytes = 'fake-ogg-bytes', name = `voice-${Math.random().toStri
 // mirror that so the '!'-prefix fast path in name resolution is exercised
 // the same way as production.
 const CHAT = (n) => `!${n}:beeper.local`;
+const EW = ['e', 'egpt'];   // a node's wake set, as boot passes it (the bridge has no default)
 const liveMsg = (over = {}) => ({
   id: `m-${Math.random().toString(36).slice(2)}`,
   chatID: CHAT('chat-1'),
@@ -387,7 +389,7 @@ const liveMsg = (over = {}) => ({
 
 describe('beeper bridge', () => {
   it('dispatches a live message; authorized mirrors isSender', async () => {
-    const { incoming } = await startBridge();
+    const { incoming } = await startBridge({ wakeWords: EW });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: '@e hola' })] });
     await waitFor(() => incoming.length === 2);
@@ -755,6 +757,7 @@ describe('beeper bridge', () => {
     const hung = new Promise((r) => { release = r; });
     let started = 0;
     const { incoming } = await startBridge({
+      wakeWords: EW,
       transcribe: async () => { started += 1; await hung; return 'fake transcript'; },
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -910,7 +913,7 @@ describe('beeper bridge', () => {
     // persona-marker guard cannot catch its echo; the sent-id set IS the own-output
     // key. The operator's OWN typed line is isSender too but was never sent by us, so
     // it is NOT marked and reaches the host to accumulate.
-    const { bridge, incoming } = await startBridge({ nodeName: 'kg' });   // NO personaEmoji — auto sends carry none
+    const { bridge, incoming } = await startBridge({ nodeName: 'kg' });
     await sendSettled(bridge, 'all good, talk soon', { chatId: CHAT('chat-1') });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, isSender: true, text: 'all good, talk soon' })] });   // E's reply, echoed back under its real id
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-id', isSender: true, text: 'note for later' })] });                          // operator's OWN typed message
@@ -2031,8 +2034,8 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
     expect(m.from.atEAnywhere).toBe(false);   // pre-2026-07-09: true, via the removed network-wide injection
   });
 
-  it('a node with handles [e, egpt] still wakes on @e (default wake set)', async () => {
-    const { incoming } = await startBridge();   // default wakeWords e/egpt
+  it('a node with handles [e, egpt] still wakes on @e', async () => {
+    const { incoming } = await startBridge({ wakeWords: EW });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@e estás?' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.atEAnywhere).toBe(true);
@@ -2165,11 +2168,11 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
     const spine = createSpine({
       bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
       brain, identity: createIdentity({ now: () => 1000 }), router: { resolve: () => 'e' },
-      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true }; }, surfaces: () => true },
       sender: { open(chatId, o) { opens.push(o); return { activate() {}, update() {}, async finish() {}, fail() {} }; } },
       transcript: { async log(ev, reply) { if (reply == null) recorded.push(ev); } }, heartbeats: { runDue() {} },
       mesh: { isEnvelope: () => false, async handle() {} },
-      fromThisNode, isSelfChat: () => false, clock: { now: () => 1000 }, defaultBeing: 'e', log: { line: (s) => notes.push(s) },
+      fromThisNode, isSelfChat: () => false, clock: { now: () => 1000 }, log: { line: (s) => notes.push(s) },
     });
     const feed = (body, from) => { fed.push(from); pending.push(spine.handleInbound({ body, from })); };
     return { brain, opens, notes, fed, recorded, feed, release, settled: () => Promise.all(pending) };
@@ -2300,7 +2303,7 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
     logs = [];
     fake.chats.set(GRP, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp', participants: ROSTER });
   });
-  const start = () => startBridge({ onLog: (m) => logs.push(m) });
+  const start = (extra = {}) => startBridge({ onLog: (m) => logs.push(m), ...extra });
   // What actually went over the wire, through the REAL send path (no private entry point).
   const sent = async (text, chatId = GRP) => {
     const { bridge } = await start();
@@ -2342,7 +2345,9 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
   });
 
   it('a name this node WAKES ON addresses the being, never the human of that name in the chat', async () => {
-    expect(await sent('@e responde tú')).toBe('@e responde tú');   // wakeWords default ['e','egpt']; "E" is also a human here
+    const { bridge } = await start({ wakeWords: EW });   // "E" is also a human here
+    await sendSettled(bridge, '@e responde tú', { chatId: GRP });
+    expect(fake.posts.at(-1).text).toBe('@e responde tú');
     expect(logs.join('\n')).toMatch(/"@e" stays plain text .*wakes on that handle/);
   });
 
@@ -2671,8 +2676,8 @@ describe('beeper bridge — a quote-reply to a being\'s post names that being (o
   it('END TO END: the arrival, the envelope, the router and the gate wake E — and ken, in a mention-direct chat', async () => {
     const { incoming } = await startBridge({ nodeName: 'kg' });
     fake.messages.set(CHAT('chat-1'), [{ id: '7143', text: E_POST }, { id: '7150', text: KEN_POST }]);
-    const agents = { egpt: { handles: ['e', 'egpt'], default: true, name: 'E' }, ken: { handles: ['ken'], name: 'Ken' } };
-    const router = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
+    const agents = { egpt: { handles: ['e', 'egpt'], name: 'E' }, ken: { handles: ['ken'], name: 'Ken' } };
+    const router = createRouter({ getAgents: () => agents });
     const identity = createIdentity();
     fake.emit(quoteReply('7143', 'a E'));
     fake.emit(quoteReply('7150', 'a Ken'));
@@ -3218,6 +3223,53 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(fake.deletes).toHaveLength(0);
     expect(fake.posts.find((p) => p.text === '👂 hola bare').replyToMessageID).toBe('vn-bare');
     expect(incoming.some((i) => i.from.msgKey === 'reply-vbare')).toBe(false);
+  });
+
+  // ANY LOCAL BEING'S NAME (operator 2026-10-23: no default agent, the readback stays): the gate's
+  // list is every local being's tokens (boot's replyWakeWords), so `w` reads back like `e`. Anything
+  // more than the bare name, a non-voice quote with no synthesizer, or a stranger: a normal wake.
+  describe('a bare name of ANY local being reads back (w beside e)', () => {
+    const LOCAL = { wakeWords: [...EW, 'w'], replyWakeWords: [...EW, 'w'] };
+    it('a bare "w" reply to a voice note → 👂 transcript, no turn', async () => {
+      const transcribe = countingTranscribe();
+      const { incoming } = await startBridge({ ...LOCAL, readTranscript: async () => transcriptDoc(voiceLine('vn-w', 'hola w')), transcribe });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-w', text: 'w', isSender: true, linkedMessageID: 'vn-w' })] });
+      const reveal = await waitFor(() => fake.posts.find((p) => p.text === '👂 hola w'));
+      expect(reveal.replyToMessageID).toBe('vn-w');
+      expect(transcribe.calls).toBe(0);
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-w', text: 'plain human line' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-w'));
+      expect(incoming.some((i) => i.from.msgKey === 'reply-w')).toBe(false);
+    });
+    it('"w what does it say?" replying to a voice note is a normal wake — nothing posted', async () => {
+      const { incoming } = await startBridge({ ...LOCAL, readTranscript: async () => transcriptDoc(voiceLine('vn-w2', 'hola')) });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-w2', text: 'w what does it say?', isSender: true, linkedMessageID: 'vn-w2' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-w2'));
+      expect(fake.posts).toHaveLength(0);
+    });
+    it('a bare "w" replying to a TEXT message with no synthesizer wired is a normal wake', async () => {
+      const { incoming } = await startBridge({ ...LOCAL, readTranscript: async () => transcriptDoc(textLine('tn-w', 'hello there')) });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-w3', text: 'w', isSender: true, linkedMessageID: 'tn-w' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-w3'));
+      expect(fake.posts).toHaveLength(0);
+    });
+    it('🔊 a bare "w" replying to a TEXT message calls synthesize as before and wakes nobody', async () => {
+      const synthesize = countingSynthesize();
+      const { incoming } = await startBridge({ ...LOCAL, readTranscript: async () => transcriptDoc(textLine('tn-w4', 'hello there')), synthesize, voice: 'ona' });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-w4', text: 'w', isSender: true, linkedMessageID: 'tn-w4' })] });
+      await waitFor(() => fake.uploads.length === 1);
+      expect(synthesize.calls).toBe(1);
+      expect(synthesize.lastText).toBe('hello there');
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-w4', text: 'plain human line' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-w4'));
+      expect(incoming.some((i) => i.from.msgKey === 'reply-w4')).toBe(false);
+    });
+    it('a stranger\'s bare "w" (not the account, not allowed) gets no readback — a normal wake', async () => {
+      const { incoming } = await startBridge({ ...LOCAL, readTranscript: async () => transcriptDoc(voiceLine('vn-w5', 'hola')) });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-w5', text: 'w', isSender: false, senderID: 'someone@beeper.local', linkedMessageID: 'vn-w5' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-w5'));
+      expect(fake.posts).toHaveLength(0);
+    });
   });
 
   // E's OWN reply lines carry NO id in transcript.md (replyLine's format is `[@being
@@ -4725,7 +4777,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
       readConfig: () => ({
         node_name: 'do', user_name: 'An',
         beeper: { use: 'main', main: { account: 'an@example.com', token: 'TOK-do', base_url: `http://127.0.0.1:${fake.port}` } },
-        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } },
         liveness: { every_ms: TICK },   // the liveness pulse would otherwise size the tick down to 15 s
       }),
       makeSession, probeEndpoint: async () => ({ ok: false, status: 0 }),
@@ -5019,7 +5071,7 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
     const logs = [];
     const commands = createCommands({
       getConfig: () => ({ node_name: 'kg', node_role: 'primary', beeper: { primary: { phone: '+16468217865' } } }),
-      send: async () => {}, loadState: async () => st, writeState: async (s) => { st = s; }, defaultKey: 'e',
+      send: async () => {}, loadState: async () => st, writeState: async (s) => { st = s; },
       forkBridge: {
         createGroup: (o) => port.createGroup(o),
         postReply: (chatId, text, replyTo, { canary = null } = {}) => port.send(chatId, text, { replyTo, canary }),
@@ -5144,7 +5196,7 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
     const spine = createSpine({
       bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
       brain, identity: createIdentity({ now: () => now }), router: { resolve: () => 'e' },
-      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true },
+      gating: { async decide() { return { mode: 'on', receives: true, mayReply: true }; }, surfaces: () => true },
       sender: { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } },
       transcript: createTranscript({ contacts: { resolve: async () => 'diego' }, io }),
       heartbeats: { runDue() {} }, mesh: { isEnvelope: () => false, async handle() {} }, clock: { now: () => 1000 }, turnTimeoutMs: 0,

@@ -42,11 +42,11 @@ function threeContacts() {
 // The chat's group Chrome is a fake pipe Chrome answering like `cdp` (tests/fake-pipe-chrome.mjs);
 // /status reads it only when it is already up, so a test that wants `chrome: up` launches it first
 // (launchChat). `spawns` records every launch.
-function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp = {}, warmStats, shellConnected, dueFor, defaultKey } = {}) {
+function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp = {}, warmStats, shellConnected, dueFor } = {}) {
   const sent = [];
   const chrome = fakePipeChrome(cdp);
   const cmds = createCommands({
-    getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' } })),
+    getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' }, agents: { e: {} } })),
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: () => {},
     loadState,
@@ -61,7 +61,6 @@ function harness({ io, gitOut, loadState, brains, getConfig, onLog, cdp = {}, wa
     ...(shellConnected ? { shellConnected } : {}),
     // the compaction probe reads ~/.claude/projects for real — always fake it here
     dueFor: dueFor ?? (() => ({ due: false })),
-    ...(defaultKey ? { defaultKey } : {}),
   });
   return { cmds, sent, spawns: chrome.calls, launchChat: (chatId) => cmds.chatChromeOf('whatsapp', chatId) };
 }
@@ -256,8 +255,8 @@ describe('/status <target>', () => {
   it('a conversation WITH a thread: real thread_id/mode/members, but agent/model/effort/tools/personality are the LIVE resolved def (no more freeze)', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const slug = first.slug;
-    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', { agents: { e: { mode: 'on' } } });
-    state = recordThread(state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1', undefined, 'e');
+    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', { agents: { egpt: { mode: 'on' } } });
+    state = recordThread(state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1', undefined, 'egpt');
     // The file straddles the 2026-08-28 shape change: `e` spoke ONCE under the old sigil+node
     // label and once under the new bare name. Both must resolve to the same roster entry.
     const transcript = [
@@ -271,7 +270,7 @@ describe('/status <target>', () => {
       '',
     ].join('\n');
     const brains = { resolve: (name) => (name === 'sonnet-high' ? { name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'], personality: 'poet' } : null) };
-    const getConfig = () => ({ whatsapp: { chat_id: '!self' }, agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } });
+    const getConfig = () => ({ whatsapp: { chat_id: '!self' }, agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] } } });
 
     const { cmds, sent } = harness({
       loadState: async () => state,
@@ -501,7 +500,7 @@ describe('/status: enriched fields', () => {
       },
     },
     agents: {
-      egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true },
+      egpt: { configuration: 'egpt', handles: ['e', 'egpt'] },
       carol: { relay_channel: 'rodz1', to: 'don.do' },
       wren: { paths: [{ path1: { relay_channel: 'rodz2', to: 'ed.do' } }] },
     },
@@ -595,7 +594,7 @@ describe('/status: enriched fields', () => {
     expect(sent[0].text).not.toContain(TOKEN_SENTINEL);
   });
 
-  it('agents: persona shows its handles, a scalar relay shows "name → to", a multipath relay shows its to once', async () => {
+  it('agents: a local agent shows its handles (no default: true needed), a scalar relay shows "name → to", a multipath relay shows its to once', async () => {
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => RICH_CONFIG });
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
@@ -606,7 +605,7 @@ describe('/status: enriched fields', () => {
   });
 
   it('agents block is omitted when cfg().agents is absent', async () => {
-    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => ({ whatsapp: { chat_id: '!self' } }) });
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).not.toMatch(/agents:/);
   });
@@ -695,8 +694,8 @@ describe('/status: enriched fields', () => {
 describe('/status runs on the node of the being it is typed to (was: the node-first gate)', () => {
   const HEALTHY_IO = { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML };
   const HEALTHY_GIT = (args) => (args.includes('--short') ? 'abc1234' : 's');
-  const KG = { whatsapp: { chat_id: '!self' }, node_name: 'kg', peer_nodes: ['kg', 'do'], agents: { egpt: { handles: ['e', 'egpt'], default: true } } };
-  const DO = { whatsapp: { chat_id: '!self' }, node_name: 'do', peer_nodes: ['kg', 'do'], agents: { egpt: { handles: ['d', 'don'], default: true } } };
+  const KG = { whatsapp: { chat_id: '!self' }, node_name: 'kg', peer_nodes: ['kg', 'do'], agents: { egpt: { handles: ['e', 'egpt'] } } };
+  const DO = { whatsapp: { chat_id: '!self' }, node_name: 'do', peer_nodes: ['kg', 'do'], agents: { egpt: { handles: ['d', 'don'] } } };
   const self = { chatId: '!self', surface: 'whatsapp' };
   // The spine's reading (classify): commandOf, then isCommand, then run.
   const typed = async (cmds, ev) => { const c = cmds.commandOf(ev); if (c && await cmds.isCommand(c)) await cmds.run(c); return c; };
@@ -725,7 +724,7 @@ describe('/status runs on the node of the being it is typed to (was: the node-fi
 
   // Exactly one node answers: the other node reads `/e status` as another node's command.
   it('/e status on the do node is not a command there — nothing said', async () => {
-    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => doAmbiguousContacts(), getConfig: () => DO, defaultKey: 'egpt' });
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => doAmbiguousContacts(), getConfig: () => DO });
     const c = await typed(cmds, { ...self, body: '/e status' });
     expect(c.commandElsewhere).toBe('e');
     expect(sent).toHaveLength(0);
@@ -738,7 +737,7 @@ describe('/status runs on the node of the being it is typed to (was: the node-fi
     await typed(cmds, { ...self, body: '/e status do' });
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/"do" matches 3/);
-    const peer = harness({ getConfig: () => DO, defaultKey: 'egpt' }).cmds;
+    const peer = harness({ getConfig: () => DO }).cmds;
     for (const c of [cmds, peer]) expect(c.commandOf({ ...self, body: sent[0].text, authorized: true })).toBe(null);
   });
 
@@ -797,6 +796,7 @@ describe('/status — rung attribution, thread size, and the warm pool', () => {
   const CFG = {
     whatsapp: { chat_id: '!self' },
     node_name: 'kg',
+    agents: { e: {} },
     transcription_service: { enabled: true, use_config: 'reve', reve: { fallback_order: ['cli'], cli: { type: 'whisper-cli', command: '/bin/whisper' } } },
     compaction: { ratio: 0.20 },
   };
@@ -955,8 +955,8 @@ describe('/status: each being\'s threshold is the one compaction.mjs applies', (
   });
 
   it('/status <fragment> applies the conversation\'s own ratio AND context_window, not the node ratio over the model table', async () => {
-    let st = recordThread(threeContacts(), 'whatsapp', '!hfm:beeper.local', 'sid-hfm', undefined, 'e');
-    st = patchBeing(st, 'whatsapp', '!hfm:beeper.local', 'e', { compaction: { ratio: 0.5, context_window: 400_000 } });
+    let st = recordThread(threeContacts(), 'whatsapp', '!hfm:beeper.local', 'sid-hfm', undefined, 'egpt');
+    st = patchBeing(st, 'whatsapp', '!hfm:beeper.local', 'egpt', { compaction: { ratio: 0.5, context_window: 400_000 } });
     const { cmds, sent } = harness({
       getConfig: () => ({ ...CFG8, compaction: { ratio: 0.20 } }), io: IO, gitOut: () => 'abc1234', loadState: async () => st,
       dueFor: (t, o) => ({ due: false, tokens: 12_345, threshold: Math.round(t.window * o.ratio) }),

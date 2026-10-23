@@ -38,11 +38,10 @@ const fakeRouter = { resolve: () => 'e' };
 // gating with togglable knobs, so each branch is exercised independently.
 //   receive — decide().receives ('off' = false)
 //   reply   — decide().mayReply (would the reply surface at all)
-//   send    — decide().sendToEgpt ('always' | 'mode')
 //   surface — surfaces() result; defaults to `mayReply` unless given (on-mode '...').
-function fakeGating({ receive = true, reply = true, send = 'mode', surface } = {}) {
+function fakeGating({ receive = true, reply = true, surface } = {}) {
   return {
-    async decide() { return { mode: reply ? 'on' : 'mention', receives: receive, mayReply: reply, sendToEgpt: send }; },
+    async decide() { return { mode: reply ? 'on' : 'mention', receives: receive, mayReply: reply }; },
     surfaces: (d, _text) => (surface === undefined ? d.mayReply : surface),
   };
 }
@@ -67,7 +66,7 @@ function fakeSender(bridge) {
 function fakeHeartbeats() { return { ran: [], runDue(now) { this.ran.push(now); } }; }
 function fakeStore() { return { threads: [], recordThread(rec) { this.threads.push(rec); } }; }
 
-function build({ receive = true, reply = true, send = 'mode', surface } = {}) {
+function build({ receive = true, reply = true, surface } = {}) {
   const bridge = fakeBridge();
   const brain = fakeBrain();
   const transcript = fakeTranscript();
@@ -76,7 +75,7 @@ function build({ receive = true, reply = true, send = 'mode', surface } = {}) {
   const spine = createSpine({
     bridge, brain, store,
     identity: fakeIdentity, router: fakeRouter,
-    gating: fakeGating({ receive, reply, send, surface }),
+    gating: fakeGating({ receive, reply, surface }),
     sender: fakeSender(bridge), transcript, heartbeats,
     clock: { now: () => 1000 },
   });
@@ -121,8 +120,8 @@ describe('spine pipe', () => {
     expect(store.threads).toHaveLength(0);
   });
 
-  it('mayReply=false + send_to_egpt=mode (default): logs, but does NOT run the brain or send', async () => {
-    const { spine, bridge, brain, transcript } = build({ reply: false, send: 'mode' });
+  it('mayReply=false: logs, but does NOT run the brain or send', async () => {
+    const { spine, bridge, brain, transcript } = build({ reply: false });
     spine.start();
     await bridge.emit(MSG);
 
@@ -130,18 +129,6 @@ describe('spine pipe', () => {
     expect(bridge.sent).toHaveLength(0);
     expect(transcript.entries).toHaveLength(1);
     expect(transcript.entries[0].reply).toBeUndefined();   // recorded only — 'not contacted yet'
-  });
-
-  it('mayReply=false + send_to_egpt=always: E RUNS (context), reply recorded not-surfaced, NOT sent', async () => {
-    const { spine, bridge, brain, transcript, store } = build({ reply: false, send: 'always' });
-    spine.start();
-    await bridge.emit(MSG);
-
-    expect(brain.calls).toHaveLength(1);                          // E ran on the message
-    expect(bridge.sent).toHaveLength(0);                          // but nothing surfaced
-    expect(inbounds(transcript)).toHaveLength(1);
-    expect(replies(transcript)[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
-    expect(store.threads).toHaveLength(1);                        // thread recorded — E engaged
   });
 
   it("on-mode silence (surfaces=false): brain runs, reply recorded not-surfaced, NOT sent", async () => {
@@ -283,7 +270,7 @@ describe('spine — emitted reply actions', () => {
 // is prompted WITH them (in order) + the trigger line. (Echoes of E's own auto replies
 // come back isSender too but are dropped by the bridge's sent-ids echo guard upstream.)
 describe('spine — mode:auto (operator impersonation)', () => {
-  const autoGating = { async decide() { return { mode: 'auto', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+  const autoGating = { async decide() { return { mode: 'auto', receives: true, mayReply: true }; }, surfaces: () => true };
   // Auto replies are now humanized: a person's message DWELLS before the turn, and the
   // reply is delayed by a typing time before the send (operator 2026-07-05). Drive both
   // injected timers deterministically so these behavioral assertions stay stable.
@@ -349,7 +336,7 @@ describe('spine — mode:auto (operator impersonation)', () => {
   it('regression: a NON-auto (mention) chat is unchanged — an isSender @e message runs a normal turn (the auto-only interception does not bleed in)', async () => {
     const bridge = fakeBridge();
     const brain = fakeBrain();
-    const mentionGating = { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+    const mentionGating = { async decide() { return { mode: 'mention', receives: true, mayReply: true }; }, surfaces: () => true };
     const spine = createSpine({
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter, gating: mentionGating,
@@ -567,7 +554,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     const spine = createSpine({
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter,
-      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }), loadState: null, defaultKey: 'e' }),   // REAL gating → 'on' hides the '…'
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }), loadState: null }),   // REAL gating → 'on' hides the '…'
       sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
       clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
     });
@@ -594,7 +581,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     const spine = createSpine({
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter,
-      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null, defaultKey: 'e' }),
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null }),
       sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
       clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
     });
@@ -617,7 +604,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
     const spine = createSpine({
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter,
-      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null, defaultKey: 'e' }),
+      gating: createGating({ getConfig: () => ({ dispatch: { auto_default_mode: 'mention' } }), loadState: null }),
       sender, transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
       clock: { now: () => 1000 }, synthesize, voice: 'es_MX-claude-high',
     });
@@ -637,7 +624,7 @@ describe('spine — voice-reply pipeline (chunk 2)', () => {
 // is ordinary chat now — it dispatches normally, immediately, no hold. (BACKLOG backfill STAYS —
 // the S3-wake record guarantee, unrelated to the removed suppression.)
 describe('spine — symmetric nodes (no suppression, no standby)', () => {
-  const onGating = { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+  const onGating = { async decide() { return { mode: 'on', receives: true, mayReply: true }; }, surfaces: () => true };
   function build() {
     const bridge = fakeBridge();
     const brain = fakeBrain();
@@ -687,7 +674,7 @@ describe('spine — resume observation (a slept process is not a live one)', () 
   // A mention-mode gate: a being is reached only by a message that addresses it — so a chat's
   // backlog of plain chatter would have woken nobody, and one `@e` line would have.
   const mentionGating = {
-    async decide(_being, ev) { return { mode: 'mention', receives: true, mayReply: !!ev.mention?.atEAnywhere, sendToEgpt: 'mode' }; },
+    async decide(_being, ev) { return { mode: 'mention', receives: true, mayReply: !!ev.mention?.atEAnywhere }; },
     surfaces: (d) => d.mayReply,
   };
   function buildTicking({ tickMs = TICK } = {}) {

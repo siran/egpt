@@ -349,7 +349,7 @@ describe('spine — the emitting node records every byte the model emitted, in o
       bridge, brain,
       identity: createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5) }),
       gating: createGating({ getConfig: () => ({}), loadState }),
-      router: createRouter(), sender: createSender({ bridge }),
+      router: createRouter({ getAgents: () => ({ e: {} }), loadState }), sender: createSender({ bridge }),
       transcript, heartbeats: { runDue() {} },
     });
     spine.start();
@@ -442,7 +442,7 @@ describe("transcript.logStream — the operator's sequence keeps every backwards
     const files = new Map();
     const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), now: () => new Date(Date.UTC(2026, 6, 25, 19, 10)) });
     let prev = '';
-    for (const s of states) { await t.logStream(ev, prev, s); prev = s; }
+    for (const s of states) { await t.logStream(ev, prev, s, { being: 'e' }); prev = s; }
     await settle();
     return fileEndingIn(files, 'transcript.md').split('(streaming) ')[1];
   };

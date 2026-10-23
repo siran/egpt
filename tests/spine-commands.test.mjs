@@ -1811,14 +1811,14 @@ describe('loop intercept', () => {
     let cb = null;
     const brain = { calls: [], async turn(b, e) { this.calls.push(e); return { text: 'x' }; } };
     const exits = [];
-    const cmds = createCommands({ getConfig: () => ({ whatsapp: { chat_id: '!self' } }), send: async () => {}, exit: (c) => exits.push(c) });
+    const cmds = createCommands({ getConfig: () => ({ ...AGENTS, whatsapp: { chat_id: '!self' } }), send: async () => {}, exit: (c) => exits.push(c) });
     const transcript = { entries: [], log(ev) { this.entries.push(ev); } };
     const spine = createSpine({
       bridge: { onMessage(fn) { cb = fn; }, send() {}, stop() {} },
       brain, commands: cmds,
       identity: { build: (m) => ({ ...m }) },
       router: { resolve: () => 'e' },
-      gating: { decide: async () => ({ mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }), surfaces: () => true },
+      gating: { decide: async () => ({ mode: 'on', receives: true, mayReply: true }), surfaces: () => true },
       sender: { open: () => ({ update() {}, async finish() {} }) },
       transcript, heartbeats: { runDue() {} },
     });
@@ -2179,14 +2179,12 @@ describe('/agents <handle>|all — bare status view, usage, and /e/egpt retireme
     expect(sent[1].text).toMatch(/allowed_tools: \[Read, Write, Bash\]/);
   });
 
-  it('/agents force all (bare) returns ONE fenced-yaml block per resident being, defaultKey first', async () => {
+  it('/agents force all (bare) returns ONE fenced-yaml block per resident being, in residence order (no default being first)', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
-    // inserted wren BEFORE e, to prove the ordering is defaultKey-first by RULE, not by
-    // accident of insertion order
     state = patchContact(state, 'whatsapp', '!room', { agents: { wren: { mode: 'mention' }, e: { mode: 'on' } } });
     const { cmds, sent } = harness({ state });
     await cmds.run({ chatId: '!room', surface: 'whatsapp', body: '/agents force all' });
-    expect(sent[0].text).toMatch(/being: e[\s\S]*\n---\n[\s\S]*being: wren/);
+    expect(sent[0].text).toMatch(/being: wren[\s\S]*\n---\n[\s\S]*being: e\n/);
   });
 
   // A node with no residents here says nothing (operator 2026-10-11) — never an empty fenced block.
@@ -2596,7 +2594,7 @@ describe('/rooms <slug> — a nonexistent room says so, never a fabricated roste
 // tests/rooms-members.test.mjs; here we lock only the recognition + non-leak.)
 describe('/rooms /members /activate — dispatch recognition', () => {
   const self = { chatId: '!self', surface: 'whatsapp' };
-  const cfg = { whatsapp: { chat_id: '!self' } };
+  const cfg = { ...AGENTS, whatsapp: { chat_id: '!self' } };
 
   it('are recognized from the Self DM, refused from a random chat', async () => {
     const { cmds } = harness({ config: cfg });
@@ -2706,7 +2704,7 @@ describe('/tabs /open /tab /close', () => {
 // the unwired-command catch-all — the exact failure this locks against.
 describe('/help', () => {
   const self = { chatId: '!self', surface: 'whatsapp' };
-  const cfg = { whatsapp: { chat_id: '!self' } };
+  const cfg = { ...AGENTS, whatsapp: { chat_id: '!self' } };
 
   it('replies with real help text, not the unwired catch-all', async () => {
     const { cmds, sent } = harness({ config: cfg });

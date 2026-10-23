@@ -3202,7 +3202,7 @@ describe('configuration: inline map vs. type-file name (both forms, one resolver
   it('resolveDefaultBrainDef: the persona\'s INLINE map resolves the same way (an object is truthy — it does not fall through to the shipped egpt type)', () => {
     const brains = createBrains({ builtinDir: '/nonexistent-builtin', agentsDir: '/nonexistent-agents' });
     const config = { agents: { egpt: { configuration: { ...inline }, name: 'E', default: true } } };
-    expect(resolveDefaultBrainDef({ getConfig: () => config, brains }))
+    expect(resolveDefaultBrainDef({ getConfig: () => config, brains, being: 'egpt' }))
       .toMatchObject({ type: 'ccode', model: 'haiku', effort: 'low', verbose_thinking: true, personality: 'egpt' });
   });
 
@@ -3308,7 +3308,7 @@ describe('personality: at the AGENT level in config.yaml, beside configuration:'
   it('the persona preview (/status, resolveDefaultBrainDef) reads the SAME ladder', () => {
     const brains = { resolve: vi.fn(() => ({ name: 'haiku-default', type: 'ccode', model: 'haiku' })) };
     const config = { agents: { egpt: { configuration: 'haiku-default', personality: 'don', default: true } } };
-    expect(resolveDefaultBrainDef({ getConfig: () => config, brains }).personality).toBe('don');
+    expect(resolveDefaultBrainDef({ getConfig: () => config, brains, being: 'egpt' }).personality).toBe('don');
   });
 
   // END TO END: what actually reaches loadFeed (the identity feed) and seedLayers on a kickoff.

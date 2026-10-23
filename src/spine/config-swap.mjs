@@ -10,7 +10,6 @@ import { LEGACY_BLOCKS } from '../loop-guard.mjs';
 export const RESTART_KEYS = [
   'node_name', 'node_alias',                                              // node signature, ears, mesh self-set
   'beeper', 'beeper_token', 'agents.*.use', 'agents.*.beeper_connection', // tokens, endpoints, the bridges dialled
-  'agents.*.default',                                                     // defaultKey, injected into every service
   'agents.*.fallback_handle.unless_peer_alive',                           // one peer watcher per port, built at boot
   'shell', 'peer_spine',                                                  // console port/token, being link, mouth link
   'dispatch.address_without_at',                                          // baked into both limbs and the router

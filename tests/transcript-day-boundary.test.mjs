@@ -134,7 +134,7 @@ describe('transcript.log — the day is marked where it changes', () => {
     const { files, t } = mk();
     const ev = identity.build({ body: 'Ja', from: from(AT_2240, '204652') });
     await t.log(ev);
-    await t.logStream(ev, '', 'pensando');
+    await t.logStream(ev, '', 'pensando', { being: 'e' });
     await settle();
     const text = fileEndingIn(files, 'transcript.md');
     expect(text.indexOf('[ 2026-09-01 ]')).toBeLessThan(text.indexOf('(streaming)'));

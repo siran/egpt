@@ -29,8 +29,8 @@ const BASE = {
   group_title: '{group}-{name}', peer_nodes: ['kg', 'do'],
 };
 const NODES = {
-  kg: { ...BASE, node_name: 'kg', node_role: 'primary', agents: { egpt: { handles: ['e', 'egpt'], default: true } } },
-  do: { ...BASE, node_name: 'do', node_role: 'secondary', agents: { egpt: { handles: ['d', 'don'], default: true } } },
+  kg: { ...BASE, node_name: 'kg', node_role: 'primary', agents: { egpt: { handles: ['e', 'egpt'] } } },
+  do: { ...BASE, node_name: 'do', node_role: 'secondary', agents: { egpt: { handles: ['d', 'don'] } } },
 };
 const ALIASES = join(HOME, 'config', 'commands_alias.yaml');
 const writeAliases = (text) => { mkdirSync(join(HOME, 'config'), { recursive: true }); writeFileSync(ALIASES, text, 'utf8'); };
@@ -43,10 +43,10 @@ const member = (body, over = {}) => ({
 });
 const operator = (body, over = {}) => member(body, { senderId: '@an:beeper.com', senderName: 'An', isSender: true, authorized: true, ...over });
 
-// One node: its own state, bridge, commands and spine. `mode` is the chat's reply mode ('on' answers
+// One node: its own state, bridge, commands and spine. `mode` is the being's reply mode ('on' answers
 // every line; 'mention' only a line that addresses the being).
 function node(name, { mode = 'mention' } = {}) {
-  const config = NODES[name];
+  const config = { ...NODES[name], agents: { egpt: { ...NODES[name].agents.egpt, mode } } };
   let st = ensureContact({ contacts: {} }, 'whatsapp', GROUP, { pushedName: 'C' }).state;
   st = recordThread(st, 'whatsapp', GROUP, `${name}-thread`, '2026-10-19T00:00:00Z', 'egpt');
   const calls = { create: [], exit: [], sent: [], logs: [], notes: [], transcript: [], brain: [], ran: [], stop: [] };
@@ -54,7 +54,6 @@ function node(name, { mode = 'mention' } = {}) {
     getConfig: () => config, send: async (chatId, text) => { calls.sent.push(text); },
     exit: async (code) => { calls.exit.push(code); },
     loadState: async () => st, writeState: async (s) => { st = s; },
-    defaultKey: 'egpt',
     commandAliasesPath: ALIASES,
     forkBridge: {
       editMessage: async () => true,
@@ -70,7 +69,7 @@ function node(name, { mode = 'mention' } = {}) {
     onLog: (m) => calls.logs.push(m),
   });
   const commands = { ...real, run: (e) => { calls.ran.push(e.body); return real.run(e); } };
-  const router = createRouter({ getAgents: () => config.agents, defaultBeing: 'egpt' });
+  const router = createRouter({ getAgents: () => config.agents });
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
     brain: { async turn(being, ev) { calls.brain.push({ being, body: ev.body }); return { text: 'ok', sessionId: `${name}-thread`, being }; }, async accessLevel() { return 'regular'; } },
@@ -80,7 +79,7 @@ function node(name, { mode = 'mention' } = {}) {
     gating: {
       async decide(being, ev, mention) {
         const mayReply = mode === 'on' || !!(mention?.atEStart || mention?.atEAnywhere);
-        return { mode, receives: true, mayReply, sendToEgpt: 'mode' };
+        return { mode, receives: true, mayReply };
       },
       surfaces: (d) => d.mayReply,
     },
@@ -88,7 +87,7 @@ function node(name, { mode = 'mention' } = {}) {
     transcript: { async log(ev, reply) { if (reply == null) calls.transcript.push(ev.body); } },
     stopSwitch: { present: () => false, async pull(o) { calls.stop.push(o.reason); } },
     stopPhrase: () => 'EGPT STOP',
-    defaultBeing: 'egpt', clock: { now: () => 1 }, turnTimeoutMs: 0,
+    clock: { now: () => 1 }, turnTimeoutMs: 0,
     onLog: (m) => calls.notes.push(m),
   });
   // The bridge's persona mention, as it computes it (mentionStatus over the persona's handles).
@@ -182,7 +181,7 @@ describe('/<handle> <not a command> is ordinary text that addresses nobody', () 
   it('/e hola: the router addresses no one; nothing runs; nobody is woken on either node', async () => {
     const { kg, dolly, say } = pair();
     const routed = await kg.router.resolve(member('/e hola'));
-    expect(routed.targets[0].fallthrough).toBe(true);
+    expect(routed.targets).toEqual([]);
     await say(member('/e hola'));
     for (const n of [kg, dolly]) recordedOnly(n, '/e hola');
   });

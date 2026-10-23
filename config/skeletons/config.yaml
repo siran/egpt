@@ -167,13 +167,12 @@ agents:
     #                             # the AGENT level beside `configuration:` (operator 2026-09-10), and a
     #                             # being keeps its own identity on a shared engine with no per-being
     #                             # file at all. An agent-level personality: outranks one inside the def.
-    handles: [e, egpt, ekg]       # THE wake list: @e / @egpt / @ekg reach this node's persona.
+    handles: [e, egpt, ekg]       # THE wake list: @e / @egpt / @ekg reach this agent.
     #                             # Declared handles are COMPLETE — the map key does NOT wake.
     #                             # Omit handles and the key wakes instead; [] means nothing does.
     #                             # The full form is <letter><node_name>, so rename these with the node.
     #                             # A SECOND profile on this machine (its own EGPT_HOME) suffixes s:
     #                             # ekgs / kkgs / wkgs, so a mention picks one profile, not both.
-    default: true                 # THE persona: answers un-mentioned messages + ends relay chains. EXACTLY ONE agent per node. Its map KEY is the being-id (renaming the key = a new identity).
     name: "egpt"                  # REQUIRED for any agent that runs turns: the display label the
     #                             # bridge stamps ("<emoji> <name>: <reply>"). It does NOT default to
     #                             # the map key - that fallback was removed 2026-09-01 because the key
@@ -279,11 +278,10 @@ networks:
 # Per-chat modes live in each conversation (set via /e auto <mode> <chat>); these
 # are the node-wide defaults. All commented = defaults shown.
 # dispatch:
-#   auto_default_mode: mention      # reply mode for a chat with no explicit mode (on|auto|mute|mention-direct|mention|accum|off).
-#                                   # accum gates exactly like mention AND prompts each turn with what was said since the
-#                                   # persona's LAST turn, labelled as context. PERSONA only — siblings default to mention.
+#   auto_default_mode: mention      # EVERY agent's mode where neither the chat nor the agent says one (on|auto|mute|mention-direct|mention|accum|off).
+#                                   # accum gates exactly like mention AND prompts each turn with what was said since that
+#                                   # agent's LAST turn. on/auto here = every agent answers everything everywhere (boot warns).
 #   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
-#   send_to_egpt: mode              # global default: keep the persona in context even when it will not reply (always|mode)
 #   address_without_at: true        # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
 #                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 

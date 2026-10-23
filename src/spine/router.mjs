@@ -1,5 +1,5 @@
 // router.mjs — the §2c router service: resolve an InboundEvent to the beings that
-// should answer. E (the persona) is the default voice.
+// should answer. There is NO default being (operator 2026-10-22/23).
 //
 // The `agents:` config block is the ONE registry (operator 2026-07-02, new-config-only):
 // resolve() runs the ONE mention matcher (`addressed`, below) over the node's whole
@@ -8,18 +8,14 @@
 // fallbackWake) — and resolves EVERY agent the
 // message addressed, in text order. A LOCAL agent (configuration ≠ 'relay') routes like a
 // being (being = agent name); a RELAY agent (configuration: relay) routes to a mesh target
-// whose ROUTE is the agent's relay_channel; the DEFAULT (persona) agent — the one carrying
-// `default: true`, whose KEY boot injects as `defaultBeing` — routes to its own key (operator
-// 2026-07-10: the being-id IS the map key, no hardcoded 'e'/'egpt'). An unknown @token, or a
-// message addressing nobody, falls through to the persona (defaultBeing).
+// whose ROUTE is the agent's relay_channel. Then EVERY local being whose mode in this chat is
+// on/auto (gating.resolveMode) takes the line too, named or not — each being once. Nobody
+// named and nobody on → no target; `receives` says whether the line is recorded at all.
 //
-// resolve() returns { being, mesh?, mention, targets } — `targets` is the FULL list (the spine
-// fans out over it: every local being takes a turn, every mesh target is forwarded), with the
-// first target mirrored at the top level for a single-target caller. The mention RIDE-ALONG
-// matters because ev.mention is @e-specific (the bridge computes it for the persona wake-word):
-// an agent picked by its OWN @name would otherwise look un-mentioned to its gate, so it carries
-// its own { atEStart, atEAnywhere } — the matcher's REAL per-agent flags, so the existing mode
-// vocabulary keeps its meaning (mention-direct ≠ mention). E keeps ev.mention unchanged.
+// resolve() returns { being, mesh?, mention, targets, receives } — `targets` is the FULL list (the
+// spine runs every one through its per-target path), with the first target mirrored at the top
+// level. Each target carries its OWN mention — the matcher's real per-agent { atEStart,
+// atEAnywhere, replyToBot } — so the mode vocabulary keeps its meaning (mention-direct ≠ mention).
 //
 // Cross-node reach is AGENT-BASED (operator 2026-07-25): the ONLY way to leave this machine is
 // a RELAY agent, whose relay_channel is the route — resolve() returns { being: null, mesh:
@@ -36,14 +32,17 @@ import { VOICE_MARK } from '../incoming-media.mjs';
 import { getBeing, getContact, allowedUsersPermits, defaultBeingOf } from '../conversations-state.mjs';
 import { surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { fromOtherNode } from './node-names.mjs';
+import { resolveMode } from './gating.mjs';
+
+// Is this agents-map entry a LOCAL being (not a relay, not a `_` comment key)?
+export const isLocalAgent = (k, a) => !k.startsWith('_') && !!a && typeof a === 'object' && !Array.isArray(a)
+  && !a.relay_channel && !Array.isArray(a.paths) && String(a.configuration ?? '').toLowerCase() !== 'relay';
 
 // A local (non-relay) agent's map key, matched case-insensitively; null when there is none.
 function localAgentKey(agents, name) {
   const want = String(name ?? '').trim().toLowerCase();
   if (!want) return null;
-  const hit = Object.entries(agents ?? {}).find(([k, a]) => k.toLowerCase() === want && !k.startsWith('_')
-    && a && typeof a === 'object' && !Array.isArray(a)
-    && !a.relay_channel && !Array.isArray(a.paths) && String(a.configuration ?? '').toLowerCase() !== 'relay');
+  const hit = Object.entries(agents ?? {}).find(([k, a]) => k.toLowerCase() === want && isLocalAgent(k, a));
   return hit ? hit[0] : null;
 }
 
@@ -65,6 +64,22 @@ export function strangerAgentFor(ev, config = {}) {
   if (ev.isSender || ev.raw?.chatType !== 'private') return null;
   const key = localAgentKey(config.agents, map[ev.connection]);
   return key && !isKnownSender(ev.senderId, config) ? key : null;
+}
+// The block a stranger's new conversation is seeded with for its agent: its owner, answering every line.
+export const STRANGER_SEED = Object.freeze({ default: true, mode: 'on' });
+
+// What boot logs (and verify-install warns) about a config under the no-default-agent rule
+// (operator 2026-10-22/23): `default:` is ignored, and an on/auto mode set for a being or for the
+// node applies in EVERY chat the node hears. Pure; one line per finding.
+export function configWarnings(config = {}) {
+  const out = [];
+  for (const [name, a] of Object.entries(config.agents ?? {})) {
+    if (a && typeof a === 'object' && Object.hasOwn(a, 'default')) out.push(`agents.${name}.default is ignored — there is no default agent (2026-10-22). Remove the line.`);
+    if (isLocalAgent(name, a) && (a.mode === 'on' || a.mode === 'auto')) out.push(`WARNING agents.${name}.mode: ${a.mode} — ${name} answers EVERY line in EVERY chat this node hears. Set the mode per conversation instead.`);
+  }
+  const node = resolveMode(null, '', { dispatch: config.dispatch, whatsapp: config.whatsapp }).mode;
+  if (node === 'on' || node === 'auto') out.push(`WARNING dispatch.auto_default_mode: ${node} — EVERY being without a mode of its own answers every line in every chat this node hears.`);
+  return out;
 }
 
 // THE wake vocabulary — the ONE definition of "which @tokens address this agent", lowercased
@@ -93,7 +108,7 @@ export function strangerAgentFor(ev, config = {}) {
 // addressable by NOTHING. Falling back to the key on empty would make `handles: []` mean the same
 // as `handles: [<key>]`, reviving the very bug above, and would leave no way to say "no @address".
 //
-// THE ONE definition: src/spine/boot.mjs (the persona wake set it hands the ports) and
+// THE ONE definition: src/spine/boot.mjs (the node's wake set it hands the ports) and
 // src/spine/mesh.mjs (an envelope's `<being>.<node>` token) import it from here. There used to be
 // three copies of this rule in those three files.
 export function wakeTokens(name, agent) {
@@ -364,10 +379,10 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
 // failure below, which must never be silent.
 // `getConfig` — the node config, read for dispatch.stranger_agent and the allowed_users lists.
-export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), defaultBeing = 'e', addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
+export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
-  function targetFor({ name, agent, token, atStart, unlessPresent, unlessPeerAlive, reply }, ev) {
+  function targetFor({ name, agent, token, atStart, reply }) {
     // The mention an addressed agent hands its own gate. NOT a constant: the flags are the
     // matcher's REAL per-agent findings (operator 2026-07-25: "respect the mode, if it's
     // mention-direct not the same as mention … nothing has changed"). replyAllowed() already
@@ -422,52 +437,16 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), d
       const mesh = { being: name, route: { room_id: agent.relay_channel, ...(agent.network ? { network: String(agent.network).toLowerCase() } : {}) }, ...(to ? { to } : {}) };
       return { being: null, mesh, mention, address };
     }
-    // The DEFAULT (persona) agent routes to its own key (= defaultBeing), keeping
-    // the bridge-computed ev.mention. Matched by key OR the `default: true` marker —
-    // no 'e'/'egpt' literals (operator 2026-07-10).
-    //
-    // WHY ev.mention AND NOT the synthetic `mention` above: for the PERSONA the bridge's is the
-    // richer one. It is the only mention carrying `replyToBot` (the synthetic hardcodes false),
-    // so replacing it would break the quote-reply-without-@e path. E keeps ev.mention.
-    //
-    // …EXCEPT for a hit won by this agent's `fallback_handle` (operator 2026-08-31), which is the
-    // one thing ev.mention CANNOT know about: the bridge computes atE from `wakeWords` (boot.mjs,
-    // via wakeTokens — DECLARED handles only, see its header). On kg — `handles: [ekg, egptkg]`,
-    // `fallback_handle: { handle: e, unless_present: +1347… }` — a live `@e estás?` in a 1:1 logged
-    // `(atE=false)` and got NOTHING, while `@ekg estás?` in the SAME chat was answered. The
-    // membership guard below had ALREADY run and ALREADY said the peer was absent; this branch
-    // then handed the gate the bridge's atE=false and threw that YES away. The feature was a
-    // no-op for the persona, and INVISIBLY so: a guard-DROPPED hit falls through to the identical
-    // `{ being: defaultBeing, mention: ev.mention }` at the bottom of resolve(), so passing and
-    // dropping produced the same object and the log stayed silent either way.
-    //
-    // OR, NEVER REPLACE: the fallback match ADDS the matcher's own per-agent findings (same flags,
-    // same convention as `mention` above) onto whatever the bridge already found, so `replyToBot`
-    // and an atEStart the bridge saw on some OTHER handle both survive. `unlessPresent` is set on
-    // this hit ONLY after it passed the guard — resolve() never pushes a dropped hit — so the guard
-    // stays the SINGLE authority on whether this node answers, and an ordinary persona hit returns
-    // the very same object it always did (identity, not a copy).
-    //
-    // AND THIS IS WHY `wakeWords` IS LEFT ALONE. Widening the BRIDGE's vocabulary to `e` would set
-    // atE=true before any guard exists to say otherwise, and resolve()'s "nobody addressed"
-    // fall-through would then hand that atE=true to the persona in precisely the chats the guard
-    // REJECTED — reviving the live two-spines-answer-one-mention bug (wakeTokens' header), loudly,
-    // in a group, from two visibly different accounts. Silence under the guard has to stay the
-    // default that costs no code, not a second suppression kept in sync with this one.
-    if (name === defaultBeing || agent.default === true) {
-      if (unlessPresent == null && unlessPeerAlive == null) return { being: defaultBeing, mention: ev?.mention, address };
-      return { being: defaultBeing, mention: { replyToBot: false, ...(ev?.mention ?? {}), atEStart: !!ev?.mention?.atEStart || atStart, atEAnywhere: true }, address };
-    }
-    // Any other LOCAL agent → being = its name, gated on its own mention.
+    // A LOCAL agent → being = its name, gated on its own mention.
     return { being: name, mention, address };
   }
 
   return {
     /** @param {import('./spine.mjs').InboundEvent} ev
-     *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[] }>}
-     *  `targets` is EVERY addressed agent in text order (the spine fans out over it); the
-     *  first target's fields are mirrored at the top level so a single-target caller reads
-     *  exactly what resolve() always returned.
+     *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[], receives: boolean }>}
+     *  `targets` is EVERY addressed agent in text order, then every being taken by its on/auto mode
+     *  (the spine runs each one); the first target's fields are mirrored at the top level. Empty =
+     *  nobody takes the line; `receives` false = no being here receives it (not recorded).
      *  ASYNC (operator 2026-08-15, allowed_users): a per-conversation allowed_users override
      *  lives in conversations.yaml, which nothing caches (re-read per lookup) — resolving it
      *  needs one state read, done ONCE here, not once per hit. */
@@ -499,16 +478,16 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), d
       // wake a being. Same line f70edce drew for the mesh responder's own allowed_users.
       const org = ev?.origin ?? ev;
       // THE CONVERSATION'S OWN AGENT (operator 2026-10-15): the entry's `agents.<being>.default: true`,
-      // else, for a chat with no entry yet, the stranger rule. It takes the fall-through below, and a
-      // stranger in its conversation reaches it and nobody else. No state read → none (unchanged).
+      // else, for a chat with no entry yet, the stranger rule. A stranger in its conversation reaches it
+      // and nobody else. No state read → none (unchanged).
       const cfg = { ...(getConfig() ?? {}), agents };
+      const contact = state ? getContact(state, ev?.surface, ev?.chatId) : null;
       const owner = !state ? null
-        : (localAgentKey(agents, defaultBeingOf(getContact(state, ev?.surface, ev?.chatId)?.entry))
-          ?? (getContact(state, ev?.surface, ev?.chatId) ? null : strangerAgentFor(ev, cfg)));
+        : (localAgentKey(agents, defaultBeingOf(contact?.entry)) ?? (contact ? null : strangerAgentFor(ev, cfg)));
       const ownerOnly = !!owner && !ev?.isSender && !isKnownSender(ev?.senderId, cfg);
       // THE allowed_users test for one being here (see the ALLOWED_USERS GATE below). Every target
-      // that can wake a being passes it, the fall-through included (operator 2026-10-16: "no mode
-      // is above allowed_users").
+      // that can wake a being passes it, one taken by its mode included (operator 2026-10-16: "no
+      // mode is above allowed_users").
       const permits = (name, agent) => {
         const conv = state ? (() => { try { return getBeing(state, ev.surface, ev.chatId, name); } catch { return null; } })() : null;
         const convAllowed = Array.isArray(conv?.allowedUsers) ? conv.allowedUsers : null;
@@ -539,6 +518,118 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), d
         })());
         return presence.get(identity);
       };
+      // THE POST-MATCH FILTERS — one set, for a named hit and for a being taken by its mode alike:
+      // false drops that being from this line (it is still recorded). `anyArrival` = exempt from the
+      // connection gate: a hit won by a fallback_handle token (its own guard below decides), or a
+      // being taken by its mode (as the old default fall-through was: it never arbitrated arrivals).
+      const admits = (name, agent, anyArrival = false) => {
+        if (ownerOnly && name.toLowerCase() !== owner.toLowerCase()) return false;
+        // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
+        // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
+        // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
+        // account, so on Beeper `do` hears `@don` DIRECTLY and answers it — kg must NOT also
+        // relay it. kg relays `don` ONLY from the shell (which `do` can't hear), so kg pins its
+        // `don` relay agent `surface: shell`. A surface-mismatched agent is dropped from the
+        // target list (the OTHER agents this message addressed are unaffected). A MULTIPATH
+        // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
+        // The pin names a NETWORK the operator types (`surface: shell`), so it is resolved
+        // through THE network→surface map before comparing — the same map identity.build used
+        // to stamp ev.surface. Without that, kg's live `don: surface: shell` stopped matching
+        // the moment the shell became surface `room` (2026-08-28) and the relay went silent.
+        // …and it is compared against the ARRIVAL surface (`org`, above), not the dispatch one:
+        // kg pins `don` to `surface: shell` precisely because on Beeper `do` hears @don himself,
+        // so a WhatsApp line tunnelled into a room must not start matching that pin the moment
+        // the tunnel re-addresses it onto surface `room`.
+        if (agent.surface != null
+            && surfaceOf(String(agent.surface).toLowerCase()) !== String(org?.surface ?? '').toLowerCase()) return false;
+        // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
+        // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
+        // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;
+        // see brainpool.mjs's confinementFor for what `dangerously_skip_permissions` still
+        // means — a CAPABILITY tier only, never a reachability gate any more). Two-tier, the SAME override pattern
+        // access_level already uses: a per-conversation `allowedUsers` (conversations.yaml
+        // agents.<being>.allowed_users, read via getBeing off the ONE state read above,
+        // FLAT — that block is already scoped to one being in one conversation) REPLACES —
+        // never merges with — the node's global default, which lives NESTED under
+        // agents.<handle>.conversation_defaults.allowed_users in config.yaml: the nesting IS
+        // the allowlist of which agent fields get this two-tier treatment (a registry/
+        // structural field like handles/configuration/relay_channel, sitting as a direct
+        // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
+        // tiers = no restriction, today's default (reachable by anyone who could normally
+        // address this being). When the resolved list is non-empty, gate on the SENDER's id via
+        // the shared allowedUsersPermits predicate (conversations-state.mjs, alongside getBeing
+        // — the SAME two-tier shape it documents) — a literal "*" entry permits any sender
+        // (operator 2026-08-16), otherwise shortChatId normalizes both sides (src/bridges/
+        // chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
+        // allowed_users check uses — so a short OR legacy full-form entry matches either way.
+        // Deliberately INDEPENDENT of ev.authorized/ev.isSender (the existing NETWORK-level
+        // allowed_users/isSender concept) — a being's own allowed_users is a narrower, different
+        // check and never reuses that field. A hit failing it is dropped SILENTLY, same
+        // convention as the surface-pin mismatch above: it falls through exactly as if the
+        // @token had never matched.
+        if (!permits(name, agent)) return false;
+        // THE CONNECTION GATE (operator 2026-09-08) — another post-match filter, same shape as
+        // the two above and placed before the fallback guard so that guard keeps being the last
+        // thing to run and the only one that can cost a lookup. The ONE matcher decided the
+        // token was addressed; this decides whether THIS ARRIVAL is the one that answers it, and
+        // a drop falls through exactly as if the @token had never matched (the message is still
+        // received, still recorded, still read as back-context — only the wake is withheld).
+        //
+        // WHY. One spine can hold BOTH accounts as two EARS, and one real WhatsApp group is a
+        // DIFFERENT room per account, so the spine hears one typed line TWICE — deliberately
+        // undeduplicated (bridge-fanout.mjs). The operator's ruling is that the binding decides:
+        // "received by primary, logs, recognized agent, produces reply … received by secondary,
+        // logs, K is not an agent. continue."
+        //
+        // THE INGEST HALF, AND ONLY THAT (operator 2026-09-10). This asks boot's `inboundOf`,
+        // never its `outboundOf`: an agent's `use:` names where it SPEAKS, and letting that move
+        // what it can HEAR is exactly the coupling that took the live node deaf on the
+        // operator's own account. On a node with ONE ear inboundOf answers that ear for every
+        // agent, so nothing here can withhold a wake that the single ear delivered.
+        //
+        // `ev.connection` is stamped at the fan-out registration and is NULL on a one-bridge
+        // node (fanoutInbound hands back the bridge itself there), so this whole gate is inert
+        // for every node that holds one Beeper endpoint.
+        //
+        // A GUARDED HIT IS EXEMPT, and that is the CONDITIONAL, not an escape hatch. The gate
+        // can only compare two connection NAMES; it cannot ask "is my own connection in this
+        // chat at all", because one real group is a different chatId per account and the owning
+        // connection has never seen the arriving one's id. So on its own the gate would also
+        // silence the case the operator requires to work — `k hi` in a group only the OTHER
+        // account is in, where the owning connection is not present and the arrival that exists
+        // is the only one there will ever be. `fallback_handle` asks exactly that question
+        // (`unless_present`, answered from the ARRIVING chat's roster, fanned out since
+        // 32eb862): a hit won by a guarded token has already been decided by the one filter that
+        // can see membership, so the gate must not overrule it. Unconditional tokens — which are
+        // the ones that double-answer, and the ones boot warns about — are what this gate is
+        // for.
+        //
+        // WHAT IS STILL MISSING, said out loud so the next reader does not look for it: the
+        // guard names the owning connection by a HAND-PASTED phone number. Deriving it — asking
+        // literally "is my OWNING CONNECTION in this chat" — needs that connection's own account
+        // identity, and a `beeper:` block records only a label, a token and an optional
+        // base_url. Until one exists, an UNCONDITIONAL handle bound to a connection reaches
+        // nobody in a chat only the OTHER connection is in (locked as a gap in
+        // tests/multi-connection-wake.test.mjs).
+        //
+        // AND IT ARBITRATES BETWEEN TWO ARRIVALS, NOTHING ELSE (operator 2026-09-13, "secondary
+        // only hears if primary is not present"). Ear-ness is a PER-CHAT fact now: a connection
+        // this node holds that is not one of its ears still wakes in the chats the ear's account
+        // is NOT in, and boot's bridge gate drops everything else before the spine ever sees it
+        // (src/spine/boot.mjs perChatEars / theEarIsAbsentFrom). Such an arrival is therefore the
+        // ONLY one this node will get for that message — there is no second arrival to choose
+        // between, and dropping it here would silence every agent in exactly the chats only that
+        // connection can hear. So the arrival's own connection is handed to `inboundOf`, which is the one place that
+        // knows whether it is a per-chat ear; a caller with no arrival in hand still asks the
+        // node-level question, unchanged. AGENTS ARE PER SPINE, not per connection — this gate
+        // may decide WHICH ARRIVAL wakes an agent, never which connections an agent may hear.
+        if (ev?.connection && typeof inboundOf === 'function'
+            && !anyArrival) {
+          const own = inboundOf(name, ev.connection);
+          if (own && own !== ev.connection) return false;
+        }
+        return true;
+      };
       if (agents && typeof agents === 'object') {
         // isVoice rides off the SAME ev already in scope — no new field, the one this node already
         // carries for a voice-note turn. STAMPED IN EXACTLY ONE PLACE: identity.build (identity.mjs),
@@ -557,114 +648,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), d
         // A REACTION's body quotes its target's words, not the reactor's: it addresses only by
         // replyToBeing, as a text reply to that message would (operator 2026-10-18).
         for (const hit of addressed(ev?.kind === 'reaction' ? '' : (ev?.body ?? ''), agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
-          if (ownerOnly && hit.name !== owner.toLowerCase()) continue;
-          // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
-          // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
-          // unmatched). Co-account CORRECTNESS, not convenience: `do` and `kg` share ONE Beeper
-          // account, so on Beeper `do` hears `@don` DIRECTLY and answers it — kg must NOT also
-          // relay it. kg relays `don` ONLY from the shell (which `do` can't hear), so kg pins its
-          // `don` relay agent `surface: shell`. A surface-mismatched agent is dropped from the
-          // target list (the OTHER agents this message addressed are unaffected). A MULTIPATH
-          // agent is an ordinary map since 2026-07-26, so it can be pinned like any other.
-          // The pin names a NETWORK the operator types (`surface: shell`), so it is resolved
-          // through THE network→surface map before comparing — the same map identity.build used
-          // to stamp ev.surface. Without that, kg's live `don: surface: shell` stopped matching
-          // the moment the shell became surface `room` (2026-08-28) and the relay went silent.
-          // …and it is compared against the ARRIVAL surface (`org`, above), not the dispatch one:
-          // kg pins `don` to `surface: shell` precisely because on Beeper `do` hears @don himself,
-          // so a WhatsApp line tunnelled into a room must not start matching that pin the moment
-          // the tunnel re-addresses it onto surface `room`.
-          if (hit.agent.surface != null
-              && surfaceOf(String(hit.agent.surface).toLowerCase()) !== String(org?.surface ?? '').toLowerCase()) continue;
-          // ALLOWED_USERS GATE (operator 2026-08-15): "we should control by access_level and who
-          // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
-          // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;
-          // see brainpool.mjs's confinementFor for what `dangerously_skip_permissions` still
-          // means — a CAPABILITY tier only, never a reachability gate any more). Two-tier, the SAME override pattern
-          // access_level already uses: a per-conversation `allowedUsers` (conversations.yaml
-          // agents.<being>.allowed_users, read via getBeing off the ONE state read above,
-          // FLAT — that block is already scoped to one being in one conversation) REPLACES —
-          // never merges with — the node's global default, which lives NESTED under
-          // agents.<handle>.conversation_defaults.allowed_users in config.yaml: the nesting IS
-          // the allowlist of which agent fields get this two-tier treatment (a registry/
-          // structural field like handles/configuration/relay_channel, sitting as a direct
-          // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
-          // tiers = no restriction, today's default (reachable by anyone who could normally
-          // address this being). When the resolved list is non-empty, gate on the SENDER's id via
-          // the shared allowedUsersPermits predicate (conversations-state.mjs, alongside getBeing
-          // — the SAME two-tier shape it documents) — a literal "*" entry permits any sender
-          // (operator 2026-08-16), otherwise shortChatId normalizes both sides (src/bridges/
-          // chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
-          // allowed_users check uses — so a short OR legacy full-form entry matches either way.
-          // Deliberately INDEPENDENT of ev.authorized/ev.isSender (the existing NETWORK-level
-          // allowed_users/isSender concept) — a being's own allowed_users is a narrower, different
-          // check and never reuses that field. A hit failing it is dropped SILENTLY, same
-          // convention as the surface-pin mismatch above: it falls through exactly as if the
-          // @token had never matched (to another target, or to the fall-through below, which
-          // faces its own being's list).
-          if (!permits(hit.name, hit.agent)) continue;
-          // THE CONNECTION GATE (operator 2026-09-08) — another post-match filter, same shape as
-          // the two above and placed before the fallback guard so that guard keeps being the last
-          // thing to run and the only one that can cost a lookup. The ONE matcher decided the
-          // token was addressed; this decides whether THIS ARRIVAL is the one that answers it, and
-          // a drop falls through exactly as if the @token had never matched (the message is still
-          // received, still recorded, still read as back-context — only the wake is withheld).
-          //
-          // WHY. One spine can hold BOTH accounts as two EARS, and one real WhatsApp group is a
-          // DIFFERENT room per account, so the spine hears one typed line TWICE — deliberately
-          // undeduplicated (bridge-fanout.mjs). The operator's ruling is that the binding decides:
-          // "received by primary, logs, recognized agent, produces reply … received by secondary,
-          // logs, K is not an agent. continue."
-          //
-          // THE INGEST HALF, AND ONLY THAT (operator 2026-09-10). This asks boot's `inboundOf`,
-          // never its `outboundOf`: an agent's `use:` names where it SPEAKS, and letting that move
-          // what it can HEAR is exactly the coupling that took the live node deaf on the
-          // operator's own account. On a node with ONE ear inboundOf answers that ear for every
-          // agent, so nothing here can withhold a wake that the single ear delivered.
-          //
-          // `ev.connection` is stamped at the fan-out registration and is NULL on a one-bridge
-          // node (fanoutInbound hands back the bridge itself there), so this whole gate is inert
-          // for every node that holds one Beeper endpoint.
-          //
-          // A GUARDED HIT IS EXEMPT, and that is the CONDITIONAL, not an escape hatch. The gate
-          // can only compare two connection NAMES; it cannot ask "is my own connection in this
-          // chat at all", because one real group is a different chatId per account and the owning
-          // connection has never seen the arriving one's id. So on its own the gate would also
-          // silence the case the operator requires to work — `k hi` in a group only the OTHER
-          // account is in, where the owning connection is not present and the arrival that exists
-          // is the only one there will ever be. `fallback_handle` asks exactly that question
-          // (`unless_present`, answered from the ARRIVING chat's roster, fanned out since
-          // 32eb862): a hit won by a guarded token has already been decided by the one filter that
-          // can see membership, so the gate must not overrule it. Unconditional tokens — which are
-          // the ones that double-answer, and the ones boot warns about — are what this gate is
-          // for.
-          //
-          // WHAT IS STILL MISSING, said out loud so the next reader does not look for it: the
-          // guard names the owning connection by a HAND-PASTED phone number. Deriving it — asking
-          // literally "is my OWNING CONNECTION in this chat" — needs that connection's own account
-          // identity, and a `beeper:` block records only a label, a token and an optional
-          // base_url. Until one exists, an UNCONDITIONAL handle bound to a connection reaches
-          // nobody in a chat only the OTHER connection is in (locked as a gap in
-          // tests/multi-connection-wake.test.mjs).
-          //
-          // AND IT ARBITRATES BETWEEN TWO ARRIVALS, NOTHING ELSE (operator 2026-09-13, "secondary
-          // only hears if primary is not present"). Ear-ness is a PER-CHAT fact now: a connection
-          // this node holds that is not one of its ears still wakes in the chats the ear's account
-          // is NOT in, and boot's bridge gate drops everything else before the spine ever sees it
-          // (src/spine/boot.mjs perChatEars / theEarIsAbsentFrom). Such an arrival is therefore the
-          // ONLY one this node will get for that message — there is no second arrival to choose
-          // between, and dropping it here would silence every agent but the persona in exactly the
-          // chats only that connection can hear (the persona hides it: a dropped hit falls through
-          // to "nobody addressed" below, which wakes the default being on the bridge's own atE).
-          // So the arrival's own connection is handed to `inboundOf`, which is the one place that
-          // knows whether it is a per-chat ear; a caller with no arrival in hand still asks the
-          // node-level question, unchanged. AGENTS ARE PER SPINE, not per connection — this gate
-          // may decide WHICH ARRIVAL wakes an agent, never which connections an agent may hear.
-          if (ev?.connection && typeof inboundOf === 'function'
-              && hit.unlessPresent == null && hit.unlessPeerAlive == null) {
-            const own = inboundOf(hit.name, ev.connection);
-            if (own && own !== ev.connection) continue;
-          }
+          if (!admits(hit.name, hit.agent, hit.unlessPresent != null || hit.unlessPeerAlive != null)) continue;
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
           // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher
           // decided the token was addressed, this decides whether THIS node is the one to answer
@@ -708,26 +692,32 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), d
             if (present == null) onLog(`fallback_handle: @${hit.name} NOT woken by its fallback handle in ${ev?.surface}/${ev?.chatId} — could not establish whether ${hit.unlessPresent} is in the chat (unknown ⇒ the token stays its owner's; use a declared handle)`);
             if (present !== false) continue;
           }
-          targets.push(targetFor(hit, ev));
+          targets.push(targetFor(hit));
         }
       }
-      // Nobody addressed (or every hit was surface-pinned/allowed-users away): an @token that
-      // matched no agent is the persona's, and so is a bare message. `address: null` explicitly —
-      // nothing addressed this being, so there is no handle to take off the prompt, and every
-      // target this function can return carries the field (see targetFor).
-      // `fallthrough: true` — NOBODY was explicitly addressed; this is the persona default, not a
-      // real @mention. The per-being echo gate (spine.mjs) reads it so a being's own plain signed
-      // line never wakes the persona by default (only an explicit cross-being address does).
-      // `denied: true` — that being's allowed_users refuses this sender, or the message replies to
-      // another node's signed post (operator 2026-10-18: addressed to its signer, that node's to
-      // wake): the line is recorded, and the gate (gating.decide) wakes nobody, whatever the mode.
-      if (!targets.length) {
-        const being = owner ?? defaultBeing;
-        const elsewhere = fromOtherNode(cfg, { fromNode: ev?.replyToNode ?? null });
-        if (elsewhere) onLog(`reply: ${ev?.surface}/${ev?.chatId} quotes node <${ev.replyToNode}>'s post — addressed there; recorded, prompts nobody`);
-        targets.push({ being, mention: ev?.mention, address: null, fallthrough: true, ...(!elsewhere && permits(being, agents[being]) ? {} : { denied: true }) });
+      // EVERY BEING WHOSE MODE HERE IS on/auto TAKES THE LINE TOO (operator 2026-10-22/23: no default
+      // being; an "on" being answers every line, named or not) — each being once, a named one keeping
+      // its named target, through the same filters as a hit. `fallthrough: true` = taken by its mode,
+      // not addressed: the spine's signed-line gate never wakes it on a being's own output.
+      // `address: null`: nothing addressed it, so there is no handle to take off the prompt.
+      // A reply to another node's signed post is addressed to its signer (operator 2026-10-18):
+      // recorded, and no being takes it by mode here. A stranger's chat with no entry yet runs its
+      // owner on the mode its seed will write (STRANGER_SEED).
+      // `receives`: does any being here receive the line at all — every one 'off' → not recorded (C4).
+      const elsewhere = fromOtherNode(cfg, { fromNode: ev?.replyToNode ?? null });
+      if (elsewhere) onLog(`reply: ${ev?.surface}/${ev?.chatId} quotes node <${ev.replyToNode}>'s post — addressed there; recorded, prompts nobody by mode`);
+      const local = Object.entries(agents).filter(([k, a]) => isLocalAgent(k, a));
+      let receives = !local.length;
+      for (const [key, agent] of local) {
+        const name = key.toLowerCase();
+        const bv = state ? (() => { try { return getBeing(state, ev.surface, ev.chatId, key); } catch { return null; } })() : null;
+        const mode = (!contact && owner === key) ? STRANGER_SEED.mode : resolveMode(bv, key, cfg).mode;
+        if (mode !== 'off') receives = true;
+        if (elsewhere || (mode !== 'on' && mode !== 'auto')) continue;
+        if (targets.some((t) => t.being === name) || !admits(key, agent, true)) continue;
+        targets.push({ being: name, mention: {}, address: null, fallthrough: true });
       }
-      return { ...targets[0], targets };
+      return targets.length ? { ...targets[0], targets, receives } : { being: null, mention: undefined, targets, receives };
     },
   };
 }

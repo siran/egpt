@@ -39,9 +39,9 @@ describe('config-swap — restart-only keys', () => {
     expect(changedKeys(base, next)).toEqual(['agents.e', 'agents.h', 'liveness', 'dispatch']);
   });
 
-  it('a token, a port, an agent\'s connection or the persona move are restart-only, named by path', () => {
+  it('a token, a port, an agent\'s connection are restart-only, named by path; `default:` is ignored (no default agent)', () => {
     const next = { ...base, beeper: { main: { token: 'B' } }, shell: { port: 23999 }, agents: { e: { mode: 'on' }, h: { configuration: 'x', use: 'secondary', default: true } } };
-    expect(restartKeysChanged(base, next)).toEqual(['beeper', 'agents.h.use', 'agents.e.default', 'agents.h.default', 'shell']);
+    expect(restartKeysChanged(base, next)).toEqual(['beeper', 'agents.h.use', 'shell']);
   });
 
   it('isRestartKey answers /config set targets: under a restart key, or a parent of one', () => {
@@ -203,10 +203,11 @@ async function bootWith({ modes = {}, edit = (c) => c } = {}) {
 describe('boot — a config.yaml edit applies without a restart unless it touches a restart-only key', () => {
   // The conversation sets no mode of its own, so the node and agent rungs decide (gating resolveMode).
   it('(a) dispatch.auto_default_mode, agents.<x>.mode, liveness.every_ms: swapped, no restart, the next turn sees it', async () => {
-    const t = await bootWith({ edit: (c) => ({ ...c, dispatch: { auto_default_mode: 'off' } }) });
+    // h holds 'mention' here, so the node rung moves egpt alone (an 'on' node default would wake every being).
+    const t = await bootWith({ modes: { h: 'mention' }, edit: (c) => ({ ...c, dispatch: { auto_default_mode: 'off' } }) });
     await t.say('@e hola', 'm1');
     await new Promise((r) => setTimeout(r, 50));
-    expect(t.made).toHaveLength(0);                            // off: not even received
+    expect(t.made).toHaveLength(0);                            // egpt off: no turn
 
     t.save((c) => ({ ...c, dispatch: { auto_default_mode: 'on' }, liveness: { every_ms: 60_000 } }));
     t.app.spine.tick();
@@ -252,7 +253,7 @@ describe('boot — a config.yaml edit applies without a restart unless it touche
   });
 
   it('(c) agents.h.configuration: only H\'s warm session reopens, on H\'s next turn; E keeps its process', async () => {
-    const t = await bootWith({ modes: { egpt: 'on', h: 'mention' } });
+    const t = await bootWith({ modes: { egpt: 'mention', h: 'mention' } });
     await t.say('@e hola', 'm1');
     await t.say('@h hola', 'm2');
     await vi.waitFor(() => expect(t.made.map((s) => s.opts.model)).toEqual(['haiku', 'sonnet']));

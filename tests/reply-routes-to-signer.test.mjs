@@ -1,6 +1,6 @@
 // A reply is addressed to the being that SIGNED the quoted post (operator 2026-10-18: "a reply to
 // Rodz means a reply to the being that spoke"). Signature only — no peer-being list:
-//   (a) quoted post signed by a LOCAL being → that being wakes (like a mention), nobody else;
+//   (a) quoted post signed by a LOCAL being → that being wakes (like a mention);
 //   (b) signed by ANOTHER node → addressed there: recorded, no local wake in any mode — unless the
 //       reply also mentions a local being (a mention wins);
 //   (c) unsigned → today's behaviour.
@@ -12,22 +12,25 @@ import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 
 const AGENTS = {
-  egpt: { default: true, handles: ['e', 'egpt'] },
+  egpt: { handles: ['e', 'egpt'] },
   wren: { handles: ['wren'] },
 };
 
-function buildSpine(mode) {
-  const config = { node_name: 'kg', dispatch: { auto_default_mode: mode } };
+// `mode` is E's in this chat; wren keeps the default ('mention') unless given.
+function buildSpine(mode, { wren = null } = {}) {
+  const config = { node_name: 'kg' };
+  const state = { contacts: { whatsapp: { c: { slug: 'fam', agents: { egpt: { mode }, ...(wren ? { wren: { mode: wren } } : {}) } } } } };
+  const loadState = async () => state;
   const logs = [];
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, kind: ev.kind }); return { text: 'x' }; } };
   const transcript = { logged: [], async log(ev, reply) { if (reply == null) this.logged.push(ev.body); } };
   const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
-    brain, sender, transcript, defaultBeing: 'egpt',
+    brain, sender, transcript,
     identity: createIdentity({ now: () => 1000 }),
-    router: createRouter({ getAgents: () => AGENTS, getConfig: () => config, defaultBeing: 'egpt', onLog: (l) => logs.push(l) }),
-    gating: createGating({ getConfig: () => config, loadState: null, defaultKey: 'egpt' }),
+    router: createRouter({ getAgents: () => AGENTS, getConfig: () => config, loadState, onLog: (l) => logs.push(l) }),
+    gating: createGating({ getConfig: () => config, loadState }),
     heartbeats: { runDue() {} }, mesh: { isEnvelope: () => false, async handle() {} },
     fromThisNode: (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === 'kg',
     isSelfChat: () => false, clock: { now: () => 1000 },
@@ -55,10 +58,10 @@ describe('a reply wakes the being that signed the quoted post (kg, E on)', () =>
     expect(woke(s)).toEqual(['egpt']);
   });
 
-  it("(a) a reply to wren's signed post wakes wren only — E (on) does not also wake", async () => {
+  it("(a) a reply to wren's signed post wakes wren — and E (on) takes it too, by its mode", async () => {
     const s = buildSpine('on');
     await s.spine.handleInbound(reply('y eso?', { node: 'kg', being: 'wren' }));
-    expect(woke(s)).toEqual(['wren']);
+    expect(woke(s).sort()).toEqual(['egpt', 'wren']);
   });
 
   it("(b) a reply to don's do-signed post is recorded and wakes nobody here", async () => {
@@ -104,7 +107,7 @@ describe('a reply wakes the being that signed the quoted post (kg, E on)', () =>
   });
 
   it("'off' still does not receive a reply to don's post", async () => {
-    const s = buildSpine('off');
+    const s = buildSpine('off', { wren: 'off' });
     await s.spine.handleInbound(reply('y eso?', { node: 'do', being: 'don' }));
     expect(woke(s)).toEqual([]);
     expect(s.transcript.logged).toEqual([]);

@@ -1,20 +1,20 @@
 // gating.mjs — the §2c gating service: resolve a being's per-CONVERSATION policy
-// (mode + send_to_egpt, both read from conversations.yaml — the per-conversation
-// home, operator 2026-06-30) and turn it into the loop's decisions. The
+// (its mode, read from conversations.yaml — the per-conversation home, operator
+// 2026-06-30) and turn it into the loop's decisions. The
 // mode→decision LOGIC is the kept, test-locked auto-mode.mjs; this service only
 // resolves WHICH mode/policy applies and packages the per-message decision:
 //
-//   decide(being, ev, mention?, { denied? }) -> { mode, receives, mayReply, sendToEgpt }   (ONE conv-state read)
+//   decide(being, ev, mention?, { denied? }) -> { mode, receives, mayReply }   (ONE conv-state read)
 //   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'-'...' silence cosmetic
 //
 // `mode` resolves down ONE chain, most specific first (operator 2026-07-25):
 //   conversations.yaml  <conv>.agents.<name>.mode   per-conversation override (an alias room's own first)
 //   conversations.yaml  <conv>.<name>.mode          per-conversation block    (getBeing reads both)
 //   config.yaml         agents.<name>.mode          the AGENT's own default
-//   config.yaml         dispatch.auto_default_mode  node-wide (persona; legacy whatsapp.auto_e_default)
+//   config.yaml         dispatch.auto_default_mode  node-wide, every being (legacy whatsapp.auto_e_default)
 //   built-in            'mention'
-// `sendToEgpt` is the conversation's `<being>.send_to_egpt` override, else the global
-// config default (dispatch.send_to_egpt, legacy whatsapp.send_to_egpt), else 'mode'. The
+// `send_to_egpt: always` (a context turn that never replies) is RETIRED (operator 2026-10-23):
+// a being runs only when it may reply; `accum` hands it the context instead. The
 // absolute kill is dispatch.auto_paused (legacy whatsapp.auto_e_paused). The routing globals
 // moved OUT of the whatsapp transport block into `dispatch:` (operator 2026-06-25 —
 // E is a sibling, not a network); the whatsapp.* reads stay as back-compat fallbacks
@@ -22,8 +22,6 @@
 // modes live in the agents registry + conversations.yaml.
 import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-
-const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
 
 // The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
 // 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
@@ -66,11 +64,11 @@ export async function superChannelAlive(chatId, { chatRaw, config = {} }) {
 // sideGroupFor(ev, { create }) → the chat a reply here goes to instead (a chat id, or a function that
 // makes it, for sender.open to call), false = withhold it, null = in place (commands.autoSideGroup:
 // reply_in_side_group, operator 2026-10-18). Absent → always in place.
-export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e', sideGroupFor = null } = {}) {
+// seedOf(ev) → { <being>: block } a brand-new conversation is seeded with (boot: the stranger rule), or null.
+export function createGating({ getConfig = () => ({}), loadState = null, seedOf = null, sideGroupFor = null } = {}) {
   const cfg = () => getConfig() ?? {};
 
-  // The single per-message decision. ONE conversations.yaml read resolves the conversation's
-  // mode + send_to_egpt, so there is exactly one state load per message. `mention` is passed
+  // The single per-target decision. ONE conversations.yaml read resolves the being's mode here. `mention` is passed
   // explicitly by the loop (it's the ROUTED being's mention — a sibling routed by its own @name
   // is mentioned for ITS gate, not @e's); default to ev.mention for direct callers.
   // `denied` is the router's allowed_users answer for this target (router.resolve): a denied
@@ -81,6 +79,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
     if (loadState) { try { state = await loadState(); } catch { state = null; } }
     let bv = null;
     if (state) { try { bv = getBeing(state, ev.surface, ev.chatId, being); } catch { bv = null; } }
+    if (!bv) bv = seedOf?.(ev)?.[being] ?? null;   // no entry yet: the block its seed will write
     const { mode } = resolveMode(bv, being, c);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
@@ -94,14 +93,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, default
       if (at === false) mayReply = false;
       else if (at) replyChatId = at;
     }
-    // send_to_egpt keeps the persona in a chat's context even when it won't reply — that's a
-    // persona concern. A sibling is an engineer, not a context-follower: it runs ONLY when it
-    // may reply, so force 'mode' for any non-persona being (never 'always'). A denied sender
-    // runs no context turn either, nor does 'mute' (log only, operator 2026-10-16).
-    const sendToEgpt = (being !== defaultKey || denied || mode === 'mute')
-      ? 'mode'
-      : (_send(bv?.send_to_egpt) ?? _send(c.dispatch?.send_to_egpt) ?? _send(c.whatsapp?.send_to_egpt) ?? 'mode');
-    return { mode, receives: receives(mode), mayReply, sendToEgpt, ...(replyChatId ? { replyChatId } : {}) };
+    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}) };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an

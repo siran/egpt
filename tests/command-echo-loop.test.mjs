@@ -30,7 +30,7 @@ function ambiguousState() {
 function commandsHarness({ state = null } = {}) {
   const sent = [];
   const cmds = createCommands({
-    getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
+    getConfig: () => ({ whatsapp: { chat_id: '!self' }, agents: { e: {} } }),
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: () => {},
     loadState: state ? async () => state : null,
@@ -113,7 +113,7 @@ function buildSpine({ guard, stopSwitch = null, isCommand = (ev) => String(ev.bo
   const brain = { async turn() { return { text: 'x' }; } };
   const identity = { build: (msg) => ({ ...msg }) };
   const router = { resolve: () => 'e' };
-  const gating = { async decide() { return { mode: 'on', receives: true, mayReply: false, sendToEgpt: 'mode' }; }, surfaces: () => false };
+  const gating = { async decide() { return { mode: 'on', receives: true, mayReply: false }; }, surfaces: () => false };
   const transcript = { logged: [], async log(ev) { this.logged.push(ev); } };
   const heartbeats = { runDue() {} };
   const sender = { open() { return { activate() {}, update() {}, async finish() {}, fail() {} }; } };

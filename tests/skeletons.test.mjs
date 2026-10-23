@@ -178,7 +178,6 @@ describe('config/skeletons/config.yaml', () => {
     expect(doc.agents?.egpt).toMatchObject({
       configuration: { type: 'ccode', model: 'sonnet', effort: 'high', personality: 'egpt' },
       handles: ['e', 'egpt', 'ekg'],
-      default: true,
     });
     // default_brain / persona_name are gone from the skeleton (new-config-only)
     expect(Object.keys(doc)).not.toContain('default_brain');
@@ -199,8 +198,8 @@ describe('config/skeletons/config.yaml', () => {
       expect(a.handles).toContain(letter);
       expect(a.name, `${key} runs turns, so it must declare a name: or its replies stamp blank`).toBeTruthy();
     }
-    // exactly one persona
-    expect(Object.entries(doc.agents).filter(([, a]) => a?.default === true).map(([k]) => k)).toEqual(['egpt']);
+    // no default agent (2026-10-22): the skeleton marks none
+    expect(Object.entries(doc.agents).filter(([, a]) => a && Object.hasOwn(a, 'default'))).toEqual([]);
   });
 
   // Each character carries its OWN personality, which is only possible on the inline-map form:
@@ -271,7 +270,6 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
     // the per-agent pair — read by getBeing → src/spine/gating.mjs
     const b = getBeing(state, 'whatsapp', 'EXAMPLE_CHAT_ID', 'egpt');
     expect(AUTO_MODES).toContain(b.mode);
-    expect(['always', 'mode']).toContain(b.send_to_egpt);
 
     // and it must not have grown a phantom resident in the process
     expect(residentsOf(entry)).toEqual(['egpt']);

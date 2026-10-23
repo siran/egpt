@@ -23,7 +23,7 @@ const GROUP = 'grpC';
 const SIDE = shortChatId('!side1:beeper.local');
 const RODZ_ID = '@whatsapp_lid-69433129173200:beeper.local';
 const LULU = '@whatsapp_lid-lulu42:beeper.local';
-const AGENTS = { e: { handles: ['e'], default: true }, don: { handles: ['d', 'don'] } };
+const AGENTS = { e: { handles: ['e'], mode: 'on' }, don: { handles: ['d', 'don'] } };
 const CONFIG = {
   networks: { whatsapp: { chat_ids: ['!self'] } }, agents: AGENTS,
   beeper: { primary: { phone: '+16468217865' }, secondary: { phone: '+13472576794' } },
@@ -55,7 +55,6 @@ function build() {
     getConfig: () => CONFIG, send: async () => {},
     exit: async (code, o = {}) => { calls.exit.push({ code, force: !!o.force }); },
     loadState: async () => st, writeState: async (s) => { st = s; },
-    defaultKey: 'e',
     forkBridge: {
       editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
       createGroup: async (opts) => { calls.create.push(opts); return { success: true, chatID: '!side1:beeper.local' }; },
@@ -78,11 +77,11 @@ function build() {
     commands,
     heartbeats: { runDue() {} },
     identity: { build: (m) => ({ ...m }) },
-    router: createRouter({ getAgents: () => AGENTS, defaultBeing: 'e' }),
-    gating: { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: (d) => d.mayReply },
+    router: createRouter({ getAgents: () => AGENTS }),
+    gating: { async decide() { return { mode: 'on', receives: true, mayReply: true }; }, surfaces: (d) => d.mayReply },
     sender: { open() { return { update() {}, activate() {}, fail() {}, async finish() {} }; } },
     transcript: { async log(ev, reply) { if (reply == null) calls.transcript.push(ev.body); } },
-    defaultBeing: 'e', clock: { now: () => 1 }, turnTimeoutMs: 0,
+    clock: { now: () => 1 }, turnTimeoutMs: 0,
   });
   const say = (ev) => spine.handleInbound(ev);
   return { say, calls, getState: () => st };

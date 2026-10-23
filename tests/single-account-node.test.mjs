@@ -73,7 +73,7 @@ const MINIMAL = () => ({
   node_name: 'kg',
   user_name: 'John',
   beeper: { use: 'main', main: { account: 'you@example.com', token: TOKEN } },
-  agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
+  agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } },
 });
 
 // Complete in-memory fs seam — transcript/stats run their real read/merge/write paths without
@@ -155,16 +155,14 @@ function seedOn(chatId = '!room:beeper.com', name = 'fam') {
 }
 
 describe('ONE beeper token, ONE account, ONE node — the baseline that must never grow a requirement', () => {
-  it('boots, with one persona agent, on a config that declares nothing but a token, a node name and the shipped agents block', async () => {
+  it('boots, with one agent, on a config that declares nothing but a token, a node name and the shipped agents block', async () => {
     const { app, opts } = await bootWith(MINIMAL());
     expect(app).toBeTruthy();
 
-    // exactly one agent, and it IS the persona — the `default: true` boot refuses to start without
     const declared = Object.entries(app.cfg.agents ?? {});
     expect(declared.map(([name]) => name)).toEqual(['egpt']);
-    expect(declared.filter(([, a]) => a?.default === true)).toHaveLength(1);
 
-    // …and boot resolved that persona all the way through to the bridge's wake vocabulary, so
+    // …and boot resolved that agent all the way through to the bridge's wake vocabulary, so
     // "it booted" means "it can be addressed", not merely "it did not throw".
     expect([...opts.wakeWords].sort()).toEqual(['e', 'egpt']);
     expect(app.peerNodes).toEqual([]);   // solo node — no co-account peer set to complete
@@ -300,7 +298,7 @@ describe('ONE beeper token, ONE account, ONE node — the baseline that must nev
 
     const withPeer = await bootWith({
       ...MINIMAL(),
-      agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, fallback_handle: { handle: ['rodz'], unless_peer_alive: 23376 } } },
+      agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], fallback_handle: { handle: ['rodz'], unless_peer_alive: 23376 } } },
     });
     expect(withPeer.lines.filter((l) => /^\[peer\] watching the peer spine on :23376/.test(l))).toHaveLength(1);
     withPeer.app.stop();   // stops the probe before its first 5s interval ever fires
@@ -342,8 +340,6 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     const declared = Object.keys(cfg.beeper ?? {}).filter((k) => cfg.beeper[k] && typeof cfg.beeper[k] === 'object');
     expect(declared, 'skeleton must declare exactly one beeper connection').toHaveLength(1);
     expect(cfg.beeper[declared[0]].token, `beeper.${declared[0]} must carry a token`).toBe(TOKEN);
-    const personas = Object.entries(cfg.agents ?? {}).filter(([, a]) => a?.default === true);
-    expect(personas, 'skeleton must declare exactly one `default: true` persona agent').toHaveLength(1);
 
     // …and the proof that the list above is COMPLETE: the real boot() runs on it.
     const { app, built, opts, probeCalls } = await bootWith(cfg);
@@ -352,7 +348,6 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     // The shipped file names no port, so boot looks one up with the token — ONE sweep, and only
     // for the connection an agent actually rides (the cost of that sweep is locked above).
     expect(probeCalls).toHaveLength(10);
-    expect(Object.entries(app.cfg.agents).filter(([, a]) => a?.default === true)).toHaveLength(1);
     app.stop();
   });
 

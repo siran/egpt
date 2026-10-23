@@ -299,17 +299,9 @@ function stripCode(text) {
   }
   return out;
 }
-// The PERSONA's view of the matcher: does this text wake E? Returns { atEStart, atEAnywhere }.
-//
-// WAKE-WORD SET (operator 2026-07-07: the bridge gate must honor configured
-// handles). The DEFAULT set is the network-wide persona address e/egpt, used only
-// when no caller supplies a list. A caller (the bridge, from boot's persona agent)
-// passes an explicit `wakeWords` list — the persona agent's DECLARED handles, else
-// its map key (router.mjs wakeTokens; operator 2026-07-26: the key is the being-id,
-// not an address), e.g. DOLLY's [d, don] — and that list is COMPLETE: nothing is
-// injected beside it. The bug this fixes: a live `@ed estás?` logged atE=false
-// because the gate was hardcoded to e/egpt and never read the agents config.
-const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
+// A LIMB's view of the matcher: does this text address any being on this node? Returns
+// { atEStart, atEAnywhere }. `wakeWords` is the node's wake set (boot: every agent's tokens) and
+// is COMPLETE: no list → nothing matches (there is no default agent, 2026-10-22).
 // `opts` is the matcher's option bag, forwarded verbatim to mentionHits — today just
 // { addressWithoutAt }, the node's `dispatch.address_without_at`, handed in by the limb that owns
 // the wake list. `opts.voiceWake` is a SEPARATE, optional SPOKEN list (voice_handles), supplied by
@@ -336,7 +328,7 @@ const DEFAULT_WAKE_WORDS = ['egpt', 'e'];
 // mentionHits return [], so neither flag moves.
 export function mentionStatus(text, wakeWords, opts) {
   const { voiceWake, ...matchOpts } = opts || {};
-  const hits = mentionHits(text, (Array.isArray(wakeWords) && wakeWords.length) ? wakeWords : DEFAULT_WAKE_WORDS, matchOpts);
+  const hits = mentionHits(text, Array.isArray(wakeWords) ? wakeWords : [], matchOpts);
   const spoken = mentionHits(String(text ?? '').replace(VOICE_MARK, ''), voiceWake, matchOpts).some((h) => h.atStart);
   return { atEAnywhere: hits.length > 0 || spoken, atEStart: hits.some((h) => h.atStart) || spoken };
 }

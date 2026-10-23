@@ -37,7 +37,6 @@ const convState = (patch = {}) => ({
 const mk = (config, state = null) => createGating({
   getConfig: () => config,
   loadState: state ? async () => state : null,
-  defaultKey: 'e',
 });
 
 describe('REPRODUCE-FIRST 1 — config.yaml agents.<name>.mode is that agent\'s own default', () => {
@@ -47,13 +46,13 @@ describe('REPRODUCE-FIRST 1 — config.yaml agents.<name>.mode is that agent\'s 
   });
 
   it('the PERSONA agent\'s own mode beats the node-wide dispatch.auto_default_mode', async () => {
-    const g = mk({ agents: { e: { default: true, mode: 'mute' } }, dispatch: { auto_default_mode: 'on' } });
+    const g = mk({ agents: { e: { mode: 'mute' } }, dispatch: { auto_default_mode: 'on' } });
     expect((await g.decide('e', ev)).mode).toBe('mute');
   });
 
   it('TWO agents with DIFFERENT modes in ONE config behave differently on the SAME message', async () => {
     // e: mention (a mid-sentence @e is enough) · don: mention-direct (only at the head)
-    const g = mk({ agents: { e: { default: true, mode: 'mention' }, don: { relay_channel: 'mesh', mode: 'mention-direct' } } });
+    const g = mk({ agents: { e: { mode: 'mention' }, don: { relay_channel: 'mesh', mode: 'mention-direct' } } });
     expect((await g.decide('e',   ev, MID)).mayReply).toBe(true);    // @e mid-sentence answers
     expect((await g.decide('don', ev, MID)).mayReply).toBe(false);   // @don mid-sentence stays silent
     expect((await g.decide('don', ev, AT_HEAD)).mayReply).toBe(true); // …but @don at the head wakes it
@@ -84,20 +83,10 @@ describe('REPRODUCE-FIRST 2 — conversations.yaml `agents:` block overrides the
 
   it('the persona is a normal agent here too', async () => {
     const g = mk(
-      { agents: { e: { default: true, mode: 'on' } }, dispatch: { auto_default_mode: 'on' } },
+      { agents: { e: { mode: 'on' } }, dispatch: { auto_default_mode: 'on' } },
       convState({ agents: { e: { mode: 'mention-direct' } } }),
     );
     expect((await g.decide('e', ev)).mode).toBe('mention-direct');
-  });
-
-  it('the `agents:` block carries every per-conversation field flat, side by side (phase 1: one block, not a merge)', async () => {
-    const g = mk(
-      { agents: { e: { default: true, mode: 'on' } } },
-      convState({ agents: { e: { mode: 'mention-direct', send_to_egpt: 'always' } } }),
-    );
-    const d = await g.decide('e', ev);
-    expect(d.mode).toBe('mention-direct');
-    expect(d.sendToEgpt).toBe('always');
   });
 
   it('a conversation naming OTHER agents leaves this one on its config default', async () => {
@@ -140,13 +129,8 @@ describe('REGRESSION — everything below the new rung is unchanged (except the 
   });
 
   it('a pre-phase-1 entry[<being>] block does NOT beat config.yaml\'s per-agent mode — it is simply never read', async () => {
-    const g = mk({ agents: { e: { default: true, mode: 'mute' } } }, convState({ e: { mode: 'on' } }));
+    const g = mk({ agents: { e: { mode: 'mute' } } }, convState({ e: { mode: 'on' } }));
     expect((await g.decide('e', ev)).mode).toBe('mute');   // config wins; the legacy block is inert
-  });
-
-  it('a pre-phase-1 entry[<being>].send_to_egpt is NOT read — the dispatch global applies instead', async () => {
-    const g = mk({ dispatch: { send_to_egpt: 'mode' } }, convState({ e: { mode: 'on', send_to_egpt: 'always' } }));
-    expect((await g.decide('e', ev)).sendToEgpt).toBe('mode');
   });
 
   it('auto_paused is still the absolute kill, per-agent mode or not', async () => {

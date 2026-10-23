@@ -199,27 +199,28 @@ describe('shell-port limb', () => {
       ws.fire('message', Buffer.from(text));
       return captured;
     }
+    const EW = ['e', 'egpt'];
 
     it('a bare-text "@e hi" frame → atEStart AND atEAnywhere true', () => {
-      const from = fromFor('@e hi');
+      const from = fromFor('@e hi', EW);
       expect(from.atEStart).toBe(true);
       expect(from.atEAnywhere).toBe(true);
     });
 
     it('"@e" mid-message → atEAnywhere true, atEStart false', () => {
-      const from = fromFor('hey @e look');
+      const from = fromFor('hey @e look', EW);
       expect(from.atEAnywhere).toBe(true);
       expect(from.atEStart).toBe(false);
     });
 
     it('no wake word → both false (E stays gated out, as before — but now CORRECTLY, not by omission)', () => {
-      const from = fromFor('hello');
+      const from = fromFor('hello', EW);
       expect(from.atEAnywhere).toBe(false);
       expect(from.atEStart).toBe(false);
     });
 
     it('an @e inside a code fence does NOT wake — mentionStatus strips code, and it flows through the limb', () => {
-      const from = fromFor('```\n@e in a fence\n```');
+      const from = fromFor('```\n@e in a fence\n```', EW);
       expect(from.atEAnywhere).toBe(false);
       expect(from.atEStart).toBe(false);
     });

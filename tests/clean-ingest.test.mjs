@@ -26,7 +26,7 @@ import { encodeNodeSignature } from '../src/node-signature.mjs';
 
 // THIS node is 'kg' with a persona `egpt` (@e/@egpt) and a sibling `eplus` (@eplus). 'do' is a PEER.
 const AGENTS = {
-  egpt:  { default: true, handles: ['e', 'egpt'] },
+  egpt:  { handles: ['e', 'egpt'] },
   eplus: { handles: ['eplus'] },
 };
 // fromThisNode exactly as boot wires it: fromNode set AND the node is ours ('kg').
@@ -41,15 +41,16 @@ const SIG_DO_DON = encodeNodeSignature('do', 'don');    // a PEER node's being
 function buildSpine({ mode = 'mention', guard = null } = {}) {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body }); return { text: 'x' }; } };
   const identity = createIdentity({ now: () => 1000 });
-  const router = createRouter({ getAgents: () => AGENTS, defaultBeing: 'egpt' });
-  const gating = createGating({ getConfig: () => ({ dispatch: { auto_default_mode: mode } }), loadState: null, defaultKey: 'egpt' });
+  const config = { dispatch: { auto_default_mode: mode } };
+  const router = createRouter({ getAgents: () => AGENTS, getConfig: () => config });
+  const gating = createGating({ getConfig: () => config, loadState: null });
   const transcript = { logged: [], async log(ev) { this.logged.push(ev); } };
   const sender = { opened: 0, open() { this.opened++; return { activate() {}, update() {}, async finish() {}, fail() {} }; } };
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
     brain, identity, router, gating, sender, transcript,
     heartbeats: { runDue() {} }, mesh: { isEnvelope: () => false, async handle() {} },
-    fromThisNode, guard, isSelfChat: () => false, clock: { now: () => 1000 }, defaultBeing: 'egpt',
+    fromThisNode, guard, isSelfChat: () => false, clock: { now: () => 1000 },
   });
   return { spine, brain, transcript };
 }
@@ -204,10 +205,10 @@ describe('clean ingest — a signed line wakes only the being it explicitly addr
     expect(transcript.logged).toHaveLength(0);
   });
 
-  it('LOCK: a human (unsigned) line in a mode-on chat still wakes E', async () => {
+  it('LOCK: a human (unsigned) line in a mode-on chat still wakes every being on there', async () => {
     const { spine, brain } = buildSpine({ mode: 'on' });
     await spine.handleInbound({ body: 'hola', from: from({ msgKey: 'h-2', isSender: false, senderName: 'Bob' }) });
-    expect(wokeBeings(brain)).toEqual(['egpt']);
+    expect(wokeBeings(brain).sort()).toEqual(['egpt', 'eplus']);
   });
 
   it("LOCK: this node's own node-only frame wakes nobody, even naming @eplus", async () => {

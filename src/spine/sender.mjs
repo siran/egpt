@@ -374,7 +374,7 @@ const QUOTE_MEMO_MAX = 200;
 // publicOf(being) / noticeAdmin({ being, chatId, text }) (2026-10-15): a PUBLIC being
 // (agents.<name>.public) takes the plain branch below, and its error lines go to noticeAdmin
 // (boot: the admin channel) instead of the chat.
-export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e', peerMouth = null, publicOf = () => false, noticeAdmin = async () => {}, onUndeliverable = () => {}, onLog = () => {}, now = () => Date.now() } = {}) {
+export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', peerMouth = null, publicOf = () => false, noticeAdmin = async () => {}, onUndeliverable = () => {}, onLog = () => {}, now = () => Date.now() } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
@@ -385,10 +385,10 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
   const later = (room, opts) => {
     let asked = null, out = null;
     const ask = () => (asked ??= Promise.resolve().then(room)
-      .catch((e) => { onLog(`sender: ${opts.being ?? defaultKey} — making its room threw: ${e?.message ?? e}`); return null; })
+      .catch((e) => { onLog(`sender: ${opts.being ?? '?'} — making its room threw: ${e?.message ?? e}`); return null; })
       .then((id) => {
         if (id) out = sender.open(id, opts);
-        else onLog(`sender: ${opts.being ?? defaultKey} — its room could not be made, nothing posted`);
+        else onLog(`sender: ${opts.being ?? '?'} — its room could not be made, nothing posted`);
         return out;
       }));
     const onOpen = (f) => ask().then((o) => (o ? f(o) : undefined));
@@ -401,7 +401,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       async end(text) { if (asked) await onOpen((o) => o.end(text)); },
       async finish(reply, o = {}) {
         if (asked || (o.surface !== false && textOf(reply).trim())) return onOpen((x) => x.finish(reply, o));
-        onLog(`sender: ${opts.being ?? defaultKey} turn withheld before its room was made — nothing posted`);
+        onLog(`sender: ${opts.being ?? '?'} turn withheld before its room was made — nothing posted`);
       },
       async fail(e) { if (asked) await onOpen((o) => o.fail(e)); },
       get confirmedId() { return out?.confirmedId ?? null; },
@@ -417,7 +417,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
     // `hideSilence`: an 'on' turn — a partial that may still be its '…' silence is never shown (operator 2026-10-18).
     open(chatId, opts = {}) {
       if (typeof chatId === 'function') return later(chatId, opts);
-      let { being = defaultKey, replyTo = null, replyIn = undefined, replyKey = null, queued = false, queuedAhead = 0, auto = false, ambient = false, hideSilence = false, origin = null, status = null } = opts;
+      let { being = null, replyTo = null, replyIn = undefined, replyKey = null, queued = false, queuedAhead = 0, auto = false, ambient = false, hideSilence = false, origin = null, status = null } = opts;
       const { bridge: bridgeForThisBeing, route: peerRoute, keyOf } = outbound(being, chatId);
       // ROUTED-TARGET FALLBACK (never a silent drop): a send the sending account can't place on the
       // routed room (a super/alias room it isn't a member of → resolveChatId null → DROPPED) re-sends

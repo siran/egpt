@@ -530,11 +530,6 @@ export async function startBeeperBridge(opts = {}) {
     // Trailing-debounce window for the 👂 echo (per chat, coalesced). The
     // transcript still reaches the model instantly; only the chat echo waits.
     postsBackDelayMs = POSTS_BACK_DELAY_MS,
-    // The persona body_emoji (🐶). Accepted for compatibility (boot still passes it), but no longer
-    // used for suppression: the leading-persona-emoji own-message check was removed (operator
-    // 2026-07-12) so no emoji reaches a decision. Own-message suppression is wasSentByUs alone —
-    // the ids we sent, nothing else (operator 2026-07-15).
-    personaEmoji = null,
     // Per-NODE 👂-echo WRAP layers (operator 2026-07-12): the 👂 transcript echo this bridge
     // posts is wrapped concentrically — outer bridge_signature_open/close (identifies WHICH SPINE
     // posted: REVE `kg` vs DOLLY `do` on one account), inner transcription_open/close (the 👂
@@ -551,21 +546,14 @@ export async function startBeeperBridge(opts = {}) {
     nodeName = '',
     transcriptionOpen = '',
     transcriptionClose = '',
-    // The persona wake-word set (operator 2026-07-07): the network-wide default e/egpt
-    // PLUS the persona agent's name + every configured handle (boot derives it from the
-    // agents block). The gate hardcoded e/egpt and never read the config, so a node
-    // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
-    // for a node that passes nothing).
-    wakeWords = ['e', 'egpt'],
-    // The SPOKEN wake-alias set (operator 2026-08-09): the persona agent's `voice_handles`, gating
-    // a voice note's whisper TRANSCRIPT — at the START of it, never `@` (whisper output never
-    // produces one). START, not anywhere (operator 2026-09-09): one rule for the spoken form and
-    // the bare @handle form, so `perro` no longer wakes E out of "tengo un perro grande". Default
-    // EMPTY, unlike wakeWords above: silence-by-default, no network-wide or map-key fallback — a
-    // node that configures nothing wakes on NO spoken alias.
+    // THE NODE'S WAKE SET (boot: every agent's handles + fallback tokens; no default agent since
+    // 2026-10-22). It sets this limb's own mention flag (atE: the incoming log line and the chat
+    // stats) and keeps an @handle an address in the picker guard. WHO takes a line is the router's.
+    wakeWords = [],
+    // …and every agent's spoken aliases (voice_handles), matched at the START of a transcript.
     voiceWakeWords = [],
-    // THE BARE-REPLY GATE'S OWN VOCABULARY (operator 2026-09-01) — wakeWords ∪ the persona's
-    // `fallback_handle` tokens, computed by boot (src/spine/boot.mjs). A SECOND list because the
+    // THE BARE-REPLY GATE'S OWN VOCABULARY (operator 2026-09-01; every LOCAL being's since
+    // 2026-10-23: wake + fallback + voice tokens) — computed by boot (src/spine/boot.mjs). A SECOND list because the
     // gate below is a DIFFERENT consumer from the mention gate: `wakeWords` feeds mentionStatus →
     // atE, stamped BEFORE any membership guard exists to say otherwise, so widening THAT would
     // have this node claim a mention owned by the peer account's agent (src/spine/router.mjs,
@@ -590,7 +578,7 @@ export async function startBeeperBridge(opts = {}) {
     // May a BARE leading handle address ("d hola", no '@')? The node's dispatch.address_without_at
     // (operator 2026-07-27: "this addressing without the '@' must be an option, easy to turn
     // on/off globally"), DEFAULT true — boot reads it once and hands the SAME value here, to the
-    // shell limb and to the router, so the persona gate and the agent registry switch together.
+    // shell limb and to the router, so the limbs and the agent registry switch together.
     // It rides beside wakeWords into the SAME mentionStatus call below; nothing else consults it.
     addressWithoutAt = true,
     // WHO THIS NODE SPEAKS AS (operator 2026-09-16): every identity the accounts this node's beings

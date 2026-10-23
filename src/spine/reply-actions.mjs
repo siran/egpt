@@ -431,7 +431,7 @@ export function partialProse(partial, ev = {}, opts = {}) {
 // wake = spine.wakeOnBackground, which carries the outcome back to the being as a turn.
 // onUndeliverable({ being, chatId, what, reason }) (2026-10-19): a limb that said nothing anywhere —
 // boot posts it to log_to_group, once (the sender's own hook, for the reply).
-export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, limbs = {}, actionsOf = () => null, wake = null, defaultKey = 'e', onUndeliverable = async () => {}, onLog = () => {} } = {}) {
+export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, limbs = {}, actionsOf = () => null, wake = null, onUndeliverable = async () => {}, onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   const lost = async (out, ev, being, what) => {
@@ -575,7 +575,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
      * someone else's message, a /media file that isn't there all log and stay OUT of `ran`.
      * Additive — every existing caller ignored the (previously undefined) return value.
      */
-    async execute(run = [], stripped = [], ev = {}, { being = defaultKey } = {}) {
+    async execute(run = [], stripped = [], ev = {}, { being = null } = {}) {
       for (const s of stripped) onLog(`stripped malformed action (${s.reason}): ${JSON.stringify(String(s.raw).slice(0, 120))}`);
       const ran = [];
       for (const a of run) {

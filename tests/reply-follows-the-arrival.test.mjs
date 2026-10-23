@@ -285,7 +285,7 @@ const KG = () => ({
     secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
   },
   agents: {
-    egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' },
+    egpt: { configuration: 'egpt', handles: ['e'], name: 'E' },
   },
 });
 
@@ -297,11 +297,8 @@ const KG_WITH_PEER = () => {
   return c;
 };
 
-// The same node with a SECOND, NON-DEFAULT agent. It exists to reach the router's connection
-// gate, which the persona never does: an unaddressed message falls through to the default being
-// with the bridge's own atE (router.mjs, "Nobody addressed"), so a gate that DROPPED the persona's
-// hit produces a reply anyway. Only a hit for another agent can show whether the gate let it
-// through. `k` is not in the bridge's wake words for this arrival — atE stays false, exactly as it
+// The same node with a SECOND agent, to reach the router's connection gate with a hit that is not
+// E's. `k` is not in the bridge's wake words for this arrival — atE stays false, exactly as it
 // is live for a token the bridge does not know (multi-connection-wake's deliver models the same).
 const KG_WITH_K = () => {
   const c = KG();
@@ -320,7 +317,7 @@ const KG_WITH_GUI = () => ({
     primary_gui: { account: 'anrodz42@example.com', token: GUI },
   },
   agents: {
-    egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E', use: 'primary_gui' },
+    egpt: { configuration: 'egpt', handles: ['e'], name: 'E', use: 'primary_gui' },
   },
 });
 
@@ -329,7 +326,7 @@ const SINGLE = () => ({
   node_name: 'kg',
   user_name: 'An',
   beeper: { primary: { account: 'anrodz42@example.com', token: PRIMARY } },
-  agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
+  agents: { egpt: { configuration: 'egpt', handles: ['e'], name: 'E' } },
 });
 
 async function bootWith(config, { state: seedState, ...extra } = {}) {
@@ -1184,7 +1181,7 @@ describe('the retired super_chats block reroutes nothing and places no SI-state 
   const SI = (shape = KG, block) => { const c = shape(); if (block) c.super_chats = block; return c; };
   const SI_CHAN = '!both-super';
   const seed = (base = BOTH_AS_PRIMARY) => {
-    const st = ensureContact(emptyState(), 'whatsapp', base, { pushedName: 'base' }).state;
+    const st = ensureContact(emptyState(), 'whatsapp', base, { pushedName: 'base', agents: { egpt: { mode: 'on' } } }).state;
     return aliasContact(st, 'whatsapp', SI_CHAN, getContact(st, 'whatsapp', base).jid, { transcript: 'x', super: true });
   };
   const hola = (spy) => spy.onIncoming('hola', {

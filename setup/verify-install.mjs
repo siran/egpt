@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { runPowerShell } from './migrate.mjs';
+import { configWarnings } from '../src/spine/router.mjs';
 
 // ── pure helpers (unit-tested; no live probes) ─────────────────────────────
 
@@ -40,14 +41,11 @@ export function isUnderDir(child, parent) {
   return c === d || c.startsWith(d + '/');
 }
 
-// Boot's persona rule (src/spine/boot.mjs personaOf): exactly one agent with `default: true`; no name is magic.
-export function personaCheck(agents) {
-  const names = Object.entries(agents ?? {})
-    .filter(([, a]) => a && typeof a === 'object' && !Array.isArray(a) && a.default === true)
-    .map(([name]) => name);
-  if (names.length === 1) return ['ok', `config: parses, persona agent '${names[0]}' (default: true)`];
-  if (!names.length) return ['fail', 'config: no agent has `default: true` — boot needs exactly one persona (fatal boot)'];
-  return ['fail', `config: ${names.length} agents have \`default: true\` (${names.join(', ')}) — boot allows exactly one (fatal boot)`];
+// Boot's agents rule (src/spine/router.mjs configWarnings, logged at boot): there is no default
+// agent — `default:` is ignored — and an on/auto mode set for a being or the node applies in every chat.
+export function agentsCheck(cfg) {
+  const warns = configWarnings(cfg);
+  return warns.length ? warns.map((w) => ['warn', `config: ${w}`]) : [['ok', `config: parses, ${Object.keys(cfg?.agents ?? {}).length} agents`]];
 }
 
 export function expectedLogsDir(egptHome) { return join(egptHome, 'config', 'logs'); }
@@ -199,7 +197,7 @@ export function runChecks({ egptHome, out = console.log } = {}) {
     try { cfg = YAML.parse(readFileSync(cfgPath, 'utf8')); } catch (e) { perr = e; }
     if (perr) add('fail', `config: ${cfgPath} FAILED to parse — ${perr.message}`);
     else if (!cfg?.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) add('fail', 'config: no agents block (fatal boot)');
-    else add(...personaCheck(cfg.agents));
+    else for (const r of agentsCheck(cfg)) add(...r);
   }
   for (const [label, p] of [
     ['config/conversations.yaml', join(egptHome, 'config', 'conversations.yaml')],

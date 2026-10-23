@@ -488,7 +488,6 @@ export function createCommands({
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /agents mode persist a mode
   brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
-  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/state reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
   // ── THE BRAIN'S OWN TWO SEAMS (brainpool.mjs `scopeOf` / `evict`) ─────────────────────────
   // Injected from boot as the SAME brain instance createTurns takes, so a command can never
   // resolve a being's address — or its warm entry — differently from the turn that will run it.
@@ -760,9 +759,15 @@ export function createCommands({
   function beingOfHandle(handle) {
     const agents = cfg().agents ?? {};
     const hit = addressed(handle, agents, { addressWithoutAt: true })[0];
-    if (hit) return hit.token === handle && !isRelayAgent(hit.agent) ? hit.name : null;
-    const personaListed = Object.keys(agents).some((k) => k.toLowerCase() === String(defaultKey).toLowerCase());
-    return !personaListed && handle === String(defaultKey).toLowerCase() ? defaultKey : null;   // the persona is real even with no agents: map
+    return hit && hit.token === handle && !isRelayAgent(hit.agent) ? hit.name : null;
+  }
+  // The being a conversation-level view describes, now there is no default agent (operator
+  // 2026-10-22): the conversation's owner, else its first resident here, else this node's first
+  // local agent. null = this node runs no local being.
+  function subjectOf(entry) {
+    const agents = cfg().agents ?? {};
+    const local = Object.keys(agents).filter((k) => !k.startsWith('_') && agents[k] && typeof agents[k] === 'object' && !isRelayAgent(agents[k]));
+    return defaultBeingOf(entry) ?? residentsOf(entry).find((b) => local.includes(b)) ?? local[0] ?? null;
   }
   function commandOf(ev) {
     let body = String(ev?.body ?? '').trim();
@@ -780,7 +785,7 @@ export function createCommands({
     return { ...ev, body: p.rest ? `${p.cmd} ${p.rest}` : p.cmd, commandBeing: being, commandHandle: p.handle, ...tag };
   }
   // The handle a reply tells a person to type: the one they typed, else the persona's first.
-  const handleOf = (ev) => ev?.commandHandle ?? wakeTokens(defaultKey, cfg().agents?.[defaultKey])[0] ?? defaultKey;
+  const handleOf = (ev) => { if (ev?.commandHandle) return ev.commandHandle; const k = subjectOf(null); return k ? (wakeTokens(k, cfg().agents?.[k])[0] ?? k) : '<handle>'; };
   const hintOf = (cmd, ev = null) => `/${handleOf(ev)} ${cmd}`;
 
   // rs — the RADIO quick reply (operator 2026-08-08): a single top-level string of its own,
@@ -1382,9 +1387,8 @@ export function createCommands({
   // validates the subcommand + its value up front, resolves the target conversation through
   // slugArg (bare = HERE, given = resolveTarget — identical to /e auto/reset's <target>), then
   // resolves the handle set — a typed HANDLE resolved to its being KEY through the wake
-  // vocabulary (see the HANDLE → KEY block below), or every residentsOf() entry for `all`,
-  // ordered defaultKey-first when resident so the persona reads first in a multi-being
-  // reply/status — and routes to the per-subcommand handler. Every handler below takes the
+  // vocabulary (see the HANDLE → KEY block below), or every residentsOf() entry for `all`
+  // — and routes to the per-subcommand handler. Every handler below takes the
   // ALREADY-resolved (surface, jid, where, handles[, …, state, named]) — none of them re-parse
   // or re-resolve. `named` is the reply's word for the being(s): the keys for `force all`, and for a
   // single target the operator's own token plus the key when the two differ.
@@ -1456,9 +1460,7 @@ export function createCommands({
 
     // `all` = every being residentsOf() finds on that conversation's entry — the exact
     // registry-block owner /rooms's members roster is silent on (residentsOf reads
-    // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
-    // resident) so the persona is always the first block/reply in a multi-being result; the
-    // rest keep residentsOf()'s own order.
+    // entry.agents.<being> blocks, conversations-state.mjs), in its own order.
     // ── THE ARGUMENT IS A HANDLE, THE RECORD IS KEYED BY THE KEY (operator 2026-09-17: "for
     // rethread the handles work to identify agent, so e and egpt are the same") ──────────────
     // It used to be `handles = [handleArg]` — whatever the operator typed became the being KEY
@@ -1479,12 +1481,10 @@ export function createCommands({
     // heartbeat-loader do: a typed argument is bare, so the node's `dispatch.address_without_at`
     // switch (about chat prose) never governs it.
     //
-    // THREE more arms, each a target that IS real but which the wake vocabulary deliberately does
+    // TWO more arms, each a target that IS real but which the wake vocabulary deliberately does
     // not cover — none of them a second handle matcher:
     //   · the KEY itself. wakeTokens drops the key once `handles:` is declared, and that rule is
     //     about who a MESSAGE wakes; here the key is the RECORD NAME the verbs write, so it works.
-    //   · defaultKey — the persona is real by definition, even with an empty agents: map (the same
-    //     exemption agentsBeingBlock already makes).
     //   · a RESIDENT record — a being seeded by an earlier turn with no config.yaml entry is real,
     //     just unconfigured on this node (agentsBeingBlock says exactly that).
     // Order matters and this is the order: a CLAIMED handle beats residency, so kg's stray `e:`
@@ -1498,13 +1498,11 @@ export function createCommands({
     if (handleArg === FORCE_ALL) {
       // `force all` = every being residentsOf() finds on that conversation's entry — the exact
       // registry-block owner /rooms's members roster is silent on (residentsOf reads
-      // entry.agents.<being> blocks, conversations-state.mjs). Ordered defaultKey-first (when
-      // resident) so the persona is always the first block/reply in a multi-being result; the
-      // rest keep residentsOf()'s own order. These are KEYS already — nothing to resolve.
+      // entry.agents.<being> blocks, conversations-state.mjs). In residentsOf()'s own
+      // order (there is no default being to put first). These are KEYS already — nothing to resolve.
       // Each node reads its OWN state, so it changes and reports only its own residents.
       const entry = getContact(state, surface, jid)?.entry;
       handles = residentsOf(entry);
-      if (handles.includes(defaultKey)) handles = [defaultKey, ...handles.filter((h) => h !== defaultKey)];
       if (!handles.length) { onLog(`/agents: force all — no resident beings ${where} on this node`); return; }
       named = handles.join(', ');
     } else {
@@ -2158,9 +2156,7 @@ export function createCommands({
       // resolveBeingDef's every `??` and rendering a config-shaped answer for a being that is
       // not here.
       const b = getBeing(state, sc.surface, sc.chatId, handle);
-      // defaultKey is exempt: the persona is real by definition even with an empty agents:
-      // map (resolveDefaultBrainDef's own shipped-'egpt'-type fallback). Any OTHER handle is
-      // real here iff it is either configured at the node level (agents: in config.yaml) or
+      // A handle is real here iff it is either configured at the node level (agents: in config.yaml) or
       // already RESIDENT in this conversation — getBeing ALWAYS returns a truthy object
       // (jid/slug/surface/being are set unconditionally), so its OWN `present` flag is what
       // actually says whether a per-conversation `agents.<handle>` block exists, not the
@@ -2169,7 +2165,7 @@ export function createCommands({
       // being name (keeps it runnable)", its own header) — fine for turn(), which that
       // total-ness exists to serve, but the status VIEW must not dress that bare fallback up
       // as a real being.
-      if (handle !== defaultKey && !((cfg() ?? {}).agents ?? {})[handle] && !b?.present) {
+      if (!((cfg() ?? {}).agents ?? {})[handle] && !b?.present) {
         return `being: ${handle}\nnot configured on this node`;
       }
       const c = getContact(state, sc.surface, sc.chatId);
@@ -2191,13 +2187,12 @@ export function createCommands({
       }
       const previewDef = def ? (def.dangerously_skip_permissions === true ? def : coerceAllowedTools(def)) : null;
 
-      // Determinism parity with turn(): the PERSONA's run always carries a concrete
-      // model/effort (DETERMINISTIC_MODEL/EFFORT fallback); a sibling may legitimately have
-      // neither set (inherits the CLI login default) — reported as such rather than a
-      // fabricated persona default.
-      const isDefault = handle === defaultKey;
-      const modelVal = previewDef?.model ?? (isDefault ? DETERMINISTIC_MODEL : null);
-      const effortVal = previewDef?.effort ?? (isDefault ? DETERMINISTIC_EFFORT : null);
+      // Determinism parity with turn(): a ccode being's run always carries a concrete
+      // model/effort (DETERMINISTIC_MODEL/EFFORT fallback); a local engine may legitimately have
+      // neither set — reported as such rather than a fabricated default.
+      const ccode = (previewDef?.type ?? CCODE) === CCODE;
+      const modelVal = previewDef?.model ?? (ccode ? DETERMINISTIC_MODEL : null);
+      const effortVal = previewDef?.effort ?? (ccode ? DETERMINISTIC_EFFORT : null);
       const toolsRaw = previewDef?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;
       const toolsVal = Array.isArray(toolsRaw) ? `[${toolsRaw.join(', ')}]` : (toolsRaw ?? '?');
       // def.cwd ?? convDir — the SAME derivation turn() uses for the being's actual run cwd.
@@ -3393,13 +3388,13 @@ export function createCommands({
     const entry = getContact(state, surface, ev.chatId)?.entry;
     const agentOf = (b) => {
       const k = Object.keys(c.agents ?? {}).find((n) => !n.startsWith('_') && n.toLowerCase() === String(b).toLowerCase());
-      const a = k ? c.agents[k] : (b === defaultKey ? {} : null);
+      const a = k ? c.agents[k] : null;
       return a && typeof a === 'object' && !Array.isArray(a) ? a : null;
     };
     if (agentOf(defaultBeingOf(entry))?.public === true) return null;
     const arrived = String((ev.origin ?? ev).surface ?? '').toLowerCase();
     const bare = c.dispatch?.address_without_at !== false;
-    const beings = [defaultKey, ...Object.keys(c.agents ?? {}).filter((n) => !n.startsWith('_') && n.toLowerCase() !== defaultKey)];
+    const beings = Object.keys(c.agents ?? {}).filter((n) => !n.startsWith('_'));
     const lines = [];
     for (const b of beings) {
       const a = agentOf(b);
@@ -3968,7 +3963,7 @@ export function createCommands({
           }
         }
         convs = String(n);
-        try { mode = getBeing(st, ev.surface, ev.chatId, defaultKey)?.mode ?? null; } catch { mode = null; }
+        try { mode = getBeing(st, ev.surface, ev.chatId, subjectOf(getContact(st, ev.surface, ev.chatId)?.entry))?.mode ?? null; } catch { mode = null; }
       }
     } catch { convs = '?'; }
 
@@ -4049,8 +4044,8 @@ export function createCommands({
       }
     } catch { lines.push('transcription: off'); }
 
-    // agents — local agents from cfg().agents. The persona (default:true) shows its
-    // handles; a relay agent (scalar or multipath, agentPaths normalizes both) shows
+    // agents — from cfg().agents. Every local agent shows its handles (there is no default
+    // agent, 2026-10-22); a relay agent (scalar or multipath, agentPaths normalizes both) shows
     // its `to` once. Omitted entirely when cfg().agents is absent/empty.
     try {
       const agentsCfg = cfg().agents;
@@ -4058,7 +4053,7 @@ export function createCommands({
         const agentLines = [];
         for (const [name, agent] of Object.entries(agentsCfg)) {
           try {
-            if (agent && agent.default) {
+            if (agent && typeof agent === 'object' && !isRelayAgent(agent)) {
               const handles = Array.isArray(agent.handles) ? agent.handles.join(', ') : '';
               agentLines.push(`  ${name} (${handles})`);
             } else {
@@ -4196,7 +4191,8 @@ export function createCommands({
     let convPath = c?.entry?.conversation_path;
     if (!convPath) { try { convPath = conversationPathOf(r.surface, slug); } catch { convPath = '?'; } }
 
-    const b = getBeing(state, r.surface, r.jid, defaultKey);
+    const being = subjectOf(c?.entry);
+    const b = being ? getBeing(state, r.surface, r.jid, being) : null;
     const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
 
     // The persona's LIVE brain def (phase 1, operator 2026-08-14): there is no more
@@ -4206,7 +4202,7 @@ export function createCommands({
     // name-the-existing-thing, not a second derivation).
     let previewDef = null;
     try {
-      const raw = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE });
+      const raw = resolveDefaultBrainDef({ getConfig: cfg, brains, convDir, brainType: CCODE, being });
       previewDef = raw?.dangerously_skip_permissions === true ? raw : coerceAllowedTools(raw);
     } catch { previewDef = null; }
 
@@ -4263,7 +4259,7 @@ export function createCommands({
         // The ratio AND window the spine applies to this being here, override included
         // (compact-being's compactionPolicy, 2026-09-24) - not the node ratio over the model's
         // table window, which ignored a conversation's own `compaction:` and `context_window`.
-        const p = compactionPolicy(cfg(), model, compactionOverrideOf(b, cfg(), defaultKey));
+        const p = compactionPolicy(cfg(), model, compactionOverrideOf(b, cfg(), being));
         const { tokens, threshold } = dueFor({ sessionId: b.threadId, model, window: p.window }, { ratio: p.ratio });
         const limit = threshold ?? p.threshold;
         if (tokens != null) context = `${tokens}/${limit} tok (compact at ${Math.round(p.ratio * 100)}% of ${p.window})`;
@@ -4284,6 +4280,7 @@ export function createCommands({
       `surface: ${r.surface}`,
       `slug: ${slug}`,
       `conversation_path: ${convPath}`,
+      `being: ${being ?? 'none'}`,
       `mode: ${mode}`,
       `agent: ${agentVal}`,
       `engine: ${engineVal}`,

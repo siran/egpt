@@ -102,13 +102,14 @@ describe('a ccode type that declares allowed_tools narrows its level to that lis
     expect(opts.tools).toEqual(['Read']);
   });
 
+  // djhaiku states no effort: since 2026-10-22 every ccode being runs a concrete one (DETERMINISTIC_EFFORT).
   it('REGRESSION (dolly djh): a scoped entry `Bash(curl:*)` admits its base tool, so the DJ keeps Bash', async () => {
     const types = { ...TYPES, djhaiku: 'type: ccode\nmodel: haiku\nallowed_tools: [ Read, Bash(curl:*) ]\n' };
     const agents = { ...AGENTS, djh: { configuration: 'djhaiku', conversation_defaults: { access_level: 'all', allowed_users: ['*'] } } };
     const { opts, argv } = await optionsFor('djh', agents, types);
     expect(opts.allowedTools).toEqual(['Read', 'Bash(curl:*)']);
     expect(opts.tools).toEqual(['Read', 'Bash']);
-    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Bash', '--allowedTools', 'Read Bash(curl:*)', '--model', 'haiku', '--settings', '{"cleanupPeriodDays":3650000}']);
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Bash', '--allowedTools', 'Read Bash(curl:*)', '--model', 'haiku', '--effort', 'high', '--settings', '{"cleanupPeriodDays":3650000}']);
   });
 
   it('two scoped entries of one tool name it once in --tools', async () => {

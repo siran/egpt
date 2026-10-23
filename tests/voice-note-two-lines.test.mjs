@@ -159,7 +159,7 @@ function buildSpine({ mode = 'on' } = {}) {
   const spine = createSpine({
     bridge, brain, identity,
     router: { resolve: () => 'e' },
-    gating: { async decide(_b, ev) { decided.push(ev); return { mode, receives: mode !== 'off', mayReply: mode !== 'off', sendToEgpt: 'mode' }; }, surfaces: () => true },
+    gating: { async decide(_b, ev) { decided.push(ev); return { mode, receives: mode !== 'off', mayReply: mode !== 'off' }; }, surfaces: () => true },
     sender: { open() { return { activate() {}, update() {}, fail() {}, async finish() {} }; } },
     transcript: createTranscript({ contacts: { resolve: async () => 'diego' }, io: memIo(files) }),
     heartbeats: { runDue() {} }, clock: { now: () => 1000 }, turnTimeoutMs: 0,
