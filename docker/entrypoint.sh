@@ -18,6 +18,8 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
   x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vncpass >/dev/null
   x11vnc -display :99 -rfbauth /tmp/vncpass -forever -shared -quiet -rfbport 5900 &
   log "VNC on :5900"
+  websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
+  log "noVNC on :6080 (http://localhost:6080/vnc.html, same password)"
 else
   log "VNC disabled (set VNC_PASSWORD to enable)"
 fi

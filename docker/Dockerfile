@@ -64,6 +64,10 @@ RUN python3 -m venv /opt/piper/venv \
        curl -fsSL -o "$f" "https://huggingface.co/rhasspy/piper-voices/resolve/$PIPER_VOICES_REV/es/es_MX/claude/high/$f"; \
      done
 
+# noVNC: the same VNC screen as a browser tab on :6080 (vnc.html).
+RUN apt-get update && apt-get install -y --no-install-recommends novnc websockify \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=whisper /src/whisper.cpp/build/bin/whisper-cli /src/whisper.cpp/build/bin/whisper-server /usr/local/bin/
 COPY --from=whisper /src/whisper.cpp/samples/jfk.wav /opt/whisper/samples/jfk.wav
 
@@ -79,6 +83,6 @@ ENV HOME=/home/egpt EGPT_HOME=/home/egpt/.egpt DISPLAY=:99 EGPT_SESSION1=1 \
     RADIO_PIPER=/opt/piper
 RUN mkdir -p /home/egpt/.egpt /home/egpt/.config/BeeperTexts /home/egpt/.claude /home/egpt/src/egpt
 VOLUME ["/home/egpt/.egpt", "/home/egpt/.config/BeeperTexts", "/home/egpt/.claude", "/home/egpt/src/egpt"]
-EXPOSE 5900
+EXPOSE 5900 6080
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/egpt-entrypoint"]
