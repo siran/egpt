@@ -1,0 +1,211 @@
+// telegram-boot.test.mjs — boot wires the Telegram limb only when limbs.telegram names a
+// connection whose token file exists; a node without it boots exactly as before (kg, do), and a
+// node whose ONLY limb is Telegram boots with no Beeper bridge at all.
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+
+const _HOME = vi.hoisted(() => {
+  const tmp = process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp';
+  const dir = `${tmp}/egpt-telegram-boot-home`;
+  process.env.EGPT_HOME = dir;
+  return dir;
+});
+
+import { promises as fs } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+let boot, emptyState, ensureContact;
+beforeAll(async () => {
+  ({ boot } = await import('../src/spine/boot.mjs'));
+  ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
+});
+afterAll(async () => {
+  delete process.env.EGPT_HOME;
+  try { await fs.rm(_HOME, { recursive: true, force: true }); } catch {}
+});
+
+// A Beeper token in the environment would make a "no Beeper" config not beeperless.
+let envToken;
+beforeEach(() => { envToken = process.env.BEEPER_ACCESS_TOKEN; delete process.env.BEEPER_ACCESS_TOKEN; });
+afterEach(async () => {
+  if (envToken !== undefined) process.env.BEEPER_ACCESS_TOKEN = envToken;
+  await fs.rm(join(_HOME, 'secrets'), { recursive: true, force: true });
+});
+
+const TG_TOKEN = '123456:FAKE-telegram-token';
+const writeToken = async (connection = 'main', token = TG_TOKEN) => {
+  await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
+  await fs.writeFile(join(_HOME, 'secrets', `telegram-${connection}.token`), `${token}\n`);
+};
+
+const AGENTS = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
+const BEEPER_ONLY = () => ({ node_name: 'kg', user_name: 'John', limbs: { beeper: { main: { account: 'you@example.com', token: 'TOK-b' } } }, agents: AGENTS });
+const TELEGRAM_ONLY = () => ({ node_name: 'EDW', user_name: 'John', limbs: { telegram: { main: { account: 'edw_bot' } } }, networks: { telegram: { allowed_users: [42] } }, agents: AGENTS });
+const MIXED = () => ({ ...BEEPER_ONLY(), limbs: { ...BEEPER_ONLY().limbs, telegram: { main: { account: 'edw_bot' } } }, networks: { telegram: { allowed_users: [42] } } });
+
+function memIo() {
+  const files = new Map();
+  const dirs = new Set();
+  const missing = (path) => Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+  return {
+    appendFile: async (path, data) => files.set(path, `${files.get(path) ?? ''}${data}`),
+    writeFile: async (path, data) => files.set(path, String(data)),
+    readFile: async (path) => { if (!files.has(path)) throw missing(path); return files.get(path); },
+    mkdir: async (path) => { dirs.add(path); },
+    existsSync: (path) => files.has(path) || dirs.has(path),
+    readdir: async (path) => [...files.keys()].filter((f) => dirname(f) === path).map((f) => f.slice(path.length + 1)),
+    rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
+  };
+}
+function fakeSession(opts) {
+  return { sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { onUpdate?.(`↩ ${m}`); return { text: `↩ ${m}`, sessionId: this.sessionId }; }, close() {} };
+}
+// One spy per start call; the same fake "real bridge" shape serves both transports.
+function fakeTransport() {
+  const built = [];
+  const start = async (opts) => {
+    const spy = { opts, onIncoming: opts.onIncoming, sent: [], streams: [] };
+    built.push(spy);
+    return {
+      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      startStreamMessage(init, o) {
+        const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
+        spy.streams.push(h); return h;
+      },
+      wasSentByUs: () => false,
+      isAlive: () => true, stop() { spy.stopped = true; },
+    };
+  };
+  return { start, built };
+}
+
+async function bootWith(config, { state, telegram = true } = {}) {
+  const beeper = fakeTransport();
+  const tg = fakeTransport();
+  const lines = [];
+  let convState = state ?? emptyState();
+  const app = await boot({
+    readConfig: () => config,
+    startBridge: beeper.start,
+    ...(telegram ? { startTelegram: tg.start } : {}),
+    makeSession: fakeSession,
+    probeEndpoint: async () => ({ ok: false, status: 0 }),
+    loadState: async () => convState,
+    writeState: async (s) => { convState = s; },
+    io: memIo(), ingest: false, tickMs: 0,
+    now: () => Date.UTC(2026, 9, 23, 14, 5),
+    log: { line: (s) => lines.push(s) },
+  });
+  return { app, beeper: beeper.built, tg: tg.built, lines };
+}
+
+function seedOn(surface, chatId, name) {
+  const ens = ensureContact(emptyState(), surface, chatId, { pushedName: name, slugHint: name });
+  const entry = ens.state.contacts[surface][chatId];
+  entry.agents = { ...(entry.agents ?? {}), egpt: { ...(entry.agents?.egpt ?? {}), mode: 'on' } };
+  return ens.state;
+}
+const tgFrom = { chatId: 'tg:42', chatName: 'An R', chatType: 'private', network: 'telegram', userId: '42', senderName: 'An R', authorized: true, msgKey: '7' };
+const waFrom = { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' };
+
+describe('no limbs.telegram — kg/do boot exactly as before', () => {
+  it('builds the one Beeper bridge, starts no Telegram limb (even with a token file on disk), and logs nothing [telegram]', async () => {
+    await writeToken();
+    const { app, beeper, tg, lines } = await bootWith(BEEPER_ONLY());
+    expect(beeper).toHaveLength(1);
+    expect(beeper[0].opts.beeperToken).toBe('TOK-b');
+    expect(tg).toHaveLength(0);
+    expect(app.telegramPort).toBeNull();
+    expect(lines.filter((l) => /telegram/i.test(l))).toEqual([]);
+    // the spine still holds the single bridge itself — no fan-out wrapper
+    expect(app.bridge.onMessage).toBe(app.bridge.onMessage);
+    expect(app.bridge.stop).toBe(app.bridge.stop);
+    app.stop();
+  });
+
+  it('a Beeper reply still goes out through Beeper', async () => {
+    const { app, beeper } = await bootWith(BEEPER_ONLY(), { state: seedOn('whatsapp', waFrom.chatId, 'fam') });
+    await beeper[0].onIncoming('hola E', waFrom);
+    expect(beeper[0].streams).toHaveLength(1);
+    expect(beeper[0].streams[0].chatId).toBe(waFrom.chatId);
+    expect(beeper[0].streams[0].finals[0]).toContain('hola E');
+    app.stop();
+  });
+
+  it('with no beeper block and no telegram, the legacy inert Beeper bridge is still built (unchanged)', async () => {
+    const { app, beeper, tg } = await bootWith({ node_name: 'kg', user_name: 'John', agents: AGENTS });
+    expect(beeper).toHaveLength(1);
+    expect(tg).toHaveLength(0);
+    app.stop();
+  });
+});
+
+describe('limbs.telegram without its token file', () => {
+  it('is not wired; one line names the file and the setup script; Beeper is untouched', async () => {
+    const { app, beeper, tg, lines } = await bootWith(MIXED());
+    expect(tg).toHaveLength(0);
+    expect(beeper).toHaveLength(1);
+    expect(app.telegramPort).toBeNull();
+    const said = lines.filter((l) => l.startsWith('[telegram]'));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/telegram-main\.token/);
+    expect(said[0]).toMatch(/setup\/telegram-token\.mjs main/);
+    app.stop();
+  });
+});
+
+describe('a node whose only limb is Telegram', () => {
+  it('boots with no Beeper bridge; the limb gets the token from the file and the node-level options', async () => {
+    await writeToken();
+    const { app, beeper, tg, lines } = await bootWith(TELEGRAM_ONLY());
+    expect(beeper).toHaveLength(0);
+    expect(tg).toHaveLength(1);
+    expect(tg[0].opts.telegramToken).toBe(TG_TOKEN);
+    expect(tg[0].opts.connection).toBe('main');
+    expect([...tg[0].opts.wakeWords].sort()).toEqual(['e', 'egpt']);
+    expect(tg[0].opts.isAllowedUser('42', 'telegram')).toBe(true);
+    expect(tg[0].opts.isAllowedUser('43', 'telegram')).toBe(false);
+    expect(lines.join('\n')).not.toContain(TG_TOKEN);
+    expect(app.telegramPort.owns('tg:42')).toBe(true);
+    app.stop();
+    expect(tg[0].stopped).toBe(true);
+  });
+
+  it('an inbound Telegram message reaches the spine and the reply streams back out through Telegram', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R') });
+    await tg[0].onIncoming('hola E', tgFrom);
+    expect(tg[0].streams).toHaveLength(1);
+    expect(tg[0].streams[0].chatId).toBe('tg:42');
+    expect(tg[0].streams[0].finals[0]).toContain('hola E');
+    app.stop();
+  });
+
+  it('a command reply from an allowed user goes back to the Telegram chat', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(TELEGRAM_ONLY());
+    await tg[0].onIncoming('/e status', tgFrom);
+    await vi.waitFor(() => expect(tg[0].sent.some((s) => s.chatId === 'tg:42')).toBe(true));
+    app.stop();
+  });
+});
+
+describe('a node with Beeper and Telegram', () => {
+  it('each reply goes out the limb its chat belongs to', async () => {
+    await writeToken();
+    let state = seedOn('whatsapp', waFrom.chatId, 'fam');
+    const tgEnt = ensureContact(state, 'telegram', 'tg:42', { pushedName: 'An R', slugHint: 'An R' });
+    state = tgEnt.state;
+    state.contacts.telegram['tg:42'].agents = { egpt: { mode: 'on' } };
+    const { app, beeper, tg } = await bootWith(MIXED(), { state });
+    expect(beeper).toHaveLength(1);
+    expect(tg).toHaveLength(1);
+
+    await tg[0].onIncoming('hola tg', tgFrom);
+    await beeper[0].onIncoming('hola wa', waFrom);
+    expect(tg[0].streams.map((s) => s.chatId)).toEqual(['tg:42']);
+    expect(beeper[0].streams.map((s) => s.chatId)).toEqual([waFrom.chatId]);
+    expect(tg[0].streams[0].finals[0]).toContain('hola tg');
+    expect(beeper[0].streams[0].finals[0]).toContain('hola wa');
+    app.stop();
+  });
+});

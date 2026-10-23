@@ -57,7 +57,7 @@
 #                      without a port list; a list repeating one token across
 #                      several ports collapses to plain account + token.
 limbs:
-  # the node's I/O transports (an http limb, later telegram, will sit beside beeper); a new install needs no top-level beeper: copy
+  # the node's I/O transports (beeper, telegram; an http limb later); a new install needs no top-level beeper: copy
   beeper:
     main:
       account: "you@example.com"    # the account this token belongs to (label)
@@ -68,6 +68,9 @@ limbs:
     # use: main                     # OPTIONAL override of the default mouth - see above
     # auto_update:                  # keeping Beeper itself current: auto | manual | none
     #   windows: { method: manual } # the default: a log_to_group notice, install on /<handle> update beeper
+  # telegram:                       # a Telegram BOT, no Beeper needed. Its token is NOT here: it is the file
+  #   main:                         # <EGPT_HOME>/secrets/telegram-main.token (node setup/telegram-token.mjs main)
+  #     account: "my_egpt_bot"      # the bot's username (label); who may command: networks.telegram.allowed_users
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the
@@ -253,7 +256,7 @@ networks:
   whatsapp:
     chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
     allowed_users: [] # id of user allowed to issue commands in the chat_ids
-  telegram: { chat_ids: [], allowed_users: [] }
+  telegram: { chat_ids: [], allowed_users: [] } # Telegram numeric user ids (limbs.telegram bot)
   signal:   { chat_ids: [], allowed_users: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [join, split, send, end]

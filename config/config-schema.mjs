@@ -736,8 +736,8 @@ export const CONFIG_SCHEMA = {
 
   limbs: `
     The node's conversational I/O transports, one block each (operator
-    2026-10-23). Today only beeper; an http chatbox (and later telegram) sits
-    beside it. Restart-only.
+    2026-10-23): beeper and telegram; an http chatbox will sit beside them.
+    Restart-only.
 
     Not the /book and /email action limbs (agents.<name>.actions,
     src/spine/reply-actions.mjs): those are not configured here.
@@ -746,6 +746,15 @@ export const CONFIG_SCHEMA = {
       beeper
         The Beeper accounts block, documented under beeper: below. Read through
         src/tools/config-io.mjs beeperBlockOf alone.
+      telegram
+        <connection>: { account: <bot username, a label> } — a Telegram BOT on the
+        Bot API (src/bridges/telegram.mjs), long polling, no Beeper. One bot per
+        node for now (the first connection). The token is NOT in config: it is the
+        file <EGPT_HOME>/secrets/telegram-<connection>.token, written by
+        setup/telegram-token.mjs; boot checks it with getMe and logs the @username.
+        Its chats are tg:<chat id>; networks.telegram.allowed_users (Telegram
+        numeric user ids) may command. A node with no limbs.beeper connection and
+        no Beeper token runs on Telegram alone.
   `,
 
   beeper: `

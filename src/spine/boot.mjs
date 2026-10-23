@@ -18,6 +18,7 @@ import { createLagProbe, intakeCap } from './lag-probe.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
+import { startTelegramBridge, readTelegramToken, isTelegramChatId } from '../bridges/telegram.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
@@ -177,14 +178,6 @@ export function whisperPortOf(cfg) {
   return WHISPER_DEFAULT_PORT;
 }
 
-// Make a STREAMING sender shell-aware. createSender renders through its injected `bridge`
-// (`bridge.send` / `bridge.startStream`); handed the raw beeper bridge, a streamed @e /
-// brain-member reply on a shell-owned chat streamed to Beeper and never reached the editor
-// (the command `send` closure was the only shell-aware path — why /status showed in the shell
-// but a streamed reply did not). This facade delegates the methods createSender + the mesh
-// service call to shellPort for shell-owned chat ids and to the real bridge otherwise; every other bridge
-// method passes through unchanged (spread first). Pure so the routing is testable directly
-// (mirrors the other top-level boot helpers). The beeper path for non-shell chats is untouched.
 // Redirect a shell inbound event to its CURRENT joined room, if any — "entering a
 // room is like typing in another chat" (operator): once `/rooms join acim` sets the shell's
 // current room, a plain or `@e`-addressed message typed at the shell must dispatch as
@@ -202,7 +195,7 @@ export function whisperPortOf(cfg) {
 // the redirect also `claim`s it on shellPort (the SAME ownership signal `owns()` already
 // keys outbound routing on for the console seat), or the reply would be handed to the beeper
 // bridge instead of pushed back over this socket. Pure aside from that one registration call,
-// so the redirect decision itself is testable directly (mirrors makeShellAwareBridge below).
+// so the redirect decision itself is testable directly (mirrors makeLimbAwareBridge below).
 export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
   // Commands (anything slash-prefixed) are never part of the room fan-out — this feature is
   // "prose fan-out to the current room", not "commands run against the room". Without this
@@ -218,24 +211,36 @@ export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
   return { ...msg, from: { ...(msg?.from ?? {}), network: 'room', chatId: room } };
 }
 
-export function makeShellAwareBridge(bridge, shellPort) {
-  return {
-    ...bridge,
-    send: (c, t, o) => (shellPort.owns(c) ? shellPort.send(c, t, o) : bridge.send(c, t, o)),
-    startStream: (c, i, tag) => (shellPort.owns(c) ? shellPort.startStream(c, i, tag) : bridge.startStream(c, i, tag)),
-    // The mesh posts its origin placeholder ("🤔 thinking…") via postStatus, so a shell-origin
-    // relay (`@don` typed in the shell) must land that placeholder on the editor — not stream it
-    // to Beeper and drop it — the same reason send/startStream are wrapped, extended to the mesh
-    // return path (operator 2026-07-25). shellPort.postStatus returns null (no editable shell msg
-    // id), so the mesh's later edit/delete of the placeholder is a guarded no-op.
-    postStatus: (c, t) => (shellPort.owns(c) ? shellPort.postStatus(c, t) : bridge.postStatus(c, t)),
-  };
+// THE LIMB-AWARE FACADE. A chat a limb owns (`owns(chatId)`: the shell's seats, telegram's tg:
+// chats) is that limb's; Beeper is the default. Every chat-keyed bridge method below that some
+// limb implements goes to the first owning limb, else to the bridge; everything else is the
+// bridge's own (spread first). With the shell alone this is exactly the old shell-aware facade:
+// the shell has only send/startStream/postStatus (its postStatus returns null, so a mesh
+// placeholder edit there is a no-op). A new port method must be listed here or in the facade
+// test's not-chat-keyed list.
+export const LIMB_ROUTED_METHODS = [
+  'send', 'startStream', 'postStatus', 'editStatus', 'deleteStatus', 'react', 'unreact', 'sendMedia',
+  'editOwn', 'editMessage', 'wasSentByUs', 'sendFailure', 'chatHasParticipant', 'getChatName',
+  'postVerbatim', 'startStreamVerbatim', 'chatRaw', 'listMessagesRaw', 'recentMessages', 'awaitMessage',
+  'archiveChat', 'resolveChatId',
+];
+export function makeLimbAwareBridge(bridge, ...limbs) {
+  if (!limbs.length) return bridge;
+  const routed = { ...bridge };
+  for (const m of LIMB_ROUTED_METHODS) {
+    if (!limbs.some((l) => typeof l?.[m] === 'function')) continue;
+    routed[m] = (c, ...rest) => {
+      const limb = limbs.find((l) => typeof l?.[m] === 'function' && l.owns?.(c));
+      return limb ? limb[m](c, ...rest) : bridge[m](c, ...rest);
+    };
+  }
+  return routed;
 }
 
 // ── WHICH MOUTH SAYS A REPLY (operator 2026-09-05, the peer-spine mouth link) ──────────────────
 // The SPEAKING half's two questions, in one object, handed to createSender — which is where the
 // decision is actually made (src/spine/sender.mjs header). Split out here for the same reason
-// makeShellAwareBridge and redirectShellToRoom are: it is the routing rule, it is pure but for
+// makeLimbAwareBridge and redirectShellToRoom are: it is the routing rule, it is pure but for
 // the injected bridge reads, and it is worth testing directly rather than through a whole boot.
 //
 // `route(chatId)` answers "should the PEER say this reply?" and, when it should, hands back the
@@ -1048,6 +1053,7 @@ export async function boot({
   readConfig = readConfigSync,
   readConfigHash = configContentHashSync,   // () => config.yaml content hash, null while absent/malformed — the change detector's seam
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
+  startTelegram = null,               // the Telegram limb's `start` seam (null = real Bot API transport)
   makeSession = (opts) => (opts.sandboxed ? createSandboxCliSession(opts) : createBrainSession(opts)),   // engine-dispatching session factory (ccode remains default); sandboxed:true wraps the ccode session in setup/sandbox-logon-launcher.ps1's OS-level isolation
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
   io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
@@ -2131,6 +2137,29 @@ export async function boot({
     earProbeTimeoutMs: parseFrequency(earCfg.timeout) ?? 45_000,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   };
+  // THE TELEGRAM LIMB (limbs.telegram.<connection>: { account }): one bot, owner of every tg: chat.
+  // Its token is a file, $EGPT_HOME/secrets/telegram-<connection>.token, never config. Same port
+  // adapter as Beeper (the transport is injected), same send guard. Absent ⇒ null: nothing changes.
+  const telegramPort = await (async () => {
+    const block = cfg.limbs?.telegram;
+    const names = block && typeof block === 'object' && !Array.isArray(block) ? Object.keys(block).filter((k) => block[k] && typeof block[k] === 'object') : [];
+    if (!names.length) return null;
+    const tlog = (m) => log.line?.(`[telegram] ${m}`);
+    const connection = names[0];
+    if (names.length > 1) tlog(`limbs.telegram declares ${names.join(', ')} — one bot per node for now, using '${connection}'`);
+    const t = readTelegramToken(EGPT_HOME, connection);
+    if (!t.token) { tlog(`limbs.telegram.${connection} is declared but ${t.path} is ${t.problem} — not wired. Write it with: node setup/telegram-token.mjs ${connection}`); return null; }
+    if (t.warn) tlog(`${t.path}: ${t.warn}`);
+    const port = await createBeeperBridgePort({
+      telegramToken: t.token, connection,
+      isAllowedUser: sharedBridgeOpts.isAllowedUser, wakeWords, addressWithoutAt, resumedAt: sharedBridgeOpts.resumedAt,
+      bridgeSignatureOpen: sharedBridgeOpts.bridgeSignatureOpen, bridgeSignatureClose: sharedBridgeOpts.bridgeSignatureClose,
+      nodeName: node_name, plainOf: isPublicAgent,
+      onLog: tlog,
+    }, { start: startTelegram ?? startTelegramBridge });
+    return sendGuard.wrap({ ...port, owns: isTelegramChatId });
+  })();
+  const telegramLimbs = telegramPort ? [telegramPort] : [];
   // Bridge instances, keyed by ENDPOINT — the (base_url, token) pair, not the token alone
   // (operator 2026-09-02). The token was a sufficient key only while every connection reached
   // the SAME Beeper Desktop; two Desktops on one node are two different addresses, and keying
@@ -2313,7 +2342,8 @@ export async function boot({
       // cannot be half of a double answer — being silent wherever the ear is present is the whole
       // of what it is.
       if (owned) inboundOwned.add(key);
-      bridgeByEndpoint.set(key, owned ? port : conditional ? earWhereTheEarIsAbsent(port, name) : outboundOnly(port));
+      // A tg: chat asked of any Beeper connection is the Telegram limb's (no limb ⇒ the port itself).
+      bridgeByEndpoint.set(key, makeLimbAwareBridge(owned ? port : conditional ? earWhereTheEarIsAbsent(port, name) : outboundOnly(port), ...telegramLimbs));
     }
     return bridgeByEndpoint.get(key);
   };
@@ -2332,17 +2362,20 @@ export async function boot({
   // arrival with the EAR's name rather than an outbound alias that happens to share the endpoint.
   // This loop is also the whole reason a declared `primary` no agent speaks on is now DIALLED —
   // before the split, an unspoken-on connection was never opened and therefore never heard.
-  for (const name of inboundConnections) {
+  // NO BEEPER AT ALL (no limbs.beeper connection, no legacy token) but a Telegram limb: the limb is
+  // this node's bridge and no Beeper bridge is built. Every other node builds what it always did.
+  const beeperless = !!telegramPort && !declaredConnections.length && !tokenFor(null);
+  for (const name of beeperless ? [] : inboundConnections) {
     const b = await bridgeForEndpoint(endpointFor(name), { ear: true, name });
     if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
   }
   // …then the MOUTHS — every agent's, and the node's own default mouth (node-level sends ride it
   // even when no agent does). Each adds a bridge only if its endpoint is not already open.
-  for (const name of new Set([...Object.keys(agents()).map((being) => outboundOf(being)), defaultConnection])) {
+  for (const name of beeperless ? [] : new Set([...Object.keys(agents()).map((being) => outboundOf(being)), defaultConnection])) {
     const b = await bridgeForEndpoint(endpointFor(name), { ear: false, name });
     if (!connectionOfBridge.has(b)) connectionOfBridge.set(b, name);
   }
-  const defaultBridge = bridgeByEndpoint.get(endpointKey(endpointFor(defaultConnection)));   // this node's DEFAULT MOUTH (the connection, not any being's), and what outboundConnectionFor(null, …) resolves to whenever that mouth can reach the chat
+  const defaultBridge = beeperless ? telegramPort : bridgeByEndpoint.get(endpointKey(endpointFor(defaultConnection)));   // this node's DEFAULT MOUTH (the connection, not any being's), and what outboundConnectionFor(null, …) resolves to whenever that mouth can reach the chat
   // INBOUND ON EVERY CONNECTION (operator 2026-09-02), closing the gap the multi-connection work
   // left open: outbound has been per-connection since 2026-08-30, but the spine registered
   // onMessage/onEdit/onMedia on the DEFAULT bridge alone, so a message arriving on any other
@@ -2356,7 +2389,9 @@ export async function boot({
   // …and WHICH CONNECTION HEARD WHICH CHAT is read off that same stamp (rememberArrival, above),
   // so a reply the peer mouth cannot place goes back out the ear it came in on. Only where there
   // is a choice: with one connection the facade IS the bridge and nothing wraps it.
-  const fanned = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values()], connectionOfBridge);
+  // The Telegram limb is an ear like any connection: its arrivals take the same intake (spine
+  // enqueue). Unnamed in connectionOfBridge, so they carry no connection stamp.
+  const fanned = fanoutInbound(defaultBridge, [...bridgeByEndpoint.values(), ...telegramLimbs], connectionOfBridge);
   const bridge = bridgeByEndpoint.size > 1 ? remembering(fanned) : fanned;
   // ── WHICH CONNECTION AN OUTBOUND INTO *THIS CHAT* RIDES (operator 2026-09-11) ─────────────
   // *"self doesn't have mouth. if mouth is available always use mouth."* ONE rule for every
@@ -2653,7 +2688,7 @@ export async function boot({
   // The read is one load per routed reply; the write only when a cold alias just got its first id
   // (setAliasMouthChat returns the same state otherwise, so writeState is skipped).
   const peerMouth = makePeerMouth({
-    peer: peerSpine, bridge, bridgeOf: rawBridgeOf, owns: (c) => shellPort.owns(c),
+    peer: peerSpine, bridge, bridgeOf: rawBridgeOf, owns: (c) => shellPort.owns(c) || !!telegramPort?.owns(c),
     localMouth: localMouthAvailable ? localMouthFor : null,
     mouthRoomFor: async (chatId) => aliasMouthInfo(await _loadState(), chatId),
     rememberMouthRoom: async (chatId, mouthChatId) => {
@@ -2664,7 +2699,8 @@ export async function boot({
     onLog: mouthLog,
   });
 
-  // Shell-aware bridge facade (makeShellAwareBridge, top of file): the STREAMING senders
+  // Shell-aware bridge facade (makeLimbAwareBridge with the shell, top of file; the tg: routing is
+  // already inside each bridge, from bridgeForEndpoint): the STREAMING senders
   // (E's persona sender + the brain-member relay sender) render through their injected
   // `bridge`, which was the raw beeper bridge — so a streamed @e / @member reply on a
   // shell-owned chat streamed to Beeper and never reached the editor. Handed as `bridge` to
@@ -2673,8 +2709,8 @@ export async function boot({
   // redirect to a shell-owned chat, not just the default one. shellAwareBridge (the default
   // connection's facade — the same object mesh/memberSender rode before this change) is this
   // map's default-mouth entry; shellAwareBridgeOf mirrors rawBridgeOf's per-being lookup.
-  const shellAwareBridgeByEndpoint = new Map([...bridgeByEndpoint].map(([key, b]) => [key, makeShellAwareBridge(b, shellPort)]));
-  const shellAwareBridge = shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(defaultConnection)));
+  const shellAwareBridgeByEndpoint = new Map([...bridgeByEndpoint].map(([key, b]) => [key, makeLimbAwareBridge(b, shellPort)]));
+  const shellAwareBridge = beeperless ? makeLimbAwareBridge(telegramPort, shellPort) : shellAwareBridgeByEndpoint.get(endpointKey(endpointFor(defaultConnection)));
   // …and it asks the SAME question rawBridgeOf does (outboundConnectionFor, operator 2026-09-11):
   // the reply path asks this one, so this is the resolver that actually puts a locally placed
   // reply back out the connection the chat lives on. The STOP confirmation (stopSwitch.pull, far
@@ -3172,7 +3208,7 @@ export async function boot({
   await background?.load();
   // /update beeper + the 6-hourly Beeper check (src/tools/beeper-update.mjs). Real node only: it reads
   // the local Beeper installs and the update feed. Drains like /restart; the spine stays up.
-  beeperUpdate = ingest ? createBeeperUpdate({
+  beeperUpdate = (ingest && !beeperless) ? createBeeperUpdate({
     getConfig,
     home: EGPT_HOME,
     drain: (fn) => spine.drainForRestart(fn, { purpose: 'restarting Beeper for the update' }),
@@ -3792,6 +3828,7 @@ export async function boot({
 
   return {
     spine, bridge, shellPort, pool, peerNodes,           // shellPort: the second LIMB — exposed so its regulation is assertable, like bridge's
+    telegramPort,                                        // null unless limbs.telegram is wired
     get cfg() { return cfg; },                           // the LIVE config (swapped by applyConfig)
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
     noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer

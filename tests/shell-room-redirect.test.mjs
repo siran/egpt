@@ -13,7 +13,7 @@
 // The NETWORK stays 'shell' throughout: that is the console's authority, and this file is one
 // of the places that would notice if it silently changed.
 import { describe, it, expect } from 'vitest';
-import { redirectShellToRoom, makeShellAwareBridge } from '../src/spine/boot.mjs';
+import { redirectShellToRoom, makeLimbAwareBridge } from '../src/spine/boot.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
@@ -184,7 +184,7 @@ describe('outbound routing: the redirect must claim() the room chatId, or a repl
     expect(port.owns('acim')).toBe(true);
   });
 
-  it('end to end: makeShellAwareBridge routes a send for the claimed room chatId to the shell socket, not the raw bridge', async () => {
+  it('end to end: makeLimbAwareBridge routes a send for the claimed room chatId to the shell socket, not the raw bridge', async () => {
     const port = createShellPort();
     const beeperSends = [];
     const rawBridge = { send: async (c, t) => { beeperSends.push({ c, t }); return null; } };
@@ -192,7 +192,7 @@ describe('outbound routing: the redirect must claim() the room chatId, or a repl
     const commands = createCommands({ getConfig: () => ({}), send: async () => {} });
     await commands.run({ chatId: LOBBY, surface: 'room', body: '/rooms join acim', authorized: true });
 
-    const bridge = makeShellAwareBridge(rawBridge, port);
+    const bridge = makeLimbAwareBridge(rawBridge, port);
     // BEFORE the redirect ever claims 'acim', a send targeting it falls through to beeper (wrong bridge)
     await bridge.send('acim', 'unclaimed');
     expect(beeperSends).toHaveLength(1);

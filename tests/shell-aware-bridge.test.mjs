@@ -4,14 +4,14 @@
 // its injected `bridge`. boot handed it the raw beeper bridge, so a STREAMED @e / @member
 // reply on a shell-owned chat streamed to Beeper and never reached the editor — only the
 // command `send` closure was shell-aware, which is why /status showed in the shell but a
-// streamed reply did not. boot now wraps the bridge in makeShellAwareBridge before handing it
+// streamed reply did not. boot now wraps the bridge in makeLimbAwareBridge before handing it
 // to BOTH senders. Two reproduce-first gates:
-//   1. routing (unit): makeShellAwareBridge sends/streams to shellPort for shell-owned chats,
+//   1. routing (unit): makeLimbAwareBridge sends/streams to shellPort for shell-owned chats,
 //      to the real beeper bridge otherwise — asserted with a fake shellPort + fake bridge.
 //   2. relay integration: the REAL member sender (createSender) over the REAL facade + REAL
 //      shellPort renders a relay reply through the shell socket, NOT the beeper bridge.
 import { describe, it, expect } from 'vitest';
-import { makeShellAwareBridge } from '../src/spine/boot.mjs';
+import { makeLimbAwareBridge } from '../src/spine/boot.mjs';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createMeshService } from '../src/spine/mesh.mjs';
@@ -60,7 +60,7 @@ function startedPort(opts = {}) {
   return { shellPort, sock: dialAuthed(servers[0]) };
 }
 
-describe('makeShellAwareBridge — streaming sends route to the shell for shell-owned chats, to beeper otherwise', () => {
+describe('makeLimbAwareBridge — streaming sends route to the shell for shell-owned chats, to beeper otherwise', () => {
   function fakes() {
     const shellCalls = [];
     const beeperCalls = [];
@@ -81,7 +81,7 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
 
   it('send + startStream on a shell-owned chat go to shellPort, NOT the beeper bridge', () => {
     const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
-    const b = makeShellAwareBridge(beeper, shellPort);
+    const b = makeLimbAwareBridge(beeper, shellPort);
     b.send('main', 'hi', { replyTo: 'x' });
     b.startStream('main', '⏳', { persona: 'e' });
     expect(shellCalls.map((c) => c.m)).toEqual(['send', 'startStream']);
@@ -90,7 +90,7 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
 
   it('send + startStream on a NON-shell chat go to the real beeper bridge, NOT shellPort', () => {
     const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
-    const b = makeShellAwareBridge(beeper, shellPort);
+    const b = makeLimbAwareBridge(beeper, shellPort);
     b.send('!room-9', 'hi', { replyTo: 'x' });
     b.startStream('!room-9', '⏳', { persona: 'e' });
     expect(beeperCalls.map((c) => c.m)).toEqual(['send', 'startStream']);
@@ -99,7 +99,7 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
 
   it('unrelated bridge methods pass through unchanged (bridge spread first)', () => {
     const { shellPort, beeper } = fakes();
-    const b = makeShellAwareBridge(beeper, shellPort);
+    const b = makeLimbAwareBridge(beeper, shellPort);
     expect(typeof b.onEdit).toBe('function');
   });
 
@@ -109,7 +109,7 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
   // placeholder streamed to Beeper and dropped. Now it routes to shellPort for shell-owned chats.
   it('REPRODUCE-FIRST: postStatus on a shell-owned chat goes to shellPort (returns null), NOT beeper', () => {
     const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
-    const b = makeShellAwareBridge(beeper, shellPort);
+    const b = makeLimbAwareBridge(beeper, shellPort);
     const id = b.postStatus('main', '🤔 thinking…');
     expect(shellCalls.map((c) => c.m)).toEqual(['postStatus']);
     expect(beeperCalls).toHaveLength(0);
@@ -118,7 +118,7 @@ describe('makeShellAwareBridge — streaming sends route to the shell for shell-
 
   it('postStatus on a NON-shell chat goes to the beeper bridge (returns its msg id), NOT shellPort', () => {
     const { shellPort, beeper, shellCalls, beeperCalls } = fakes();
-    const b = makeShellAwareBridge(beeper, shellPort);
+    const b = makeLimbAwareBridge(beeper, shellPort);
     const id = b.postStatus('!room-9', '🤔 thinking…');
     expect(beeperCalls.map((c) => c.m)).toEqual(['postStatus']);
     expect(shellCalls).toHaveLength(0);
@@ -142,7 +142,7 @@ describe('a brain-member relay reply on a shell-owned chat renders through the s
     };
 
     // The REAL member sender, wired exactly as boot wires it, over the REAL facade.
-    const memberSender = createSender({ bridge: makeShellAwareBridge(beeper, shellPort), bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey: 'e' });
+    const memberSender = createSender({ bridge: makeLimbAwareBridge(beeper, shellPort), bodyEmojiOf: () => '🤖', labelOf: (id) => id, defaultKey: 'e' });
 
     // The relay's openStream shape (boot): open a member stream (posts the ⏳ placeholder as a
     // live frame), then finish it with the brain reply (the committed final).
@@ -181,7 +181,7 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
     };
 
     // The REAL mesh service over the REAL shell-aware facade, exactly as boot wires it.
-    const shellAware = makeShellAwareBridge(beeper, shellPort);
+    const shellAware = makeLimbAwareBridge(beeper, shellPort);
     const mesh = createMeshService({
       bridge: shellAware,
       brain: { async turn() { return { text: '' }; } },          // origin never runs the being
@@ -232,7 +232,7 @@ describe('a shell-origin mesh relay reply streams back into the shell, not Beepe
       startStream(c, i, o) { return { update() {}, async finish() {}, async delete() {}, delivered: false }; },
     };
 
-    const shellAware = makeShellAwareBridge(beeper, shellPort);
+    const shellAware = makeLimbAwareBridge(beeper, shellPort);
     const mesh = createMeshService({
       bridge: shellAware,
       brain: { async turn() { return { text: '' }; } },
@@ -288,7 +288,7 @@ describe('the ORIGIN node signs the relayed reply it posts home (shell surface)'
       startStream() { return { update() {}, async finish() {}, async delete() {}, delivered: false }; },
     };
     const mesh = createMeshService({
-      bridge: makeShellAwareBridge(beeper, shellPort),
+      bridge: makeLimbAwareBridge(beeper, shellPort),
       brain: { async turn() { return { text: '' }; } },
       getConfig: () => ({ node_name: 'kg' }),
       bodyEmojiOf: () => '',
