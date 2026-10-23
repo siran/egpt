@@ -24,6 +24,9 @@ else
   log "VNC disabled (set VNC_PASSWORD to enable)"
 fi
 
+# A new container is a new pid namespace: pid files left by the previous one name other processes.
+rm -f "$EGPT_HOME"/state/daemon-s0.pid "$EGPT_HOME"/state/daemon-s1.pid "$EGPT_HOME"/state/spine.pid
+
 # First boot: the eGPT checkout on its volume. /upgrade pulls it later.
 if [ ! -d "$REPO/.git" ]; then
   log "cloning $REPO_URL (main) into $REPO"
