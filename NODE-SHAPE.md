@@ -149,7 +149,9 @@ limbs:                            # the I/O transports; an http limb will sit be
 ```
 
 A top-level `beeper:` (before migration 0049) is still read, with one
-deprecation line per boot; 0049 moves it under `limbs:`, comments included.
+deprecation line per boot; 0049 copies it under `limbs:`, comments included, and
+leaves the old block as a DEPRECATED copy for older code, ignored once
+`limbs.beeper` is set.
 
 **The role names are load-bearing.** The spine resolves the ear from the key
 `primary` and the mouth from the key `secondary` (`src/spine/boot.mjs`), and each

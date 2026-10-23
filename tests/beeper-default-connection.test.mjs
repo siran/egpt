@@ -345,10 +345,10 @@ describe('limbs.beeper and the pre-0049 top-level beeper: boot the same node', (
     });
   }
 
-  it('both forms at once: limbs.beeper is dialled, the top-level block is ignored and said so once', async () => {
+  it('both forms at once: limbs.beeper is dialled, the top-level block is named as the deprecated copy once', async () => {
     const { built, lines, app } = await bootWith({ agents: AG(), limbs: { beeper: LIVE_BEEPER() }, beeper: { main: { account: 'x@y', token: 'TOK-stale' } } });
     expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'secondary']);
-    expect(lines.filter(isDeprecation)).toEqual([expect.stringMatching(/top-level beeper: ignored, limbs\.beeper is set/)]);
+    expect(lines.filter(isDeprecation)).toEqual([expect.stringMatching(/^\[bridge\] top-level beeper: is the deprecated copy kept for older code; limbs\.beeper is used, and the two differ/)]);
     app.stop();
   });
 });

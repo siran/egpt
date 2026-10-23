@@ -751,9 +751,11 @@ export const CONFIG_SCHEMA = {
   beeper: `
     Beeper accounts block (operator 2026-07-09; MULTI-CONNECTION operator 2026-08-30).
 
-    LIVES AT limbs.beeper (2026-10-23). A top-level beeper: is still read, with
-    one deprecation line per boot, and ignored when limbs.beeper is set;
-    migrations/0049 moves it under limbs:, comments included.
+    LIVES AT limbs.beeper (2026-10-23). The top-level beeper: was evicted from
+    code that day; configs keep it only as a deprecated copy for older code, and
+    current code ignores it when limbs.beeper is set (one informational line per
+    boot). Alone, it is still read, with one deprecation line per boot;
+    migrations/0049 copies it under limbs:, comments included, and leaves it.
 
     SHAPE:
       use: <name>

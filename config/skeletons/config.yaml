@@ -57,7 +57,7 @@
 #                      without a port list; a list repeating one token across
 #                      several ports collapses to plain account + token.
 limbs:
-  # the node's I/O transports: an http limb (and later telegram) will sit beside beeper
+  # the node's I/O transports (an http limb, later telegram, will sit beside beeper); a new install needs no top-level beeper: copy
   beeper:
     main:
       account: "you@example.com"    # the account this token belongs to (label)

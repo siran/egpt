@@ -24,17 +24,22 @@ describe('beeperBlockOf', () => {
     const seen = [];
     const onDeprecated = (m) => seen.push(m);
     beeperBlockOf({ beeper: BLOCK() }, { onDeprecated });
-    expect(seen).toEqual([expect.stringMatching(/^deprecated config\.yaml key — top-level beeper: read as limbs\.beeper\. Migration 0049 moves it under limbs:$/)]);
+    expect(seen).toEqual([expect.stringMatching(/^deprecated config\.yaml key — top-level beeper: read as limbs\.beeper\. Migration 0049 copies it under limbs:$/)]);
     beeperBlockOf({ limbs: { beeper: BLOCK() } }, { onDeprecated });
     beeperBlockOf({}, { onDeprecated });
     beeperBlockOf({ beeper: BLOCK() });
     expect(seen).toHaveLength(1);
   });
 
-  it('both forms: limbs.beeper wins and the top-level block is named as ignored', () => {
+  it('both forms: limbs.beeper wins; one informational line names the top-level block as the deprecated copy, and says when they differ', () => {
     const seen = [];
-    expect(beeperBlockOf({ limbs: { beeper: { main: { token: 'A' } } }, beeper: { main: { token: 'B' } } }, { onDeprecated: (m) => seen.push(m) })).toEqual({ main: { token: 'A' } });
-    expect(seen).toEqual([expect.stringMatching(/top-level beeper: ignored, limbs\.beeper is set/)]);
+    const onDeprecated = (m) => seen.push(m);
+    expect(beeperBlockOf({ limbs: { beeper: BLOCK() }, beeper: BLOCK() }, { onDeprecated })).toEqual(BLOCK());
+    expect(beeperBlockOf({ limbs: { beeper: { main: { token: 'A' } } }, beeper: { main: { token: 'B' } } }, { onDeprecated })).toEqual({ main: { token: 'A' } });
+    expect(seen).toEqual([
+      'top-level beeper: is the deprecated copy kept for older code; limbs.beeper is used',
+      'top-level beeper: is the deprecated copy kept for older code; limbs.beeper is used, and the two differ (expected: a renewed token goes into limbs.beeper only)',
+    ]);
   });
 
   it('neither form, or no config: nothing, and nothing said', () => {
@@ -43,9 +48,9 @@ describe('beeperBlockOf', () => {
     expect(seen).toEqual([]);
   });
 
-  it('limbs is restart-only, and the 0049 move restarts the spine', () => {
+  it('limbs is restart-only, and the 0049 copy restarts the spine', () => {
     expect(isRestartKey('limbs.beeper.primary.token')).toBe(true);
-    expect(restartKeysChanged({ beeper: BLOCK() }, { limbs: { beeper: BLOCK() } })).toEqual(['limbs', 'beeper']);
+    expect(restartKeysChanged({ beeper: BLOCK() }, { limbs: { beeper: BLOCK() }, beeper: BLOCK() })).toEqual(['limbs']);
   });
 });
 

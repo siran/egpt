@@ -1,6 +1,7 @@
-// 0049 — top-level beeper: → limbs.beeper, verbatim. Fixtures are the two live shapes (keys, comment
-// placement and blank lines as measured 2026-10-23; values made up): reve already carries an empty
-// `limbs:` with the operator's two comment lines, dolly has none.
+// 0049 — top-level beeper: copied to limbs.beeper, verbatim; the old block stays under the DEPRECATED
+// comment the operator put on both live nodes (2026-10-23). Fixtures are the two live shapes (keys,
+// comment placement and blank lines as measured 2026-10-23; values made up): reve already carries an
+// empty `limbs:` with the operator's two comment lines, dolly has none.
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -89,6 +90,12 @@ const DOLLY = [
   '    handles: [d]',
 ];
 const under = (lines, n = 2) => lines.map((l) => (l ? `${' '.repeat(n)}${l}` : l));
+const DEPRECATED = (where = 'above') => [
+  `# DEPRECATED (2026-10-23): the valid Beeper block is limbs.beeper, ${where}. This copy stays only so`,
+  '# older eGPT code still finds its connections; current code ignores it. Edit limbs.beeper, not this.',
+];
+// The block left in place: its header comment, then the DEPRECATED lines right above its key line.
+const kept = ([header, ...rest]) => [header, ...DEPRECATED(), ...rest];
 
 let root, egptHome;
 const cfgPath = () => join(egptHome, 'config', 'config.yaml');
@@ -101,7 +108,7 @@ const vaults = () => (existsSync(join(egptHome, 'disposable')) ? readdirSync(joi
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'egpt-0049-')); egptHome = join(root, '.egpt'); logs.length = 0; write(lf(REVE)); });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe('0049 — top-level beeper: → limbs.beeper', () => {
+describe('0049 — top-level beeper: copied to limbs.beeper, the old block kept as DEPRECATED', () => {
   it('REPRODUCE: reve states a top-level `beeper:` and an empty `limbs:`', async () => {
     const cfg = YAML.parse(read());
     expect(cfg.limbs).toBe(null);
@@ -109,27 +116,29 @@ describe('0049 — top-level beeper: → limbs.beeper', () => {
     expect((await plan(ctx())).satisfied).toBe(false);
   });
 
-  it('reve: the block goes under the existing limbs:, after the operator\'s two comment lines, one blank line kept', async () => {
+  it('reve: the copy goes under the existing limbs:, after the operator\'s two comment lines; beeper: stays, marked DEPRECATED', async () => {
     const before = YAML.parse(read());
     await (await plan(ctx())).apply();
-    expect(read()).toBe(lf([...REVE_HEAD, ...REVE_LIMBS, ...under(REVE_BEEPER), ...REVE_TAIL]));
+    expect(read()).toBe(lf([...REVE_HEAD, ...REVE_LIMBS, ...under(REVE_BEEPER), '', ...kept(REVE_BEEPER), ...REVE_TAIL]));
     const after = YAML.parse(read());
     expect(after.limbs).toEqual({ beeper: before.beeper });
-    expect(after.beeper).toBeUndefined();
+    expect(after.beeper).toEqual(before.beeper);
     expect(beeperBlockOf(after)).toEqual(beeperBlockOf(before));
   });
 
-  it('dolly, CRLF: no limbs: — it is written where beeper: stood, CRLF kept', async () => {
+  it('dolly, CRLF: no limbs: — it is written above beeper:, which stays, CRLF kept', async () => {
     write(crlf(DOLLY));
     await (await plan(ctx())).apply();
-    expect(read()).toBe(crlf([...DOLLY.slice(0, 8), 'limbs:', ...under(DOLLY_BEEPER), ...DOLLY.slice(8 + DOLLY_BEEPER.length)]));
-    expect(YAML.parse(read()).limbs.beeper.primary.owner_node).toBe('kg');
+    expect(read()).toBe(crlf([...DOLLY.slice(0, 8), 'limbs:', ...under(DOLLY_BEEPER), '', ...kept(DOLLY_BEEPER), ...DOLLY.slice(8 + DOLLY_BEEPER.length)]));
+    const after = YAML.parse(read());
+    expect(after.limbs.beeper.primary.owner_node).toBe('kg');
+    expect(after.beeper).toEqual(after.limbs.beeper);
   });
 
-  it('a limbs: that already maps a limb takes beeper: beside it, at its indent', async () => {
+  it('a limbs: that already maps a limb takes the copy beside it, at its indent; a limbs: below says "below"', async () => {
     write(lf(['beeper:', '  main: { account: a@b, token: T }', 'limbs:', '    http:', '      port: 8080   # chatbox', '# next', 'agents: {}']));
     await (await plan(ctx())).apply();
-    expect(read()).toBe(lf(['limbs:', '    http:', '      port: 8080   # chatbox', '    beeper:', '      main: { account: a@b, token: T }', '# next', 'agents: {}']));
+    expect(read()).toBe(lf([...DEPRECATED('below'), 'beeper:', '  main: { account: a@b, token: T }', 'limbs:', '    http:', '      port: 8080   # chatbox', '    beeper:', '      main: { account: a@b, token: T }', '# next', 'agents: {}']));
   });
 
   it('backs up into disposable/migration-0049-<ts>/config.yaml, never beside the file', async () => {
@@ -142,20 +151,29 @@ describe('0049 — top-level beeper: → limbs.beeper', () => {
     expect(logs.join('\n')).toContain(join('disposable', vault, 'config.yaml'));
   });
 
-  it('is idempotent: satisfied once moved, nothing written the second time', async () => {
+  it('is idempotent: satisfied once copied, nothing written the second time', async () => {
     await (await plan(ctx())).apply();
-    const moved = read();
+    const copied = read();
     const p = await plan(ctx());
     expect(p.satisfied).toBe(true);
-    expect(p.notes.join()).toMatch(/no top-level `beeper:` left/);
-    expect(read()).toBe(moved);
+    expect(p.notes.join()).toMatch(/top-level `beeper:` is its deprecated copy/);
+    expect(read()).toBe(copied);
     expect(vaults()).toHaveLength(1);
   });
 
-  it('refuses a top-level beeper: beside limbs.beeper, and changes nothing', async () => {
+  it('satisfied, untouched: limbs.beeper beside an equal top-level copy (the operator\'s hand-restored live nodes), or no top-level beeper:', async () => {
+    const both = lf(['limbs:', '  beeper:', '    main: { token: A }', ...DEPRECATED(), 'beeper:', '  main: { token: A }']);
+    write(both);
+    expect((await plan(ctx())).satisfied).toBe(true);
+    write(lf(['limbs:', '  beeper:', '    main: { token: A }']));
+    expect((await plan(ctx())).notes.join()).toMatch(/no top-level `beeper:`/);
+    expect(vaults()).toEqual([]);
+  });
+
+  it('refuses a top-level beeper: beside a DIFFERENT limbs.beeper, and changes nothing', async () => {
     const both = lf(['limbs:', '  beeper:', '    main: { token: A }', 'beeper:', '  main: { token: B }']);
     write(both);
-    await expect(plan(ctx())).rejects.toThrow(/0049 refuses: .*top-level `beeper:` AND `limbs\.beeper`/);
+    await expect(plan(ctx())).rejects.toThrow(/0049 refuses: .*top-level `beeper:` AND a different `limbs\.beeper`/);
     expect(read()).toBe(both);
     expect(vaults()).toEqual([]);
   });
@@ -181,7 +199,8 @@ describe('0049 — top-level beeper: → limbs.beeper', () => {
   it('the plan names keys and lines, never a value', async () => {
     const p = await plan(ctx());
     const shown = p.changes.join('\n');
-    expect(shown).toMatch(/lines 13-26; keys primary, secondary\) → `limbs\.beeper`, under the existing `limbs:` \(line 9\)/);
+    expect(shown).toMatch(/lines 13-26; keys primary, secondary\) copied to `limbs\.beeper`, under the existing `limbs:` \(line 9\)/);
+    expect(shown).toMatch(/top-level `beeper:` stays, under a two-line DEPRECATED comment/);
     for (const secret of ['TOK-REVE', 'example.com', '+1000']) expect(shown).not.toContain(secret);
   });
 
@@ -194,6 +213,8 @@ describe('0049 — top-level beeper: → limbs.beeper', () => {
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(egptHome, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0049-beeper-lives-under-limbs'].outcome).toBe('applied');
-    expect(Object.keys(YAML.parse(read()).limbs.beeper)).toEqual(['primary', 'secondary']);
+    const after = YAML.parse(read());
+    expect(Object.keys(after.limbs.beeper)).toEqual(['primary', 'secondary']);
+    expect(after.beeper).toEqual(after.limbs.beeper);
   });
 });
