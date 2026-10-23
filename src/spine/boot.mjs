@@ -35,7 +35,7 @@ import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-sessi
 import { connectCliHost } from '../cli-host.mjs';
 import { defaultIsAlive, heldExclusive } from '../daemon-singleton.mjs';
 import { raiseSelfToNormal } from '../process-priority.mjs';
-import { readConfigSync, configContentHashSync } from '../tools/config-io.mjs';
+import { readConfigSync, configContentHashSync, beeperBlockOf } from '../tools/config-io.mjs';
 import { restartKeysChanged, changedKeys } from './config-swap.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 // THE liveness question for a Beeper install, already written and already tested
@@ -1246,12 +1246,14 @@ export async function boot({
     const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.agent_signature_close != null) ? a.agent_signature_close : (cfg.agent_signature_close ?? '');
   };
+  // Read once: limbs.beeper (or the pre-0049 top-level beeper:) is restart-only, so no swap moves it.
+  const beeperBlock = beeperBlockOf(cfg, { onDeprecated: (m) => log.line?.(`[bridge] ${m}`) });
   // Every CONNECTION declared under `beeper:`, in declaration order — the keys whose value is a
   // BLOCK, so the `use:` selector (a bare string) is never one of them. Same predicate
   // connectionBlock (below) uses to look one up, so any name this list yields is guaranteed to
   // resolve to a block there.
   const declaredConnections = (() => {
-    const b = cfg.beeper;
+    const b = beeperBlock;
     if (!b || typeof b !== 'object' || Array.isArray(b)) return [];
     return Object.keys(b).filter((k) => k !== 'auto_update' && b[k] && typeof b[k] === 'object');   // auto_update: Beeper's own updates, not a connection
   })();
@@ -1289,7 +1291,7 @@ export async function boot({
     return null;
   })();
   const defaultConnection = (() => {
-    const b = cfg.beeper;
+    const b = beeperBlock;
     if (!b || typeof b !== 'object' || Array.isArray(b)) return null;
     if (b.use != null) return b.use;
     return nameDerivedConnection;
@@ -1623,7 +1625,7 @@ export async function boot({
   // which install answers, so it sits on the connection beside `account`.
   const candidatesOf = (acct) => (Array.isArray(acct?.endpoints) && acct.endpoints.length ? acct.endpoints : null);
   const connectionBlock = (name) => {
-    const b = cfg.beeper;
+    const b = beeperBlock;
     return name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
   };
   // One candidate (or the connection block itself, which is the SAME shape minus `endpoints`)
@@ -1802,8 +1804,8 @@ export async function boot({
   // about how little that now is, or an operator reads it as "removing this moves my traffic to a
   // Desktop that has never seen these chats", which was true yesterday and is not true today.
   // Silent on a lone-connection node, which resolves to the same answer with the key or without it.
-  if (cfg.beeper?.use != null && nameDerivedConnection && nameDerivedConnection !== cfg.beeper.use) {
-    log.line?.(`[bridge] beeper.use names '${cfg.beeper.use}' — it selects this node's DEFAULT MOUTH and nothing else: ingest (${inboundConnections.map((n) => `'${n}'`).join(', ') || 'NOTHING'}) is decided without it, and so is any chat that mouth cannot reach. Remove it and the default mouth becomes '${nameDerivedConnection}', this node hears on exactly the same connection it hears on now, and every chat only ${inboundConnections.map((n) => `'${n}'`).join(' / ') || 'the ear'} can reach — the Self-DM included — is still answered there.`);
+  if (beeperBlock?.use != null && nameDerivedConnection && nameDerivedConnection !== beeperBlock.use) {
+    log.line?.(`[bridge] beeper.use names '${beeperBlock.use}' — it selects this node's DEFAULT MOUTH and nothing else: ingest (${inboundConnections.map((n) => `'${n}'`).join(', ') || 'NOTHING'}) is decided without it, and so is any chat that mouth cannot reach. Remove it and the default mouth becomes '${nameDerivedConnection}', this node hears on exactly the same connection it hears on now, and every chat only ${inboundConnections.map((n) => `'${n}'`).join(' / ') || 'the ear'} can reach — the Self-DM included — is still answered there.`);
   }
   // The per-agent half of the ear, and the ONLY thing the router's connection gate asks. An agent
   // does not CHOOSE its ear — the node does — but on a node holding SEVERAL ears the gate still
@@ -1889,9 +1891,9 @@ export async function boot({
   // named here, once, before the first bridge is built. It BOOTS anyway, for the same reason the
   // dead-endpoint fallback below does: refusing to start would take the node down over a config
   // the operator can fix while it is running.
-  if ((declaredConnections.length || cfg.beeper?.use != null) && !connectionBlock(defaultConnection)) {
-    log.line?.(cfg.beeper?.use != null
-      ? `[bridge] beeper.use names '${cfg.beeper.use}' but there is no '${cfg.beeper.use}:' block under beeper: — NO connection resolved, so this node has no outbound of its own; falling back to beeper_token / BEEPER_ACCESS_TOKEN, and the bridge is inert if neither is set`
+  if ((declaredConnections.length || beeperBlock?.use != null) && !connectionBlock(defaultConnection)) {
+    log.line?.(beeperBlock?.use != null
+      ? `[bridge] beeper.use names '${beeperBlock.use}' but there is no '${beeperBlock.use}:' block under beeper: — NO connection resolved, so this node has no outbound of its own; falling back to beeper_token / BEEPER_ACCESS_TOKEN, and the bridge is inert if neither is set`
       : `[bridge] beeper: declares ${declaredConnections.map((n) => `'${n}'`).join(', ')} but none is named 'secondary' or 'primary' and no 'use:' picks one — NO connection resolved, so this node has no outbound of its own; falling back to beeper_token / BEEPER_ACCESS_TOKEN, and the bridge is inert if neither is set`);
   }
 

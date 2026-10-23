@@ -277,5 +277,5 @@ invisible to the sandboxed store, so the first turn after the move fails to resu
 and the spine starts the being FRESH. Since 2026-09-14 that raises an operator
 alert instead of passing silently.
 
-Every token — shell, transcription, Beeper — lives in `config.yaml` and nowhere
-else. Never copy one into a doc, a commit, or a chat.
+Every token — shell, transcription, Beeper (under `limbs.beeper` since migration 0049) —
+lives in `config.yaml` and nowhere else. Never copy one into a doc, a commit, or a chat.

@@ -138,14 +138,18 @@ handover ends them, and threads resume by id on the next turn.
 ## The config shape
 
 ```yaml
-beeper:
-  primary:                        # the EAR — your account
-    account: email@domain.com
-    token: bdapi_...
-  secondary:                      # the MOUTH — omit it on a one-number node
-    account: email.second@domain.com
-    token: bdapi_...
+limbs:                            # the I/O transports; an http limb will sit beside beeper
+  beeper:
+    primary:                      # the EAR — your account
+      account: email@domain.com
+      token: bdapi_...
+    secondary:                    # the MOUTH — omit it on a one-number node
+      account: email.second@domain.com
+      token: bdapi_...
 ```
+
+A top-level `beeper:` (before migration 0049) is still read, with one
+deprecation line per boot; 0049 moves it under `limbs:`, comments included.
 
 **The role names are load-bearing.** The spine resolves the ear from the key
 `primary` and the mouth from the key `secondary` (`src/spine/boot.mjs`), and each

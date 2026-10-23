@@ -56,16 +56,18 @@
 #                      in order. The token lookup above answers the same question
 #                      without a port list; a list repeating one token across
 #                      several ports collapses to plain account + token.
-beeper:
-  main:
-    account: "you@example.com"    # the account this token belongs to (label)
-    token: "PASTE_YOUR_TOKEN_HERE"
-  # alt:
-  #   account: "other@example.com"
-  #   token: "PASTE_YOUR_TOKEN_HERE"
-  # use: main                     # OPTIONAL override of the default mouth - see above
-  # auto_update:                  # keeping Beeper itself current: auto | manual | none
-  #   windows: { method: manual } # the default: a log_to_group notice, install on /<handle> update beeper
+limbs:
+  # the node's I/O transports: an http limb (and later telegram) will sit beside beeper
+  beeper:
+    main:
+      account: "you@example.com"    # the account this token belongs to (label)
+      token: "PASTE_YOUR_TOKEN_HERE"
+    # alt:
+    #   account: "other@example.com"
+    #   token: "PASTE_YOUR_TOKEN_HERE"
+    # use: main                     # OPTIONAL override of the default mouth - see above
+    # auto_update:                  # keeping Beeper itself current: auto | manual | none
+    #   windows: { method: manual } # the default: a log_to_group notice, install on /<handle> update beeper
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

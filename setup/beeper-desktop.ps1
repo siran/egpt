@@ -93,10 +93,11 @@ function Set-BeeperServiceAccess {
 }
 
 # --- tokens and ports ------------------------------------------------------------------------
-# connection name -> token, read from config.yaml by eGPT's own reader. Never print the values.
+# connection name -> token, read from config.yaml by eGPT's own reader (limbs.beeper, else the
+# pre-0049 top-level beeper:). Never print the values.
 function Get-BeeperTokens([string] $RepoRoot, [string] $EgptHome) {
   $io = ([Uri](Join-Path $RepoRoot 'src\tools\config-io.mjs')).AbsoluteUri
-  $js = 'const m = await import(process.argv[1]); const b = m.readConfigSync()?.beeper ?? {}; const o = {}; for (const [k, v] of Object.entries(b)) if (v && typeof v === ''object'' && v.token) o[k] = v.token; console.log(JSON.stringify(o));'
+  $js = 'const m = await import(process.argv[1]); const b = m.beeperBlockOf(m.readConfigSync()) ?? {}; const o = {}; for (const [k, v] of Object.entries(b)) if (v && typeof v === ''object'' && v.token) o[k] = v.token; console.log(JSON.stringify(o));'
   $prev = $env:EGPT_HOME
   if ($EgptHome) { $env:EGPT_HOME = $EgptHome }
   try { $json = & node --input-type=module -e $js $io } finally { $env:EGPT_HOME = $prev }

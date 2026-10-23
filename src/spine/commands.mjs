@@ -49,7 +49,7 @@ import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, 
 import { fill } from '../tools/template.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
-import { CONFIG_YAML_PATH, writeConfigKey } from '../tools/config-io.mjs';
+import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config-io.mjs';
 import { isRestartKey } from './config-swap.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { createCdpClient, createChannelTransport } from '../tools/cdp.mjs';
@@ -471,7 +471,8 @@ function phoneDigitsOf(v) {
 // exclusion => null => the caller STOPS rather than create a group with a wrong/missing member.
 // Pure + exported so the rule is unit-tested, and so boot can swap it.
 export function resolveSecondaryParticipantId(config, selfIds = []) {
-  const phones = [...new Set([config?.beeper?.primary?.phone, config?.beeper?.secondary?.phone].map(phoneDigitsOf).filter(Boolean))];
+  const b = beeperBlockOf(config);
+  const phones = [...new Set([b?.primary?.phone, b?.secondary?.phone].map(phoneDigitsOf).filter(Boolean))];
   if (phones.length < 2) return null;
   const selfSet = new Set((Array.isArray(selfIds) ? selfIds : []).map(phoneDigitsOf).filter(Boolean));
   const others = phones.filter((d) => !selfSet.has(d));
@@ -715,7 +716,7 @@ export function createCommands({
   // only answers on ITS OWN machine's local API, so acting on a sibling's token is future
   // work, not v1. An entry missing `account` is skipped + logged by name; never crashes.
   const beeperAccounts = (() => {
-    const raw = cfg().beeper;
+    const raw = beeperBlockOf(cfg());
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
     const out = {};
     for (const [name, entry] of Object.entries(raw)) {
@@ -3202,9 +3203,9 @@ export function createCommands({
   // config.beeper.secondary.phone's digits. Null => STOP (log only, no chat reply). Shared by both verbs.
   const resolveRodz = async (chatId, verb) => {
     const accountID = await forkBridge.chatAccountId(chatId);
-    const rodzDigits = phoneDigitsOf(cfg().beeper?.secondary?.phone);
+    const rodzDigits = phoneDigitsOf(beeperBlockOf(cfg())?.secondary?.phone);
     const rodzUserId = rodzDigits ? await forkBridge.resolveUserIdByPhone(rodzDigits, { accountID }) : null;
-    if (!rodzUserId) { onLog(`${verb}: could not resolve Rodz's Beeper user id from config.beeper.secondary.phone — refusing, nothing created.`); return null; }
+    if (!rodzUserId) { onLog(`${verb}: could not resolve Rodz's Beeper user id from the Beeper secondary connection's phone — refusing, nothing created.`); return null; }
     return { accountID, rodzUserId };
   };
 
@@ -3248,7 +3249,7 @@ export function createCommands({
   // every contact, makes all of them. /join and /split invite Rodz + the requester (the operator's own
   // request: Rodz alone); the automatic group (`everyone`) Rodz + every member of the chat. No mouth →
   // the members alone. → { accountID, participantIDs } or null (logged).
-  const hasMouth = () => !!phoneDigitsOf(cfg().beeper?.secondary?.phone);
+  const hasMouth = () => !!phoneDigitsOf(beeperBlockOf(cfg())?.secondary?.phone);
   const invitableOf = (ev) => (String(ev?.senderId ?? '').endsWith(':beeper.local') ? ev.senderId : null);
   async function sideGroupPlan(ev, verb, { everyone = false } = {}) {
     const rodz = hasMouth() ? await resolveRodz(ev.chatId, verb) : null;
@@ -3266,7 +3267,7 @@ export function createCommands({
   async function membersOf(chatId, verb) {
     const items = (await forkBridge.chatRaw?.(chatId))?.participants?.items;
     if (!Array.isArray(items)) { onLog(`${verb}: could not read the members of ${chatId} — nothing created.`); return null; }
-    const ours = new Set(Object.values(cfg().beeper ?? {}).map((a) => phoneDigitsOf(a?.phone)).filter(Boolean));
+    const ours = new Set(Object.values(beeperBlockOf(cfg()) ?? {}).map((a) => phoneDigitsOf(a?.phone)).filter(Boolean));
     return items.filter((p) => !p?.isSelf && !ours.has(phoneDigitsOf(p?.phoneNumber))).map((p) => invitableOf({ senderId: p?.id })).filter(Boolean);
   }
   // createGroup on the primary → the SHORT chat id, or null (logged).

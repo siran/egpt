@@ -22,6 +22,7 @@
 // modes live in the agents registry + conversations.yaml.
 import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
+import { beeperBlockOf } from '../tools/config-io.mjs';
 
 // The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
 // 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
@@ -56,8 +57,9 @@ export async function superChannelAlive(chatId, { chatRaw, config = {} }) {
   const items = raw?.participants?.items;
   if (!Array.isArray(items)) return null;
   const digits = (v) => String(v ?? '').replace(/\D/g, '');
-  const operator = digits(config.beeper?.primary?.phone);
-  const mouths = new Set(Object.values(config.beeper ?? {}).map((a) => digits(a?.phone)).filter((d) => d && d !== operator));
+  const beeper = beeperBlockOf(config);
+  const operator = digits(beeper?.primary?.phone);
+  const mouths = new Set(Object.values(beeper ?? {}).map((a) => digits(a?.phone)).filter((d) => d && d !== operator));
   return items.some((p) => !mouths.has(digits(p?.phoneNumber)));
 }
 

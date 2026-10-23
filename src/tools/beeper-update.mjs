@@ -10,6 +10,7 @@ import { openSync, closeSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn as nodeSpawn, execFile } from 'node:child_process';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { beeperBlockOf } from './config-io.mjs';
 
 export const AUTO_UPDATE_METHODS = ['auto', 'manual', 'none'];
 export const CHECK_EVERY_MS = 6 * 3_600_000;
@@ -26,7 +27,7 @@ const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Unins
 // { os, method, note }: the method this node runs; note = the one boot log line when it differs from what is configured.
 export function autoUpdateMethod(cfg, platform = process.platform) {
   const os = OS_OF[platform] ?? platform;
-  const raw = cfg?.beeper?.auto_update?.[os]?.method;
+  const raw = beeperBlockOf(cfg)?.auto_update?.[os]?.method;
   const method = raw == null ? (DEFAULT_METHOD[os] ?? 'none') : String(raw).trim().toLowerCase();
   if (!AUTO_UPDATE_METHODS.includes(method)) return { os, method: 'none', note: `beeper.auto_update.${os}.method "${raw}" is not auto | manual | none — treated as none` };
   if (os !== 'windows' && method !== 'none') return { os, method: 'none', note: `beeper.auto_update.${os}.method is ${method}: Beeper updates are not implemented on ${os} yet — treated as none` };
@@ -86,7 +87,7 @@ export async function readPending({ localAppData = process.env.LOCALAPPDATA, rea
 
 // Every Beeper answering /v1/info, named by the connection whose token it answers; tokened connections with no port too.
 export async function readRunning(cfg, { fetchImpl = fetch } = {}) {
-  const conns = Object.entries(cfg?.beeper ?? {}).filter(([k, v]) => k !== 'auto_update' && v && typeof v === 'object' && v.token).map(([name, v]) => ({ name, token: v.token }));
+  const conns = Object.entries(beeperBlockOf(cfg) ?? {}).filter(([k, v]) => k !== 'auto_update' && v && typeof v === 'object' && v.token).map(([name, v]) => ({ name, token: v.token }));
   const live = (await Promise.all(PORTS.map(async (port) => ({ port, version: (await getJson(fetchImpl, `http://127.0.0.1:${port}/v1/info`)).json?.app?.version ?? null })))).filter((p) => p.version);
   const owner = new Map();
   await Promise.all(conns.flatMap((c) => live.map(async (p) => {

@@ -734,8 +734,26 @@ export const CONFIG_SCHEMA = {
     the id to enroll.
   `,
 
+  limbs: `
+    The node's conversational I/O transports, one block each (operator
+    2026-10-23). Today only beeper; an http chatbox (and later telegram) sits
+    beside it. Restart-only.
+
+    Not the /book and /email action limbs (agents.<name>.actions,
+    src/spine/reply-actions.mjs): those are not configured here.
+
+    KEYS:
+      beeper
+        The Beeper accounts block, documented under beeper: below. Read through
+        src/tools/config-io.mjs beeperBlockOf alone.
+  `,
+
   beeper: `
     Beeper accounts block (operator 2026-07-09; MULTI-CONNECTION operator 2026-08-30).
+
+    LIVES AT limbs.beeper (2026-10-23). A top-level beeper: is still read, with
+    one deprecation line per boot, and ignored when limbs.beeper is set;
+    migrations/0049 moves it under limbs:, comments included.
 
     SHAPE:
       use: <name>

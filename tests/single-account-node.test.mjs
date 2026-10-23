@@ -336,10 +336,12 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     // it can reach the chat, and the connection holding the chat speaks where it cannot). Shipping
     // it would teach a new user a key they do not need and hide the one-connection baseline behind
     // a selector. ONE TOKEN IS THE WHOLE REQUIREMENT, which is what the file's own header says.
-    expect(cfg.beeper?.use, 'the skeleton must NOT ship beeper.use — a lone connection needs no selector').toBeUndefined();
-    const declared = Object.keys(cfg.beeper ?? {}).filter((k) => cfg.beeper[k] && typeof cfg.beeper[k] === 'object');
+    expect(cfg.beeper, 'the skeleton ships the Beeper block under limbs: (migration 0049)').toBeUndefined();
+    const beeper = cfg.limbs?.beeper;
+    expect(beeper?.use, 'the skeleton must NOT ship beeper.use — a lone connection needs no selector').toBeUndefined();
+    const declared = Object.keys(beeper ?? {}).filter((k) => beeper[k] && typeof beeper[k] === 'object');
     expect(declared, 'skeleton must declare exactly one beeper connection').toHaveLength(1);
-    expect(cfg.beeper[declared[0]].token, `beeper.${declared[0]} must carry a token`).toBe(TOKEN);
+    expect(beeper[declared[0]].token, `limbs.beeper.${declared[0]} must carry a token`).toBe(TOKEN);
 
     // …and the proof that the list above is COMPLETE: the real boot() runs on it.
     const { app, built, opts, probeCalls } = await bootWith(cfg);
@@ -382,7 +384,7 @@ describe('config/skeletons/config.yaml — the file a new user copies actually b
     const cfg = filled();
     // The lone declared connection — read by NAME rather than through `use:`, which the shipped
     // file no longer carries (see above).
-    const conn = Object.values(cfg.beeper).find((v) => v && typeof v === 'object');
+    const conn = Object.values(cfg.limbs.beeper).find((v) => v && typeof v === 'object');
     // Uncommenting one of these is a deliberate step a node takes when it grows into a second
     // Beeper Desktop or a second node on one account. Shipping any of them SET would hand every
     // new user the expanded path (and, for `endpoints:`, a boot-time HTTP probe) by default.

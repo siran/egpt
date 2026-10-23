@@ -304,3 +304,22 @@ Describe 'the profile ACL check' {
     $gaps[0] | Should Be $bad
   }
 }
+
+Describe 'Get-BeeperTokens (limbs.beeper, else the pre-0049 top-level beeper:)' {
+  $repo = Split-Path -Parent $PSScriptRoot
+  $cases = @(
+    @{ name = 'limbs'; yaml = "node_name: kg`nlimbs:`n  # local-endpoint`n  beeper:`n    primary: { account: a@b, token: TOK-P }`n    secondary: { account: c@d, token: TOK-S }`n    auto_update: { windows: { method: manual } }`n" },
+    @{ name = 'top'; yaml = "node_name: kg`nbeeper:`n  primary: { account: a@b, token: TOK-P }`n  secondary: { account: c@d, token: TOK-S }`n" }
+  )
+  foreach ($case in $cases) {
+    It "reads every connection's token from the $($case.name) form, and nothing else" {
+      $h = Join-Path $TestDrive $case.name
+      New-Item -ItemType Directory -Force (Join-Path $h 'config') | Out-Null
+      [IO.File]::WriteAllText((Join-Path $h 'config\config.yaml'), $case.yaml)
+      $t = Get-BeeperTokens -RepoRoot $repo -EgptHome $h
+      (@($t.Keys) | Sort-Object) -join ',' | Should Be 'primary,secondary'
+      $t['primary'] | Should Be 'TOK-P'
+      $t['secondary'] | Should Be 'TOK-S'
+    }
+  }
+}

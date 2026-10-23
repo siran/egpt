@@ -312,3 +312,43 @@ describe('the DEFAULT outbound connection — the names carry the meaning (opera
     app.stop();
   });
 });
+
+// ── limbs.beeper (migration 0049) ─────────────────────────────────────────────────────────────
+// The block moved under limbs: and boot reads it through src/tools/config-io.mjs beeperBlockOf.
+// Either form must boot the SAME node: the same bridges dialled, the same reply path, the same log,
+// plus one deprecation line for the old form only.
+describe('limbs.beeper and the pre-0049 top-level beeper: boot the same node', () => {
+  // [shape, the ear an arrival is delivered on]
+  const SHAPES = {
+    'primary + secondary + primary_gui, no use:': [LIVE_BEEPER, 'primary'],
+    'an explicit use: primary': [() => ({ use: 'primary', ...LIVE_BEEPER() }), 'primary'],
+    'owner_node on secondary, auto_update set': [() => ({ ...LIVE_BEEPER(), secondary: { ...LIVE_BEEPER().secondary, owner_node: 'kg' }, auto_update: { windows: { method: 'manual' } } }), 'secondary'],
+  };
+  const dialled = (built) => built.map((s) => ({ connection: s.connection, token: s.token, baseUrl: s.opts.baseUrl, wsUrl: s.opts.wsUrl }));
+  const isDeprecation = (l) => l.includes('top-level beeper:');
+
+  for (const [name, [shape, ear]] of Object.entries(SHAPES)) {
+    // contract 4.1
+    it(`${name}: same bridges, same reply path, same log`, async () => {
+      const old = await bootWith({ agents: AG(), beeper: shape() });
+      const neu = await bootWith({ agents: AG(), limbs: { beeper: shape() } });
+      expect(dialled(neu.built)).toEqual(dialled(old.built));
+      await deliver(old.byConnection[ear], '@e hola');
+      await deliver(neu.byConnection[ear], '@e hola');
+      expect(neu.replies()).toEqual(old.replies());
+      expect(neu.replies()).toHaveLength(1);
+      expect(old.lines.filter(isDeprecation)).toEqual([expect.stringMatching(/^\[bridge\] deprecated config\.yaml key — top-level beeper: read as limbs\.beeper\. Migration 0049/)]);
+      expect(neu.lines.filter(isDeprecation)).toEqual([]);
+      expect(neu.lines).toEqual(old.lines.filter((l) => !isDeprecation(l)));
+      old.app.stop();
+      neu.app.stop();
+    });
+  }
+
+  it('both forms at once: limbs.beeper is dialled, the top-level block is ignored and said so once', async () => {
+    const { built, lines, app } = await bootWith({ agents: AG(), limbs: { beeper: LIVE_BEEPER() }, beeper: { main: { account: 'x@y', token: 'TOK-stale' } } });
+    expect(built.map((s) => s.connection).sort()).toEqual(['primary', 'secondary']);
+    expect(lines.filter(isDeprecation)).toEqual([expect.stringMatching(/top-level beeper: ignored, limbs\.beeper is set/)]);
+    app.stop();
+  });
+});

@@ -430,6 +430,37 @@ describe('the outbound connection is resolved in exactly one place', () => {
   });
 });
 
+// THE BEEPER BLOCK HAS ONE READER (limbs, phase A, 2026-10-23): src/tools/config-io.mjs beeperBlockOf
+// reads limbs.beeper, else the pre-0049 top-level beeper:. A direct `.beeper` read sees only the old
+// form, so a migrated node would look Beeper-less to it. Shipped JS (comments stripped), shipped
+// PowerShell (`#` comments dropped) and the root launchers; migrations edit raw YAML and are exempt.
+describe('the Beeper block is read through beeperBlockOf alone', () => {
+  const DIRECT = /[\w$)\]]\??\.beeper\b(?![-\w$]|\.(?:com|desktop|local)\b)|\[\s*['"]beeper['"]\s*\]/;
+  const READER = 'src/tools/config-io.mjs';
+  const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' }).split('\n').map((f) => f.trim())
+    .filter((f) => (/^(src|setup)\//.test(f) && /\.(mjs|js|ps1|psm1)$/.test(f) && !/\.Tests\.ps1$/.test(f)) || /^[^/]+\.mjs$/.test(f));
+  const codeOf = (f) => {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    return /\.ps/.test(f) ? src.split('\n').map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n') : stripComments(src);
+  };
+
+  it('the pattern is alive: it fires on every way the block was read, and on none of its neighbours', () => {
+    for (const s of ['cfg.beeper', 'config?.beeper?.primary?.phone', "cfg()['beeper']", 'cfg().beeper', 'm.readConfigSync()?.beeper ?? {}', 'Object.values(config.beeper ?? {})', '${cfg.beeper.use}', '$cfg.beeper.primary', 'cfg.limbs?.beeper'])
+      expect(DIRECT.test(s), s).toBe(true);
+    for (const s of ['cfg.beeper_token', 'beeperBlockOf(cfg)', "'https://api.beeper.com/desktop'", "'com.automattic.beeper.desktop'", "'!a:beeper.local'", "'../bridges/beeper.mjs'", 'beeper: {', 'opts.beeperToken'])
+      expect(DIRECT.test(s), s).toBe(false);
+  });
+
+  it('no shipped source but the reader reads `.beeper` off a config', () => {
+    expect(files.length).toBeGreaterThan(100);
+    expect(files).toContain('setup/beeper-desktop.ps1');
+    const offenders = files.filter((f) => f !== READER).flatMap((f) => codeOf(f).split('\n')
+      .map((l, i) => (DIRECT.test(l) ? `${f}:${i + 1}: ${l.trim()}` : null)).filter(Boolean));
+    expect(offenders, 'route it through beeperBlockOf (src/tools/config-io.mjs)').toEqual([]);
+    expect(codeOf(READER)).toMatch(/export function beeperBlockOf/);
+  });
+});
+
 // A NATIVE EXE'S STDERR IS NOT AN ERROR (found the hard way 2026-09-14). Windows PowerShell 5.1
 // wraps every stderr line of a native executable in a NativeCommandError ErrorRecord, and under
 // $ErrorActionPreference='Stop' that is TERMINATING. git writes its progress meter to stderr, so

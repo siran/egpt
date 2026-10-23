@@ -35,6 +35,19 @@ export async function readConfig() {
   }
 }
 
+// THE BEEPER LIMB'S BLOCK: `limbs.beeper`, else the pre-0049 top-level `beeper:`. The one reader
+// (tests/integrity.test.mjs); beeperBlockPath is where it sits, for the setup scripts that edit it.
+export const beeperBlockPath = (cfg) => (cfg?.limbs?.beeper == null && cfg?.beeper != null ? ['beeper'] : ['limbs', 'beeper']);
+export function beeperBlockOf(cfg, { onDeprecated } = {}) {
+  const path = beeperBlockPath(cfg);
+  if (onDeprecated && cfg?.beeper != null) {
+    onDeprecated(path.length === 1
+      ? 'deprecated config.yaml key — top-level beeper: read as limbs.beeper. Migration 0049 moves it under limbs:'
+      : 'deprecated config.yaml key — top-level beeper: ignored, limbs.beeper is set. Merge it into limbs.beeper by hand (migration 0049 refuses both)');
+  }
+  return path.reduce((o, k) => o?.[k], cfg);
+}
+
 // CONTENT hash of config.yaml — the auto-restart-on-config-change watcher (src/spine/spine.mjs,
 // boot's configBootHash + readConfigHash seams). sha256 hex of the raw bytes, so a no-op save
 // (identical bytes) hashes the same and never restarts. PARSE-GATED: returns null when the file

@@ -35,7 +35,7 @@
 // 401 — it just cannot name the pid or the session.
 import { pathToFileURL } from 'node:url';
 import { hostname, networkInterfaces } from 'node:os';
-import { readConfigSync } from './config-io.mjs';
+import { readConfigSync, beeperBlockOf } from './config-io.mjs';
 
 const DEFAULT_PORTS = [23373, 23374, 23375 - 1];   // the two Desktops, and 23372 in case a third install ever lands below them
 const TIMEOUT_MS = 6000;
@@ -44,7 +44,7 @@ const TIMEOUT_MS = 6000;
 // pointer, not a connection). base_url absent ⇒ the bridge default, which is what the spine
 // would ride — so it is reported as the default, never as "unset".
 export function connectionsOf(cfg = {}) {
-  const b = cfg.beeper;
+  const b = beeperBlockOf(cfg);
   if (!b || typeof b !== 'object') return [];
   // A CONNECTION MAY CARRY SEVERAL CANDIDATE ENDPOINTS (`endpoints:`), and each has its OWN
   // token — that is the whole point of the shape: one account, several installs, and the spine
@@ -135,7 +135,8 @@ export async function report({ cfg = readConfigSync(), extraPorts = [], deps = {
   // way, and each outbound rides whichever connection can actually reach that chat. So it is
   // printed only when it is set — `beeper.use = (none)` read as a missing key, and (none) is now
   // the ordinary shape.
-  lines.push(`node ${cfg.node_name ?? '?'}${cfg.beeper?.use != null ? ` — beeper.use = ${cfg.beeper.use} (overrides the default MOUTH; the ear is decided without it)` : ''}`);
+  const use = beeperBlockOf(cfg)?.use;
+  lines.push(`node ${cfg.node_name ?? '?'}${use != null ? ` — beeper.use = ${use} (overrides the default MOUTH; the ear is decided without it)` : ''}`);
   lines.push('');
   for (const port of ports) {
     const o = owners.get(port);
