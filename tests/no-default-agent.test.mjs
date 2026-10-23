@@ -38,6 +38,7 @@ function build(modes = {}) {
   return { bridge, brain, inbound, settle };
 }
 
+// contract 6.6
 describe('no default agent — mode is per being', () => {
   it('REPRODUCE-FIRST: two "on" beings both answer an unnamed line', async () => {
     const { bridge, brain, settle } = build({ egpt: 'on', wren: 'on' });
@@ -68,6 +69,7 @@ describe('no default agent — mode is per being', () => {
     expect(inbound()).toEqual(['buenas', '@e qué opinas']);
   });
 
+  // contract 12.1
   it('REPRODUCE-FIRST: nobody on and nobody named → recorded, no reply (a quote of an unsigned post of ours no longer wakes a default being)', async () => {
     const { bridge, brain, inbound, settle } = build({});
     await bridge.emit(msg('buenas'));

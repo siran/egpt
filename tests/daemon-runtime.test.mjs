@@ -312,6 +312,7 @@ describe('daemon runtime fake-world harness', () => {
     expect(logs.join('')).toContain('user wanted out');
   });
 
+  // contract 14.2
   it('exit code 43 restarts immediately without upgrade work', async () => {
     const { runtime, children, spawnSync } = makeRuntime();
     runtime.spawnShell();
@@ -339,6 +340,7 @@ describe('daemon runtime fake-world harness', () => {
     expect(runtime.state.backoff).toBe(4000);
   });
 
+  // contract 14.2
   it('exit code 42 pulls, installs on changed sha, builds, and restarts', async () => {
     const imported = [];
     const spawnSync = makeSpawnSync({ shas: ['oldsha', 'newsha'] });
@@ -800,6 +802,7 @@ describe('boot-failure recovery ladder (never-healthy crash loop)', () => {
   });
 
   describe('regression: the paths the ladder must not have disturbed', () => {
+    // contract 14.2
     it('exit code 44 still rewinds from the sidecar the SPINE wrote, and consumes it', async () => {
       const unlinked = [];
       const { runtime, children, spawnSync } = makeRuntime({
@@ -975,6 +978,7 @@ describe('one runner across sessions', () => {
       expect(w.hold()).toBeUndefined();
     });
 
+    // contract 14.4
     it('arriving while Session 1 holds the profile spawns nothing, stays up on a REF\'d hold timer, and takes the profile back when Session 1 lets go', () => {
       const w = world({ claimedByS1: true, files: { 'state/spine.pid': '9500\n' } });
       expect(w.runtime.start()).toBeNull();
@@ -1073,6 +1077,7 @@ describe('one runner across sessions', () => {
   });
 
   describe('the Session 1 daemon', () => {
+    // contract 14.4
     it('arriving while the S0 spine holds the profile: claims s1.claim, asks ONCE through state/ingest (temp, then rename), spawns only once the profile is free', () => {
       const w = world({ session1: true, files: { 'state/spine.pid': '9500\n' }, runnerHeldByOther: true, sessions: 0 });
       expect(w.runtime.start()).toBeNull();

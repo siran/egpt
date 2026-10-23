@@ -25,6 +25,7 @@ const META = {
 };
 
 describe('media.save', () => {
+  // contract 8.1
   it('copies the attachment into conversations/<slug>/media with a meaningful name + index line', async () => {
     const { media, copies, appends } = harness();
     const dest = await media.save(META);
@@ -68,6 +69,8 @@ describe('media.save', () => {
     expect(await media.save({ localPath: '/x' })).toBe(null);
   });
 
+  // contract 4.3
+  // contract 8.5
   it('a video gets Route-A: keyframes (ffmpeg from config) + audio transcript → augmented descriptor', async () => {
     let state = emptyState();
     const io = { copyFile: async () => {}, mkdir: async () => {}, appendFile: async () => {} };

@@ -20,6 +20,7 @@ afterEach(() => {
 });
 
 describe('swallow', () => {
+  // contract 15.3
   it('writes one line with tag, message, and code', () => {
     const e = Object.assign(new Error('disk exploded'), { code: 'EIO' });
     swallow('test.tag', e);

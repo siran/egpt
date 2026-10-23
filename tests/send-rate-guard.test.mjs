@@ -85,6 +85,7 @@ function rig({ keyOf = (c) => c, limits = {} } = {}) {
 const sentTo = (port, chat) => port.posts.filter((p) => p.chat === chat);
 
 describe('send-rate guard — loop_guard.outbound counts each chat\'s sends', () => {
+  // contract 15.2
   it('REPRODUCE: 5 + 5 sends in two consecutive 3 s windows pause THAT chat and drop what follows', async () => {
     const { guard, trips, nodeTrips, port, bridge, sends, clock } = rig();
     await sends('!flood', 5, 0);                 // t = 0..400
@@ -398,6 +399,7 @@ describe('makePeerMouth.homeChatOf — the mouth room maps back to the chat it w
 });
 
 describe('boot — the send-rate trip, wired', () => {
+  // contract 15.2
   it('pauses the chat, says so in it, and posts ONE line to the logging group', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(T0);

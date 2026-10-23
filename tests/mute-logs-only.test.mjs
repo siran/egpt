@@ -42,6 +42,7 @@ function build({ eMode = 'mute', wrenMode, dispatch = {}, state = null } = {}) {
 }
 
 describe('mute — recorded, never a turn', () => {
+  // contract 5.1
   it('REPRODUCTION: send_to_egpt always used to run a turn on every muted line — an allowed user\'s handle call runs none now', async () => {
     const { bridge, brain, inbound } = build({ dispatch: { send_to_egpt: 'always' } });
     await bridge.emit(msg('e hola'));

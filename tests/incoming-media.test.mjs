@@ -64,6 +64,7 @@ describe('transcribeVoiceNote — room service (enabled + postsBack)', () => {
     expect(sent).toEqual(['👂 (164s) hola que tal']);   // author dropped, duration survives
   });
 
+  // contract 9.2
   it('postsBack:false → transcript still returns, but NO ack (heard, not spoken)', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({
@@ -109,6 +110,20 @@ describe('transcribeVoiceNote — room service (enabled + postsBack)', () => {
   it('no transcriber injected → null (module stays Node-import-free)', async () => {
     const t = await transcribeVoiceNote({ localPath: '/tmp/n.ogg', enabled: true, postsBack: true });
     expect(t).toBeNull();
+  });
+
+  // contract 9.3
+  it('a whisper repetition loop is flagged before it is returned (model, transcript) or spoken (👂)', async () => {
+    const sent = [];
+    const t = await transcribeVoiceNote({
+      localPath: '/tmp/n.ogg', transcribe: async () => 'Gracias, ' + Array(17).fill('Michelle.').join(' '),
+      reply: (x) => sent.push(x), enabled: true, postsBack: true,
+    });
+    expect(t).toContain('transcription unreliable');
+    expect(t).not.toContain('Michelle. Michelle.');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('transcription unreliable');
+    expect(sent[0]).not.toContain('Michelle. Michelle.');
   });
 });
 

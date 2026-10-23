@@ -81,6 +81,7 @@ describe('formatDispatchLine — canonical shape', () => {
 describe('formatDispatchLine — stage-direction (reactions etc.)', () => {
   // MESSAGES-FIRST-CLASS-PLAN Phase 2: a meta-event is wrapped in outer brackets
   // (theater-play model) so it reads as a stage-direction, not an utterance.
+  // contract 6.4
   it('wraps the body in [ … ] and carries no #<id> tag (the id is in the action)', () => {
     expect(formatDispatchLine({
       senderName: 'An', chatName: 'HFM', node: 'wa', ts: TS, msgId: '142379',
@@ -228,6 +229,7 @@ describe('isLiveStreamFrame — the ⏳ marker, wherever the frame carries it', 
   // they all build their own fixtures. This one drives the REAL sender and feeds its REAL
   // output back into the REAL recogniser. It never names the marker, so it is the assertion
   // that breaks the moment the two disagree.
+  // contract 6.5
   it('recognises the REAL sender\'s own frames — one marker, not two literals', () => {
     const inits = [], frames = [];
     const bridge = {

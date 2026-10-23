@@ -982,6 +982,7 @@ describe('stats module + msys path helpers', () => {
     expect(homeDirMsys().startsWith('/')).toBe(true);
     expect(toMsysPath(homeDirMsys())).toBe(homeDirMsys());   // already msys → idempotent
   });
+  // contract 13.2
   it('statsPath resolves to the <chatId>.yaml fallback when no name is known (still OUTSIDE the conv dir)', async () => {
     // statsPath is an async RESOLVER now (filenames are human-readable). With no display name and
     // an empty in-memory fs, it falls back to the id-based base <chatId>.yaml — deterministic and
@@ -1330,6 +1331,7 @@ describe('rollTranscript — a changed thread starts a new transcript', () => {
     },
   } });
 
+  // contract 5.3
   it('moves transcript.md to transcripts/<thread_id>.md byte-identical, leaving a fresh one in its place', async () => {
     const fs = fakeFs({ [src]: TEXT });
     expect(await rollTranscript(SURFACE, SLUG, { io: fs.io })).toBe(archive('THREAD-A'));

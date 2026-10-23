@@ -93,9 +93,16 @@ describe('commands.isCommand', () => {
     const { cmds } = harness({ config: { ...AGENTS,  telegram: { chat_id: '!tg-self' } } });
     expect(await cmds.isCommand(typed(cmds, { body: '/e restart', chatId: '!tg-group', surface: 'telegram' }))).toBe(false);
   });
+  // contract 7.1
   it('the whatsapp Self chat_id does NOT authorize the same id on the telegram surface (namespace)', async () => {
     const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self' } } });
     expect(await cmds.isCommand(typed(cmds, { body: '/e restart', chatId: '!self', surface: 'telegram' }))).toBe(false);
+  });
+  // contract 7.2
+  it('a chat titled like Self and a sender named like the operator authorize nothing — ids only', async () => {
+    const { cmds } = harness({ config: { ...AGENTS,  whatsapp: { chat_id: '!self', user_name: 'An' } } });
+    expect(await cmds.isCommand(typed(cmds, { body: '/e restart', chatId: '!group', chatName: '!self', senderId: 'mallory', senderName: 'An' }))).toBe(false);
+    expect(await cmds.isCommand(typed(cmds, { body: '/e restart', chatId: '!group', chatName: 'Self', senderId: 'mallory', senderName: 'An' }))).toBe(false);
   });
   it('does NOT treat plain text (or @e) as a command', async () => {
     const { cmds } = harness();

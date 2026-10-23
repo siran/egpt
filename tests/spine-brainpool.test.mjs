@@ -205,6 +205,7 @@ describe('brainpool.turn', () => {
   // --- brain registry: resolved FRESH every turn (phase 1, operator 2026-08-14 — no more
   //     per-conversation freeze). The def is never written back into the registry any more;
   //     these lock what the RUN itself carries. ---
+  // contract 12.2
   it('resolves the default brain from the registry, keys the warm entry by its engine', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'codex', model: 'gpt-5.4-mini', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
@@ -213,6 +214,7 @@ describe('brainpool.turn', () => {
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: DEFAULT_ALLOWED_TOOLS });
   });
 
+  // contract 12.3
   it('DETERMINISM: a def with model:null/effort omitted runs on the deterministic fallback, never null (operator 2026-07-02)', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
@@ -760,6 +762,7 @@ describe('brainpool.turn', () => {
   // The value comes from the RESOLVED config now (src/spine/config-resolver.mjs configFor,
   // injected as resolveConfig) — node config.yaml < the conversations.yaml entry < the
   // conversation's own folder — not from brainpool opening the folder file itself.
+  // contract 10.2
   it('passes the resolved warm idle_ttl override to pool.run (normal + overflow retry)', async () => {
     const { brain, pool } = harness([
       () => Promise.reject(new Error('claude: error_during_execution\n  Prompt is too long')),
@@ -780,6 +783,7 @@ describe('brainpool.turn', () => {
 });
 
 describe('brainpool.turn — local sibling beings (agents registry)', () => {
+  // contract 12.2
   it('a LOCAL agent\'s type file (agents block) is resolved through the registry — no readonly instancing', async () => {
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
     const config = { agents: { 'don-local': { configuration: 'sonnet-high', name: 'Don' } } };
@@ -796,6 +800,16 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
     expect(pool.calls[0].message.endsWith(ev.line)).toBe(true);           // its own line LAST
     const entry = getState().contacts.whatsapp['!room:beeper.com'];
     expect(entry['don-local']?.readonly).toBeUndefined();   // def lives in config → not instanced
+  });
+
+  // contract 12.2
+  it('there is no default_brain: config.default_brain neither overrides nor fills the type file', async () => {
+    const brains = { resolve: (name) => (name === 'bare' ? { name: 'bare', type: 'ccode' } : null) };
+    const config = { default_brain: { type: 'codex', model: 'opus', effort: 'low' }, agents: { e: { configuration: 'bare' } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].key).toMatch(/^e:ccode:/);
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high' });
   });
 
   it('records the local agent thread in a NESTED block (E flat untouched) and RESUMES it next turn', async () => {
@@ -873,6 +887,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
   // getting. The BOXED shape of the same cases — where the cwd root is deliberately absent — is
   // asserted in its own describe below; before that describe existed these read process.platform
   // and silently asserted whichever shape the machine running them happened to produce.
+  // contract 11.1
   it('a LIST allowed_tools def → brainOptions carry confineToDirs [the conversation dir]; buildClaudeArgs sandboxes it', async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, platform: 'linux' });
@@ -891,6 +906,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
     expect(allow).not.toContain('Read');                       // file tool stays path-confined
   });
 
+  // contract 11.2
   it('allowed_paths: null grant → --add-dir (full access); tool list w/o write tools → deny rules (read-only), end-to-end', async () => {
     const brains = { resolve: () => ({
       name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
@@ -931,6 +947,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
     expect(logs.join('\n')).toMatch(/per-path tool granularity beyond read-only isn't native/);
   });
 
+  // contract 11.2
   it("'all' def is REJECTED → coerced to the explicit list, CONFINED, no bypass (operator 2026-07-03)", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, platform: 'linux' });
@@ -2397,6 +2414,7 @@ describe('brainpool.turn — dangerously_skip_permissions:true escalation hole i
     }
   });
 
+  // contract 11.1
   it('a conv-local brains/<name>.yaml attempting dangerously_skip_permissions:true does NOT unconfine a sibling turn', async () => {
     const tmpBase = mkdtempSync(join(tmpdir(), 'egpt-brains-e2e-'));
     const builtinDir = join(tmpBase, 'builtin');

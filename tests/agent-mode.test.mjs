@@ -45,6 +45,7 @@ describe('REPRODUCE-FIRST 1 — config.yaml agents.<name>.mode is that agent\'s 
     expect((await g.decide('wren', ev)).mode).toBe('on');
   });
 
+  // contract 6.2
   it('the PERSONA agent\'s own mode beats the node-wide dispatch.auto_default_mode', async () => {
     const g = mk({ agents: { e: { mode: 'mute' } }, dispatch: { auto_default_mode: 'on' } });
     expect((await g.decide('e', ev)).mode).toBe('mute');
@@ -73,6 +74,7 @@ describe('REPRODUCE-FIRST 1 — config.yaml agents.<name>.mode is that agent\'s 
 });
 
 describe('REPRODUCE-FIRST 2 — conversations.yaml `agents:` block overrides the per-agent config', () => {
+  // contract 6.2
   it('<conv>.agents.<name>.mode WINS over config.yaml agents.<name>.mode', async () => {
     const g = mk(
       { agents: { wren: { mode: 'on' } } },
@@ -100,6 +102,7 @@ describe('REPRODUCE-FIRST 2 — conversations.yaml `agents:` block overrides the
 });
 
 describe('REGRESSION — everything below the new rung is unchanged (except the retired pre-phase-1 shape, see below)', () => {
+  // contract 6.2
   it('no mode anywhere: the PERSONA still gets dispatch.auto_default_mode', async () => {
     expect((await mk({ dispatch: { auto_default_mode: 'mute' } }).decide('e', ev)).mode).toBe('mute');
     expect((await mk({ whatsapp: { auto_e_default: 'mute' } }).decide('e', ev)).mode).toBe('mute');   // legacy home

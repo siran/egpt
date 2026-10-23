@@ -64,6 +64,7 @@ describe('redirectShellToRoom — the pure decision boot.mjs\'s shell-limb wirin
   // Commands (anything starting with '/') must NEVER be part of the "prose fan-out to the
   // current room" feature — they always keep operating on the console's own lobby seat,
   // regardless of any joined room.
+  // contract 7.4
   it('REPRODUCE-FIRST: a slash command is NEVER redirected, even with a room joined — stays on the console lobby seat', () => {
     const claims = [];
     const msg = shellMsg('/rooms leave acim');

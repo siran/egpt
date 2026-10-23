@@ -91,6 +91,7 @@ describe('REPRODUCE-FIRST — one message, two local agents: ONE inbound line, B
 });
 
 describe('REPRODUCE-FIRST — a turn that FAILS does not re-record its message', () => {
+  // contract 3.2
   it('an auto-dwell turn whose brain throws leaves exactly ONE inbound line (it was recorded at arrival)', async () => {
     const files = new Map();
     const bridge = fakeBridge();
@@ -171,6 +172,7 @@ describe('REGRESSION — the auto-dwell burst still records each line once, in o
 // authorization gates REPLIES elsewhere, never the record — so an unauthorized message on the
 // new surface must still be logged.
 describe('LOCK — a brand-new surface gets its own transcript directory, logged regardless of authorization', () => {
+  // contract 3.2
   it('a googlevoice message lands under conversations/googlevoice/, not whatsapp, even when unauthorized', async () => {
     const files = new Map();
     const bridge = fakeBridge();

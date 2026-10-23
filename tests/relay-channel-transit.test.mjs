@@ -174,6 +174,7 @@ describe('AN ENVELOPE IS NEVER RECORDED — the message, not the chat', () => {
     expect(brain.calls.map((c) => c.chatId)).toEqual([SPLIT_ID]);
   });
 
+  // contract 16.3
   it('DECISION — a stray envelope in an ORDINARY chat is not recorded either: relay traffic is not chat wherever it lands', async () => {
     // Not a hypothetical. mesh's SELF-FALLBACK posts envelopes into the Self chat BY DESIGN when a
     // relay channel does not resolve (mesh.mjs selfRoute — "Relaying through this chat meanwhile"),

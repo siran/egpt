@@ -197,6 +197,7 @@ afterAll(async () => {
   try { await fs.rm(HOME, { recursive: true, force: true }); } catch {}
 });
 
+// contract 13.2
 describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic fixture)', () => {
   // (a) the spine SEES the fixture registry — mode 'on' produced a reply AND the
   //     existing threadId was resumed (not a fresh kickoff). Empty read = red.
@@ -213,6 +214,7 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
   //     identities/<name>/00-*.md dir, never the retired EGPT_HOME/identities root, and
   //     never the retired config/identities/ location (operator 2026-09-10 moved it under
   //     config/agents/ — an identity is a property of the agent).
+  // contract 13.3
   it('(b) seeding lands flat under config/agents/identities + config/skeletons/room', async () => {
     const flatPreset = join(HOME, 'config', 'agents', 'identities', 'psychologist.md');
     expect((await fs.stat(flatPreset)).isFile()).toBe(true);             // seeded flat (secretary pre-existed)
@@ -225,6 +227,7 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
 
   // (c) the ingest watcher consumes from state/ingest — NOT from the retired
   //     EGPT_HOME/ingest root.
+  // contract 14.1
   it('(c) ingest consumes from state/ingest, ignores the retired EGPT_HOME/ingest', async () => {
     await expect(fs.stat(join(P.ingestDir, 'probe.cmd'))).rejects.toThrow();   // consumed
     expect((await fs.stat(join(P.oldIngestDir, 'old.cmd'))).isFile()).toBe(true); // untouched (wrong box)
@@ -250,6 +253,8 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
 
   // (f) media + video-transcription destinations resolve INSIDE the fixture conversation's
   //     media/ folder (path-shape only — the frame/transcribe deps are faked, no ffmpeg/whisper).
+  // contract 8.1
+  // contract 8.5
   it('(f) media save + video sidecar destinations root under <conv>/media', async () => {
     const state = parse(readFileSync(P.conversations, 'utf8'));
     const contacts = createContacts({ loadState: async () => state, writeState: async () => {}, io: {} });
@@ -315,5 +320,19 @@ describe('GUARD 1 — boot reads the canonical layout (real constants, hermetic 
     expect(idx.filter((i) => i < 0)).toEqual([]);           // every layer reached the feed
     expect(idx).toEqual([...idx].sort((a, b) => a - b));    // …in numeric-prefix order
     expect((await fs.stat(join(P.directives, '50-extra.md'))).isFile()).toBe(true);
+  });
+
+  // contract 13.1
+  it('(i) config is config/config.yaml ONLY — a legacy root or JSON copy is never read', async () => {
+    const { CONFIG_YAML_PATH, readConfig, readConfigSync } = await import('../src/tools/config-io.mjs');
+    expect(CONFIG_YAML_PATH).toBe(P.config);
+    expect((await readConfig()).node_name).toBe('kg');
+    await fs.writeFile(join(HOME, 'config.yaml'), 'node_name: legacy\n', 'utf8');
+    for (const p of [join(HOME, 'config.json'), join(HOME, 'config', 'config.json')]) await fs.writeFile(p, '{"node_name":"legacy"}', 'utf8');
+    await fs.rename(P.config, `${P.config}.away`);
+    try {
+      expect(await readConfig()).toEqual({});
+      expect(readConfigSync()).toEqual({});
+    } finally { await fs.rename(`${P.config}.away`, P.config); }
   });
 });

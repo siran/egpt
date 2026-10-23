@@ -237,6 +237,16 @@ describe('spine — FAN OUT to every addressed agent', () => {
     expect(transcript.entries[0].r).toBeUndefined();     // …and it is the FIRST thing written
   });
 
+  // contract 5.4
+  it('every addressed being is handed the ONE dispatch line, #<id> and all — the line the record holds', async () => {
+    const { spine, brain, transcript } = fanoutSpine();
+    const line = 'An@[fam].wa (00:00) #m1: hey @e and @wren, thoughts?';
+    await spine.handleInbound({ ...MSG, body: 'hey @e and @wren, thoughts?', line });
+    expect(brain.calls.map((c) => c.being).sort()).toEqual(['egpt', 'wren']);
+    expect(brain.calls.map((c) => c.line)).toEqual([line, line]);
+    expect(transcript.entries.filter((e) => e.r == null).map((e) => e.ev.line)).toEqual([line]);
+  });
+
   it('LOCK: a bare message runs nobody — no default agent', async () => {
     const { spine, brain, mesh } = fanoutSpine();
     await spine.handleInbound({ ...MSG, body: 'just a normal message' });

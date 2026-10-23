@@ -14,6 +14,8 @@ const FROM = {
 };
 
 describe('identity.build', () => {
+  // contract 4.4
+  // contract 5.4
   it('maps a whatsapp text message to the envelope + dispatch line', () => {
     const ev = identity.build({ body: 'hola', from: FROM });
     expect(ev).toMatchObject({
@@ -42,6 +44,7 @@ describe('identity.build', () => {
     expect(ev.line).toBe('[ An@[fam].wa (14:05): reacted 👍 to #m7 "hola" ]');
   });
 
+  // contract 4.4
   it('maps telegram/signal networks to their node + surface', () => {
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'telegram' } })).toMatchObject({ surface: 'telegram', node: 'tg' });
     expect(identity.build({ body: 'x', from: { ...FROM, network: 'signal' } })).toMatchObject({ surface: 'signal', node: 'sig' });

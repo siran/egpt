@@ -40,6 +40,7 @@ const ev = {
 };
 
 describe('transcript.log — §3.1 stats collector chokepoint', () => {
+  // contract 3.1
   it('fires the member collector into BOTH the per-chat and per-contact stats files (fire-and-forget)', async () => {
     const files = new Map();
     const io = {
@@ -183,6 +184,15 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  // contract 3.1
+  it('log() never waits on the collector — a collector that never settles still records the line', async () => {
+    const files = new Map();
+    const hang = () => new Promise(() => {});
+    const t = createTranscript({ contacts: fakeContacts, io: { ...mkIo(files), readdir: hang, readFile: hang } });
+    expect(await t.log({ ...ev, chatId: '!hung:beeper.com', senderId: '@whatsapp_hung:beeper.local' })).toBe(true);
+    expect(transcriptText(files)).toContain('hola');
   });
 });
 

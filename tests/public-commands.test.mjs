@@ -124,6 +124,7 @@ describe('the default public list: join, split, send, end', () => {
     expect(n.calls.brain).toEqual([]);
   });
 
+  // contract 7.4
   it('a member\'s "/e restart" is refused; the operator\'s runs', async () => {
     const n = node();
     await n.say(member('/e restart'));

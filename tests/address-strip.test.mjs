@@ -309,6 +309,7 @@ describe('REPRODUCE — the STEER path feeds the being its own wake word', () =>
 });
 
 describe('LOCKS — the steer path keeps everything else', () => {
+  // contract 5.4
   it('a steer that was never addressed is unchanged — the RAW dispatch line, head and all', async () => {
     const brain = await steerInto('también revisa X', { atEStart: false, atEAnywhere: false }, { mode: 'on' });
     expect(brain.steered).toEqual([`${headOf('m2')}también revisa X`]);

@@ -29,6 +29,7 @@ function fakePool() { const runs = []; return { runs, run(key, msg, _onP, opts) 
 const TARGET = { key: 'e:ccode:whatsapp:hfm-1', sessionId: 'sid-1', model: 'haiku', cwd: '/c', allowedTools: 'all' };
 
 describe('compaction service', () => {
+  // contract 10.3
   it('debounces the cooling period, then sends native /compact through the warm pool when over ratio', async () => {
     const pool = fakePool(), sched = makeScheduler();
     const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });

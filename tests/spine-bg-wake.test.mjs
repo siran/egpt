@@ -182,6 +182,7 @@ describe('spine — a background task\'s result wakes the being', () => {
     expect(b.notes.some((n) => /STOP/.test(n))).toBe(true);
   });
 
+  // contract 6.1
   it('a chat whose gate says no reply (off) is not woken', async () => {
     const brain = stubBrain();
     const b = build({ brain, mode: 'off' });

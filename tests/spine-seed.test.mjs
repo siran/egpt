@@ -107,6 +107,7 @@ describe('seedSkeletons', () => {
     expect(files[join(IDS, 'ken.md')]).toBe('I am Ken');
   });
 
+  // contract 13.3
   it('seeds the shared room template (config/skeletons/room/*.md) copy-if-missing', () => {
     const files = run({
       [join(REPO, 'room', '00-identity.md')]: 'I am eGPT',
@@ -120,6 +121,7 @@ describe('seedSkeletons', () => {
     expect(files[join(SKEL, 'room', '40-rules.md')]).toBe('RULES');
   });
 
+  // contract 13.3
   it('NEVER overwrites an operator-edited room template file', () => {
     const files = run({
       [join(REPO, 'room', '00-identity.md')]: 'SHIPPED',

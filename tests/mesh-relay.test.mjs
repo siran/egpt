@@ -29,6 +29,7 @@ function harness({ donReply = async () => 'yes, here' } = {}) {
 }
 
 describe('mesh relay — YAML provenance over a shared channel', () => {
+  // contract 16.1
   it('encodes an OPAQUE base64 body with a READABLE tail, and round-trips (An 2026-06-20)', () => {
     const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
     expect(w).toMatch(/\nfrom: HFM\n/);            // routing tail stays readable
@@ -110,6 +111,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(s.info).toMatchObject({ by: 'don.do' });       // identity rides alongside
   });
 
+  // contract 16.4
   it('answers "no <being>.<node> here" — never silence — when the peer lacks it', async () => {
     const h = harness();
     await h.do.onRoomMessage({ route: h.route, text: encodeMesh({ by: 'An', body: 'hi @ghost', from: 'HFM', to: 'ghost.do' }) });
@@ -117,6 +119,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(parseMesh(h.channel[0])).toMatchObject({ by: 'ghost.do', body: 'no ghost.do here' });
   });
 
+  // contract 16.3
   it('never re-relays mesh traffic (a provenance-tailed message is consumed)', async () => {
     const h = harness();
     // kg is not the target node (to: don.do) → consume, no re-relay, no "not here"
@@ -344,6 +347,7 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
     for (const s of sent) expect(parseMesh(s.t)).toMatchObject({ to: 'wren.kg', via: 'don.do' });
   });
 
+  // contract 16.3
   it('a relay-record ALWAYS forwards into its own route — even when the next hop is local (no collapse)', async () => {
     const sent = [];
     const kg = createMeshRelay({

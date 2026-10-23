@@ -79,6 +79,7 @@ describe('clean ingest — the three-check wake model', () => {
   // 3. ECHO. E's own signed output re-entering (no cross-being address), in mode 'on' (replies to
   //    everything) — must NOT re-wake E. This is the PALMA loop's REPLY face: only the own-output
   //    classification stops it, since 'on' has no mention gate.
+  // contract 7.3
   it("3. E's own signed output re-entering does NOT re-wake E (mode on)", async () => {
     const { spine, brain, transcript } = buildSpine({ mode: 'on' });
     await spine.handleInbound({ body: `ya terminé la tarea${SIG_KG_E}`, from: from({ msgKey: 'kg-e-3', isSender: false }) });
@@ -211,6 +212,7 @@ describe('clean ingest — a signed line wakes only the being it explicitly addr
     expect(wokeBeings(brain).sort()).toEqual(['egpt', 'eplus']);
   });
 
+  // contract 7.3
   it("LOCK: this node's own node-only frame wakes nobody, even naming @eplus", async () => {
     const { spine, brain } = buildSpine({ mode: 'on' });
     await spine.handleInbound({ body: `@eplus aviso${encodeNodeSignature('kg')}`, from: from({ msgKey: 'kg-sys-1', isSender: true }) });

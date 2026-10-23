@@ -161,6 +161,7 @@ describe('a voice note pending across a spine restart', () => {
     expect(next.brain.calls).toHaveLength(0);
   });
 
+  // contract 8.3
   it("the audio is saved into media/ as a live outcome does: the bridge's meta, the transcription as caption, before the outcome line", async () => {
     const dir = home();
     const audio = join(dir, 'note.ogg');

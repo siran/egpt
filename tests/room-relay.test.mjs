@@ -148,6 +148,7 @@ describe('room relay — brain-member gated delivery (mode)', () => {
 });
 
 describe('room relay — the reply counts as exactly ONE non-human turn (phase-3 guard tie)', () => {
+  // contract 6.5
   it('human resets, the single brain reply counts once, and is transcript-logged exactly once', async () => {
     const members = [{ id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' }];
     const { spine, guard, channel, transcript, relayCalls } = harness({ members });

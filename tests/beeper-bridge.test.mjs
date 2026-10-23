@@ -388,6 +388,7 @@ const liveMsg = (over = {}) => ({
 });
 
 describe('beeper bridge', () => {
+  // contract 7.2
   it('dispatches a live message; authorized mirrors isSender', async () => {
     const { incoming } = await startBridge({ wakeWords: EW });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea' })] });
@@ -461,6 +462,7 @@ describe('beeper bridge', () => {
   // one ordinary reply count as a whole burst against the loop guard. (2) A frame must not
   // advance the diff BASELINE, or the settle — the one entry that IS kept — reads against the
   // last PARTIAL instead of against the placeholder.
+  // contract 6.5
   it("a PEER's live stream frames are ONE message, diffed placeholder → settled", async () => {
     const { incoming } = await startBridge();
     const id = `${Math.floor(Math.random() * 1e6)}`;
@@ -498,6 +500,7 @@ describe('beeper bridge', () => {
   // 2026-10-13 it is no longer DROPPED at the bridge (that blocked a same-node sibling's @mention):
   // it reaches onIncoming marked `from.fromNode` (this node) so the SPINE's per-being echo gate
   // suppresses the wake. Marking works for a reply even WITHOUT the persona emoji.
+  // contract 7.3
   it("marks E's own re-ingested reply as own output (from.fromNode) — even one that does NOT lead with the persona emoji", async () => {
     const { bridge, incoming } = await startBridge({ nodeName: 'kg' });
     await sendSettled(bridge, '🐶 egpt: roger', { chatId: CHAT('chat-1') });        // resolves + remembers its confirmed id
@@ -524,6 +527,7 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('te entiendo **An**, mira [aquí](https://x.com/p)');
   });
 
+  // contract 7.2
   it('authorizes a non-isSender message when its senderID is allow-listed', async () => {
     // Beeper does not reliably tag the owner's own sends as isSender (fails even
     // on Self, operator 2026-06-16), so the bridge must authorize from the
@@ -646,6 +650,7 @@ describe('beeper bridge', () => {
   // IS the saved label, no separate pushName exists), the sender falls back to a
   // NON-PRIVATE id: the phone number from the WhatsApp jid. The label appears NOWHERE
   // in the sender identity (senderName / firstName / username all leak-safe).
+  // contract 4.4
   it('NEVER falls back to the operator\'s contact-list label — uses the phone/id instead', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -729,6 +734,8 @@ describe('beeper bridge', () => {
 
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
   // handed to onMedia — not transcribed-then-dropped.
+  // contract 8.3
+  // contract 9.1
   it('a voice note is transcribed AND its file handed to onMedia (caption = transcript)', async () => {
     const { incoming, media } = await startBridge();
     const att = fakeAttachment({ name: 'ptt.ogg', mimeType: 'audio/ogg', isVoiceNote: true });
@@ -852,6 +859,8 @@ describe('beeper bridge', () => {
   // ROUTE A (operator 2026-06-16): a video is handed to E with keyframes (Read
   // them) + the audio transcript — onMedia (the host) returns the augmented
   // descriptor; the bridge announces frames + transcript on the dispatch line.
+  // contract 4.3
+  // contract 8.5
   it('a video surfaces host-extracted frames + the audio transcript to the model', async () => {
     const { incoming } = await startBridge({
       onMedia: async () => ({ savedPath: '/m/clip.mp4', framePaths: ['/m/clip-frame-01.jpg', '/m/clip-frame-02.jpg'], transcript: 'hola desde el video' }),
@@ -899,6 +908,7 @@ describe('beeper bridge', () => {
     expect(media).toHaveLength(0);
   });
 
+  // contract 8.1
   it('"images_docs" saves an image but skips audio', async () => {
     const { media } = await startBridge({ media: { download: 'images_docs' } });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [fakeAttachment({ name: 'a.jpg', mimeType: 'image/jpeg' })] })] });
@@ -1622,6 +1632,7 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('wa-instance');
   });
 
+  // contract 4.1
   it('default network scope is OPEN ([]): EVERY network is processed (Beeper is the transport; network is metadata, not a gate)', async () => {
     fake.chats.set(CHAT('chat-unknown'), { title: 'X', type: 'single', isMuted: false, accountID: null });
     fake.chats.set(CHAT('chat-telegram'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
@@ -1915,6 +1926,7 @@ describe('beeper bridge — /v1/chats cursor pagination', () => {
 // host-facing (onIncoming's `from`, onMedia, listChats, getChatName/getChatSlug)
 // sees short ids only; every fake.posts[*].chatID (what actually hit the API) is
 // the full form.
+// contract 4.5
 describe('beeper bridge — short-id boundary', () => {
   it('onIncoming/from.chatId is the SHORT id, never the wire\'s full Matrix form', async () => {
     const { incoming } = await startBridge();
@@ -2946,6 +2958,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // THE KEY LOCK (operator 2026-07-20): the @e reply REUSES the note's already-made arrival
   // transcription from transcript.md and NEVER re-transcribes (the old branch downloaded the audio
   // and ran whisper a SECOND time — a wasteful double transcription this rework removes).
+  // contract 8.4
   it('a bare @e reply to a voice note REUSES the transcript.md text (👂 <text>) and calls transcribe ZERO times; E is NOT dispatched', async () => {
     const transcribe = countingTranscribe();
     const doc = transcriptDoc(voiceLine('vn-1', 'hola que tal'));
@@ -2993,6 +3006,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.find((i) => i.from.msgKey === 'reply-miss').from.atEStart).toBe(true);   // a plain @e still wakes E
   });
 
+  // contract 8.4
   it('REGRESSION: a bare wake-word PLUS extra text (@e what did she say) replying to a voice note wakes E normally — NO substitution', async () => {
     const transcribe = countingTranscribe();
     const { incoming } = await startBridge({ readTranscript: async () => transcriptDoc(voiceLine('vn-2', 'hola')), transcribe });
@@ -3079,6 +3093,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     return f;
   };
 
+  // contract 8.4
   it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, cleans up its own ack (never the trigger), and does NOT wake E', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(textLine('tn-audio', 'hello there'));
@@ -3198,6 +3213,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // matching "ev" inside ordinary prose), this gate already requires the WHOLE reply to be
   // nothing but the wake-word, so a bare 'e' (no '@') carries the same negligible false-positive
   // risk as '@e' — accepted on both the voice-note branch and this text-mirror branch.
+  // contract 8.4
   it('a BARE "e" (no @) reply to a TEXT message triggers the mirror exactly like "@e"', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(textLine('tn-bare', 'hello there'));
@@ -3214,6 +3230,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.some((i) => i.from.msgKey === 'reply-bare')).toBe(false);
   });
 
+  // contract 8.4
   it('a BARE "e" (no @) reply to a VOICE note triggers the transcript reveal exactly like "@e"', async () => {
     const doc = transcriptDoc(voiceLine('vn-bare', 'hola bare'));
     const { incoming } = await startBridge({ readTranscript: async () => doc });
@@ -3228,6 +3245,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // ANY LOCAL BEING'S NAME (operator 2026-10-23: no default agent, the readback stays): the gate's
   // list is every local being's tokens (boot's replyWakeWords), so `w` reads back like `e`. Anything
   // more than the bare name, a non-voice quote with no synthesizer, or a stranger: a normal wake.
+  // contract 8.4
   describe('a bare name of ANY local being reads back (w beside e)', () => {
     const LOCAL = { wakeWords: [...EW, 'w'], replyWakeWords: [...EW, 'w'] };
     it('a bare "w" reply to a voice note → 👂 transcript, no turn', async () => {
@@ -3377,6 +3395,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   const KG_WAKE = ['ekg', 'egptkg'];              // kg's DECLARED handles — the MENTION path's list
   const KG_REPLY_WAKE = ['ekg', 'egptkg', 'e'];   // …∪ its fallback_handle token — THIS gate's list
 
+  // contract 8.4
   it('REPRODUCE-FIRST: replying `e` to a VOICE NOTE reads the transcript back (before: nothing — `e` had left wakeWords)', async () => {
     const doc = transcriptDoc(voiceLine('vn-fb', 'hola que tal'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, wakeWords: KG_WAKE, replyWakeWords: KG_REPLY_WAKE });
@@ -3399,6 +3418,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // ONE GATE, TWO BEHAVIOURS, chosen by WHAT IS QUOTED (operator 2026-09-01: "replying to 'e' to a
   // text should read it then also. before it was 'ev', but we can reuse the 'e'"). The text branch
   // is the SAME 2026-08-10 mirror above — no second synthesis path; only its vocabulary changed.
+  // contract 8.4
   it('REPRODUCE-FIRST: replying `e` to a TEXT synthesizes that text and returns it as audio', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(textLine('tn-fb', 'hello there'));
@@ -4480,6 +4500,7 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
 //
 // Two chats, the two shapes the operator named: a 1:1 on the ear the mouth is not in (Favel), and
 // a group both accounts are in, which is two rooms with two ids and so two arrivals of every message.
+// contract 8.4
 describe('the whole node — replying `e` reads the message back (ear, mouth, record, workers)', () => {
   const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';
   const AN = '+15550000001', RODZ = '+15550000002', FAVEL = '+15550000003', DON = '+15550000004';
@@ -4701,6 +4722,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
     expect(incoming.find((i) => i.text === 'hace veinte minutos').from.backlog).toBe(true);   // before it: backfilled
   });
 
+  // contract 15.1
   it('REPRODUCE-FIRST (the bridge): stamped during the sleep and delivered after the resume → backlog; stamped after it → live', async () => {
     let resumed = null;
     const { incoming } = await startBridge({ resumedAt: () => resumed });
@@ -4908,6 +4930,7 @@ describe('a restart is not an outage — the backlog cutoff is the last alive be
     return at;
   };
 
+  // contract 15.1
   it('REPRODUCE-FIRST: stamped after the last beat and delivered on connect → answered; stamped before it → backlog', async () => {
     const beat = lastBeat(60_000);
     const { incoming } = await startBridge();
@@ -5151,6 +5174,7 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
     await waitFor(() => incoming.length === 1);
   });
 
+  // contract 8.3
   it('…and the onMedia meta its outcome saves the audio with, caption aside — what a restart saves into media/', async () => {
     const { incoming, arrivals, media } = await startBridge({ transcribe: async () => 'Mira marico' });
     fake.emit({ type: 'message.upserted', entries: [note()] });
@@ -5175,6 +5199,7 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
     });
   }
 
+  // contract 9.2
   it('transcription OFF for the chat: nothing is pending — one `[voice note]` line, as before', async () => {
     const { incoming, arrivals } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: false, postsBack: false }) });
     fake.emit({ type: 'message.upserted', entries: [note()] });
@@ -5213,6 +5238,7 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
   const CHATTER = 'Bea@[Diego Pérez].wa (16:13) #31504: jaja';
   const OUTCOME = 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription) Mira marico';
 
+  // contract 9.1
   it('end to end: the record gets the arrival at arrival time, then the chatter, then the transcription — appended, nothing rewritten, only the transcription prompts', async () => {
     fake.chats.set(CHAT('chat-1'), { title: 'Diego Pérez', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const s = recordingSpine();

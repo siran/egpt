@@ -378,6 +378,7 @@ describe('a locally placed reply goes out on the connection the message ARRIVED 
   // THE REPRODUCTION. Two connections, the being's own output resolving to `secondary`, the
   // message heard on `primary`, and no peer mouth at all. Before the fix the reply left on
   // `secondary` carrying a chatId only `primary` has ever seen.
+  // contract 4.1
   it('THE SELF-DM: heard on primary, answered on primary — never on the being\'s own `secondary`', async () => {
     const { app, byConnection, replies } = await bootWith(KG());
 

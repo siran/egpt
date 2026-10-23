@@ -127,6 +127,7 @@ function memIo() {
 }
 
 describe('boot()', () => {
+  // contract 1
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
@@ -232,6 +233,8 @@ describe('boot()', () => {
     app.stop();
   });
 
+  // contract 2
+  // contract 13.2
   it('registers the alive beat as a spawned command: spine.pid written, immediate first beat on tick, cadence honored, env carries EGPT_HOME + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
@@ -662,6 +665,7 @@ describe('boot() — config-shape migration', () => {
     app.stop();
   });
 
+  // contract 7.1
   it('networks: wrapper — per-surface allowed_users; chat_ids is a LIST (self-DM = first)', async () => {
     const { opts, app } = await captureBoot({ agents: AG, networks: {
       whatsapp: { chat_ids: ['self-1', 'self-2'], allowed_users: ['op@wa'] },
@@ -684,6 +688,7 @@ describe('boot() — config-shape migration', () => {
   // must NOT fall back to whatsapp's list. surfaceCfg resolves an absent block to {} →
   // allowed_users [] → isAllowedUser denies EVERYONE, fail-closed by default (this is intended,
   // not a bug: authorizing a new surface is an explicit config step).
+  // contract 7.1
   it('a brand-new surface with no networks.<surface> block denies everyone by default (fail-closed)', async () => {
     const { opts, app } = await captureBoot({ agents: AG, networks: {
       whatsapp: { chat_ids: ['self-1'], allowed_users: ['op@wa'] },
@@ -716,6 +721,7 @@ describe('boot() — config-shape migration', () => {
 
   // THE BARE-REPLY READBACK'S LIST (operator 2026-10-23: the readback stays): every LOCAL being's
   // wake, fallback and voice tokens — not a relay's, which names a being on another node.
+  // contract 8.4
   it('replyWakeWords = every local being\'s wake + fallback + voice tokens; a relay contributes none', async () => {
     const r = await captureBoot({ agents: {
       egpt: { configuration: 'egpt', handles: ['ekg'], fallback_handle: { handle: ['e'], unless_present: '+13472576794' } },
@@ -1379,6 +1385,7 @@ describe('boot() — transcriptor worker role', () => {
 // NO DEFAULT AGENT (operator 2026-10-22): boot needs an agents map and nothing else of it.
 // `default:` is ignored (one log line per agent); an on/auto mode set for a being or for the node
 // is warned, because it applies in every chat; the limbs get EVERY agent's wake tokens.
+// contract 12.1
 describe('boot() — no default agent', () => {
   const bootWith = async (agents, extra = {}) => {
     const lines = [];
@@ -1393,6 +1400,10 @@ describe('boot() — no default agent', () => {
     app.stop();
     return { lines, opts };
   };
+
+  it('no agents block refuses to boot', async () => {
+    await expect(bootWith(undefined)).rejects.toThrow(/no agents block is a fatal misconfiguration/);
+  });
 
   it('REPRODUCE-FIRST: boots with no `default: true` anywhere', async () => {
     const { opts } = await bootWith({ egpt: { configuration: 'egpt', handles: ['e', 'egpt'] }, wren: { configuration: 'egpt', handles: ['w'] } });

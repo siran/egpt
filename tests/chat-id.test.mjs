@@ -55,6 +55,7 @@ describe('fullChatId', () => {
     expect(fullChatId('')).toBe('');
   });
 
+  // contract 4.5
   it('round-trips through shortChatId', () => {
     const full = '!aYFq5skcCliVAmwIhRqH:beeper.local';
     expect(fullChatId(shortChatId(full))).toBe(full);

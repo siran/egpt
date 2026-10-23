@@ -1,0 +1,6 @@
+{
+  "4.2": "No test pins it, and the Beeper limb does think today: mention flags, the flood-ban gate, voice transcription + 👂 echo, echo dedup (src/bridges/beeper.mjs).",
+  "8.2": "No test covers a room and media: room-relay carries the origin's relative [saved: media/…] path, which from the room's folder points at the room's own media/.",
+  "14.3": "The /e wizard and the readonly freeze were retired 2026-08-14/15; spine-commands pins that /e does nothing and warm-reconfigure pins a live, unevicted reconfigure. Reword or drop.",
+  "16.2": "Not implemented: mid left the wire in ab1a3ef and onRoomMessage (src/mesh/relay.mjs) has no forward-once check; a re-delivered envelope or a looping to: chain is forwarded again."
+}

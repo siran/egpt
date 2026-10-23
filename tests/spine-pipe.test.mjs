@@ -94,6 +94,9 @@ describe('spine pipe', () => {
     expect(bridge.stopped).toBe(true);
   });
 
+  // contract 4.1
+  // contract 1
+  // contract 5.1
   it('round-trips a message: bridge in → brain → bridge out, logged + recorded', async () => {
     const { spine, bridge, brain, transcript, store } = build();
     spine.start();
@@ -120,6 +123,7 @@ describe('spine pipe', () => {
     expect(store.threads).toHaveLength(0);
   });
 
+  // contract 3.2
   it('mayReply=false: logs, but does NOT run the brain or send', async () => {
     const { spine, bridge, brain, transcript } = build({ reply: false });
     spine.start();
@@ -131,6 +135,8 @@ describe('spine pipe', () => {
     expect(transcript.entries[0].reply).toBeUndefined();   // recorded only — 'not contacted yet'
   });
 
+  // contract 5.1
+  // contract 5.2
   it("on-mode silence (surfaces=false): brain runs, reply recorded not-surfaced, NOT sent", async () => {
     const { spine, bridge, brain, transcript } = build({ reply: true, surface: false });
     spine.start();
@@ -152,10 +158,27 @@ describe('spine pipe', () => {
     expect(bridge.sent.map(s => s.text)).toEqual(['↩ one', '↩ two']);
   });
 
+  // contract 2
   it('tick() runs due heartbeats with the clock time', () => {
     const { spine, heartbeats } = build();
     spine.tick();
     expect(heartbeats.ran).toEqual([1000]);
+  });
+
+  // contract 2
+  it('the loop interval start() arms runs the due heartbeats on every iteration', () => {
+    const armed = [];
+    const bridge = fakeBridge();
+    const heartbeats = fakeHeartbeats();
+    const spine = createSpine({
+      bridge, brain: fakeBrain(), identity: fakeIdentity, router: fakeRouter, gating: fakeGating(),
+      sender: fakeSender(bridge), transcript: fakeTranscript(), heartbeats, clock: { now: () => 1000 },
+      tickMs: 30_000, setInterval: (fn, ms) => { armed.push({ fn, ms }); return 1; }, clearInterval: () => {},
+    });
+    spine.start();
+    expect(armed.map((a) => a.ms)).toEqual([30_000]);
+    armed[0].fn(); armed[0].fn();
+    expect(heartbeats.ran).toEqual([1000, 1000]);
   });
 
   it('stats() reports zeros for an empty queue', () => {
@@ -654,6 +677,7 @@ describe('spine — symmetric nodes (no suppression, no standby)', () => {
 
   // BACKLOG BACKFILL (operator 2026-07-08, S3 wake) — UNCHANGED: an old message (backlog:true) is
   // logged but NEVER dispatched. The woken node backfills its record; it does not re-answer stale traffic.
+  // contract 15.1
   it('backlog (backlog:true) is transcript-logged but NEVER dispatched — even @e in mode:on', async () => {
     const { bridge, brain, transcript } = build();
     await bridge.emit({ ...MSG, msgId: 'b1', body: '@e estás?', backlog: true });

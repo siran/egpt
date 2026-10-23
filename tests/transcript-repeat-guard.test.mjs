@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { detectRepeatLoop, flagDegenerateTranscript } from '../src/transcript-repeat-guard.mjs';
 
 describe('transcript repeat guard', () => {
+  // contract 9.3
   it('detects the classic whisper single-word loop and keeps the prefix + one instance', () => {
     const garbage = 'Gracias, ' + Array(17).fill('Michelle.').join(' ');
     const r = detectRepeatLoop(garbage);

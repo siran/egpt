@@ -84,6 +84,7 @@ function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, log
 }
 
 describe('mesh service — outbound (origin relays through a relay agent)', () => {
+  // contract 16.1
   it('(a) posts a 🤔 placeholder + an encoded request envelope to the relay_channel, with the return-address', async () => {
     const { bridge, mesh } = svc({ node: 'kg' });
     const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don do X' };
@@ -204,6 +205,7 @@ describe('mesh service — multipath outbound (a list agent fans out one envelop
 });
 
 describe('mesh service — responder (a request arrives at the owning node)', () => {
+  // contract 16.1
   it('(b) runs the target local being (brain.turn) and edit-streams the reply as an envelope (re/post_id/done), mirrored', async () => {
     const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
     const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain });
@@ -901,6 +903,7 @@ describe('mesh service — an unresolved relay channel falls back to Self', () =
 });
 
 describe('mesh service — origin-wait timeout', () => {
+  // contract 16.4
   it('(f) surfaces "<target> did not answer" into the origin chat when no reply arrives', async () => {
     const timers = fakeTimers();
     const { bridge, mesh } = svc({ node: 'kg', meshCfg: { timeout_ms: 30000 }, timers });
@@ -923,6 +926,7 @@ describe('mesh service — origin-wait timeout', () => {
 //    the per-relay `origin.waitKey` (set by relay.mjs from its own synthetic post_id), armed AFTER
 //    relayOut resolves so the key is populated. ──
 describe('mesh service — shell-origin (postStatus resolves null) concurrent relays get independent timeouts', () => {
+  // contract 16.4
   it('two concurrent forwards from the SAME chat each get their OWN timer AND their OWN reply home', async () => {
     const timers = fakeTimers();
     const { bridge, mesh } = svc({ node: 'kg', meshCfg: { timeout_ms: 60000 }, timers });

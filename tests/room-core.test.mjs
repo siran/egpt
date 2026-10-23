@@ -49,6 +49,7 @@ describe('ConversationRoom — byte-identical to the legacy slugDir root', () =>
 // An operator-named room is not a second KIND of Room — it is a conversation on surface
 // `room`, out of the SAME constructor, with the SAME tree. It simply does not arrive
 // through Beeper, so its folder sits OUTSIDE the Beeper tree (operator 2026-08-28).
+// contract 13.2
 describe('an operator-named room roots at rooms/<slug> — outside the Beeper tree', () => {
   for (const name of ['work', 'ChatGPT CDP', 'acim']) {
     it(`baseDir for room "${name}" is the rooms root, not conversations/room/<name>`, () => {

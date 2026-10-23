@@ -37,6 +37,7 @@ describe('compact-being — deterministic trigger', () => {
     expect(latestContextTokens(after)).toBe(40010);
   });
 
+  // contract 10.3
   it('the threshold is a fraction of the window, not the full window', () => {
     const limit = Math.round(DEFAULT_WINDOW * COMPACT_RATIO);   // 50_000 (haiku default)
     expect(needsCompaction(limit - 1)).toBe(false);
@@ -173,6 +174,7 @@ describe('compact-being — warm-pool targets (native /compact lives in the spin
     expect(conv.cwd).toBe('C:/dir/whatsapp/chat');   // the cwd the daemon resumes with
   });
 
+  // contract 10.3
   it('dueForCompaction reads the session jsonl and applies the threshold', () => {
     const dir = mkdtempSync(pjoin(tmpdir(), 'due-'));
     const file = pjoin(dir, 's.jsonl');

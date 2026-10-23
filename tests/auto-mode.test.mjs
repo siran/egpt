@@ -438,6 +438,7 @@ describe('mentionStatus({ voiceWake }) — a spoken alias wakes only at the STAR
   });
 });
 
+// contract 6.2
 describe('replyAllowed', () => {
   const M = (o) => ({ atEStart: false, atEAnywhere: false, replyToBot: false, ...o });
   it('on always allows (personality decides downstream)', () => {
@@ -578,6 +579,7 @@ describe('fanOutDecision — single record-always / gate-on-mode chokepoint', ()
 });
 
 describe('mayEmit — outbound backstop', () => {
+  // contract 6.3
   it('HARD-blocks mute/off even when replyAllowed is (wrongly) true', () => {
     expect(mayEmit('mute', { replyAllowed: true })).toBe(false);
     expect(mayEmit('off',  { replyAllowed: true })).toBe(false);
@@ -620,6 +622,7 @@ describe('mayEmit — outbound backstop', () => {
 // it here guards against its silent removal. The wrapper delegates to this fn,
 // so this IS the real gate, pause included — not a parallel copy.
 describe('mayEmitChat — global pause kill over the mode gate', () => {
+  // contract 6.3
   it('paused BLOCKS every mode — even on, even with replyAllowed', () => {
     expect(mayEmitChat({ paused: true, mode: 'on' })).toBe(false);
     expect(mayEmitChat({ paused: true, mode: 'on', replyAllowed: true })).toBe(false);
@@ -638,6 +641,7 @@ describe('mayEmitChat — global pause kill over the mode gate', () => {
       }
     }
   });
+  // contract 6.1
   it('defaults are fail-safe (no args → no emit)', () => {
     expect(mayEmitChat()).toBe(false);                       // no mode, not paused → mayEmit(undefined) → false
     expect(mayEmitChat({ mode: 'mention' })).toBe(false);    // mention w/o replyAllowed → fails closed

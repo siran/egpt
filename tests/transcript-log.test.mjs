@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { transcriptAppend, replyLine, contextSinceLastTurn, bodyForMessageId } from '../src/transcript-log.mjs';
 
 describe('transcriptAppend', () => {
+  // contract 5.3
   it('a new transcript gets the front matter + the line', () => {
     const out = transcriptAppend({ existing: false, body: 'hola wren', name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5136707031', persona: 'wren' });
     expect(out.startsWith('---\n')).toBe(true);
@@ -80,6 +81,14 @@ describe('replyLine — the unified line shape', () => {
   it('tags a withheld reply, leaves a surfaced one clean', () => {
     expect(replyLine({ being: 'wren', body: 'hi', surfaced: true, now: NOW, ...CHAT })).toBe('wren@[SPOILER ALERT: chat de EyAy].wa (19:07): hi');
     expect(replyLine({ being: 'wren', body: 'hi', surfaced: false, now: NOW, ...CHAT })).toContain(': (not surfaced) hi');
+  });
+
+  // contract 5.2
+  it('a withheld reply line is the sent line byte for byte, plus only the tag', () => {
+    const body = '/react #7 👍\nsegunda línea';
+    const sent = replyLine({ being: 'wren', body, surfaced: true, msgId: '7', now: NOW, timeZone: 'America/New_York', ...CHAT });
+    const held = replyLine({ being: 'wren', body, surfaced: false, msgId: '7', now: NOW, timeZone: 'America/New_York', ...CHAT });
+    expect(held).toBe(sent.replace(`: ${body}`, `: (not surfaced) ${body}`));
   });
 
   // The RAW BYTE TRAIN block header (operator 2026-08-27): empty body, tag in the same slot,

@@ -48,6 +48,7 @@ async function both(mode, r, t, opts) {
 }
 
 describe('a person\'s reaction gates like a text reply to the same message', () => {
+  // contract 6.4
   it('on: wakes every being on there, as a text would', async () => {
     const { reaction, text } = await both('on', reactionTo('hola'), textReply('👍'));
     expect(text.brain.calls.map((c) => c.being).sort()).toEqual(['egpt', 'wren']);
@@ -55,6 +56,7 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
     expect(reaction.opens).toHaveLength(2);
   });
 
+  // contract 6.4
   it('mention: a reaction to the BEING\'s post wakes it, as a reply to that post does', async () => {
     const { reaction, text } = await both('mention', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing));
     expect(text.brain.calls.map((c) => c.being)).toEqual(['egpt']);
@@ -88,11 +90,31 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
     expect(on.reaction.brain.calls.map((c) => c.being).sort()).toEqual(['egpt', 'wren']);
   });
 
+  // contract 6.4
   it('mute: recorded, no turn — off: not even recorded', async () => {
     const mute = build('mute'); await mute.bridge.emit(reactionTo('🐶 e: listo', toBeing));
     expect(mute.brain.calls).toEqual([]);
     expect(mute.recorded).toEqual(['reaction']);
     const off = build('off'); await off.bridge.emit(reactionTo('🐶 e: listo', toBeing));
+    expect(off.brain.calls).toEqual([]);
+    expect(off.recorded).toEqual([]);
+  });
+});
+
+describe('a person\'s edit gates like a message', () => {
+  const editOf = () => ({ body: 'edited #m1\n    - hola\n    + chau', from: { ...base, msgKey: 'm1', isStageDirection: true } });
+
+  // contract 6.4
+  it('on wakes every being; mention/accum without a handle and mute record only; off drops', async () => {
+    const on = build('on'); await on.bridge.emit(editOf());
+    expect(on.brain.calls.map((c) => `${c.being}/${c.kind}`).sort()).toEqual(['egpt/edit', 'wren/edit']);
+    expect(on.recorded).toEqual(['edit']);
+    for (const mode of ['mention', 'accum', 'mute']) {
+      const s = build(mode); await s.bridge.emit(editOf());
+      expect(s.brain.calls).toEqual([]);
+      expect(s.recorded).toEqual(['edit']);
+    }
+    const off = build('off'); await off.bridge.emit(editOf());
     expect(off.brain.calls).toEqual([]);
     expect(off.recorded).toEqual([]);
   });

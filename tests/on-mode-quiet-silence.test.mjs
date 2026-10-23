@@ -78,6 +78,7 @@ function build({ mode = 'on', reply = 'ok', partials = [], tasks = [] } = {}) {
 }
 
 describe('on mode, a non-human line — no placeholder up front', () => {
+  // contract 6.2
   it("REPRODUCE: a '…' silence posts NOTHING (no ⏳, no ✓, no edit) and logs one line", async () => {
     const b = build({ reply: '…' });
     await b.bridge.emit(msg('qué calor hace hoy', BEING));

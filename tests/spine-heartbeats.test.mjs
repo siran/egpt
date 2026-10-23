@@ -27,6 +27,7 @@ describe('createHeartbeats', () => {
     expect(fires).toEqual([['a', 1400], ['b', 1400]]);
   });
 
+  // contract 15.3
   it('catches a sync throw, logs it, and still runs the other heartbeats', () => {
     const logs = [];
     const hb = createHeartbeats({ onLog: (m) => logs.push(m) });

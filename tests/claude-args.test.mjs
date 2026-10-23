@@ -32,6 +32,7 @@ describe('tool limitation + trusted access', () => {
     expect(valsOf(buildClaudeArgs({ allowedTools: '*' }), '--allowedTools')).toEqual([DEFAULT_ALLOWED_TOOLS.join(' ')]);
     expect(has(buildClaudeArgs({ allowedTools: '*' }), '--dangerously-skip-permissions')).toBe(false);
   });
+  // contract 11.1
   it("'all'/'*' NEVER grant bare Bash or Agent — the coerced list contains neither", () => {
     for (const at of ['all', '*']) {
       const allow = valsOf(buildClaudeArgs({ allowedTools: at }), '--allowedTools')[0].split(' ');

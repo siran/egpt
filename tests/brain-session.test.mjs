@@ -17,6 +17,14 @@ describe('brain session engine dispatch', () => {
     expect(createBrainSession({ engine: 'pi', spawn: () => {} })).toHaveProperty('turn');
   });
 
+  // contract 10.1
+  it('the default engine spawns the local claude CLI', async () => {
+    let bin = null;
+    const s = createBrainSession({ spawn: (b) => { bin = b; throw new Error('stop'); } });
+    await Promise.resolve().then(() => s.turn('hi')).catch(() => {});
+    expect(bin).toMatch(/claude(\.exe)?$/i);
+  });
+
   it('refuses an engine with no implementation', () => {
     expect(() => createBrainSession({ engine: 'nope' })).toThrow(/unsupported local brain engine/);
   });

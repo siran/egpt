@@ -237,6 +237,7 @@ describe('contextSinceLastTurn — the gap read back out of transcript.md', () =
     expect(blocks[0]).toContain('lo ultimo');
   });
 
+  // contract 5.3
   it('the being has NEVER replied here → the whole tail, up to the cap', () => {
     const { blocks } = contextSinceLastTurn(doc, { being: 'wren' });
     expect(blocks).toHaveLength(5);

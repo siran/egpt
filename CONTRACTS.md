@@ -4,6 +4,9 @@ Every line is an invariant a test must keep from regressing. Read the whole file
 in two minutes. The *why* lives in [`GENOME.md`](GENOME.md); the config
 surface in [`config/config-schema.mjs`](config/config-schema.mjs).
 
+Tag a test `// contract 8.3` (one id a line) right above its `it(`/`describe(`;
+`tests/contracts.test.mjs` fails on an untested id not in `contracts-gaps.json`.
+
 1. The spine is a loop that receives and dispatches messages through Beeper, as
    main transport.
 
@@ -118,7 +121,12 @@ surface in [`config/config-schema.mjs`](config/config-schema.mjs).
    8.3 A voice note is saved AND transcribed — the old bug was
        transcribe-then-drop.
 
-   8.4 A video is handed to the model cooked — the host (outside the sandbox)
+   8.4 A reply that is ONLY a local being's name (any being's wake token, with
+       or without `@`) to a voice note posts its 👂 transcript; to a text
+       message on a node with a voice service, the 🔊 piper reading. Neither
+       wakes anyone.
+
+   8.5 A video is handed to the model cooked — the host (outside the sandbox)
        extracts keyframes into `media/` and transcribes the audio track; the
        model never runs ffmpeg.
 

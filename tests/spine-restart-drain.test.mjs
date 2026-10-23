@@ -658,6 +658,7 @@ describe('boot — /standdown hands the profile to Session 1', () => {
     expect(lines.some((l) => /standdown.*s1\.claim/.test(l))).toBe(true);
   });
 
+  // contract 14.4
   it('a turn in flight finishes first; background work is not waited for; then exit 45', async () => {
     const h = await bootWithBackground({ successorWaiting: () => true });
     const turn = h.say('e otra cosa', { atE: true });

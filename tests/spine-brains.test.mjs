@@ -62,6 +62,7 @@ describe('brain registry', () => {
     expect(brains.resolve('sonnet-high', { convDir: '/conv/slug' })).toMatchObject({ effort: 'max', type: 'ccode' });
   });
 
+  // contract 11.2
   it('the shipped egpt.yaml built-in really loads (real fs)', () => {
     // Override the agents layer so only the repo built-in is seen (independent of the
     // real operator profile, which we must not depend on).

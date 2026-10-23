@@ -161,6 +161,7 @@ describe('auto typing — the send is delayed by a typing-speed function of the 
 });
 
 describe('auto dwell — a mid-dwell /agents auto flip AWAY from auto cancels the pending dwell cleanly', () => {
+  // contract 6.1
   it('the dwell fires but dispatches no turn once the mode is no longer auto', async () => {
     // gating starts 'auto', then flips to 'mention' (no @e in the trigger → mayReply false)
     let mode = 'auto';

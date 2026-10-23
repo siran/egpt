@@ -128,6 +128,16 @@ describe('the tunnel carries the origin, and nothing else changes', () => {
     expect(ev.senderName).toBe('Vero');
   });
 
+  // contract 7.4
+  it("the operator's slash line tunnels into the room UNAUTHORIZED — the room never re-runs it as a command", async () => {
+    const op = identity.build({ body: '/egptkg status', from: { network: 'whatsapp', chatId: GROUP, chatName: 'perrito traducciones', userId: 'u-an', senderName: 'An', msgKey: 'g2', authorized: true, isSender: true } });
+    expect(op.authorized).toBe(true);
+    const { payload, ev } = await tunnelled(op);
+    expect(payload.from).toMatchObject({ network: 'room', authorized: false, isSender: false });
+    expect(ev.authorized).toBe(false);
+    expect(ev.isSender).toBe(false);
+  });
+
   it('identity.build carries `origin` through, and it is null on every genuine bridge inbound', () => {
     expect(inGroup().origin).toBeNull();
     expect(identity.build({ body: 'x', from: { network: 'whatsapp', chatId: 'c', origin: { surface: 'telegram', chatId: 't' } } }).origin)

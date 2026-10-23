@@ -44,6 +44,7 @@ describe('boot ingest handle — /shell-connect routes to shellPort.poke(), not 
   });
 });
 
+// contract 14.2
 describe('lifecycleExit', () => {
   it('maps the lifecycle commands to the daemon exit codes', () => {
     expect(lifecycleExit('/restart')).toBe(43);
@@ -91,6 +92,7 @@ function memDir(files) {
 }
 
 describe('createIngest sweep', () => {
+  // contract 14.1
   it('reads each file, hands its trimmed content to handle, and consumes it', async () => {
     const { io, store } = memDir({ 'a.cmd': '/restart\n', 'b.cmd': '  /upgrade ' });
     const seen = [];

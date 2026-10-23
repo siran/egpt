@@ -178,6 +178,8 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(onlyFile(files)).toContain('e@[fam].wa (14:05): ↩ @e estas?');
   });
 
+  // contract 6.1
+  // contract 6.3
   it('auto_e_paused: absolute kill — even @e in on-mode is withheld but logged', async () => {
     const { bridge, brain, files } = harness({ whatsapp: { auto_e_paused: true } }, 'on');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));

@@ -69,6 +69,7 @@ describe('warm-session pool', () => {
     expect(pool.has('k3')).toBe(true);
   });
 
+  // contract 10.2
   it('idle-evicts after the per-class TTL and closes the session', async () => {
     const { makeSession, made } = fakeFactory();
     const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
@@ -83,6 +84,7 @@ describe('warm-session pool', () => {
   // migrations/0013 and the boot defaults carry). The pool holds no thread state of its own: the
   // session id lives in the conversation record and comes back down as brainOptions, so the turn
   // after an eviction opens a NEW process on the SAME session and resumes it.
+  // contract 10.2
   it('a turn after the class TTL evicted the session reopens on the same session id', async () => {
     const { makeSession, made } = fakeFactory();
     const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });

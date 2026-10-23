@@ -597,6 +597,21 @@ describe('no production source launches Chrome on a debug port', () => {
   });
 });
 
+describe('the in-process Claude SDK stays retired', () => {
+  const SHIPPED = /^(src|setup|config|migrations|bin|extension\/src)\/|^[^/]+\.(mjs|js)$/;
+  const files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' }).split('\n')
+    .filter((f) => SHIPPED.test(f) && /\.(mjs|js|cjs)$/.test(f));
+  const SDK = /@anthropic-ai\//;
+
+  // contract 10.1
+  it('no shipped source imports an @anthropic-ai package, and package.json depends on none', () => {
+    expect(files).toContain('src/warm-cli-session.mjs');
+    expect(files.filter((f) => SDK.test(readFileSync(join(ROOT, f), 'utf8')))).toEqual([]);
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    expect(Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).filter((d) => SDK.test(d))).toEqual([]);
+  });
+});
+
 // Loopback CDP has no auth: a Beeper service serving it can be driven by every local account,
 // every boxed being included (closed live 2026-10-11).
 // The reconciler task runs a script from a user-writable folder: as SYSTEM that folder would hold

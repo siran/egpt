@@ -120,6 +120,7 @@ describe('the entity folder as a rung — through the real resolver', () => {
       (v) => expect(v).toEqual({ enabled: true, postsBack: false, postsBackDelayMs: 300, listeningReaction: false }));
   });
 
+  // contract 9.2
   it('the folder file BEATS the node rung, leaf by leaf', async () => {
     await withDir('egpt-tsvc-', 'transcription_service:\n  posts_back: false\n',
       { transcription_service: { enabled: true, posts_back: true, posts_back_delay_ms: 300 } },

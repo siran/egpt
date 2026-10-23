@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildWhisperArgs, wavDurationSec } from '../src/tools/transcribe.mjs';
 
 describe('buildWhisperArgs — whisper-native anti-repetition', () => {
+  // contract 9.3
   it('includes -mc 0 and -sns by default (whisper owns the loop)', () => {
     const a = buildWhisperArgs({ model: 'm.bin', wav: 'a.wav', language: 'es' });
     expect(a).toEqual(['-m', 'm.bin', '-nt', '-f', 'a.wav', '-l', 'es', '-mc', '0', '-sns']);
