@@ -37,6 +37,9 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **Linked devices:** Beeper's WhatsApp link belongs to the Beeper account, not to each install. kg and do share Rodz's Beeper account, so they count as one linked device on Rodz's WhatsApp.
 - **VNC stays:** noVNC (http://localhost:6080/vnc.html) is the window into the container's screen, for watching eGPT's per-conversation browsers. Telegram sign-in doesn't need it.
 - **Native Telegram limb now** (operator: "native telegram, of course"), on branch `edw` for the container. kg/do Beeper unchanged; SI+EduWeb not touched.
+- **It is a Telegram BOT** (operator, after learning a user login needs our own api_id/api_hash: "we need a bot for EDW"). Bot API over HTTPS long polling, so the node dials out. Every being on EDW speaks through the one bot with its own stamp. Bots never see other bots' messages; privacy mode off (or admin) to read whole groups; one poller per token.
+- **Tokens live in a folder, not in config.yaml** (operator): `$EGPT_HOME/secrets/telegram-<connection>.token`, 0600. config.yaml names only the connection. Beeper tokens on kg/do stay as they are for now.
+- History: the earlier Telegram use was a Bot API bridge (removed fa208ca, never enabled) and, since July, the operator's Telegram inside Beeper on kg.
 - **Telegram today rides Beeper** (reve's Beeper has Telegram; `conversations/telegram/`). A direct Telegram-bot transport existed and was removed in fa208ca. A native Telegram limb (MTProto user client, `limbs.telegram`, no Beeper) would be new code.
 
 ## Steps
