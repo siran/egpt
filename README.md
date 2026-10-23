@@ -74,7 +74,8 @@ default `~/.egpt`).
    (it asks your password, checked and never stored). The service runs the node while nobody
    is logged on; the task takes it over at logon, with the browsers. `setup\start-egpt.cmd`
    starts both, `setup\stop-egpt.cmd` stops both.
-   macOS/Linux: `./setup/install-service.sh` (launchd / systemd user service). The
+   macOS/Linux: run `node egpt-daemon.mjs` from the checkout under your own supervisor
+   (the container in `docker/` does this from its entrypoint). The
    daemon keeps the node running and respawns it on the lifecycle exit codes below.
 
 4. **Verify the install:**
@@ -84,7 +85,8 @@ default `~/.egpt`).
    ```
 
    Read-only. Checks the live node — the Session 1 task and the `egpt-daemon` service
-   (Automatic, as you, AppExit 0 = Exit, yours to stop and start), profile shape, liveness
+   (Automatic, as you, AppExit 0 = Exit, yours to stop and start), or off Windows a live
+   daemon (`state/daemon-*.pid` with a fresh beat), profile shape, liveness
    (`state/spine.pid` + `state/alive.txt`), `claude` on PATH. Exit 0 = all good.
 
 ## Operating the node

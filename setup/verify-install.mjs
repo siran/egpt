@@ -5,8 +5,8 @@
 // It checks the node's two runners - the Session 1 task (setup/register-session1-daemon-task.ps1)
 // registered for this profile, at logon, Interactive, logging under config/logs; and the Session 0
 // service of the same name (setup/install-nssm-service.ps1): Automatic, as the user, AppExit 0 =
-// Exit, the user's start/stop ACE. Then the profile shape (no stale old-layout residue), the spine
-// pid/alive-beat, and that `claude` resolves.
+// Exit, the user's start/stop ACE. Off Windows, the daemon itself (daemonChecks). Then the profile
+// shape (no stale old-layout residue), the spine pid/alive-beat, and that `claude` resolves.
 //
 // Usage:  node setup/verify-install.mjs [egptHome]      (default $EGPT_HOME, else ~/.egpt)
 //
@@ -19,6 +19,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { runPowerShell } from './migrate.mjs';
 import { configWarnings } from '../src/spine/router.mjs';
+import { liveDaemonPid } from '../src/daemon-singleton.mjs';
 
 // ── pure helpers (unit-tested; no live probes) ─────────────────────────────
 
@@ -109,6 +110,16 @@ export function serviceChecks(service, name) {
   return out;
 }
 
+// Off Windows the runner is the daemon itself: state/daemon-<s0|s1>.pid contents, judged by the
+// daemon's own singleton rule (a live pid and a fresh alive.txt).
+export function daemonChecks(pidFiles, beatAgeMs, isProcessAlive) {
+  for (const key of ['s1', 's0']) {
+    const pid = liveDaemonPid({ pidFileContent: pidFiles[key], beatAgeMs }, { isProcessAlive });
+    if (pid) return [{ level: 'ok', msg: `runner: egpt daemon pid ${pid} (${key}) alive, alive.txt fresh` }];
+  }
+  return [{ level: 'fail', msg: 'runner: no live egpt daemon (state/daemon-s0.pid or daemon-s1.pid with a fresh alive.txt) - nothing runs this node' }];
+}
+
 // Beat-age → status. Alive beats every 60s; generous thresholds so a slow tick
 // doesn't false-alarm, but a truly dead loop trips.
 export function beatStatus(ageMs) {
@@ -179,8 +190,11 @@ export function runChecks({ egptHome, out = console.log } = {}) {
   out('');
 
   // (1) the runners: the Session 1 task and the Session 0 service.
-  if (process.platform !== 'win32') add('warn', 'runner: not Windows - no Session 1 task to check (setup/install-service.sh)');
-  else if (!name) add('fail', `runner: cannot derive a task name from ${egptHome}`);
+  if (process.platform !== 'win32') {
+    const pidFile = (key) => { try { return readFileSync(join(egptHome, 'state', `daemon-${key}.pid`), 'utf8'); } catch { return ''; } };
+    const beatAgeMs = Date.now() - mtimeMs(join(egptHome, 'state', 'alive.txt'));
+    for (const r of daemonChecks({ s0: pidFile('s0'), s1: pidFile('s1') }, beatAgeMs, pidAlive)) add(r.level, r.msg);
+  } else if (!name) add('fail', `runner: cannot derive a task name from ${egptHome}`);
   else {
     let facts = null;
     try { facts = probeRunner(name); } catch (e) { add('warn', `runner: cannot read Task Scheduler / the SCM - ${e.message}`); }
