@@ -205,6 +205,11 @@ const PORTABLE_BY_DESIGN = [
     why: 'the guard itself — this line is what portability looks like. Flagged only because it names the Windows binary in order to NOT use it elsewhere.',
   },
   {
+    file: 'src/spine/synthesizer-worker.mjs',
+    code: "platform === 'win32' ? join(radioPiper, 'venv', 'Scripts', 'python.exe') : join(radioPiper, 'venv', 'bin', 'python')",
+    why: 'the venv layout per platform (EDW 2026-10-23): Scripts/python.exe on win32, bin/python elsewhere.',
+  },
+  {
     file: 'src/video-frames.mjs',
     code: '/ffmpeg(\\.exe)?$/i',
     why: 'the `.exe` is OPTIONAL in this regex on purpose: ffprobeFromFfmpeg() derives the sibling binary from whatever ffmpeg path it was given, with or without a Windows suffix. Removing it would BREAK Windows without helping POSIX.',
@@ -230,11 +235,6 @@ const PORTABLE_BY_DESIGN = [
 // stays green while the list itself is the to-do. Delete an entry when the code is fixed; the
 // rot check below will fail if you delete the code and leave the entry.
 const KNOWN_PLATFORM_DEBT = [
-  {
-    file: 'src/spine/synthesizer-worker.mjs',
-    code: "join(radioPiper, 'venv', 'Scripts', 'python.exe')",
-    why: 'PRE-EXISTING, named by the operator 2026-09-04 and deliberately left alone (CLAUDE.md §3: do not fix adjacent code). `Scripts/` + `python.exe` is the WINDOWS venv layout; POSIX is `bin/python`, so a synthesizer worker on Linux/macOS spawns a path that does not exist. REAL FIX: resolve the layout at runtime — join(radioPiper, "venv", "Scripts", "python.exe") on win32, join(radioPiper, "venv", "bin", "python") elsewhere.',
-  },
   {
     file: 'src/sandbox-cli-session.mjs',
     // (the argv moved into the shared launcherArgv 2026-09-28 — same spawn, same guard)

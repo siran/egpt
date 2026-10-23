@@ -340,7 +340,7 @@ networks:
 #   server: { token: "SHARED_SECRET" }   # HMAC auth; SAME value on the worker and its clients
 #   ffmpeg_command: C:\path\ffmpeg.exe
 # Piper itself is NOT config: set the RADIO_PIPER env var to the piper install root on
-# this machine (must contain venv\Scripts\python.exe and voices\*.onnx).
+# this machine (must contain venv\Scripts\python.exe, or venv/bin/python off Windows, and voices\*.onnx).
 
 # --- Transcript echo: who posts the ear ("listened") transcript --------------
 # The echo posts a voice note's transcript back into the chat. Among the echo-capable

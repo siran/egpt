@@ -15,7 +15,7 @@
 // slow/failing worker start never stalls the spine's tick + alive heartbeat. start() is
 // itself awaitable so callers (tests) can observe the resolved wiring deterministically.
 
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { startSynthesizerServer as realStartSynthesizerServer, SYNTHESIZER_DEFAULT_PORT } from '../tools/synthesizer.mjs';
 import { listenRetrying } from './bind-retry.mjs';
 
@@ -44,6 +44,7 @@ export function createSynthesizerWorker({
   setTimeout: setTimeoutFn = globalThis.setTimeout,       // the bind retry's timer seams
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
   onLog = () => {},
+  platform = process.platform,
 } = {}) {
   let server = null, closed = false;
   const stopping = new AbortController();   // stop() ends a pending bind retry (src/spine/bind-retry.mjs)
@@ -68,7 +69,8 @@ export function createSynthesizerWorker({
       return;
     }
 
-    const pythonPath = join(radioPiper, 'venv', 'Scripts', 'python.exe');
+    const { join } = platform === 'win32' ? win32 : posix;
+    const pythonPath = platform === 'win32' ? join(radioPiper, 'venv', 'Scripts', 'python.exe') : join(radioPiper, 'venv', 'bin', 'python');
     const voicesDir = join(radioPiper, 'voices');
     const ffmpegCommand = resolveFfmpegCommand(cfg);
     const bind = scfg.bind || '127.0.0.1';   // default 127.0.0.1 — set synthesizer.bind to the LAN ip to expose

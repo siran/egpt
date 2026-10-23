@@ -75,6 +75,7 @@ describe('synthesizer worker — start wiring', () => {
     const f = fakes();
     const w = createSynthesizerWorker({
       getConfig: () => ({ synthesizer: { enabled: true, bind: '0.0.0.0', port: 23391, server: { token: 'BUSKEY' } } }),
+      platform: 'win32',
       ...f,
     });
     await w.start();
@@ -85,6 +86,18 @@ describe('synthesizer worker — start wiring', () => {
       voicesDir: 'C:\\radio\\piper\\voices',
       ffmpegCommand: 'ffmpeg',
     });
+  });
+
+  it('POSIX venv layout: venv/bin/python off Windows', async () => {
+    process.env.RADIO_PIPER = '/opt/piper';
+    const f = fakes();
+    const w = createSynthesizerWorker({
+      getConfig: () => ({ synthesizer: { enabled: true, server: { token: 'K' } } }),
+      platform: 'linux',
+      ...f,
+    });
+    await w.start();
+    expect(f.calls.server[0]).toMatchObject({ pythonPath: '/opt/piper/venv/bin/python', voicesDir: '/opt/piper/voices' });
   });
 
   it('defaults bind/port when unset', async () => {
