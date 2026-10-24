@@ -828,7 +828,7 @@ export function createSpine({
   // in an auto chat.
   async function wouldReachABeing(ev) {
     // A command (commands.commandOf, as classify reads it) — this node's or another's — reaches no being.
-    const cmd = commands?.commandOf?.(ev) ?? ev;
+    const cmd = commands?.commandOf?.(ev, await router.agentsIn?.(ev)) ?? ev;
     if (cmd.commandElsewhere || await commands?.isCommand?.(cmd) || isEnvelope(ev) || isTransit(ev) || advice?.isAnswer?.(ev)) return false;
     const { gated } = await gatesOf((await routeOf(ev)).targets, ev);
     return gated.some(({ d }) => d.mayReply && !(d.mode === 'auto' && ev.isSender));
@@ -936,7 +936,7 @@ export function createSpine({
     // handle of another node's being: that node runs it; here it is recorded and prompts nobody. Not a
     // command (a bare `/join` included) or not admitted → the line flows on as said. The record keeps
     // the words as said (handleFast logs `ev`, never `cmd`).
-    const cmd = commands?.commandOf?.(ev) ?? ev;
+    const cmd = commands?.commandOf?.(ev, await router.agentsIn?.(ev)) ?? ev;
     if (cmd.commandElsewhere) return () => { note(`command: ${guardChannel(ev)} '/${cmd.commandElsewhere} …' names no being on this node — recorded, prompts nobody`); };
     if (await commands?.isCommand?.(cmd)) {
       if (cmd.alias) note(`alias: ${guardChannel(ev)} '${cmd.alias}' → ${cmd.body}`);

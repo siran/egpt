@@ -566,6 +566,10 @@ export async function startBeeperBridge(opts = {}) {
     // `wakeWords`, byte-identical for a node that declares no fallback and for any caller that
     // constructs this bridge directly.
     replyWakeWords = null,
+    // ONE CHAT's { wakeWords, voiceWakeWords, replyWakeWords } when its conversations.yaml entry
+    // overrides a being's handles (boot: router.mjs agentsInChat), else null → the three above.
+    // async (network, chatID). Default: no chat overrides anything.
+    wakeWordsIn = async () => null,
     // BARE-@wakeword-REPLY-TO-TEXT → SPOKEN mirror (operator 2026-08-10) of the voice-note
     // shortcut below: synthesize/voice reach createSpine (boot's `createSpine({ synthesize:
     // vx.synthesize, voice: vx.voice, ... })`) but not this limb, which needs its OWN TTS access
@@ -2344,7 +2348,9 @@ export async function startBeeperBridge(opts = {}) {
     // an anywhere-match merged into atEAnywhere alone: `perro` woke E out of "tengo un perro
     // grande" and no spoken name could ever wake a mention-direct chat. A text message (isVoice
     // false) passes no list here, so its atEAnywhere/atEStart are byte-for-byte unchanged.
-    const st = mentionStatus(text || '', wakeWords, { addressWithoutAt, voiceWake: isVoice ? voiceWakeWords : undefined });
+    // THIS chat's sets: the node's, unless its entry overrides a being's handles (wakeWordsIn above).
+    const wake = (await wakeWordsIn(acct, chatID)) ?? { wakeWords, voiceWakeWords, replyWakeWords: replyWake };
+    const st = mentionStatus(text || '', wake.wakeWords, { addressWithoutAt, voiceWake: isVoice ? wake.voiceWakeWords : undefined });
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
     // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:
@@ -2416,7 +2422,7 @@ export async function startBeeperBridge(opts = {}) {
     // `wakeWords` — a fallback token is the ROUTER's to judge, because only it can ask whether the
     // peer account is in this chat.
     const isReplyWakeWord = (w) => bareReply === `@${String(w).toLowerCase()}` || bareReply === String(w).toLowerCase();
-    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && replyWake.some(isReplyWakeWord)) {
+    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && wake.replyWakeWords.some(isReplyWakeWord)) {
       const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
       const t = transcriptionForNoteId(doc, replyToId);
       if (t) {
@@ -2583,7 +2589,7 @@ export async function startBeeperBridge(opts = {}) {
     // arrival — this is the line that prompts. Same sender, same note id, its own time.
     const { body, caption } = await _voicePending;
     const heard = await withMedia(body, caption);
-    const vst = mentionStatus(heard, wakeWords, { addressWithoutAt, voiceWake: voiceWakeWords });
+    const vst = mentionStatus(heard, wake.wakeWords, { addressWithoutAt, voiceWake: wake.voiceWakeWords });
     onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify(heard.slice(0, 60))} (atE=${vst.atEAnywhere} voice ↩#${msg.id ?? '?'})`);
     deliver(heard, { ...from, isTranscriptFromVoice: true, voiceLine: 'outcome', atEStart: vst.atEStart, atEAnywhere: vst.atEAnywhere });
   }

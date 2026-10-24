@@ -111,9 +111,30 @@ export function configWarnings(config = {}) {
 // THE ONE definition: src/spine/boot.mjs (the node's wake set it hands the ports) and
 // src/spine/mesh.mjs (an envelope's `<being>.<node>` token) import it from here. There used to be
 // three copies of this rule in those three files.
+//
+// IN ONE CHAT a being's handles may differ: agentsInChat, below, is the registry as that chat sees it.
 export function wakeTokens(name, agent) {
   const hs = Array.isArray(agent?.handles) ? agent.handles : [name];
   return hs.map((h) => String(h ?? '').toLowerCase()).filter(Boolean);
+}
+
+// THE agents registry AS ONE CHAT SEES IT (operator 2026-10-24) — the one per-chat handle lookup.
+// A being whose block in that chat's conversations.yaml entry sets `handles:` answers there to
+// that list and nothing else (its fallback_handle is dropped too); `[]` = nothing names it there.
+// voice_handles stay node-wide. No override (or no state) → the SAME map object, so a caller
+// with no per-chat key is unchanged.
+export function agentsInChat(agents, state, surface, chatId) {
+  let out = agents;
+  if (!state) return out;
+  for (const [name, agent] of Object.entries(agents ?? {})) {
+    if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
+    const hs = getBeing(state, surface, chatId, name)?.handles;
+    if (!Array.isArray(hs)) continue;
+    const { fallback_handle: _dropped, ...rest } = agent;
+    if (out === agents) out = { ...agents };
+    out[name] = { ...rest, handles: hs };
+  }
+  return out;
 }
 
 // EVERY token the node's AGENTS block answers to — wakeTokens above run over the whole map, for
@@ -442,6 +463,13 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
   }
 
   return {
+    // The registry as this event's ARRIVAL chat sees it (agentsInChat) — for the command parser,
+    // so `/<handle> …` resolves exactly as resolve() does. No loadState → the node-wide map.
+    async agentsIn(ev) {
+      const state = loadState ? await loadState().catch(() => null) : null;
+      const org = ev?.origin ?? ev;
+      return agentsInChat(getAgents() ?? {}, state, org?.surface, org?.chatId);
+    },
     /** @param {import('./spine.mjs').InboundEvent} ev
      *  @returns {Promise<{ being: string|null, mesh?: object, mention: object|undefined, targets: object[], receives: boolean }>}
      *  `targets` is EVERY addressed agent in text order, then every being taken by its on/auto mode
@@ -647,7 +675,9 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // being's own post is one more hit in this loop, filtered exactly like a handle hit.
         // A REACTION's body quotes its target's words, not the reactor's: it addresses only by
         // replyToBeing, as a text reply to that message would (operator 2026-10-18).
-        for (const hit of addressed(ev?.kind === 'reaction' ? '' : (ev?.body ?? ''), agents, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
+        // The handles are the ARRIVAL chat's (`org`): where the line was typed is whose names it uses.
+        const here = agentsInChat(agents, state, org?.surface, org?.chatId);
+        for (const hit of addressed(ev?.kind === 'reaction' ? '' : (ev?.body ?? ''), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
           if (!admits(hit.name, hit.agent, hit.unlessPresent != null || hit.unlessPeerAlive != null)) continue;
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
           // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher

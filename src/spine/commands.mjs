@@ -23,7 +23,7 @@ import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-
 // over a single already-extracted token is the house single-token lookup (src/spine/mesh.mjs's
 // findAgentByToken, src/spine/heartbeat-loader.mjs's `agent:`); `addressableTokens` LISTS the
 // valid handles in the not-hosted log line. See agentsCmd's HANDLE → KEY block.
-import { addressed, addressableTokens, fallbackWake, isKnownSender, wakeTokens, voiceWakeTokens } from './router.mjs';
+import { addressed, addressableTokens, agentsInChat, fallbackWake, isKnownSender, wakeTokens, voiceWakeTokens } from './router.mjs';
 import { superChannelAlive, resolveMode } from './gating.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -757,8 +757,8 @@ export function createCommands({
   // no command, except on the console (SHELL_SURFACE: node-local, nobody else hears it). The handle
   // resolves as /agents' argument does (the router's own lookup), local beings only.
   const isRelayAgent = (a) => !!a?.relay_channel || Array.isArray(a?.paths) || String(a?.configuration ?? '').toLowerCase() === 'relay';
-  function beingOfHandle(handle) {
-    const agents = cfg().agents ?? {};
+  // `agents`: the registry as this chat sees it (router.agentsIn — per-chat handles); absent = node-wide.
+  function beingOfHandle(handle, agents = cfg().agents ?? {}) {
     const hit = addressed(handle, agents, { addressWithoutAt: true })[0];
     return hit && hit.token === handle && !isRelayAgent(hit.agent) ? hit.name : null;
   }
@@ -770,7 +770,7 @@ export function createCommands({
     const local = Object.keys(agents).filter((k) => !k.startsWith('_') && agents[k] && typeof agents[k] === 'object' && !isRelayAgent(agents[k]));
     return defaultBeingOf(entry) ?? residentsOf(entry).find((b) => local.includes(b)) ?? local[0] ?? null;
   }
-  function commandOf(ev) {
+  function commandOf(ev, agents) {
     let body = String(ev?.body ?? '').trim();
     let alias = null;
     if (!body.startsWith('/')) {
@@ -781,7 +781,7 @@ export function createCommands({
     const p = parseBeingCommand(body);
     if (!p) return null;
     const tag = alias ? { alias } : {};
-    const being = beingOfHandle(p.handle);
+    const being = beingOfHandle(p.handle, agents ?? undefined);
     if (!being) return { ...ev, commandElsewhere: p.handle, ...tag };
     return { ...ev, body: p.rest ? `${p.cmd} ${p.rest}` : p.cmd, commandBeing: being, commandHandle: p.handle, ...tag };
   }
@@ -3396,6 +3396,7 @@ export function createCommands({
     const arrived = String((ev.origin ?? ev).surface ?? '').toLowerCase();
     const bare = c.dispatch?.address_without_at !== false;
     const beings = Object.keys(c.agents ?? {}).filter((n) => !n.startsWith('_'));
+    const here = agentsInChat(c.agents ?? {}, state, surface, ev.chatId);
     const lines = [];
     for (const b of beings) {
       const a = agentOf(b);
@@ -3403,7 +3404,7 @@ export function createCommands({
       if (a.surface != null && surfaceOfNetwork(String(a.surface).toLowerCase()) !== arrived) continue;
       const { mode } = resolveMode(getBeing(state, surface, ev.chatId, b), b, c);
       if (!PUBLIC_MODE_WORDS[mode]) continue;
-      const hs = wakeTokens(b, a);
+      const hs = wakeTokens(b, here[b]);
       const voice = voiceWakeTokens(a);
       lines.push([
         `${a.body_emoji || '🐶'} ${a.name || hs[0] || b} — ${hs.length ? `call: ${hs.map((h) => `@${h}`).join(', ')}${bare ? ` (or start a message with "${hs[0]}")` : ''}` : 'no handle'}`,

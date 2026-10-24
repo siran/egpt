@@ -104,6 +104,13 @@ describe('bare /agents from a non-operator: the public list', () => {
     expect(lines[2]).toMatch(/^🐦 Wren — .* · you can call it: yes$/);
   });
 
+  it('per-chat handles: where this chat\'s entry sets E\'s handles, the list tells that list (operator 2026-10-24)', async () => {
+    const { cmds, sent } = harness({ st: patchBeing(seed(), 'whatsapp', GROUP, 'e', { handles: ['ekg'] }) });
+    await cmds.run(msg('/agents'));
+    expect(sent[0].text.split('\n')[1]).toBe('🐶 E — call: @ekg (or start a message with "ekg") · voice: "perro" · answers only when called · you can call it: yes');
+    expect(sent[0].text.split('\n')[2]).toBe(LIST_C.split('\n')[2]);   // Wren keeps its node-wide handles
+  });
+
   it('a mode change shows up (the operator\'s /agents mode, then the member asks again)', async () => {
     const { cmds, sent, clock } = harness();
     await cmds.run(op('/agents mode on e'));

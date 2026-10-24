@@ -23,7 +23,9 @@ runs it; every other node records the line and does nothing. A bare `/restart`
 in a chat is ordinary text. `/<handle> <anything else>` (`/e hola`) is ordinary
 text too, and addresses nobody. The editor shell (the node's own console) and the ingest box
 still take the bare command. An `/<handle> agents` verb with no target acts on
-that being (`/e agents compact`).
+that being (`/e agents compact`). A chat whose conversations.yaml entry sets
+`agents.<being>.handles: [ekg]` addresses that being there by those names only,
+commands included (`[]` = by none).
 
 Anyone else in a chat runs only the commands `public_commands` names: the root
 key in config.yaml (default `[join, split, send, end]`), or the chat's own

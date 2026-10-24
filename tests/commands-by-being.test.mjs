@@ -18,7 +18,7 @@ import { createRouter } from '../src/spine/router.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { parseReplyActions } from '../src/spine/reply-actions.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
-import { ensureContact, recordThread } from '../src/conversations-state.mjs';
+import { ensureContact, recordThread, patchBeing } from '../src/conversations-state.mjs';
 
 const GROUP = 'grpC';
 const RODZ_ID = '@whatsapp_lid-69433129173200:beeper.local';
@@ -44,11 +44,13 @@ const member = (body, over = {}) => ({
 const operator = (body, over = {}) => member(body, { senderId: '@an:beeper.com', senderName: 'An', isSender: true, authorized: true, ...over });
 
 // One node: its own state, bridge, commands and spine. `mode` is the being's reply mode ('on' answers
-// every line; 'mention' only a line that addresses the being).
-function node(name, { mode = 'mention' } = {}) {
+// every line; 'mention' only a line that addresses the being). `handlesHere`: this chat's entry sets E's
+// handles (per-chat handles) — only then is the router handed the state.
+function node(name, { mode = 'mention', handlesHere = null } = {}) {
   const config = { ...NODES[name], agents: { egpt: { ...NODES[name].agents.egpt, mode } } };
   let st = ensureContact({ contacts: {} }, 'whatsapp', GROUP, { pushedName: 'C' }).state;
   st = recordThread(st, 'whatsapp', GROUP, `${name}-thread`, '2026-10-19T00:00:00Z', 'egpt');
+  if (handlesHere) st = patchBeing(st, 'whatsapp', GROUP, 'egpt', { handles: handlesHere });
   const calls = { create: [], exit: [], sent: [], logs: [], notes: [], transcript: [], brain: [], ran: [], stop: [] };
   const real = createCommands({
     getConfig: () => config, send: async (chatId, text) => { calls.sent.push(text); },
@@ -69,7 +71,7 @@ function node(name, { mode = 'mention' } = {}) {
     onLog: (m) => calls.logs.push(m),
   });
   const commands = { ...real, run: (e) => { calls.ran.push(e.body); return real.run(e); } };
-  const router = createRouter({ getAgents: () => config.agents });
+  const router = createRouter({ getAgents: () => config.agents, ...(handlesHere ? { loadState: async () => st } : {}) });
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
     brain: { async turn(being, ev) { calls.brain.push({ being, body: ev.body }); return { text: 'ok', sessionId: `${name}-thread`, being }; }, async accessLevel() { return 'regular'; } },
@@ -191,6 +193,32 @@ describe('/<handle> <not a command> is ordinary text that addresses nobody', () 
     await say(member('e hola'));
     expect(kg.calls.brain.map((b) => b.being)).toEqual(['egpt']);
     expect(dolly.calls.brain).toEqual([]);
+  });
+});
+
+// PER-CHAT HANDLES (operator 2026-10-24): where this chat's entry sets E's handles to [ekg], a command
+// addressed `/e …` is not E's here (kg records it, as for another node's being) and `/ekg …` is.
+describe("/<handle> <command> follows the chat's own handles", () => {
+  it("REPRODUCE-FIRST: handles [ekg] here — `/e agents` is not E's, `/ekg agents` is", async () => {
+    const kg = node('kg', { handlesHere: ['ekg'] });
+    await kg.say(operator('/e agents'));
+    recordedOnly(kg, '/e agents');
+    await kg.say(operator('/ekg agents'));
+    expect(kg.calls.ran).toEqual(['/agents']);
+  });
+
+  it('…and the chat line follows suit: "e hola" wakes nobody there, "ekg hola" wakes E', async () => {
+    const kg = node('kg', { handlesHere: ['ekg'] });
+    await kg.say(member('e hola'));
+    expect(kg.calls.brain).toEqual([]);
+    await kg.say(member('ekg hola'));
+    expect(kg.calls.brain.map((b) => b.being)).toEqual(['egpt']);
+  });
+
+  it('LOCK: with no per-chat key `/e agents` runs on kg as before', async () => {
+    const kg = node('kg');
+    await kg.say(operator('/e agents'));
+    expect(kg.calls.ran).toEqual(['/agents']);
   });
 });
 
