@@ -67,6 +67,18 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## Three beings on EDW (operator 10-23 22:30)
+
+| Being | Serves | Access |
+|---|---|---|
+| marketer | public marketing chat with strangers | `regular` |
+| `ed` (support) | EduWeb's **clients** | `regular` |
+| E (name pending) | EduWeb's **IT staff**: the technical work E does in SI+EduWeb today (ssh to EduWeb servers, portals, git) | needs `all` |
+
+E needs `all`, so the per-conversation Unix-user wall (step 4) is its prerequisite. Its ssh key lives under its own user. All three speak through @edwsi_bot, each with its own stamp. Each chat's modes decide who answers.
+
+Open questions: E's name/handle; where E talks (a Telegram group with the IT staff, or SI+EduWeb on WhatsApp, which is backburnered); order (wall first).
+
 ## Steps
 0. **Linux inventory**, read-only.
    → verify: every Windows-only path in `src/` and `setup/` is listed with its Linux replacement.
