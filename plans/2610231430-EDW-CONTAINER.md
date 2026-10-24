@@ -67,6 +67,15 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 ~13:50 UTC — SI+EduWeb seeded; heartbeats moved to AWS
+- **Seed:** kg's whole WhatsApp SI+EduWeb folder went into ED's Telegram folder on AWS (3.1 GB): desktop/, scripts/, .tools/, .ssh/ (E's key, now owned by ED's box uid 200000, 0600), the history in whatsapp/ subfolders, all granted to the box. The Windows Chrome profile `.tools/chrome-headless-perfil` was left out (unreadable, and useless on Linux).
+- **Wall:** proven live. "ed ejecuta whoami" → `egpt-box-0`. ED is `sandbox` in SI+EduWeb. On EC2 it needed `--security-opt systempaths=unconfined` (c0db3ff) for the box's /proc.
+- **Heartbeats** (operator: "let it be AWS's container, disable KG's; KG is the working backup"):
+  - AWS: the 7 are active as `agent: ed` with `python3`. Only 2 are daily (chequeos-bd 06:30, agenda-diaria 07:45 Caracas); the 5 one-shot `when` beats are stale.
+  - kg: the 7 are paused in `heartbeats.paused/`. **To fall back:** move them back into `heartbeats/` on kg.
+  - First AWS run is tomorrow. E's scripts may need Python packages on Linux; ED can install them in its box.
+- Follow-ups: "❌ Sending failed" shown for a failed turn (wrong words); the readback falls into a turn while a note is still being transcribed (wait instead).
+
 ## Next project (operator 10-24): a 3rd personal node in the cloud, VA
 - Like DO: the same two Beeper accounts (primary ear and secondary mouth, signed in over VNC), its own node name and its own beings with their own handles. It runs in the operator's **personal** AWS account (480854905773, profile default/anmichel), so EduWeb's admins cannot read it.
 - kg keeps wren, Drive and the laptop's files. kg/do config gains the third node in its node lists (e.g. echo peer_priority).
