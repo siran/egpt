@@ -80,7 +80,7 @@ RUN userdel -r node 2>/dev/null; useradd -m -u 1000 -s /bin/bash egpt
 USER egpt
 # EGPT_SESSION1=1: the daemon loads chrome-host (daemon-runtime.mjs).
 ENV HOME=/home/egpt EGPT_HOME=/home/egpt/.egpt DISPLAY=:99 EGPT_SESSION1=1 \
-    RADIO_PIPER=/opt/piper
+    RADIO_PIPER=/opt/piper CLAUDE_CONFIG_DIR=/home/egpt/.claude
 RUN mkdir -p /home/egpt/.egpt /home/egpt/.config/BeeperTexts /home/egpt/.claude /home/egpt/src/egpt
 VOLUME ["/home/egpt/.egpt", "/home/egpt/.config/BeeperTexts", "/home/egpt/.claude", "/home/egpt/src/egpt"]
 EXPOSE 5900 6080

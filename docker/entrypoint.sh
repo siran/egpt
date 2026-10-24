@@ -29,8 +29,11 @@ rm -f "$EGPT_HOME"/state/daemon-s0.pid "$EGPT_HOME"/state/daemon-s1.pid "$EGPT_H
 
 # First boot: the eGPT checkout on its volume. /upgrade pulls it later.
 if [ ! -d "$REPO/.git" ]; then
-  log "cloning $REPO_URL (main) into $REPO"
-  git clone --branch main "$REPO_URL" "$REPO" || { log "clone failed"; exit 1; }
+  BRANCH=${EGPT_BRANCH:-main}
+  log "cloning $REPO_URL ($BRANCH) into $REPO"
+  git clone --branch "$BRANCH" "$REPO_URL" "$REPO" || { log "clone failed"; exit 1; }
+else
+  log "checkout $REPO on branch $(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
 fi
 if [ ! -d "$REPO/node_modules" ]; then
   log "npm ci in $REPO"
@@ -51,9 +54,13 @@ keep_running() {  # name, command...
   done
 }
 
-# --password-store=basic: no desktop keyring in the container.
-keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
-  --disable-gpu >/tmp/beeper.log 2>&1 &
+if [ "${EGPT_BEEPER:-on}" = off ]; then
+  log "Beeper off (EGPT_BEEPER=off)"
+else
+  # --password-store=basic: no desktop keyring in the container.
+  keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
+    --disable-gpu >/tmp/beeper.log 2>&1 &
+fi
 
 cd "$REPO"
 keep_running egpt node egpt-daemon.mjs &
