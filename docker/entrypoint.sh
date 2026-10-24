@@ -15,6 +15,15 @@ for _ in $(seq 50); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.1; done
 openbox >/dev/null 2>&1 &
 
 # VNC for the one-time login. Requires a password; never runs open.
+# Without VNC_PASSWORD the password lives in secrets/vnc.password (made once, 0600), like the other tokens.
+if [ -z "${VNC_PASSWORD:-}" ]; then
+  VNC_FILE=$EGPT_HOME/secrets/vnc.password
+  if [ ! -s "$VNC_FILE" ]; then
+    (umask 077 && mkdir -p "$EGPT_HOME/secrets" && head -c 6 /dev/urandom | base64 > "$VNC_FILE") \
+      && log "generated $VNC_FILE"
+  fi
+  VNC_PASSWORD=$(tr -d '\r\n' 2>/dev/null < "$VNC_FILE")
+fi
 if [ -n "${VNC_PASSWORD:-}" ]; then
   x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vncpass >/dev/null
   x11vnc -display :99 -rfbauth /tmp/vncpass -forever -shared -quiet -rfbport 5900 &
@@ -22,7 +31,7 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
   websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
   log "noVNC on :6080 (http://localhost:6080/vnc.html, same password)"
 else
-  log "VNC disabled (set VNC_PASSWORD to enable)"
+  log "VNC disabled (no VNC_PASSWORD and no readable $VNC_FILE)"
 fi
 
 # A new container is a new pid namespace: pid files left by the previous one name other processes.

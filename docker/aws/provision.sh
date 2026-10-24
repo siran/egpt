@@ -23,23 +23,6 @@ ROLE=edw-instance-role
 IPROFILE=edw-instance-profile
 ROOT_GB=30
 DATA_GB=30
-TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-TRANSFER='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::'$BUCKET/$PREFIX'*"}]}'
-
-byname() {  # describe-call query name: our resource ids with that Name
-  one "$3" "$(q ec2 "$1" --filters "$TAGF" "Name=tag:Name,Values=$3" --query "$2")"
-}
-
-iam_has() {  # iam get-call args: 0 exists, 1 missing, else dies
-  local err
-  err=$(aws iam "$@" 2>&1 >/dev/null) && return 0
-  grep -q NoSuchEntity <<<"$err" && return 1
-  die "$err"
-}
-
-ours() {  # project-tag-value what
-  [ "$1" = "$PROJECT" ] || die "$2 exists but is not tagged Project=$PROJECT; not touching it"
-}
 
 user_data() {  # data-volume-id
   sed "s/@VOL@/${1//-/}/" <<'EOF'

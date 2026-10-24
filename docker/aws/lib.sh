@@ -56,6 +56,25 @@ one() {
 
 tagspec() { echo "ResourceType=$1,Tags=[{Key=Project,Value=$PROJECT},{Key=Name,Value=$2}]"; }
 
+byname() {  # describe-call query name: our resource ids with that Name
+  one "$3" "$(q ec2 "$1" --filters "$TAGF" "Name=tag:Name,Values=$3" --query "$2")"
+}
+
+iam_has() {  # iam get-call args: 0 exists, 1 missing, else dies
+  local err
+  err=$(aws iam "$@" 2>&1 >/dev/null) && return 0
+  grep -q NoSuchEntity <<<"$err" && return 1
+  die "$err"
+}
+
+ours() {  # project-tag-value what
+  [ "$1" = "$PROJECT" ] || die "$2 exists but is not tagged Project=$PROJECT; not touching it"
+}
+
+# Instance roles: EC2 may assume them; the transfer policy gets/deletes under the bucket's prefix only.
+TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+TRANSFER='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::'$BUCKET/$PREFIX'*"}]}'
+
 parse_apply() {  # for scripts whose only flag is --apply
   for a; do
     case $a in --apply) APPLY=1 ;; *) die "unknown argument: $a (only --apply)" ;; esac
