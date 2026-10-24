@@ -67,6 +67,14 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## Status 10-24 05:45 — EDW runs on AWS
+- **Instance:** i-02476c2d8b9173596, now **t3a.large** (~$55). It was resized after t3a.medium thrashed: two notes ran large-v3 CLI copies at once, plus a being's own whisper. Data volume `edw-data` vol-0c60425dcce01918b, 30 GB at /srv/egpt (egpt-home, egpt-claude, egpt-src).
+- **Image:** egpt:16597095 (= :edw, from branch edw): the wall, sudo/acl/openssh, Xvfb `-nolisten local`, the Claude token from secrets/. Checkout at 16597095.
+- **Transcription:** resident whisper-server (large-v3 loaded once, one note at a time, `-t 2`), CLI as fallback. Still slow on 2 vCPUs; improve later ("EDW is mostly text and images"). Ear-transcripts are not posted (`posts_back_delay_ms: -1`).
+- **lark → leo** 🦁 (handles leo, l). kg's llama dropped `l`, so leo owns it on kg/do/EDW. Cause: kg's llama `l` fired kg's readback into EDW's Telegram group, posting as the operator.
+- **SI+EduWeb history** refreshed from kg on AWS (to 10-23 22:55).
+- **Waiting on the operator:** `claude setup-token` → secrets/claude-oauth.token, then ED in SI+EduWeb goes to `sandbox`.
+
 ## 10-24 — the chatbox (limbs.http), when built (operator)
 - It behaves as eGPT does now: each chatbox session is a conversation (a ROOM folder `conversations/http/<client>-<id>`, the session token is its chat id). ED answers within it, with memory and tools. The team watches and replies in the conversation's Telegram group. "Not a Claude proxy."
 - On EDW the being answers to `ed` (E's role, ED's handle).
