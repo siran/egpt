@@ -1,7 +1,8 @@
 // tests/chrome-dedicated-pool.test.mjs — the per-GROUP Chrome pool (plans/2610091931 rev 2026-10-11).
 // EVERY group, `brain` included (config/browsers.yaml; unlisted → `shared`; no conversation → brain),
 // launches its GROUP's Chrome over --remote-debugging-pipe, driven by a pipe cdpClient (3a). The
-// non-brain groups are admitted by the pure memory check (chunk 2); brain and shared are never evicted.
+// non-brain groups go through the pure memory check (chunk 2: evict when short, never denied); brain and
+// shared are never evicted.
 //
 // NO REAL CHROME: the daemon's chromeHost is faked over two in-memory streams as fds 3 & 4 (like 3a's
 // fake peer) and a fake child; memory (freeMem/rssOf) is injected as plain numbers, so admission is
@@ -159,11 +160,13 @@ describe('a non-brain GROUP → its group pipe Chrome + a pipe cdpClient', () =>
     expect(calls.map((c) => c.profileDir)).toEqual([CHROME_BRAIN_PROFILE]);
   });
 
-  it('brain is never memory-gated: it launches where a non-brain group is declined', async () => {
-    const { cmds, calls } = build({ mem: { free: 100 * MB } });
-    expect((await cmds.chromeClientFor(SHARED)).declined).toBe(true);
+  it('brain is never memory-gated: low memory logs nothing for it; a non-brain group launches anyway', async () => {
+    const { cmds, calls, logs } = build({ mem: { free: 100 * MB } });
     expect((await cmds.chromeClientFor(BRAIN)).client).not.toBe(null);
-    expect(calls.map((c) => c.profileDir)).toEqual([CHROME_BRAIN_PROFILE]);
+    expect(logs.filter((l) => /memory looks short/.test(l))).toHaveLength(0);
+    expect((await cmds.chromeClientFor(SHARED)).client).not.toBe(null);
+    expect(logs.filter((l) => /memory looks short .*shared.*launching anyway/.test(l))).toHaveLength(1);
+    expect(calls.map((c) => c.profileDir)).toEqual([CHROME_BRAIN_PROFILE, sharedDir]);
   });
 
   it('two chats in the SAME group share ONE Chrome', async () => {
@@ -230,7 +233,7 @@ describe('browsers.yaml end to end — an operator edit moves a chat without a r
   });
 });
 
-describe('memory admission gates the EXTRA (non-brain) group Chromes', () => {
+describe('memory admission for the EXTRA (non-brain) group Chromes: evict when short, never deny', () => {
   it('LAUNCHES when free memory is well above the margin', async () => {
     const { cmds, calls } = build({ mem: { free: 8192 * MB } });
     const r = await cmds.chromeClientFor(SHARED);
@@ -238,14 +241,25 @@ describe('memory admission gates the EXTRA (non-brain) group Chromes', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('DECLINES below the margin with nothing to evict — nothing spawned', async () => {
+  it('below the margin with nothing to evict, LAUNCHES ANYWAY with one log line saying why', async () => {
     // 100 − 500 estimate = −400 MB, far below the 1024 MB margin; the pool is empty so canEvict=false.
-    const { cmds, calls } = build({ mem: { free: 100 * MB } });
+    const { cmds, calls, logs } = build({ mem: { free: 100 * MB } });
     const r = await cmds.chromeClientFor(SHARED);
-    expect(r.declined).toBe(true);
-    expect(r.client).toBe(null);
-    expect(r.why).toMatch(/margin/i);
-    expect(calls).toHaveLength(0);
+    expect(r).toMatchObject({ launched: true, running: true });
+    expect(r.client).not.toBe(null);
+    expect(calls).toHaveLength(1);
+    const short = logs.filter((l) => /memory looks short/.test(l));
+    expect(short).toHaveLength(1);
+    expect(short[0]).toMatch(/margin.*launching anyway: browsers are never denied/);
+  });
+
+  it('ED on the 2 GB EDW node: low memory, nothing to evict → `browser start` still gets a browser', async () => {
+    // operator 2026-10-24: "Don't deny browsers to conversations."
+    const { cmds, calls, logs } = build({ mem: { free: 300 * MB } });
+    const r = await cmds.startBrowser({ key: 'ED-2610200000', name: 'ED', group: 'edw' });
+    expect(r).toMatchObject({ ok: true, launched: true });
+    expect(calls.map((c) => c.group)).toEqual(['edw']);
+    expect(logs.filter((l) => /memory looks short .*edw.*launching anyway/.test(l))).toHaveLength(1);
   });
 
   it('under pressure, EVICTS the idlest group Chrome then launches the newcomer', async () => {
@@ -264,6 +278,7 @@ describe('memory admission gates the EXTRA (non-brain) group Chromes', () => {
     const aHandle = handles.find((h) => h.profileDir.endsWith('A-1'));
     expect(aHandle.child.killed).toBe(true);             // the idlest (A) was evicted
     expect(logs.some((l) => /evicted group Chrome .*A-1/.test(l))).toBe(true);
+    expect(logs.some((l) => /launching anyway/.test(l))).toBe(false);   // eviction made room: no override
 
     // the evicted profile persists on disk → a later ensure relaunches it (room is free again here)
     mem.free = 8192 * MB;
@@ -312,14 +327,16 @@ describe('brain and shared serve many chats: never evicted', () => {
     expect(logs.filter((l) => /evicted/.test(l))).toHaveLength(1);
   });
 
-  it('with only brain and shared up, a newcomer that does not fit is DECLINED, never them', async () => {
+  it('with only brain and shared up, a newcomer that does not fit LAUNCHES ANYWAY, never evicting them', async () => {
     const mem = { free: 2200 * MB };
-    const { cmds, handles } = build({ mem, cost: 600 * MB });
+    const { cmds, calls, handles, logs } = build({ mem, cost: 600 * MB });
     await cmds.chromeClientFor(BRAIN);
     await cmds.chromeClientFor(SHARED);                                   // 1000 free
     const r = await cmds.chromeClientFor({ key: 'a', name: 'A', group: 'A-1' });
-    expect(r.declined).toBe(true);
+    expect(r.client).not.toBe(null);
+    expect(calls).toHaveLength(3);
     expect(handles.some((h) => h.child.killed)).toBe(false);
+    expect(logs.filter((l) => /memory looks short .*A-1.*launching anyway/.test(l))).toHaveLength(1);
   });
 });
 

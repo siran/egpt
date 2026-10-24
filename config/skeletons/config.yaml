@@ -395,7 +395,7 @@ turn_timeout_ms: 600000
 #   bin: ""                    # Chrome executable; unset = platform default lookup
 #   profile_dir: ""            # --user-data-dir of the `brain` group; unset = discovered brain profile
 #   launch_estimate_mb: 500    # per-Chrome memory cost floor for group-Chrome admission when none is running to measure
-#   memory_margin_mb: 1024     # free physical memory a group-Chrome launch must leave; below it the idlest group Chrome is evicted, else declined
+#   memory_margin_mb: 1024     # free physical memory a group-Chrome launch must leave; below it the idlest group Chrome is evicted, else it launches anyway (logged; never denied)
 
 # --- Auto-login (opt-in) -----------------------------------------------------
 # /login <site> signs in on the brain Chrome using CHROME'S OWN saved password: the spine reads the

@@ -2463,9 +2463,10 @@ export const CONFIG_SCHEMA = {
         measured MAX working-set RSS supersedes this. Node-level.
       memory_margin_mb
         INT MB (DEFAULT 1024). The free physical memory a group-Chrome launch must
-        leave (chrome-pool.admitLaunch): launch only if available − estimate >=
+        leave (chrome-pool.admitLaunch): launch if available − estimate >=
         this margin; below it, evict the idlest group Chrome and retry, else
-        decline. NEVER gates or evicts the brain Chrome. Node-level.
+        launch anyway with one log line — a browser is never denied (operator
+        2026-10-24). NEVER gates or evicts the brain Chrome. Node-level.
 
     NOTE: which Chrome a CHAT uses is not a chrome key. It is config/browsers.yaml
     (skeleton: config/skeletons/browsers.yaml): groups of chat names; group

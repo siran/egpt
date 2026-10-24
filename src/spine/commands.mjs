@@ -1106,6 +1106,7 @@ export function createCommands({
   // ── GROUP CHROME POOL (plans/2610091931 rev 2026-10-11) ──────────────────────────────────────
   // One pipe-driven chrome.exe per browser-group profile dir, brain included; no Chrome listens on
   // a port. brain and shared serve many chats: never evicted, and brain is never memory-gated.
+  // Short memory evicts an idle group Chrome, else launches anyway: never denied (operator 2026-10-24).
   // The daemon holds each Chrome (chromeHost); every decision is here, and ships with /upgrade.
   const _groups = new Map();     // profileDir → { group, channel, client, pid, lastUsedAt, busy }
   const _ensuring = new Map();   // profileDir → in-flight launch (per-profile single-flight)
@@ -1157,7 +1158,7 @@ export function createCommands({
   // profile is never relaunched; single-flight per profile. `launch: false` only reports a live one.
   // FAIL CLOSED: a refused chat, a non-brain group on the brain's dir, or a profile another Chrome
   // already holds → no browser + one log line. Never throws.
-  // Resolves { group, profileDir, client, pid, launched, running, declined?, why? }.
+  // Resolves { group, profileDir, client, pid, launched, running, why? }.
   function ensureChrome(conversation, opts) { return _reattached.then(() => ensureGroupChrome(conversation, opts)); }
   function ensureGroupChrome(conversation, { launch = true } = {}) {
     conversation ??= { key: '', name: '', group: BRAIN_GROUP };
@@ -1192,8 +1193,8 @@ export function createCommands({
           const d = admitLaunch({ availableBytes: freeMem(), estimateBytes, marginBytes, canEvict: [..._groups.values()].some(evictable) });
           if (d.action === 'launch') break;
           if (d.action === 'evict' && evictIdlest()) continue;
-          onChromeLog(`declined group Chrome ${profileDir}: ${d.reason}`);
-          return { group, profileDir, client: null, launched: false, running: false, declined: true, why: d.reason };
+          onChromeLog(`memory looks short for group Chrome ${profileDir} (${d.reason}) — launching anyway: browsers are never denied`);
+          break;
         }
       }
       stampGroupProfile({ userDataDir: profileDir, group, colors: await browserColors(), log: onChromeLog });   // no Chrome holds it (above)
@@ -1237,7 +1238,7 @@ export function createCommands({
   // report). Idempotent: a running Chrome is reported, not relaunched.
   async function startBrowser(conversation) {
     const r = await ensureChrome(conversation);
-    if (!r.client) return { ok: false, reason: r.declined ? 'declined' : 'no-browser', detail: r.why };
+    if (!r.client) return { ok: false, reason: 'no-browser', detail: r.why };
     return { ok: true, ...(r.launched ? { launched: true } : { alreadyRunning: true }), detail: `the "${r.group}" browser is ${r.launched ? 'up' : 'already running'}${r.pid ? ` (pid ${r.pid})` : ''}` };
   }
 

@@ -33,7 +33,8 @@ export function estimateChromeBytes({ runningRssBytes = [], floorBytes = 0 } = {
 //   available - estimate >= margin                     → { action: 'launch'  }
 //   below margin, an idle managed Chrome can be freed   → { action: 'evict'   }  (caller evicts the
 //                                                          idlest and calls again with the freed RAM)
-//   below margin, nothing idle to evict                 → { action: 'decline' }
+//   below margin, nothing idle to evict                 → { action: 'decline' }  (caller logs it and
+//                                                          launches anyway: a browser is never denied)
 // `canEvict` is what distinguishes evict from decline; the caller sets it from whether any managed
 // Chrome is idle (never busy). The brain Chrome is NOT in the caller's managed set, so this
 // never gates or evicts it — admission bounds only the other groups' Chromes.
