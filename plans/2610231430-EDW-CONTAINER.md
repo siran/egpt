@@ -67,6 +67,16 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 03:30 — SI+EduWeb on Telegram; a real group per chatbox conversation
+- **SI+EduWeb on Telegram exists** (`tg:-5239545023`). The operator created it and added @edwsi_bot, and ED answered there.
+  - ED is set as kg's E is in WhatsApp SI+EduWeb: `opus-xhigh`, `warm.keep`.
+  - **History copied one way from kg's WhatsApp SI+EduWeb** (snapshot to 10-23 23:55) into `transcripts/whatsapp/`, `media/whatsapp/`, `files/whatsapp/` and `handoffs/whatsapp-egpt.*`. ED's handoff `ed.261024-0330.handoff.md` points at it.
+  - **Not copied, pending the operator:** E's `desktop/` (2.8 GB) and `.ssh` (E's EduWeb server key `egpt_edw`, plus an `aws` file).
+- **Support and marketing: a REAL Telegram group per conversation** (operator), so the team can reply from Telegram even when the conversation started in a website chatbox. Bots can't create groups (Bot API: no such method; bots can only leave), so a **user account (+1 646 598 7553) is the group factory**: it creates the group, adds @edwsi_bot as admin and adds the team, and later deletes the group.
+  - This needs our own api_id/api_hash: awaiting the operator's go.
+  - Caveats: Telegram watches automated user accounts (pace the factory); each member's membership cap (~500, to verify) makes deleting old groups necessary.
+- **kg sees both new Telegram chats** (the operator's Telegram is in kg's Beeper). The operator is to send `/e agents mode off` in each.
+
 ## ED, one being with use-cases (operator 10-23 23:00, SUPERSEDES the three-beings table below)
 - **ED** is the container's E: one being in every chat (🦉, handle `ed`, opus-high, E's identity). Applied, `regular` until the wall.
 - **Its use-cases differ by chat:**
