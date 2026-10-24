@@ -218,3 +218,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **ECS on EC2:** orchestration is free; instances cost what EC2 costs (EDW ~$23, ~$14–16 on Spot). Its value is lifecycle (restarts, task revisions, an ASG replacing instances).
   - ECS `dockerSecurityOptions` accepts only no-new-privileges / apparmor / label / credentialspec (API docs, ContainerDefinition). There is no seccomp or systempaths. Only `privileged: true` (EC2 launch type) gives the box what it needs, at the cost of root-level power over the host. Fine with EDW alone on its instance; not when packed with EduWeb's other containers.
   - **Proposed later**, after ED is tested on the current setup: an ECS cluster with one t3a.small Spot instance in an ASG; EDW as one privileged task; its data on an EBS volume the instance re-attaches at boot.
+
+## 10-24 ~16:50 — edw merged into main; one branch for every node
+- 95d3af4 merge (one conflict: the per-chat readback list now goes to the shared readBack via wake.replyWakeWords). Full suite green except the known beeper-bridge load flake (304/304 alone).
+- Deployed: kg and do at 95d3af4 (both Beeper connections open, heartbeats fresh); EDW checkout switched to main (45bcbb6, run.sh EGPT_BRANCH=main). The `edw` branch is retired and kept on GitHub as history.
+- Gap: Telegram readback uses node-wide replyWake (no per-chat override there yet).
