@@ -2,12 +2,12 @@
 //   node setup/telegram-token.mjs <connection> [--home <EGPT_HOME>]     (token on stdin, or asked)
 // Prints the token only as length + sha256[:12]. Temp file then rename; on POSIX the file is 0600
 // and the folder 0700. config.yaml carries no token: just limbs.telegram.<connection>: { account }.
-import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { telegramTokenPath, secretTag } from '../src/bridges/telegram.mjs';
+import { writeSecret } from '../src/secrets.mjs';
 
 const fail = (m) => { console.error(`telegram-token: ${m}`); process.exit(1); };
 const args = process.argv.slice(2);
@@ -34,16 +34,5 @@ const token = (tty ? await ask('Paste the bot token from @BotFather (not shown) 
 if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token)) fail('that does not look like a bot token (<digits>:<30+ letters, digits, _ or ->)');
 
 const path = telegramTokenPath(home, connection);
-const posix = process.platform !== 'win32';
-mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-if (posix) chmodSync(dirname(path), 0o700);
-const tmp = `${path}.tmp-${process.pid}`;
-try {
-  writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
-  if (posix) chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
-} catch (e) {
-  rmSync(tmp, { force: true });
-  fail(`could not write ${path}: ${e?.message ?? e}`);
-}
+try { writeSecret(home, `telegram-${connection}.token`, token); } catch (e) { fail(`could not write ${path}: ${e?.message ?? e}`); }
 console.log(`${path} written (${secretTag(token)}). Restart the spine to use it; boot names the bot with getMe.`);

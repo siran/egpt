@@ -1,0 +1,3 @@
+# The spine user may run the being box launcher as root, and nothing else (docker/egpt-box).
+Defaults!/usr/local/sbin/egpt-box !use_pty, !syslog, !pam_session, !lecture
+egpt ALL=(root) NOPASSWD: /usr/local/sbin/egpt-box

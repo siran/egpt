@@ -46,6 +46,8 @@ import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs'
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
 import { loadPermissionLevel, isAccessLevel } from './permission-levels.mjs';
+import { readSecret, CLAUDE_OAUTH_TOKEN_FILE } from '../secrets.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
@@ -485,13 +487,14 @@ function withConvAllowedPaths(def, convAllowedPaths) {
 // THE ONE READING OF config.yaml's `sandbox_oauth_token` (see the credential note in turn() below):
 // a boxed turn's, and — operator 2026-09-28 — every boxed heartbeat beat's (boot.mjs
 // createHeartbeatBoxRunner): the box already holds it in every turn. Unset or blank → ''. NEVER
-// LOGGED, by either caller.
-export function sandboxOauthTokenOf(config) {
-  return String(config?.sandbox_oauth_token ?? '').trim();
+// LOGGED, by either caller. Tokens live in a folder (operator 2026-10-23): with no config value it is
+// $EGPT_HOME/secrets/claude-oauth.token.
+export function sandboxOauthTokenOf(config, home = EGPT_HOME) {
+  return String(config?.sandbox_oauth_token ?? '').trim() || (readSecret(home, CLAUDE_OAUTH_TOKEN_FILE).token ?? '');
 }
 
 const GLOBAL_READ_RESERVED = ['src', 'egpt'];
-export function globalReadPathsOf(value, onLog = () => {}) {
+export function globalReadPathsOf(value, onLog = () => {}, platform = process.platform) {
   if (value == null) return [];
   if (!Array.isArray(value)) {
     onLog(`config.yaml global_read_paths is not a list (a YAML list of \`- <mount name>: <path>\` entries) - no read mounts`);
@@ -506,7 +509,7 @@ export function globalReadPathsOf(value, onLog = () => {}) {
     if (GLOBAL_READ_RESERVED.includes(name.toLowerCase())) return skip(`\`${name}\` is reserved - the built-in ${GLOBAL_READ_RESERVED.join(' and ')} mounts`);
     if (mounts.some((m) => m.name.toLowerCase() === name.toLowerCase())) return skip(`\`${name}\` is already listed above`);
     const path = typeof raw === 'string' ? normalizeCwd(raw.trim()) : '';
-    if (!/^[A-Za-z]:[\\/]/.test(path)) return skip('not an absolute path (<drive>:/... or /<drive>/...)');
+    if (platform !== 'win32' ? !path.startsWith('/') : !/^[A-Za-z]:[\\/]/.test(path)) return skip(platform !== 'win32' ? 'not an absolute path' : 'not an absolute path (<drive>:/... or /<drive>/...)');
     if (/['"]/.test(path)) return skip('a path with a quote in it cannot ride the launcher\'s scrub command');
     mounts.push({ name, path });
   });

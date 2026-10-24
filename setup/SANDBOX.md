@@ -933,3 +933,34 @@ parts*: PS 5.1 cannot pass a JSON string to an exe intact.
 **Pool exhaustion** — sixteen accounts against `warm.max`. Orphaned leases are
 reclaimed automatically now, but if the pool is genuinely full, either the warm
 cap grew or sessions are not exiting.
+
+## Linux (the eGPT container, EDW)
+
+The same `access_level: sandbox`, the same launcher parameters
+(`src/sandbox-cli-session.mjs` `launcherArgv`), a different launcher:
+`docker/egpt-box`, installed root-owned at `/usr/local/sbin/egpt-box`. The
+spine user runs it through one sudoers line (`docker/sudoers-egpt-box`); a
+change to it ships with an image rebuild, never with `/upgrade`.
+
+- **One uid per conversation folder**, from 200000, recorded in
+  `$EGPT_HOME/state/box-users.tsv` and never reused. No `/etc/passwd` entry;
+  the view carries its own.
+- **The view:** a user + mount + pid namespace, `pivot_root` into a tmpfs that
+  holds `/usr`, `/opt`, `/etc` read-only, a private `/tmp`, `/dev`, `/proc`,
+  the conversation folder (rw), the thread store (rw), `allowed_paths`,
+  `global_read_paths` and the checkout `~/src/egpt` (ro), each at its own path.
+  The old root is detached; nested user namespaces are off.
+- **Home:** `/home/egpt-box-N`, scratch like a pool profile, with `egpt`, `src`
+  and each read mount as links. The persistent keys live in the conversation's
+  `.ssh`, which the launcher keeps the box's own (0700, no ACLs).
+- **DAC behind it:** `/home/egpt` is 0700. The launcher adds ACLs (box uid +
+  spine uid, default ACLs too) on granted folders; the first grant is recursive.
+- **Privilege:** no capabilities, `no_new_privs`, tini as pid 1.
+- **Refused:** a target that is not `conversations/<surface>/<slug>`,
+  `rooms/<slug>` or `agents/<name>`; a share outside conversation folders and
+  thread stores (or `~/src`, read-only); anything not owned by the spine user.
+- **Credential:** `config.yaml` `sandbox_oauth_token`, else
+  `$EGPT_HOME/secrets/claude-oauth.token` (`claude setup-token`, then
+  `node setup/claude-oauth-token.mjs`).
+- **Not confined:** the network (as on Windows). Xvfb listens on no abstract
+  socket, so the X screen is out of reach.

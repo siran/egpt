@@ -3,7 +3,7 @@
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect, vi } from 'vitest';
-import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef, resolveSandboxed, globalReadPathsOf } from '../src/spine/brainpool.mjs';
+import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDef, resolveSandboxed, globalReadPathsOf, sandboxOauthTokenOf } from '../src/spine/brainpool.mjs';
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
@@ -2858,7 +2858,14 @@ describe('brainpool.turn — sandbox_oauth_token reaches brainOptions ONLY for a
 //    provisioner's through setup/global-read-paths.mjs. An invalid entry is skipped with one line
 //    naming it; unset or empty is nothing at all. ──
 describe('globalReadPathsOf — the one reading of config.yaml global_read_paths', () => {
-  const read = (value) => { const logs = []; return { mounts: globalReadPathsOf(value, (l) => logs.push(l)), logs }; };
+  const read = (value, platform = 'win32') => { const logs = []; return { mounts: globalReadPathsOf(value, (l) => logs.push(l), platform), logs }; };
+
+  it('on linux an absolute path is a POSIX one (the EDW box mounts it at its own path)', () => {
+    const { mounts, logs } = read([{ repos: '/srv/repos' }, { win: 'C:/Users/an' }, { rel: 'src' }], 'linux');
+    expect(mounts).toEqual([{ name: 'repos', path: '/srv/repos' }]);
+    expect(logs).toHaveLength(2);
+    for (const l of logs) expect(l).toMatch(/not an absolute path/);
+  });
 
   it('a good entry, in either path form, comes back as { name, path } in config order', () => {
     const { mounts, logs } = read([{ repos: 'C:/Users/an/src/siran' }, { notes: '/c/Users/an/Documents/notes' }]);
@@ -3433,5 +3440,20 @@ describe('brainpool.turn: the compaction notice hook', () => {
     const { brain } = harness([{ text: 'ok', sessionId: 'sid-n' }], { afterTurn: (x) => seen.push(x) });
     await brain.turn('e', ev);
     expect(seen[0].noticeCompacted).toBeNull();
+  });
+});
+
+// ── Tokens live in a folder (operator 2026-10-23): a boxed being's Claude credential comes from
+//    config.yaml's sandbox_oauth_token where set (kg/do unchanged), else $EGPT_HOME/secrets/claude-oauth.token. ──
+describe('sandboxOauthTokenOf — config value, else the secrets file', () => {
+  const home = mkdtempSync(join(tmpdir(), 'egpt-oauth-home-'));
+  it('config wins; no config reads secrets/claude-oauth.token (trimmed); neither is blank', () => {
+    expect(sandboxOauthTokenOf({}, home)).toBe('');
+    mkdirSync(join(home, 'secrets'), { recursive: true });
+    writeFileSync(join(home, 'secrets', 'claude-oauth.token'), '  sk-ant-oat01-from-file  \n', { mode: 0o600 });
+    expect(sandboxOauthTokenOf({}, home)).toBe('sk-ant-oat01-from-file');
+    expect(sandboxOauthTokenOf({ sandbox_oauth_token: '   ' }, home)).toBe('sk-ant-oat01-from-file');
+    expect(sandboxOauthTokenOf({ sandbox_oauth_token: ' sk-ant-oat01-from-config ' }, home)).toBe('sk-ant-oat01-from-config');
+    rmSync(home, { recursive: true, force: true });
   });
 });

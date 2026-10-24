@@ -41,6 +41,22 @@ import { createPiCliSession } from './pi-cli-session.mjs';
 import { lowerChild } from './process-priority.mjs';
 
 const LAUNCHER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'setup', 'sandbox-logon-launcher.ps1');
+// The Linux box (docker/egpt-box): same parameters, root-owned, run through its one sudoers line.
+export const BOX_LAUNCHER = '/usr/local/sbin/egpt-box';
+
+// Null when this platform has a box to run; else why not.
+function boxUnavailable(platform, boxLauncher) {
+  if (platform === 'win32') return null;
+  if (platform !== 'linux') return `the box is Windows- and Linux-only on this build (platform=${platform})`;
+  return existsSync(boxLauncher) ? null : `the Linux box launcher ${boxLauncher} is not installed (docker/Dockerfile installs it, with its sudoers line)`;
+}
+
+// The launcher per platform, given launcherArgv's parameters.
+function launchCommand(platform, params, boxLauncher) {
+  return platform === 'win32'
+    ? ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER_PATH, ...params]]
+    : ['sudo', ['-n', boxLauncher, ...params]];
+}
 
 // THE ONE variable a sandboxed turn is ever handed, and the only reason the launcher's
 // -SetEnv flag is ever passed: the operator's Claude SUBSCRIPTION credential — a long-lived
@@ -207,6 +223,7 @@ const OAUTH_REMEDY = [
   "  2. Paste it as the TOP-LEVEL `sandbox_oauth_token:` key of THIS node's own config",
   '     (~/.egpt/config/config.yaml). It is PER NODE: kg and do each hold their own, and one',
   "     node's token does nothing for the other.",
+  '     Or store it as $EGPT_HOME/secrets/claude-oauth.token: node setup/claude-oauth-token.mjs',
   '  3. Make it take effect, from the repo. setup/upgrade.ps1 drops an /upgrade the running',
   '     spine consumes; the daemon then pulls, rebuilds and respawns it, and the new config is read on the way up:',
   '       powershell -ExecutionPolicy Bypass -File setup/upgrade.ps1',
@@ -240,10 +257,9 @@ export function createSandboxCliSession(options = {}) {
     throw new Error(`sandboxed: true does not support engine=${engine} (supported: ccode/claude-code, codex, pi)`);
   }
 
-  // ...and the SAME loud-failure rule for the PLATFORM (operator 2026-09-04). The launcher this
-  // module wraps is Windows machinery (LogonUser + CreateProcessWithTokenW + a per-folder ACE),
-  // so off win32 there is simply nothing to run: before this guard we spawned it anyway and the
-  // caller got a bare ENOENT naming a shell binary rather than the feature that failed.
+  // ...and the SAME loud-failure rule for the PLATFORM (operator 2026-09-04): the box is
+  // setup/sandbox-logon-launcher.ps1 on Windows and docker/egpt-box on Linux (EDW 2026-10-24);
+  // anywhere else, or on a Linux node without the launcher, there is nothing to run.
   //
   // Note the ASYMMETRY with brainpool.mjs's `sandboxed` resolution, which IS platform-aware
   // (unset at both tiers => true on win32, false elsewhere). A DEFAULT may be platform-aware
@@ -257,8 +273,10 @@ export function createSandboxCliSession(options = {}) {
   // of it (resolveSandboxed rung 1). Naming only that remedy would send the operator to a line
   // that changes nothing, so both are named and the message says which is which.
   const platform = options.platform ?? process.platform;   // injectable for tests, same DI convention as `spawn` below
-  if (platform !== 'win32') {
-    throw new Error(`sandboxed: true does not support platform=${platform} — OS-level sandboxing is Windows-only on this build. Run this node on Windows, or give this agent an explicit \`access_level: regular\` (the default level is now 'sandbox', which FORCES the box on — under it a \`sandboxed: false\` is dead config, not an override).`);
+  const boxLauncher = options.boxLauncher ?? BOX_LAUNCHER;   // injectable for tests
+  const noBox = boxUnavailable(platform, boxLauncher);
+  if (noBox) {
+    throw new Error(`sandboxed: true does not support platform=${platform} here — ${noBox}. Run this node on Windows or in the eGPT image, or give this agent an explicit \`access_level: regular\` (the default level is now 'sandbox', which FORCES the box on — under it a \`sandboxed: false\` is dead config, not an override).`);
   }
 
   const _spawn = options.spawn || nodeSpawn;   // injectable for tests, same DI convention as warm-cli-session.mjs
@@ -284,7 +302,7 @@ export function createSandboxCliSession(options = {}) {
   // keep exactly today's behaviour — no token, no -SetEnv, spawn unchanged.
   if ((engine === 'ccode' || engine === 'claude-code') && !oauthToken) {
     throw new Error(
-      'sandboxed: true has NO credential: config.yaml\'s `sandbox_oauth_token` is unset or blank, and it is the '
+      'sandboxed: true has NO credential: config.yaml\'s `sandbox_oauth_token` is unset or blank (and there is no secrets/claude-oauth.token), and it is the '
       + 'ONLY credential a sandboxed turn ever gets — the leased pool account it runs as has an empty profile and '
       + 'is denied your ~/.claude by the very ACLs that make the sandbox a sandbox.\n' + OAUTH_REMEDY,
     );
@@ -391,7 +409,7 @@ export function createSandboxCliSession(options = {}) {
   const readMounts = readMountEntriesOf(options.sandboxReadMounts);
 
   // THE BASH THE CLI'S OWN Bash TOOL WILL SPAWN — see GIT_BASH_ENV above for the measured defect
-  // and for why msys64 is the first candidate. ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
+  // and for why msys64 is the first candidate. Windows only (Linux has /bin/bash), and ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
   // CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable, so a codex/pi turn is untouched. Null
   // when the node has neither candidate, and then the spread below contributes ZERO elements.
   //
@@ -399,7 +417,7 @@ export function createSandboxCliSession(options = {}) {
   // provision-sandbox-account.ps1's PI_CODING_AGENT_DIR comment records the cost of the other way
   // ("redirects EVERY pi on the box, including the operator's own terminal. Not eGPT's call to
   // make"). It had no per-spawn channel; this one does.
-  const gitBash = isCcode ? resolveSandboxGitBash(options.gitBashCandidates) : null;
+  const gitBash = isCcode && platform === 'win32' ? resolveSandboxGitBash(options.gitBashCandidates) : null;
 
   // THE BEING'S WAY TO ASK ITS SPINE FOR THE BROWSER (operator 2026-09-26: "for now only the
   // browser") — a secret minted for THIS session, plus the port to dial and the client to dial it
@@ -434,7 +452,8 @@ export function createSandboxCliSession(options = {}) {
     // options.cwd only for the (untested-in-practice) case spawnProc ran
     // with no cwd at all.
     const targetFolder = spawnOpts?.cwd ?? options.cwd;
-    const proc = _spawn('powershell.exe', launcherArgv({ targetFolder, sharePaths, sharePathsReadOnly, setEnv, readMounts, bin, args }), spawnOpts);
+    const [cmd, argv] = launchCommand(platform, launcherArgv({ targetFolder, sharePaths, sharePathsReadOnly, setEnv, readMounts, bin, args }), boxLauncher);
+    const proc = _spawn(cmd, argv, spawnOpts);
     if (onLog) tapLaunchLine(proc?.stderr, onLog);
     return proc;
   }
@@ -470,8 +489,6 @@ export function createSandboxCliSession(options = {}) {
 // the launcher's param block declares.
 function launcherArgv({ targetFolder, sharePaths = [], sharePathsReadOnly = [], setEnv = [], readMounts = [], bin, args }) {
   return [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass',
-    '-File', LAUNCHER_PATH,
     '-TargetFolder', targetFolder,
     // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
     // defaults ('' = "no entries") apply. That is the common case and it must stay unchanged.
@@ -536,12 +553,14 @@ function readMountEntriesOf(list) {
 // the launcher grants reads it; the argv then carries only a short path. Not stdin: a command that
 // reads stdin itself would eat its own script.
 //
-// THROWS, before any spawn, off win32 (there is no box) and with no POSIX bash — the caller's run
+// THROWS, before any spawn, where there is no box (boxUnavailable) and, on Windows, with no POSIX bash — the caller's run
 // then FAILS, loudly, and nothing runs anywhere else.
 const LOGON_CMDLINE_MAX = 1024;
-export function spawnBoxedCommand({ targetFolder, command, commandFile, readMounts, sandboxOauthToken, beingLink = null, spawn = nodeSpawn, setPriority, platform = process.platform, gitBashCandidates, writeFile = writeFileSync, onLog = null } = {}) {
-  if (platform !== 'win32') throw new Error(`refused — a command a being wrote runs in its box, and the box is Windows-only on this build (platform=${platform})`);
-  const bash = resolveSandboxGitBash(gitBashCandidates);
+export function spawnBoxedCommand({ targetFolder, command, commandFile, readMounts, sandboxOauthToken, beingLink = null, spawn = nodeSpawn, setPriority, platform = process.platform, gitBashCandidates, boxLauncher = BOX_LAUNCHER, writeFile = writeFileSync, onLog = null } = {}) {
+  const noBox = boxUnavailable(platform, boxLauncher);
+  if (noBox) throw new Error(`refused — a command a being wrote runs in its box, and ${noBox}`);
+  const win = platform === 'win32';
+  const bash = win ? resolveSandboxGitBash(gitBashCandidates) : '/bin/bash';
   if (!bash) throw new Error(`refused — no POSIX bash for the box: none of ${GIT_BASH_CANDIDATES.join(', ')} exists`);
   let args = ['-c', command];
   if (bash.length + 2 * command.length + 8 > LOGON_CMDLINE_MAX) {
@@ -552,11 +571,11 @@ export function spawnBoxedCommand({ targetFolder, command, commandFile, readMoun
   const link = typeof beingLink?.mint === 'function' ? beingLink.mint() : null;   // one credential per run, revoked when it ends
   const setEnv = [
     ...(oauthToken ? [`${OAUTH_ENV_NAME}=${oauthToken}`] : []),
-    `${GIT_BASH_ENV}=${bash}`, MSYS2_PATH_TYPE_ENTRY,
+    ...(win ? [`${GIT_BASH_ENV}=${bash}`, MSYS2_PATH_TYPE_ENTRY] : []),
     ...(link ? link.env : []),
   ];
-  const argv = launcherArgv({ targetFolder, setEnv, readMounts: readMountEntriesOf(readMounts), bin: bash, args });
-  const proc = spawn('powershell.exe', argv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, cwd: targetFolder });
+  const [cmd, argv] = launchCommand(platform, launcherArgv({ targetFolder, setEnv, readMounts: readMountEntriesOf(readMounts), bin: bash, args }), boxLauncher);
+  const proc = spawn(cmd, argv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, cwd: targetFolder });
   lowerChild(proc?.pid, { onLog, setPriority });
   if (link) { proc?.once?.('close', link.revoke); proc?.once?.('error', link.revoke); }
   proc?.stdin?.end?.();   // a beat has no input: a command that reads stdin gets EOF, not a wait
@@ -618,7 +637,7 @@ function withOauthRemedy(session, tokenLength) {
     if (typeof r?.text !== 'string' || !oauthRejected(r.text)) return r;
     return {
       ...r,
-      text: `${r.text}\n\n[egpt] THE SANDBOX CREDENTIAL WAS REJECTED. config.yaml's \`sandbox_oauth_token\` is set `
+      text: `${r.text}\n\n[egpt] THE SANDBOX CREDENTIAL WAS REJECTED. config.yaml's \`sandbox_oauth_token\` (or secrets/claude-oauth.token) is set `
         + `(${tokenLength} characters) but the API refused it — expired, revoked, or truncated on paste.\n${OAUTH_REMEDY}`,
     };
   };

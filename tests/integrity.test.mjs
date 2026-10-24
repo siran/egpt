@@ -227,26 +227,19 @@ const PORTABLE_BY_DESIGN = [
   {
     file: 'src/sandbox-cli-session.mjs',
     code: 'powershell -ExecutionPolicy Bypass -File setup',
-    why: 'ERROR-MESSAGE TEXT, not a spawn (added 2026-09-06 — both redeploy lines of OAUTH_REMEDY match this snippet). Nothing here executes: it is the copy-pasteable fix printed when `sandbox_oauth_token` is missing or rejected, and the whole sandbox feature ALREADY refuses to run off win32 two guards earlier in the same function ("Windows-only on this build"), so the string is unreachable on a POSIX node. Naming the exact command is the point — the failure this text exists for takes every sandboxed being on the node down at once, and a message that said "redeploy somehow" is precisely what was wrong before.',
+    why: 'ERROR-MESSAGE TEXT, not a spawn (added 2026-09-06 — both redeploy lines of OAUTH_REMEDY match this snippet). Nothing here executes: it is the copy-pasteable fix printed when `sandbox_oauth_token` is missing or rejected. Since EDW (2026-10-24) a Linux node can print it too; the same text names the secrets-file setter (node setup/claude-oauth-token.mjs), the fix on that node.',
+  },
+  {
+    file: 'src/sandbox-cli-session.mjs',
+    code: "? ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER_PATH, ...params]]",
+    why: 'THE LAUNCHER PER PLATFORM (EDW 2026-10-24; was debt since 2026-09-04): the win32 branch of launchCommand. Linux runs docker/egpt-box through sudo with the same parameters; any other platform is refused by boxUnavailable before this is reached.',
   },
 ];
 
 // Group 2: genuine platform coupling in the scanned tree. NOT excused — recorded, so the suite
 // stays green while the list itself is the to-do. Delete an entry when the code is fixed; the
 // rot check below will fail if you delete the code and leave the entry.
-const KNOWN_PLATFORM_DEBT = [
-  {
-    file: 'src/sandbox-cli-session.mjs',
-    // (the argv moved into the shared launcherArgv 2026-09-28 — same spawn, same guard)
-    code: "_spawn('powershell.exe', launcherArgv(",
-    why: 'FOUND BY THIS SCAN 2026-09-04, GUARDED THE SAME DAY. createSandboxCliSession throws BEFORE this spawn whenever the platform is not win32 ("sandboxed: true does not support platform=<p> - OS-level sandboxing is Windows-only on this build..."), the same loud shape as the engine check above it. So the bare ENOENT is gone and a sandboxed:true is REFUSED rather than silently downgraded. THE DEBT GREW ON 2026-09-23 and this entry now carries it: the access-level default became `sandbox` (operator: "all agents sandboxed, but the meta engineers"), and that level FORCES the box on platform-blind (resolveSandboxed rung 1), so off Windows a being that declares NO access_level no longer falls to the platform-aware default - it reaches this refusal on every turn. The refusal is loud and names the remedy (an explicit `access_level: regular`, since `sandboxed: false` is dead config under the forced level), which is the honest shape while the machinery is Windows-only - but a posix node now needs that line in its config where it needed nothing before. REAL FIX, unchanged: setup/sandbox-logon-launcher.ps1 grows a POSIX equivalent.',
-  },
-  {
-    file: 'src/sandbox-cli-session.mjs',
-    code: "spawn('powershell.exe', argv, { stdio:",
-    why: 'THE SAME LAUNCHER, FOR A BEING\'S HEARTBEAT COMMAND (added 2026-09-28, operator: "structural: no ai … the command runs under their unprivileged account"). spawnBoxedCommand runs a command a being wrote in <room>/heartbeats/ through setup/sandbox-logon-launcher.ps1, built by the same launcherArgv as the entry above, and it throws BEFORE this spawn whenever the platform is not win32 ("the box is Windows-only on this build") — the heartbeat run then FAILS, loudly, and the command runs nowhere else (never falling back to the spine\'s own shell, which would be the operator). Same debt as the entry above, same REAL FIX: a POSIX equivalent of the launcher.',
-  },
-];
+const KNOWN_PLATFORM_DEBT = [];
 
 const ALLOWLIST = [...PORTABLE_BY_DESIGN, ...KNOWN_PLATFORM_DEBT];
 

@@ -1,0 +1,480 @@
+#!/usr/bin/python3 -I
+# egpt-box: runs one command as a conversation's own Unix user, inside a private view of the
+# filesystem. The Linux counterpart of setup/sandbox-logon-launcher.ps1, with the same parameters
+# (src/sandbox-cli-session.mjs launcherArgv). Installed root-owned at /usr/local/sbin/egpt-box; the
+# spine user runs it through one sudoers line (docker/sudoers-egpt-box).
+#
+#   egpt-box -TargetFolder <conversation folder> [-SharePath JSON] [-SharePathReadOnly JSON]
+#            [-SetEnv JSON] [-ReadMounts JSON] -InnerBin <bin> -InnerArgs JSON
+#
+# The wall:
+#   - one uid per conversation folder (box-users.tsv in EGPT_HOME/state, never reused);
+#   - a user + mount + pid namespace whose root (pivot_root; the old root is detached) is a tmpfs
+#     holding /usr, /opt, /etc read-only, a private /tmp, /dev and /proc, and only the granted
+#     folders, each at its own path; no nested user namespaces;
+#   - POSIX ACLs give that uid the granted folders (rw or r) and nothing else;
+#   - the command runs with no capabilities and no_new_privs, under tini as the namespace's pid 1.
+import ctypes
+import errno
+import json
+import os
+import posixpath
+import re
+import signal
+import sys
+
+UID_BASE = 200000
+REGISTRY = 'box-users.tsv'
+SYSTEM_RO = ('/usr', '/opt', '/etc')
+LINKS = ('bin', 'sbin', 'lib', 'lib32', 'lib64', 'libx32')
+DEVICES = ('null', 'zero', 'full', 'random', 'urandom', 'tty')
+PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+LISTS = ('-SharePath', '-SharePathReadOnly', '-SetEnv', '-ReadMounts', '-InnerArgs')
+FLAGS = ('-TargetFolder', '-InnerBin') + LISTS
+ENV_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+MOUNT_NAME = re.compile(r'^[A-Za-z0-9_-]+$')
+BIN_NAME = re.compile(r'^[A-Za-z0-9._+-]+$')
+
+CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID = 0x20000, 0x10000000, 0x20000000
+MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC = 1, 2, 4, 8
+MS_REMOUNT, MS_NOATIME, MS_NODIRATIME, MS_BIND = 32, 1024, 2048, 4096
+MS_REC, MS_PRIVATE, MS_RELATIME = 16384, 1 << 18, 1 << 21
+MNT_DETACH = 2
+SYS_PIVOT_ROOT = {'x86_64': 155, 'aarch64': 41}
+
+
+class Refused(Exception):
+    pass
+
+
+def parse_args(argv):
+    """The launcher's argv as a dict; every list is one JSON array of strings."""
+    out = {}
+    i = 0
+    while i < len(argv):
+        flag = argv[i]
+        if flag not in FLAGS:
+            raise Refused(f'unknown parameter {flag!r}')
+        if flag in out:
+            raise Refused(f'{flag} given twice')
+        if i + 1 >= len(argv):
+            raise Refused(f'{flag} has no value')
+        value = argv[i + 1]
+        if flag in LISTS:
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise Refused(f'{flag} is not JSON')
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise Refused(f'{flag} is not a JSON array of strings')
+        out[flag] = value
+        i += 2
+    for need in ('-TargetFolder', '-InnerBin', '-InnerArgs'):
+        if need not in out:
+            raise Refused(f'{need} is required')
+    env = []
+    for entry in out.get('-SetEnv', []):
+        name, eq, value = entry.partition('=')
+        if not eq or not ENV_NAME.match(name):
+            raise Refused(f'-SetEnv entry is not NAME=VALUE: {name!r}')
+        env.append((name, value))
+    mounts = []
+    for entry in out.get('-ReadMounts', []):
+        name, eq, path = entry.partition('=')
+        if not eq or not MOUNT_NAME.match(name) or name.lower() in ('src', 'egpt') or not path:
+            raise Refused(f'-ReadMounts entry is not <name>=<path>: {entry!r}')
+        mounts.append((name, path))
+    bin_ = out['-InnerBin']
+    if not (bin_.startswith('/') or BIN_NAME.match(bin_)):
+        raise Refused(f'-InnerBin must be an absolute path or a bare name: {bin_!r}')
+    return {
+        'target': out['-TargetFolder'],
+        'rw': out.get('-SharePath', []),
+        'ro': out.get('-SharePathReadOnly', []),
+        'env': env,
+        'mounts': mounts,
+        'bin': bin_,
+        'args': out['-InnerArgs'],
+    }
+
+
+def inside(path, root):
+    return path == root or path.startswith(root.rstrip('/') + '/')
+
+
+def depth_below(path, root):
+    """Path components below root, or -1 when path is not strictly below it."""
+    if not path.startswith(root.rstrip('/') + '/'):
+        return -1
+    return len(path[len(root.rstrip('/')) + 1:].split('/'))
+
+
+def conversation_root(path, egpt_home):
+    """The conversation folder path is in (or is), else None: conversations/<surface>/<slug>, rooms/<slug>, agents/<name>."""
+    for sub, n in (('conversations', 2), ('rooms', 1), ('agents', 1)):
+        base = posixpath.join(egpt_home, sub)
+        d = depth_below(path, base)
+        if d >= n:
+            return posixpath.join(base, *path[len(base) + 1:].split('/')[:n])
+    return None
+
+
+def classify(path, kind, home):
+    """None when `path` (a realpath) may be granted as `kind` (target | rw | ro), else why not."""
+    egpt_home = posixpath.join(home, '.egpt')
+    conv = conversation_root(path, egpt_home)
+    if kind == 'target':
+        return None if conv == path else f'not a conversation folder under {egpt_home}/(conversations/<surface>|rooms|agents)/<name>'
+    if conv or depth_below(path, posixpath.join(home, '.egpt-jsonl')) >= 1:
+        return None
+    if kind == 'ro' and depth_below(path, posixpath.join(home, 'src')) >= 1:
+        return None
+    roots = 'a conversation folder or a thread store' + (', or the code under ~/src' if kind == 'ro' else '')
+    return f'outside what a box may be granted ({roots})'
+
+
+def box_user(uid):
+    return f'egpt-box-{uid - UID_BASE}'
+
+
+def box_uid_for(target, egpt_home):
+    """This conversation's uid: looked up in, or appended to, EGPT_HOME/state/box-users.tsv."""
+    import fcntl
+    state = posixpath.join(egpt_home, 'state')
+    if not posixpath.isdir(state):
+        raise Refused(f'{state} does not exist')
+    fd = os.open(posixpath.join(state, REGISTRY), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with os.fdopen(os.dup(fd), 'r+', encoding='utf-8') as fh:
+            taken = 0
+            for line in fh.read().splitlines():
+                uid, _, path = line.partition('\t')
+                if not uid.isdigit():
+                    continue
+                if path == target:
+                    return int(uid)
+                taken = max(taken, int(uid) - UID_BASE + 1)
+            uid = UID_BASE + taken
+            fh.seek(0, os.SEEK_END)
+            fh.write(f'{uid}\t{target}\n')
+            return uid
+    finally:
+        os.close(fd)
+
+
+def open_checked(path, kind, home, invoker):
+    """(realpath, O_PATH fd) for a path that may be granted as `kind`; the fd pins it against swaps."""
+    if not path.startswith('/'):
+        raise Refused(f'{path!r} is not absolute')
+    real = os.path.realpath(path)
+    why = classify(real, kind, home)
+    if why:
+        raise Refused(f'{path}: {why}')
+    fd = os.open(real, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+    if os.readlink(f'/proc/self/fd/{fd}') != real:
+        raise Refused(f'{path} changed while it was checked')
+    st = os.fstat(fd)
+    if st.st_uid != invoker:
+        raise Refused(f'{path} is not owned by the spine user (uid {st.st_uid})')
+    return real, fd
+
+
+def has_user_acl(fd, uid, perm):
+    """True when the access ACL already has a user entry for uid with at least `perm` (4 r, 2 w)."""
+    try:
+        raw = os.getxattr(f'/proc/self/fd/{fd}', 'system.posix_acl_access')
+    except OSError:
+        return False
+    for off in range(4, len(raw) - 7, 8):
+        tag, bits = int.from_bytes(raw[off:off + 2], 'little'), int.from_bytes(raw[off + 2:off + 4], 'little')
+        if tag == 2 and int.from_bytes(raw[off + 4:off + 8], 'little') == uid and bits & perm == perm:
+            return True
+    return False
+
+
+def grant(fd, uid, invoker, writable):
+    """ACLs for the box (and default ACLs so later files stay shared); recursive the first time only."""
+    import stat
+    import subprocess
+    if has_user_acl(fd, uid, 6 if writable else 4):
+        return
+    perms = 'rwX' if writable else 'rX'
+    spec = [f'u:{uid}:{perms}'] + ([f'u:{invoker}:rwX'] if writable else [])
+    if stat.S_ISDIR(os.fstat(fd).st_mode):
+        # -P with cwd on the pinned folder: the walk never follows a link out of it.
+        args, cwd = ['setfacl', '-R', '-P', '-m', ','.join(spec + [f'd:{e}' for e in spec]), '.'], (lambda: os.fchdir(fd))
+    else:
+        args, cwd = ['setfacl', '-m', ','.join(spec), f'/proc/self/fd/{fd}'], None
+    r = subprocess.run(args, preexec_fn=cwd, pass_fds=(fd,), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if r.returncode:
+        raise Refused(f'setfacl failed: {r.stderr.strip()}')
+
+
+def own_ssh_dir(tfd, uid):
+    """<target>/.ssh is the box's own, 0700 and without ACLs, so ssh accepts the keys made in it."""
+    d = os.open(f'/proc/self/fd/{tfd}', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            os.mkdir('.ssh', 0o700, dir_fd=d)
+        except FileExistsError:
+            pass
+        s = os.open('.ssh', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=d)
+        try:
+            os.fchown(s, uid, uid)
+            for acl in ('system.posix_acl_access', 'system.posix_acl_default'):
+                try:
+                    os.removexattr(s, acl)
+                except OSError as e:
+                    if e.errno != errno.ENODATA:
+                        raise
+            os.fchmod(s, 0o700)
+        finally:
+            os.close(s)
+    finally:
+        os.close(d)
+
+
+def resolve_bin(name):
+    if name.startswith('/'):
+        return name
+    for d in PATH.split(':'):
+        p = posixpath.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    raise Refused(f'-InnerBin {name!r} is not on {PATH}')
+
+
+# ---- the namespace -------------------------------------------------------------------------------
+
+def libc():
+    lib = ctypes.CDLL(None, use_errno=True)
+    lib.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_char_p]
+    return lib
+
+
+def mount(lib, src, dst, fstype=None, flags=0, data=None):
+    enc = lambda s: s.encode() if isinstance(s, str) else s
+    if lib.mount(enc(src), enc(dst), enc(fstype), flags, enc(data)) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, f'mount {src} -> {dst}: {os.strerror(err)}')
+
+
+def bind(lib, src, dst, ro, rec=False):
+    mount(lib, src, dst, None, MS_BIND | (MS_REC if rec else 0))
+    if ro:
+        # A remount must keep the flags the kernel locked on the source mount.
+        kept = 0
+        f = os.statvfs(dst).f_flag
+        for st, ms in ((os.ST_NOSUID, MS_NOSUID), (os.ST_NODEV, MS_NODEV), (os.ST_NOEXEC, MS_NOEXEC),
+                       (os.ST_NOATIME, MS_NOATIME), (os.ST_NODIRATIME, MS_NODIRATIME), (os.ST_RELATIME, MS_RELATIME)):
+            if f & st:
+                kept |= ms
+        mount(lib, None, dst, None, MS_REMOUNT | MS_BIND | MS_RDONLY | kept)
+
+
+def mountpoint(path, is_dir=True):
+    if is_dir:
+        os.makedirs(path, exist_ok=True)
+    elif not os.path.exists(path):
+        os.makedirs(posixpath.dirname(path), exist_ok=True)
+        open(path, 'w').close()
+
+
+def enter_namespaces(lib):
+    """User (identity-mapped), mount and pid namespaces; a helper still outside writes the maps."""
+    r, w = os.pipe()
+    me = os.getpid()
+    helper = os.fork()
+    if helper == 0:
+        os.close(w)
+        os.read(r, 1)
+        try:
+            for f in ('uid_map', 'gid_map'):
+                with open(f'/proc/{me}/{f}', 'w') as fh:
+                    fh.write('0 0 4294967295')
+            os._exit(0)
+        except OSError:
+            os._exit(1)
+    os.close(r)
+    rc = lib.unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID)
+    err = ctypes.get_errno()
+    os.write(w, b'x')
+    os.close(w)
+    _, status = os.waitpid(helper, 0)
+    if rc != 0:
+        raise Refused(f'unshare: {os.strerror(err)} (user namespaces are required)')
+    if os.waitstatus_to_exitcode(status) != 0:
+        raise Refused('could not write the uid/gid maps')
+
+
+def build_view(lib, root, plan):
+    mount(lib, None, '/', None, MS_REC | MS_PRIVATE)
+    mount(lib, 'tmpfs', root, 'tmpfs', MS_NOSUID, 'size=256m,mode=0755')
+    for d in SYSTEM_RO:
+        if os.path.isdir(d):
+            mountpoint(root + d)
+            bind(lib, d, root + d, ro=True, rec=True)
+    for name in LINKS:
+        p = '/' + name
+        if os.path.islink(p):
+            os.symlink(os.readlink(p), root + p)
+        elif os.path.isdir(p):
+            mountpoint(root + p)
+            bind(lib, p, root + p, ro=True, rec=True)
+    mountpoint(root + '/tmp')
+    mount(lib, 'tmpfs', root + '/tmp', 'tmpfs', MS_NOSUID | MS_NODEV, 'size=1g,mode=1777')
+    os.makedirs(root + '/var', exist_ok=True)
+    os.symlink('../tmp', root + '/var/tmp')
+    dev = root + '/dev'
+    mountpoint(dev)
+    mount(lib, 'tmpfs', dev, 'tmpfs', MS_NOSUID, 'size=1m,mode=0755')
+    for d in DEVICES:
+        if os.path.exists('/dev/' + d):
+            mountpoint(f'{dev}/{d}', is_dir=False)
+            bind(lib, '/dev/' + d, f'{dev}/{d}', ro=False)
+    mountpoint(dev + '/pts')
+    mount(lib, 'devpts', dev + '/pts', 'devpts', MS_NOSUID | MS_NOEXEC, 'newinstance,ptmxmode=0666,mode=0620')
+    os.symlink('pts/ptmx', dev + '/ptmx')
+    mountpoint(dev + '/shm')
+    mount(lib, 'tmpfs', dev + '/shm', 'tmpfs', MS_NOSUID | MS_NODEV, 'size=256m,mode=1777')
+    for i, n in enumerate(('stdin', 'stdout', 'stderr')):
+        os.symlink(f'/proc/self/fd/{i}', f'{dev}/{n}')
+    os.symlink('/proc/self/fd', dev + '/fd')
+    mountpoint(root + '/proc')
+    mount(lib, 'proc', root + '/proc', 'proc', MS_NOSUID | MS_NODEV | MS_NOEXEC)
+    # The granted folders, each at its own path; parents first so a read-only share inside a
+    # writable one stays read-only.
+    for path, fd, ro in sorted(plan['binds'], key=lambda b: b[0].count('/')):
+        # The checked fd belongs to the old mount namespace; bind a fresh one, but only if it is the
+        # same inode that was checked.
+        here = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        a, b = os.fstat(fd), os.fstat(here)
+        if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
+            raise Refused(f'{path} changed while the box was built')
+        mountpoint(root + path, is_dir=os.path.isdir(f'/proc/self/fd/{here}'))
+        bind(lib, f'/proc/self/fd/{here}', root + path, ro=ro)
+    uid, user, home = plan['uid'], plan['user'], plan['home']
+    run = root + '/run/egpt-box'
+    os.makedirs(run, exist_ok=True)
+    with open(run + '/passwd', 'w') as fh:
+        fh.write(f'root:x:0:0:root:/root:/usr/sbin/nologin\n{plan["invoker_name"]}:x:{plan["invoker"]}:{plan["invoker"]}::{plan["invoker_home"]}:/usr/sbin/nologin\n'
+                 f'{user}:x:{uid}:{uid}::{home}:/bin/bash\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n')
+    with open(run + '/group', 'w') as fh:
+        fh.write(f'root:x:0:\n{plan["invoker_name"]}:x:{plan["invoker"]}:\n{user}:x:{uid}:\nnogroup:x:65534:\n')
+    for f in ('passwd', 'group'):
+        bind(lib, f'{run}/{f}', f'{root}/etc/{f}', ro=True)
+    # Its own home, scratch like a Windows pool profile: src, egpt and each read mount by name.
+    os.makedirs(root + home, mode=0o700)
+    os.chown(root + home, uid, uid)
+    for name, target in plan['links']:
+        os.symlink(target, f'{root}{home}/{name}')
+        os.lchown(f'{root}{home}/{name}', uid, uid)
+
+
+def enter_view(lib, root):
+    """pivot_root into the view and detach the old root: nothing outside it stays reachable."""
+    nr = SYS_PIVOT_ROOT.get(os.uname().machine)
+    if nr is None:
+        raise Refused(f'no pivot_root syscall number for {os.uname().machine}')
+    old = os.open('/', os.O_DIRECTORY | os.O_RDONLY)
+    os.chdir(root)
+    if lib.syscall(nr, b'.', b'.') != 0:
+        raise OSError(ctypes.get_errno(), 'pivot_root')
+    os.fchdir(old)
+    os.close(old)
+    if lib.umount2(b'.', MNT_DETACH) != 0:
+        raise OSError(ctypes.get_errno(), 'detach the old root')
+    os.chdir('/')
+    with open('/proc/sys/user/max_user_namespaces', 'w') as fh:
+        fh.write('0')
+
+
+def run_boxed(plan):
+    lib = libc()
+    enter_namespaces(lib)
+    child = os.fork()
+    if child == 0:
+        try:
+            root = '/mnt'
+            build_view(lib, root, plan)
+            enter_view(lib, root)
+            os.chdir(plan['target'])
+            env = {'PATH': PATH, 'HOME': plan['home'], 'USER': plan['user'], 'LOGNAME': plan['user'],
+                   'SHELL': '/bin/bash', 'LANG': 'C.UTF-8', **dict(plan['env'])}
+            uid = str(plan['uid'])
+            print(f'sandbox-logon-launcher: launch account={plan["user"]} uid={uid} cwd={plan["target"]} mounts={len(plan["binds"])}', file=sys.stderr, flush=True)
+            os.execve('/usr/bin/setpriv', ['setpriv', f'--reuid={uid}', f'--regid={uid}', '--clear-groups',
+                                           '--inh-caps=-all', '--bounding-set=-all', '--no-new-privs', '--',
+                                           '/usr/bin/tini', '--', plan['bin'], *plan['args']], env)
+        except BaseException as e:  # noqa: BLE001 - the child must never fall back into the parent's code
+            print(f'egpt-box: refused - {e}', file=sys.stderr, flush=True)
+            os._exit(126)
+    def forward(n, _frame):
+        try:
+            os.kill(child, n)
+        except ProcessLookupError:
+            pass
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2):
+        signal.signal(s, forward)
+    null = os.open('/dev/null', os.O_RDWR)
+    os.dup2(null, 0)
+    os.dup2(null, 1)
+    _, status = os.waitpid(child, 0)
+    code = os.waitstatus_to_exitcode(status)
+    return code if code >= 0 else 128 - code
+
+
+def plan_for(args, invoker):
+    import pwd
+    pw = pwd.getpwuid(invoker)
+    home = os.path.realpath(pw.pw_dir)
+    egpt_home = posixpath.join(home, '.egpt')
+    target, tfd = open_checked(args['target'], 'target', home, invoker)
+    uid = box_uid_for(target, egpt_home)
+    binds = [(target, tfd, False)]
+    grant(tfd, uid, invoker, writable=True)
+    own_ssh_dir(tfd, uid)
+    for kind, paths in (('rw', args['rw']), ('ro', args['ro']), ('ro', [p for _, p in args['mounts']])):
+        for p in paths:
+            real, fd = open_checked(p, kind, home, invoker)
+            grant(fd, uid, invoker, writable=(kind == 'rw'))
+            binds.append((real, fd, kind == 'ro'))
+    checkout = posixpath.join(home, 'src', 'egpt')
+    links = [('egpt', target)]
+    if os.path.isdir(checkout):
+        real, fd = open_checked(checkout, 'ro', home, invoker)
+        binds.append((real, fd, True))
+        links.append(('src', real))
+    links += [(name, os.path.realpath(p)) for name, p in args['mounts']]
+    bin_ = resolve_bin(args['bin'])
+    real_bin = os.path.realpath(bin_)
+    if not os.path.isfile(real_bin):
+        raise Refused(f'-InnerBin {bin_} is not a file')
+    if not any(inside(real_bin, d) for d in ('/usr', '/opt')):
+        if not inside(real_bin, home) or os.stat(real_bin).st_uid not in (0, invoker):
+            raise Refused(f'-InnerBin {real_bin} is outside /usr, /opt and the spine user\'s own files')
+        binds.append((real_bin, os.open(real_bin, os.O_PATH | os.O_CLOEXEC), True))
+        bin_ = real_bin
+    return {'target': target, 'uid': uid, 'user': box_user(uid), 'home': f'/home/{box_user(uid)}',
+            'invoker': invoker, 'invoker_name': pw.pw_name, 'invoker_home': home, 'binds': binds, 'links': links,
+            'env': args['env'], 'bin': bin_, 'args': args['args']}
+
+
+def main(argv):
+    try:
+        if os.geteuid() != 0:
+            raise Refused('must run as root (through sudo)')
+        invoker = int(os.environ.get('SUDO_UID', '0') or 0)
+        if invoker == 0:
+            raise Refused('must be invoked through sudo by the spine user')
+        plan = plan_for(parse_args(argv), invoker)
+    except (Refused, OSError, KeyError) as e:
+        print(f'egpt-box: refused - {e}', file=sys.stderr, flush=True)
+        return 126
+    os.nice(10)
+    return run_boxed(plan)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

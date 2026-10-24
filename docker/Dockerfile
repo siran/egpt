@@ -71,11 +71,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends novnc websockif
 COPY --from=whisper /src/whisper.cpp/build/bin/whisper-cli /src/whisper.cpp/build/bin/whisper-server /usr/local/bin/
 COPY --from=whisper /src/whisper.cpp/samples/jfk.wav /opt/whisper/samples/jfk.wav
 
+# The being box: a sandboxed being runs as its conversation's own uid in a private view
+# (docker/egpt-box). Root-owned; the spine may run it through one sudoers line.
+RUN apt-get update && apt-get install -y --no-install-recommends sudo acl openssh-client \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/egpt-entrypoint
 COPY --chmod=755 docker/scripts/ /usr/local/bin/
+COPY --chmod=755 docker/egpt-box /usr/local/sbin/egpt-box
+COPY --chmod=440 docker/sudoers-egpt-box /etc/sudoers.d/egpt-box
 
 # Non-root user (uid 1000 matches the usual host user for volume ownership).
-RUN userdel -r node 2>/dev/null; useradd -m -u 1000 -s /bin/bash egpt
+# Its home is 0700: no other uid reads config, secrets, .claude or conversations.
+# The X socket directory exists up front: Xvfb runs as egpt, and listens on no abstract socket.
+RUN userdel -r node 2>/dev/null; useradd -m -u 1000 -s /bin/bash egpt && chmod 700 /home/egpt \
+  && install -d -m 1777 /tmp/.X11-unix
 
 USER egpt
 # EGPT_SESSION1=1: the daemon loads chrome-host (daemon-runtime.mjs).
