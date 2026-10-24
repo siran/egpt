@@ -67,6 +67,14 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## ED, one being with use-cases (operator 10-23 23:00, SUPERSEDES the three-beings table below)
+- **ED** is the container's E: one being in every chat (🦉, handle `ed`, opus-high, E's identity). Applied, `regular` until the wall.
+- **Its use-cases differ by chat:**
+  - **IT support:** the SI+EduWeb group, recreated on **Telegram** by the operator with the team. Needs `all` behind the wall.
+  - **marketer and client support:** **HTTP chatboxes** (website and logged-in area), not Telegram. Each chatbox conversation is a ROOM instance, a folder under `conversations/http/`, one per chat session.
+- **lark** also answers to `l`. Applied.
+- **Hazard when the operator joins the Telegram SI+EduWeb group:** kg's Beeper also has the operator's Telegram, so kg sees the group too, and kg's E could answer "e …" there from the operator's account. Turn kg's E off in that group (`/e agents mode off`). ED's handle is `ed` only, so it never collides with kg's `e`.
+
 ## Three beings on EDW (operator 10-23 22:30)
 
 | Being | Serves | Access |
