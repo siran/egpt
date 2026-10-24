@@ -35,7 +35,73 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 ## Ruling, 10-23 evening
 - **WhatsApp in the container is backburnered.** EDW talks over **Telegram** with a regular user account; no bots (operator: "we don't use bots in whatsapp" — the beings are the agents).
 - **Linked devices:** Beeper's WhatsApp link belongs to the Beeper account, not to each install. kg and do share Rodz's Beeper account, so they count as one linked device on Rodz's WhatsApp.
+- **VNC stays:** noVNC (http://localhost:6080/vnc.html) is the window into the container's screen, for watching eGPT's per-conversation browsers. Telegram sign-in doesn't need it.
+- **Native Telegram limb now** (operator: "native telegram, of course"), on branch `edw` for the container. kg/do Beeper unchanged; SI+EduWeb not touched.
+- **It is a Telegram BOT** (operator, after learning a user login needs our own api_id/api_hash: "we need a bot for EDW"). Bot API over HTTPS long polling, so the node dials out. Every being on EDW speaks through the one bot with its own stamp. Bots never see other bots' messages; privacy mode off (or admin) to read whole groups; one poller per token.
+- **Tokens live in a folder, not in config.yaml** (operator): `$EGPT_HOME/secrets/telegram-<connection>.token`, 0600. config.yaml names only the connection. Beeper tokens on kg/do stay as they are for now.
+- History: the earlier Telegram use was a Bot API bridge (removed fa208ca, never enabled) and, since July, the operator's Telegram inside Beeper on kg.
 - **Telegram today rides Beeper** (reve's Beeper has Telegram; `conversations/telegram/`). A direct Telegram-bot transport existed and was removed in fa208ca. A native Telegram limb (MTProto user client, `limbs.telegram`, no Beeper) would be new code.
+
+## Status 2026-10-23 22:05 (EDT)
+- **EDW is live on Telegram.** lark answered the operator in the bot's DM at 22:01 (first round trip through the container).
+- **Container:**
+  - `edw` from image `egpt:edw-dev`: seccomp unconfined, hostname `edw`, restart unless-stopped.
+  - Ports: noVNC on 127.0.0.1:6080 and VNC on :5900.
+  - Volumes: egpt-home, egpt-beeper, egpt-claude, egpt-src. The checkout is on branch `edw` (42ec953 + a7c180e).
+- **EDW config:**
+  - one bot, `limbs.telegram.main: @edwsi_bot`, with its token in `secrets/telegram-main.token` (0600); no Beeper;
+  - lark is the only being; the operator's Telegram id is the only one allowed;
+  - transcription off.
+- **Claude** is signed in with the operator's subscription (egpt-claude volume).
+- **Open:**
+  - should lark be node-wide like wren (`scope: agent/lark`)? Today it has one thread per chat;
+  - should the bot place reactions? (single-account rule today);
+  - Telegram media and voice;
+  - ed + the per-conversation Unix-user wall;
+  - when to merge `edw` into main.
+
+## Rulings, 10-23 22:15
+- **lark:** node-wide like wren (`scope: agent/lark`, applied), `access_level: all`, living in `agents/` as the meta engineer.
+- **Reactions:** the bot reacts the way E does on kg, following its pointers ("it's all like KG"). A Telegram bot is the being's own account, so the single-account suppression doesn't apply to it. Build dispatched on `edw`.
+- **Voice and media on Telegram:** turned on (whisper-cli and piper are local in the image). Build dispatched on `edw`.
+- **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
+  - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
+
+## 10-24 — AWS (operator: "the power is on the anthropic side; traffic is very low")
+- **Account:** EduWeb's, profile `eduweb` (331665579468, us-east-1, ECR `egpt` exists). Production runs there, so EDW gets its own VPC/SG with no inbound, tags Project=egpt-edw, and the scripts never touch untagged resources.
+- **Instance: t3a.medium** (2 vCPU / 4 GB, ~$27/mo on-demand, Pricing API 10-24) with a 4 GB swap file. Operator: "we need to keep transcriptions". t3.small (~$15) was too small for large-v3. t3a.large (~$55) if voice notes struggle.
+  - Measured idle use of `edw`: ~390 MB (Claude session ~125 MB, Beeper ~130 MB, which will be off).
+- **Plain EC2 + Docker, scripted** (build-push, provision, migrate, run; dry run by default). EGPT_BRANCH=edw, EGPT_BEEPER=off. Cutover: stop local `edw` first (one bot poller), move the volumes through a private encrypted S3 bucket, delete the objects. Scripts dispatched on feat/edw-aws.
+
+## 10-24 03:30 — SI+EduWeb on Telegram; a real group per chatbox conversation
+- **SI+EduWeb on Telegram exists** (`tg:-5239545023`). The operator created it and added @edwsi_bot, and ED answered there.
+  - ED is set as kg's E is in WhatsApp SI+EduWeb: `opus-xhigh`, `warm.keep`.
+  - **History copied one way from kg's WhatsApp SI+EduWeb** (snapshot to 10-23 23:55) into `transcripts/whatsapp/`, `media/whatsapp/`, `files/whatsapp/` and `handoffs/whatsapp-egpt.*`. ED's handoff `ed.261024-0330.handoff.md` points at it.
+  - **Not copied, pending the operator:** E's `desktop/` (2.8 GB) and `.ssh` (E's EduWeb server key `egpt_edw`, plus an `aws` file).
+- **Support and marketing: a REAL Telegram group per conversation** (operator), so the team can reply from Telegram even when the conversation started in a website chatbox. Bots can't create groups (Bot API: no such method; bots can only leave), so a **user account (+1 646 598 7553) is the group factory**: it creates the group, adds @edwsi_bot as admin and adds the team, and later deletes the group.
+  - This needs our own api_id/api_hash: awaiting the operator's go.
+  - Caveats: Telegram watches automated user accounts (pace the factory); each member's membership cap (~500, to verify) makes deleting old groups necessary.
+- **kg sees both new Telegram chats** (the operator's Telegram is in kg's Beeper). The operator is to send `/e agents mode off` in each.
+
+## ED, one being with use-cases (operator 10-23 23:00, SUPERSEDES the three-beings table below)
+- **ED** is the container's E: one being in every chat (🦉, handle `ed`, opus-high, E's identity). Applied, `regular` until the wall.
+- **Its use-cases differ by chat:**
+  - **IT support:** the SI+EduWeb group, recreated on **Telegram** by the operator with the team. Needs `all` behind the wall.
+  - **marketer and client support:** **HTTP chatboxes** (website and logged-in area), not Telegram. Each chatbox conversation is a ROOM instance, a folder under `conversations/http/`, one per chat session.
+- **lark** also answers to `l`. Applied.
+- **Hazard when the operator joins the Telegram SI+EduWeb group:** kg's Beeper also has the operator's Telegram, so kg sees the group too, and kg's E could answer "e …" there from the operator's account. Turn kg's E off in that group (`/e agents mode off`). ED's handle is `ed` only, so it never collides with kg's `e`.
+
+## Three beings on EDW (operator 10-23 22:30)
+
+| Being | Serves | Access |
+|---|---|---|
+| marketer | public marketing chat with strangers | `regular` |
+| `ed` (support) | EduWeb's **clients** | `regular` |
+| E (name pending) | EduWeb's **IT staff**: the technical work E does in SI+EduWeb today (ssh to EduWeb servers, portals, git) | needs `all` |
+
+E needs `all`, so the per-conversation Unix-user wall (step 4) is its prerequisite. Its ssh key lives under its own user. All three speak through @edwsi_bot, each with its own stamp. Each chat's modes decide who answers.
+
+Open questions: E's name/handle; where E talks (a Telegram group with the IT staff, or SI+EduWeb on WhatsApp, which is backburnered); order (wall first).
 
 ## Steps
 0. **Linux inventory**, read-only.
