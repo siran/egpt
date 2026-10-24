@@ -1,5 +1,5 @@
 #!/bin/bash
-# run.sh [--tag edw] [--apply]
+# run.sh [--tag edw] [--recreate] [--apply]
 # (Re)starts EDW's container on the AWS instance from the ECR image.
 # On the instance (as root) it does the work; anywhere else (WSL) it sends itself
 # to the instance over SSM and runs there.
@@ -15,12 +15,13 @@ else
   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 fi
 
-TAG=edw
+TAG=edw RECREATE=
 while [ $# -gt 0 ]; do
   case $1 in
     --apply) APPLY=1 ;;
     --tag) TAG=${2:?--tag needs a value}; shift ;;
-    *) die "usage: run.sh [--tag edw] [--apply]" ;;
+    --recreate) RECREATE=--recreate ;;   # replace the container even when it already runs this image (new flags)
+    *) die "usage: run.sh [--tag edw] [--recreate] [--apply]" ;;
   esac
   shift
 done
@@ -48,7 +49,7 @@ if [ $ON_HOST = 0 ]; then
   if [ "$APPLY" = 1 ]; then
     [ -n "$INST" ] || die "no instance tagged $PROJECT/edw-node (provision.sh --apply)"
     ssm_online "$INST" || die "$INST is not online in SSM"
-    ssm_send "$INST" "${BASH_SOURCE[0]}" $SRV/run.sh --apply --tag "$TAG"
+    ssm_send "$INST" "${BASH_SOURCE[0]}" $SRV/run.sh --apply --tag "$TAG" $RECREATE
   else
     log "[dry] copy run.sh to ${INST:-<the edw-node instance>}:$SRV/run.sh over SSM and run it with --apply --tag $TAG, which:"
     log "  writes $SRV/vnc.env (0600, random VNC password) if missing"
@@ -70,7 +71,7 @@ digest=$(aws ecr describe-images --region $REGION --repository-name egpt --image
 state=$(docker inspect -f '{{.State.Status}}' edw 2>/dev/null || true)
 have=$(docker inspect -f '{{.Image}}' edw 2>/dev/null | xargs -r docker image inspect -f '{{join .RepoDigests " "}}' 2>/dev/null || true)
 log "edw: ${state:-no container}; ECR egpt:$TAG = $digest"
-if [ "$state" = running ] && [[ " $have " == *"@$digest "* ]]; then
+if [ "$state" = running ] && [[ " $have " == *"@$digest "* ]] && [ -z "$RECREATE" ]; then
   log "edw already runs $IMAGE"
   exit 0
 fi
