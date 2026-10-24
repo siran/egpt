@@ -200,3 +200,10 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Operator to do:** @BotFather `/setjoingroups` → Disable, turned on only while adding the bot to a group.
 - **To build:** the bot leaves any group added by a non-allowed user.
 - **Next image:** unzip, gnupg, jq, awscli, plus ED's proposals (ED writes them in its folder; the box sees the repo read-only).
+
+## 10-24 ~16:35 — EDW small, no transcription (operator)
+- **EDW is t3a.small on-demand** with `transcription_service.enabled: false`. Idle use: 361 MB of 1.9 GB, swap unused. NV and EDW run without transcription; kg keeps DO's worker → its CLI.
+- **Monthly cost of ED in EduWeb's account** (Pricing API, us-east-1): EC2 13.72 + gp3 60 GB 4.80 + public IPv4 3.65 + ECR ~0.5–0.9 + egress ~0.1–0.5 ≈ **$23**. On Spot ≈ $14–16. Trimming volumes saves ~$2; deleting the old images ~$0.40.
+- **Operator direction:** "moving away from managing our EC2 boxes, moving to virtual when possible". Fargate can't host the box (no seccomp/systempaths unconfined); ECS on EC2 is the nearest step.
+- **Lambda** (asked): it doesn't fit a node's core (always-on, stateful, 15-min cap, no GUI/warm sessions). It may fit edges: Telegram webhook or chatbox front, occasional jobs.
+- **Encryption** (asked): no disk/KMS setting keeps an account's own admins out (they hold the keys and can open a shell). The boundary is the account. NV goes in the personal account (MFA on root and anmichel; note WSL ~/.aws holds long-lived admin keys).
