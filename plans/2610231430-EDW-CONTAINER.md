@@ -42,6 +42,24 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - History: the earlier Telegram use was a Bot API bridge (removed fa208ca, never enabled) and, since July, the operator's Telegram inside Beeper on kg.
 - **Telegram today rides Beeper** (reve's Beeper has Telegram; `conversations/telegram/`). A direct Telegram-bot transport existed and was removed in fa208ca. A native Telegram limb (MTProto user client, `limbs.telegram`, no Beeper) would be new code.
 
+## Status 2026-10-23 22:05 (EDT)
+- **EDW is live on Telegram.** lark answered the operator in the bot's DM at 22:01 (first round trip through the container).
+- **Container:**
+  - `edw` from image `egpt:edw-dev`: seccomp unconfined, hostname `edw`, restart unless-stopped.
+  - Ports: noVNC on 127.0.0.1:6080 and VNC on :5900.
+  - Volumes: egpt-home, egpt-beeper, egpt-claude, egpt-src. The checkout is on branch `edw` (42ec953 + a7c180e).
+- **EDW config:**
+  - one bot, `limbs.telegram.main: @edwsi_bot`, with its token in `secrets/telegram-main.token` (0600); no Beeper;
+  - lark is the only being; the operator's Telegram id is the only one allowed;
+  - transcription off.
+- **Claude** is signed in with the operator's subscription (egpt-claude volume).
+- **Open:**
+  - should lark be node-wide like wren (`scope: agent/lark`)? Today it has one thread per chat;
+  - should the bot place reactions? (single-account rule today);
+  - Telegram media and voice;
+  - ed + the per-conversation Unix-user wall;
+  - when to merge `edw` into main.
+
 ## Steps
 0. **Linux inventory**, read-only.
    → verify: every Windows-only path in `src/` and `setup/` is listed with its Linux replacement.
