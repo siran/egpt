@@ -232,3 +232,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - task privileged + host network + host mounts; service min 0 / max 100 (never two pollers);
   - VNC password read from secrets/ on the volume; ecs-provision / ecs-deploy / ecs-cutover (+ rollback).
 - Also in flight: Telegram HTML rendering (feat/telegram-html, agent): mdToTgHtml brought back from 25176248, parse_mode HTML, plain fallback.
+
+## 10-24 ~17:20 — Nova lives on EDW (test; operator)
+- **Nova ✨** is a being on EDW (handles nova, v; E's identity, opus-high; `regular`; allowed_users [operator]). She speaks through @edwsi_bot in the operator's own Telegram groups ("for a test… I can later move Nova"). Each group is its own conversation; leo can read them all; EduWeb's AWS admins could read them while she lives on EDW.
+- Her own group: `/nova agents mode on` there. Own bot later = multi-bot support for the Telegram limb (today one bot per node); then move her to her own node/account.
+- Also live (c5e62041 on all nodes): Telegram renders beings' Markdown (mdToTgHtml back, parse_mode HTML, plain fallback); browsers are never denied (8b21c11).
