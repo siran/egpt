@@ -207,3 +207,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Operator direction:** "moving away from managing our EC2 boxes, moving to virtual when possible". Fargate can't host the box (no seccomp/systempaths unconfined); ECS on EC2 is the nearest step.
 - **Lambda** (asked): it doesn't fit a node's core (always-on, stateful, 15-min cap, no GUI/warm sessions). It may fit edges: Telegram webhook or chatbox front, occasional jobs.
 - **Encryption** (asked): no disk/KMS setting keeps an account's own admins out (they hold the keys and can open a shell). The boundary is the account. NV goes in the personal account (MFA on root and anmichel; note WSL ~/.aws holds long-lived admin keys).
+
+## 10-24 ~16:50 — NV backburnered; ECS on EC2 (operator prefers it to managing EC2)
+- **NV:** backburnered (operator).
+- **The box needs, from the kernel:**
+  1. user namespaces: Docker's default seccomp blocks unshare/clone flags, so the container runs seccomp=unconfined; Chrome's own sandbox needs the same;
+  2. a fresh /proc in the box: EC2 Docker masks /proc/acpi,/proc/scsi, so the container runs systempaths=unconfined;
+  3. pivot_root and bind mounts inside the namespace.
+  Fargate allows neither 1 nor 2.
+- **ECS on EC2:** orchestration is free; instances cost what EC2 costs (EDW ~$23, ~$14–16 on Spot). Its value is lifecycle (restarts, task revisions, an ASG replacing instances).
+  - ECS `dockerSecurityOptions` accepts only no-new-privileges / apparmor / label / credentialspec (API docs, ContainerDefinition). There is no seccomp or systempaths. Only `privileged: true` (EC2 launch type) gives the box what it needs, at the cost of root-level power over the host. Fine with EDW alone on its instance; not when packed with EduWeb's other containers.
+  - **Proposed later**, after ED is tested on the current setup: an ECS cluster with one t3a.small Spot instance in an ASG; EDW as one privileged task; its data on an EBS volume the instance re-attaches at boot.
