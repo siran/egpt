@@ -9,7 +9,8 @@ REPO_URL=${EGPT_REPO_URL:-https://github.com/siran/egpt.git}
 
 # Virtual screen + a minimal window manager so Beeper's windows behave.
 rm -f /tmp/.X99-lock
-Xvfb :99 -screen 0 1440x900x24 -nolisten tcp &
+# -nolisten local: no abstract socket, which a boxed being (docker/egpt-box) could still reach.
+Xvfb :99 -screen 0 1440x900x24 -nolisten tcp -nolisten local &
 for _ in $(seq 50); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.1; done
 openbox >/dev/null 2>&1 &
 
@@ -60,6 +61,15 @@ else
   # --password-store=basic: no desktop keyring in the container.
   keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
     --disable-gpu >/tmp/beeper.log 2>&1 &
+fi
+
+# One long-lived Claude token (claude setup-token) for every being, kept on the data volume so it
+# survives restarts and rebuilds. Boxed beings read the same file per turn; replacing it needs a
+# container restart for the unboxed ones.
+if [ -s "$EGPT_HOME/secrets/claude-oauth.token" ]; then
+  CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '\r\n' < "$EGPT_HOME/secrets/claude-oauth.token")
+  export CLAUDE_CODE_OAUTH_TOKEN
+  log "claude: using secrets/claude-oauth.token"
 fi
 
 cd "$REPO"
