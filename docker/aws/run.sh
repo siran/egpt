@@ -28,7 +28,8 @@ done
 REGION=us-east-1
 SRV=/srv/egpt
 FLAGS=(-d --name edw --hostname edw --restart unless-stopped
-  --security-opt seccomp=unconfined --shm-size=1g --env-file "$SRV/vnc.env"
+  --security-opt seccomp=unconfined --security-opt systempaths=unconfined
+  --shm-size=1g --env-file "$SRV/vnc.env"
   -e EGPT_BRANCH=edw -e EGPT_BEEPER=off
   -p 127.0.0.1:5900:5900 -p 127.0.0.1:6080:6080
   -v "$SRV/egpt-home:/home/egpt/.egpt" -v "$SRV/egpt-claude:/home/egpt/.claude"
