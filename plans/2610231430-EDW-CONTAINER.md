@@ -181,3 +181,13 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **main b68356f: per-chat handles.** `agents.<being>.handles` in a chat's entry replaces the node-wide list there; `[]` = no name. One resolver (agentsInChat) for the router, commands, mention flags and readback. Deployed to kg and do.
 - **kg is fully silent in EduWeb** (fb85ZpUsf8lUl8jGjbU7): all 12 beings `mode: off` + `handles: []`. Operator: "the mouth has to be the bot, not my account". On Telegram, kg's only mouth is the operator's own account.
 - **Structural follow-up:** every new EDW Telegram group the operator joins is also seen by kg (his Telegram is in kg's Beeper). Either kg goes silent automatically in chats where an EDW bot is a member, or EduWeb's groups use a Telegram account that is not bridged into kg.
+
+## 10-24 ~15:15 — alignment (operator) and the rename lesson
+- **Groups:** EduWeb (Telegram, tg:-5256478300) is the team's main group: ED + leo through @edwsi_bot. WhatsApp SI+EduWeb is no longer the team's main group but still live: kg's E and the other beings answer there as before (heartbeats moved to ED). The operator disconnected Telegram from kg's Beeper, so kg sees no Telegram chats now.
+- **No ongoing sync** of WhatsApp SI+EduWeb into ED (E/ED recover context from files when needed). Later, not primary: maybe Telegram back on kg to keep conversations in sync.
+- **Cleanup:** the two orphan folders from the deleted groups were moved to conversations/archive/telegram/ on EDW.
+- **The courtesy rename exists** ([contacts] re-slug on name change; the path follows the folder). At 14:31 it renamed ED's folder SI+EduWeb-2610240312 → EduWeb-2610240312. It does NOT carry:
+  1. the box registry (state/box-users.tsv, root-owned, keyed by path). ED's next turn would have got a new uid that can't read its own .ssh or grants. Fixed by hand: 200000 → new path.
+  2. the boxed Claude session dir (projects/<cwd-slug>). Fixed by hand: copied under the new slug.
+  → **To build:** the launcher resolves a box uid by the folder's inode when the path is unknown, and moves the registry entry; the re-slug (or the launcher) links the session dir to the new slug.
+- **fd07259:** boxed beings' Claude sessions (~/.egpt-jsonl) live on the data volume (/srv/egpt/egpt-jsonl), so a recreate no longer wipes them.
