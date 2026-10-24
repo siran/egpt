@@ -191,3 +191,12 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   2. the boxed Claude session dir (projects/<cwd-slug>). Fixed by hand: copied under the new slug.
   → **To build:** the launcher resolves a box uid by the folder's inode when the path is unknown, and moves the registry entry; the re-slug (or the launcher) links the session dir to the new slug.
 - **fd07259:** boxed beings' Claude sessions (~/.egpt-jsonl) live on the data volume (/srv/egpt/egpt-jsonl), so a recreate no longer wipes them.
+
+## 10-24 ~15:30 — EDW access and housekeeping
+- **f59fc6f (edw):** the shell/being-link token may live in secrets/shell.token. EDW had none, so the console port was off and a boxed ED got ECONNREFUSED on 127.0.0.1:23475 (no browser, no spine). Token generated on EDW (0600); the port now serves.
+- **ED's reach:**
+  - default `allowed_users: [88164392]` (the operator only), so a stranger's group or DM gets nothing;
+  - the EduWeb group allows everyone in it (`['*']`); its membership is the operator's.
+- **Operator to do:** @BotFather `/setjoingroups` → Disable, turned on only while adding the bot to a group.
+- **To build:** the bot leaves any group added by a non-allowed user.
+- **Next image:** unzip, gnupg, jq, awscli, plus ED's proposals (ED writes them in its folder; the box sees the repo read-only).
