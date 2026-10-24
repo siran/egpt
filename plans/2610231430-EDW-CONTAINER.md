@@ -67,6 +67,12 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 — the chatbox (limbs.http), when built (operator)
+- It behaves as eGPT does now: each chatbox session is a conversation (a ROOM folder `conversations/http/<client>-<id>`, the session token is its chat id). ED answers within it, with memory and tools. The team watches and replies in the conversation's Telegram group. "Not a Claude proxy."
+- On EDW the being answers to `ed` (E's role, ED's handle).
+- Replies: SSE streaming plus a plain JSON reply.
+- The logged-in visitors' in-context info is discussed after SI+EduWeb is fully up.
+
 ## 10-24 — queued after the wall: a browser screen per conversation (operator: "yes")
 1. Each conversation's Chrome gets its own virtual display (chrome-host sets DISPLAY per group; today every Chrome inherits :99).
    → verify: one conversation's VNC never shows another's window.
