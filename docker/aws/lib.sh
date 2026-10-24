@@ -90,7 +90,7 @@ ssm_send() {
   cmd="echo $(base64 -w0 "$file") | base64 -d > $dest && bash $dest $*"
   params=$(jq -nc --arg c "$cmd" '{commands: [$c], executionTimeout: ["3600"]}')
   cid=$(q ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
-    --comment "egpt-edw $(basename "$dest") $*" --parameters "$params" --query Command.CommandId)
+    --comment "egpt-edw $(basename "$dest") ${1:-}" --parameters "$params" --query Command.CommandId)
   log "ssm command $cid on $id: bash $dest $*"
   for _ in $(seq 720); do
     sleep 5
