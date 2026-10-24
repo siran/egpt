@@ -223,3 +223,12 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - 95d3af4 merge (one conflict: the per-chat readback list now goes to the shared readBack via wake.replyWakeWords). Full suite green except the known beeper-bridge load flake (304/304 alone).
 - Deployed: kg and do at 95d3af4 (both Beeper connections open, heartbeats fresh); EDW checkout switched to main (45bcbb6, run.sh EGPT_BRANCH=main). The `edw` branch is retired and kept on GitHub as history.
 - Gap: Telegram readback uses node-wide replyWake (no per-chat override there yet).
+
+## 10-24 ~17:00 — rulings: never deny a browser; ECS over EC2 go
+- **"Don't deny browsers to conversations."** ED was refused a Chrome: commands.mjs ensureChrome declined when os.freemem() minus the estimate fell under the ~1 GB margin. The fix keeps eviction of an idle Chrome, then launches anyway with one log line (fix/never-deny-browser, agent).
+- **ECS over EC2: go** (feat/edw-ecs, agent; scripts only, dry run first):
+  - cluster `edw`; ASG of 1 (t3a.small Spot by default, `--on-demand` switch) in us-east-1a; ECS-optimized AL2023;
+  - user data re-attaches edw-data and mounts /srv/egpt;
+  - task privileged + host network + host mounts; service min 0 / max 100 (never two pollers);
+  - VNC password read from secrets/ on the volume; ecs-provision / ecs-deploy / ecs-cutover (+ rollback).
+- Also in flight: Telegram HTML rendering (feat/telegram-html, agent): mdToTgHtml brought back from 25176248, parse_mode HTML, plain fallback.
