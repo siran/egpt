@@ -60,6 +60,13 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
   - ed + the per-conversation Unix-user wall;
   - when to merge `edw` into main.
 
+## Rulings, 10-23 22:15
+- **lark:** node-wide like wren (`scope: agent/lark`, applied), `access_level: all`, living in `agents/` as the meta engineer.
+- **Reactions:** the bot reacts the way E does on kg, following its pointers ("it's all like KG"). A Telegram bot is the being's own account, so the single-account suppression doesn't apply to it. Build dispatched on `edw`.
+- **Voice and media on Telegram:** turned on (whisper-cli and piper are local in the image). Build dispatched on `edw`.
+- **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
+  - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
+
 ## Steps
 0. **Linux inventory**, read-only.
    → verify: every Windows-only path in `src/` and `setup/` is listed with its Linux replacement.
