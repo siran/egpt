@@ -174,3 +174,10 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Rodz's WhatsApp linked devices (before step 2).** If Beeper runs the WhatsApp connection on each device, each install is one linked device, and WhatsApp allows 4. Count them on Rodz's phone: WhatsApp → Linked devices.
 - **The Claude token is visible to beings.** A being's CLI runs on the subscription token, so the being can read it. This is inherent. The token unlocks Claude only, not WhatsApp or the config.
 - **EDW stops at sign-out while it is local.** Docker Desktop runs in the operator's session, so EDW stops when the operator signs out. That lasts until EDW moves to a host that runs without a login.
+
+## 10-24 ~15:00 — Telegram deleted two groups; fixes
+- Telegram deleted SI+EduWeb twice (tg:-5239545023, tg:-5347384406: "the group chat was deleted"). The operator's account is clear (@SpamBot). The third group is "EduWeb" (tg:-5256478300), joined by invite link. It is re-pointed to ED's seeded folder (thread, sandbox, warm.keep, heartbeats).
+- **edw eaaa6cc: no invisible characters on Telegram.** No node/being frame, canary, zero-width, BOM or bidi; ZWJ/VS16 kept inside emoji. The bot's own messages are known by sender, the being by its visible stamp. Beeper signing unchanged (locked). Deployed to EDW.
+- **main b68356f: per-chat handles.** `agents.<being>.handles` in a chat's entry replaces the node-wide list there; `[]` = no name. One resolver (agentsInChat) for the router, commands, mention flags and readback. Deployed to kg and do.
+- **kg is fully silent in EduWeb** (fb85ZpUsf8lUl8jGjbU7): all 12 beings `mode: off` + `handles: []`. Operator: "the mouth has to be the bot, not my account". On Telegram, kg's only mouth is the operator's own account.
+- **Structural follow-up:** every new EDW Telegram group the operator joins is also seen by kg (his Telegram is in kg's Beeper). Either kg goes silent automatically in chats where an EDW bot is a member, or EduWeb's groups use a Telegram account that is not bridged into kg.
