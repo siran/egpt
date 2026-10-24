@@ -8,6 +8,8 @@ import { dirname, join } from 'node:path';
 export const SYNTH_TOKEN_FILE = 'synthesizer.token';
 // A boxed being's Claude credential (`claude setup-token`) when config.yaml has no sandbox_oauth_token.
 export const CLAUDE_OAUTH_TOKEN_FILE = 'claude-oauth.token';
+// The console / being-link HMAC key when config.yaml has no shell.token.
+export const SHELL_TOKEN_FILE = 'shell.token';
 
 export const secretPath = (home, name) => join(home, 'secrets', name);
 

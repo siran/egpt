@@ -20,6 +20,7 @@ import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId } from '../bridges/telegram.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
+import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
 // receiving half this node offers on its own console, and the speaking half the reply path uses.
 import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, reactThroughPeer, findChatByKey, findChatByLastMessage, findMessageByKey } from '../shell/peer-mouth.mjs';
@@ -167,6 +168,11 @@ export function shouldReapStrayWhisper(cfg) {
 // the profile) still carries the port of the orphan we must kill — else the worker
 // resident-server port (transcriptor.server.port, then DOLLY's audio_transcribe.server.port),
 // else the whisper-server default.
+// The shell / being-link token: config.yaml's shell.token, else $EGPT_HOME/secrets/shell.token (tokens live in a folder).
+export function shellTokenOf(cfg, home = EGPT_HOME) {
+  return shellTokenFrom(cfg) || (readSecret(home, SHELL_TOKEN_FILE).token ?? '');
+}
+
 export function whisperPortOf(cfg) {
   const profile = activeTxProfile(cfg);
   for (const [name, eng] of Object.entries(profile)) {
@@ -2655,7 +2661,7 @@ export async function boot({
     // all: an unauthenticated 127.0.0.1:23375 is dialable by any local account (the sandboxed
     // CLI accounts included) and a frame from it would be dispatched as the AUTHORIZED operator
     // — `/upgrade` and all (src/shell/auth.mjs). Fail closed, never auto-generate.
-    token: shellTokenFrom(cfg),
+    token: shellTokenOf(cfg),
     // The console PORT (config `shell.port`), read here for the same reason the token is:
     // the limb never reads config. Absent ⇒ shell-port's SHELL_WS_PORT (23475 since 2026-09-11,
     // when 23375 turned out to sit inside the range Beeper takes its next free port from).
