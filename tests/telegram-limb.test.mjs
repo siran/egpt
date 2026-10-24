@@ -1,7 +1,7 @@
 // telegram-limb.test.mjs — the Telegram Bot API limb (src/bridges/telegram.mjs) over a fake fetch.
 // No network, no real token: every Bot API call is answered by the fake below.
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startTelegramBridge, readTelegramToken, telegramTokenPath, isTelegramChatId, secretTag } from '../src/bridges/telegram.mjs';
@@ -26,9 +26,23 @@ function fakeApi({ me = ME } = {}) {
     deleteMessage: () => ok(true),
     setMessageReaction: () => ok(true),
   };
+  const sentMedia = (b) => ok({ message_id: nextId++, chat: { id: Number(b.chat_id) } });
+  for (const m of ['sendPhoto', 'sendVideo', 'sendVoice', 'sendAudio', 'sendDocument']) answers[m] = sentMedia;
+  // getFile names a path; the file URL (GET, token in it) answers with `files[path]`.
+  const files = {};
+  answers.getFile = (b) => ok({ file_id: b.file_id, file_path: Object.keys(files).find((p) => p.includes(b.file_id)) ?? `x/${b.file_id}` });
+  const downloads = [];
   const fetch = async (url, init) => {
+    if (url.includes('/file/bot')) {
+      downloads.push(url);
+      const path = url.split(`/file/bot${TOKEN}/`)[1];
+      if (!(path in files)) return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+      if (files[path] instanceof Error) throw files[path];
+      return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(files[path]).buffer };
+    }
     const method = url.split('/').pop();
-    calls.push({ url, method, body: JSON.parse(init.body) });
+    const body = init.body instanceof FormData ? formFields(init.body) : JSON.parse(init.body);
+    calls.push({ url, method, body, headers: init.headers ?? null });
     if (method === 'getUpdates') {
       if (queue.length) return queue.shift();
       return new Promise((resolve, reject) => {
@@ -36,16 +50,24 @@ function fakeApi({ me = ME } = {}) {
         init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
       });
     }
-    return answers[method](JSON.parse(init.body));
+    return answers[method](body);
   };
   const push = (r) => { if (parked) { const p = parked; parked = null; p(r); } else queue.push(r); };
   return {
-    fetch, calls, answers, ok, err,
+    fetch, calls, answers, ok, err, files, downloads,
     updates: (...msgs) => push(ok(msgs.map((message) => ({ update_id: ++updateId, message })))),
+    raw: (...ups) => push(ok(ups.map((u) => ({ update_id: ++updateId, ...u })))),
     lastUpdateId: () => updateId,
     pushError: (code, description, parameters) => push(err(code, description, parameters)),
     of: (method) => calls.filter((c) => c.method === method),
   };
+}
+
+// A multipart body as plain fields; a file part as { name, type, size }.
+function formFields(form) {
+  const out = {};
+  for (const [k, v] of form.entries()) out[k] = typeof v === 'string' ? v : { name: v.name, type: v.type, size: v.size };
+  return out;
 }
 
 function start(api, extra = {}) {
@@ -74,7 +96,7 @@ describe('telegram limb — boot: getMe names the bot, never the token', () => {
     await vi.waitFor(() => expect(api.of('getUpdates')).toHaveLength(1));
     expect(lines.some((l) => l.includes('@edw_bot'))).toBe(true);
     expect(lines.join('\n')).not.toContain(TOKEN);
-    expect(api.of('getUpdates')[0].body).toMatchObject({ offset: 0, timeout: 25, allowed_updates: ['message'] });
+    expect(api.of('getUpdates')[0].body).toMatchObject({ offset: 0, timeout: 25, allowed_updates: ['message', 'edited_message', 'message_reaction'] });
     bridge.stop();
   });
 
@@ -148,17 +170,13 @@ describe('telegram limb — inbound', () => {
     bridge.stop();
   });
 
-  it('media: the caption passes with a "not handled yet" line; captionless media and channel posts deliver nothing', async () => {
+  it('channel posts deliver nothing', async () => {
     const api = fakeApi();
-    const { bridge, incoming, lines } = start(api);
+    const { bridge, incoming } = start(api);
     await bridge.startupReady;
-    api.updates(
-      privateMsg({ text: undefined, photo: [{ file_id: 'p' }], caption: 'look' }),
-      privateMsg({ message_id: 8, text: undefined, voice: { file_id: 'v' } }),
-      { message_id: 9, date: NOW_S, chat: { id: -100555, type: 'channel', title: 'news' }, text: 'post' },
-    );
-    await vi.waitFor(() => expect(lines.filter((l) => /media not handled yet/.test(l))).toHaveLength(2));
-    expect(incoming.map((m) => m.body)).toEqual(['look']);
+    api.updates({ message_id: 9, date: NOW_S, chat: { id: -100555, type: 'channel', title: 'news' }, text: 'post' }, privateMsg());
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    expect(incoming[0].body).toBe('@ed hola');
     bridge.stop();
   });
 
@@ -180,6 +198,236 @@ describe('telegram limb — inbound', () => {
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
     await vi.waitFor(() => expect(api.of('getUpdates')).toHaveLength(2));
     expect(api.of('getUpdates')[1].body.offset).toBe(api.lastUpdateId() + 1);
+    bridge.stop();
+  });
+});
+
+// Media goes through the same intake as Beeper's (src/bridges/limb-intake.mjs): onMedia saves it,
+// the announce line names media/<file>, a voice note is two lines, and a bare name reply reads back.
+describe('telegram limb — inbound media (the shared intake)', () => {
+  const withDir = () => mkdtempSync(join(tmpdir(), 'egpt-tg-in-'));
+  const saver = () => {
+    const saved = [];
+    return { saved, onMedia: async (m) => { saved.push(m); return `/conv/media/${m.kind}-${m.msgId}.${m.fileName?.split('.').pop() ?? 'bin'}`; } };
+  };
+
+  // contract 8.1
+  it('a photo is downloaded (getFile + file URL), saved through onMedia, announced after its caption; the temp file is removed', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['photos/p1.jpg'] = 'jpegbytes';
+      const { saved, onMedia } = saver();
+      const { bridge, incoming } = start(api, { onMedia, mediaDir: dir });
+      await bridge.startupReady;
+      api.updates(privateMsg({ text: undefined, photo: [{ file_id: 'small' }, { file_id: 'p1', file_size: 9 }], caption: 'look' }));
+      await vi.waitFor(() => expect(incoming).toHaveLength(1));
+      expect(api.of('getFile')[0].body).toEqual({ file_id: 'p1' });
+      expect(saved[0]).toMatchObject({ chatID: 'tg:42', network: 'telegram', kind: 'image', mime: 'image/jpeg', caption: 'look', msgId: '7', isVoiceNote: false });
+      expect(incoming[0].body).toBe('look\n(image) [saved: media/image-7.bin]');
+      await vi.waitFor(() => expect(readdirSync(dir)).toEqual([]));
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a captionless document is its announce line alone; whatsapp.media.download off saves and announces nothing', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['documents/d1.pdf'] = 'pdf';
+      const { saved, onMedia } = saver();
+      const { bridge, incoming } = start(api, { onMedia, mediaDir: dir });
+      await bridge.startupReady;
+      api.updates(privateMsg({ text: undefined, document: { file_id: 'd1', file_name: 'plan.pdf', mime_type: 'application/pdf' } }));
+      await vi.waitFor(() => expect(incoming).toHaveLength(1));
+      expect(incoming[0].body).toBe('(document plan.pdf) [saved: media/document-7.pdf]');
+      bridge.stop();
+
+      const off = fakeApi();
+      const o = start(off, { onMedia, media: { download: 'off' }, mediaDir: dir });
+      await o.bridge.startupReady;
+      off.updates(privateMsg({ text: undefined, document: { file_id: 'd1', file_name: 'plan.pdf', mime_type: 'application/pdf' }, caption: 'the plan' }));
+      await vi.waitFor(() => expect(o.incoming).toHaveLength(1));
+      expect(o.incoming[0].body).toBe('the plan');
+      expect(off.of('getFile')).toHaveLength(0);
+      expect(saved).toHaveLength(1);
+      o.bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('over the Bot API\'s 20 MB: not downloaded, said once, the caption still passes; a failed download never logs the token', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['videos/v1.mp4'] = new Error(`connect ECONNRESET https://api.telegram.org/file/bot${TOKEN}/videos/v1.mp4`);
+      const { onMedia } = saver();
+      const { bridge, incoming, lines } = start(api, { onMedia, mediaDir: dir });
+      await bridge.startupReady;
+      api.updates(
+        privateMsg({ text: undefined, video: { file_id: 'big', file_size: 25 * 1024 * 1024 }, caption: 'huge' }),
+        privateMsg({ message_id: 8, text: undefined, video: { file_id: 'v1', file_size: 10 }, caption: 'small' }),
+      );
+      await vi.waitFor(() => expect(incoming).toHaveLength(2));
+      expect(incoming.map((m) => m.body).sort()).toEqual(['huge', 'small']);
+      expect(lines.filter((l) => /over the Bot API's 20 MB/.test(l))).toHaveLength(1);
+      expect(lines.some((l) => /video download failed/.test(l))).toBe(true);
+      expect(lines.join('\n')).not.toContain(TOKEN);
+      expect(api.of('getFile').map((c) => c.body.file_id)).toEqual(['v1']);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // contract 8.3
+  it('a voice note is two lines (arrival, then its transcription), the 👂 echo replies to it, the audio is saved with the transcript, 🎧 asked of the one placement', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['voice/n1.oga'] = 'opus';
+      const { saved, onMedia } = saver();
+      const reacts = [];
+      const outboundFor = (chatId) => ({
+        keyOf: () => async () => ({ msgKey: null, timestamp: null }),
+        react: async (msgId, emoji, keyOf, what, o = {}) => { reacts.push({ chatId, msgId, emoji, remove: !!o.remove }); return true; },
+      });
+      const transcribe = async (p, cfg, log, meta, listening) => {
+        const off = await listening?.();
+        meta.durationSec = 3;
+        await off?.();
+        return '@ed hola';
+      };
+      const { bridge, incoming } = start(api, {
+        onMedia, mediaDir: dir, transcribe, outboundFor, postsBackDelayMs: 0,
+        resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, listeningReaction: true }),
+      });
+      await bridge.startupReady;
+      api.updates(privateMsg({ text: undefined, voice: { file_id: 'n1', duration: 3, mime_type: 'audio/ogg' } }));
+      await vi.waitFor(() => expect(incoming).toHaveLength(2));
+      expect(incoming[0].body).toBe('(voice note, 3s — being transcribed…)');
+      expect(incoming[0].from).toMatchObject({ voiceLine: 'arrival', isTranscriptFromVoice: false, voiceListening: true, msgKey: '7' });
+      expect(incoming[0].from.voicePath).toContain(dir);
+      expect(incoming[1].body).toBe('(voice transcription, 3s) @ed hola');
+      expect(incoming[1].from).toMatchObject({ voiceLine: 'outcome', isTranscriptFromVoice: true, atEAnywhere: true });
+      const echo = api.of('sendMessage').find((c) => c.body.text.startsWith('👂'));
+      expect(echo.body.text).toContain('@ed hola');
+      expect(echo.body.reply_parameters.message_id).toBe(7);
+      expect(saved[0]).toMatchObject({ kind: 'audio', isVoiceNote: true, caption: '@ed hola' });
+      expect(reacts).toEqual([
+        { chatId: 'tg:42', msgId: '7', emoji: '🎧', remove: false },
+        { chatId: 'tg:42', msgId: '7', emoji: '🎧', remove: true },
+      ]);
+      await vi.waitFor(() => expect(readdirSync(dir)).toEqual([]));
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // contract 8.4
+  it('a bare name reply from the owner to a voice note posts its 👂 transcript from transcript.md and wakes no one', async () => {
+    const api = fakeApi();
+    const doc = 'An R@[An R].tg (14:32) #5: (voice transcription, 8s) hola que tal\n';
+    const { bridge, incoming, lines } = start(api, { readTranscript: async (chatId, o) => (chatId === 'tg:42' && o.network === 'telegram' ? doc : null) });
+    await bridge.startupReady;
+    api.updates(privateMsg({ text: 'ed', reply_to_message: { message_id: 5, from: { id: 42 }, voice: { file_id: 'old' } } }));
+    await vi.waitFor(() => expect(api.of('sendMessage')).toHaveLength(1));
+    expect(api.of('sendMessage')[0].body).toMatchObject({ text: '👂 hola que tal', reply_parameters: { message_id: 5 } });
+    await vi.waitFor(() => expect(lines.some((l) => /👂 transcript sent/.test(l))).toBe(true));
+    expect(incoming).toEqual([]);
+    bridge.stop();
+  });
+
+  // contract 8.4
+  it('a bare name reply to a text, with a voice service: 🔊 reading…, the piper audio as a voice note replying to it, the ack deleted', async () => {
+    const api = fakeApi();
+    const synthesize = vi.fn(async () => Buffer.from('OggS'));
+    const { bridge, incoming } = start(api, { synthesize, voice: 'es_MX', readTranscript: async () => '' });
+    await bridge.startupReady;
+    api.updates(privateMsg({ text: '@ed', reply_to_message: { message_id: 6, from: { id: 77 }, text: 'lee esto' } }));
+    await vi.waitFor(() => expect(api.of('deleteMessage')).toHaveLength(1));
+    expect(synthesize.mock.calls[0][0]).toBe('lee esto');
+    expect(api.of('sendMessage')[0].body).toMatchObject({ text: '🔊 reading…', reply_parameters: { message_id: 6 } });
+    const v = api.of('sendVoice')[0].body;
+    expect(JSON.parse(v.reply_parameters).message_id).toBe(6);
+    expect(v.voice.type).toBe('audio/ogg');
+    expect(api.of('deleteMessage')[0].body).toEqual({ chat_id: '42', message_id: 500 });
+    expect(incoming).toEqual([]);
+    bridge.stop();
+  });
+
+  it('a bare name reply from someone not allowed is an ordinary message (no readback)', async () => {
+    const api = fakeApi();
+    const { bridge, incoming } = start(api, { readTranscript: async () => 'x #5: (voice transcription) hola\n' });
+    await bridge.startupReady;
+    api.updates(groupMsg({ text: 'ed', reply_to_message: { message_id: 5, from: { id: 1 }, voice: { file_id: 'o' } } }));
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    expect(incoming[0].body).toBe('ed');
+    expect(api.of('sendMessage')).toHaveLength(0);
+    bridge.stop();
+  });
+});
+
+// Human reactions and edits are input, as on Beeper (dispatch-line reactionAction / editAction).
+describe('telegram limb — inbound reactions and edits', () => {
+  const reaction = (over = {}) => ({ message_reaction: { chat: { id: 42, type: 'private', first_name: 'An', last_name: 'R' }, message_id: 7, user: { id: 42, first_name: 'An', last_name: 'R' }, date: NOW_S, old_reaction: [], new_reaction: [{ type: 'emoji', emoji: '👍' }], ...over } });
+
+  it('a new reaction is "reacted 👍 to #7 …" naming the target text, isReaction, authorized by the reactor\'s id', async () => {
+    const api = fakeApi();
+    const { bridge, incoming } = start(api);
+    await bridge.startupReady;
+    api.updates(privateMsg({ text: 'nos vemos mañana' }));
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    api.raw(reaction());
+    await vi.waitFor(() => expect(incoming).toHaveLength(2));
+    expect(incoming[1].body).toBe('reacted 👍 to #7 "nos vemos mañana"');
+    expect(incoming[1].from).toMatchObject({ chatId: 'tg:42', isReaction: true, authorized: true, msgKey: '7', userId: '42', replyToBot: false });
+    bridge.stop();
+  });
+
+  it('a reaction to the bot\'s own message is replyToBot and names the being from its frame; a removed or unchanged one, and an old one, are not input', async () => {
+    const api = fakeApi();
+    const { bridge, incoming } = start(api);
+    await bridge.startupReady;
+    const r = await bridge.send(`🐦 hola${encodeNodeSignature('EDW', 'ed')}`, { chatId: 'tg:42' });
+    api.raw(
+      reaction({ message_id: Number(r.messageId), user: { id: 77, first_name: 'Diego' } }),
+      reaction({ old_reaction: [{ type: 'emoji', emoji: '👍' }], new_reaction: [] }),
+      reaction({ message_id: 3, date: NOW_S - 3600 }),
+      reaction({ message_id: 4, new_reaction: [{ type: 'custom_emoji', custom_emoji_id: 'x' }] }),
+    );
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    await new Promise((res) => setTimeout(res, 20));
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0].body).toBe(`reacted 👍 to #${r.messageId} "🐦 hola"`);
+    expect(incoming[0].from).toMatchObject({ replyToBot: true, replyToBeing: 'ed', authorized: false });
+    bridge.stop();
+  });
+
+  it('an edit of a message seen is "edited #id" with old and new text, a stage direction; one never seen is recorded, not surfaced', async () => {
+    const api = fakeApi();
+    const { bridge, incoming } = start(api);
+    await bridge.startupReady;
+    api.updates(privateMsg({ text: 'imbécil' }));
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    api.raw(
+      { edited_message: privateMsg({ text: 'pobrecito', edit_date: NOW_S }) },
+      { edited_message: privateMsg({ message_id: 99, text: 'never seen', edit_date: NOW_S }) },
+    );
+    await vi.waitFor(() => expect(incoming).toHaveLength(2));
+    await new Promise((res) => setTimeout(res, 20));
+    expect(incoming).toHaveLength(2);
+    expect(incoming[1].body).toBe('edited #7\n    - imbécil\n    + pobrecito');
+    expect(incoming[1].from).toMatchObject({ isStageDirection: true, isReaction: false, atEAnywhere: false, authorized: true, msgKey: '7' });
+    bridge.stop();
+  });
+
+  it('the raw edit hook (the mesh mirror) consumes an edit before it is surfaced', async () => {
+    const api = fakeApi();
+    const seen = [];
+    const { bridge, incoming } = start(api, { onMessageEdit: async (...a) => { seen.push(a); return true; } });
+    await bridge.startupReady;
+    api.updates(privateMsg({ text: 'a' }));
+    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    api.raw({ edited_message: privateMsg({ text: 'b', edit_date: NOW_S }) });
+    await vi.waitFor(() => expect(seen).toEqual([['tg:42', '7', 'b', 'a']]));
+    expect(incoming).toHaveLength(1);
     bridge.stop();
   });
 });
@@ -327,12 +575,64 @@ describe('telegram limb — outbound', () => {
     bridge.stop();
   });
 
-  it('sendMedia is not handled yet: false, and nothing reaches the API', async () => {
+  it('a reaction Telegram refuses (not in the bot set) is logged once per emoji and skipped after — never text', async () => {
     const api = fakeApi();
+    api.answers.setMessageReaction = (b) => (b.reaction[0]?.emoji === '🎧' ? api.err(400, 'Bad Request: REACTION_INVALID') : api.ok(true));
     const { bridge, lines } = start(api);
-    expect(await bridge.sendMedia('tg:42', '/x.ogg', {})).toBe(false);
-    expect(lines.some((l) => /media not handled yet/.test(l))).toBe(true);
-    expect(api.calls.filter((c) => c.method !== 'getMe' && c.method !== 'getUpdates')).toHaveLength(0);
+    expect(await bridge.sendReaction('tg:42', '9', '🎧')).toBe(false);
+    expect(await bridge.sendReaction('tg:42', '10', '🎧')).toBe(false);
+    expect(await bridge.sendReaction('tg:-5', '3', '🎧')).toBe(false);
+    expect(await bridge.sendReaction('tg:42', '11', '👀')).toBe(true);
+    expect(lines.filter((l) => /refuses 🎧/.test(l))).toHaveLength(1);
+    expect(api.of('setMessageReaction').map((c) => `${c.body.chat_id}/${c.body.message_id}`)).toEqual(['42/9', '-5/3', '42/11']);
+    expect(api.of('sendMessage')).toHaveLength(0);
+    bridge.stop();
+  });
+
+  it('sendMedia uploads multipart: photo, video, mp3 audio, an .ogg as a voice note, anything else a document', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-media-'));
+    try {
+      const api = fakeApi();
+      const { bridge } = start(api);
+      const files = ['a.jpg', 'b.mp4', 'c.mp3', 'd.ogg', 'e.pdf', 'f.wav'].map((n) => { const p = join(dir, n); writeFileSync(p, 'bytes'); return p; });
+      const results = [];
+      for (const f of files) results.push(await bridge.sendMedia('tg:42', f, { caption: f.endsWith('a.jpg') ? 'look' : null, replyTo: f.endsWith('d.ogg') ? '7' : null }));
+      expect(api.calls.filter((c) => c.method.startsWith('send')).map((c) => c.method)).toEqual(['sendPhoto', 'sendVideo', 'sendAudio', 'sendVoice', 'sendDocument', 'sendDocument']);
+      const [photo, , , voice] = api.calls.filter((c) => c.method.startsWith('send'));
+      expect(photo.body).toMatchObject({ chat_id: '42', caption: 'look', photo: { name: 'a.jpg', type: 'image/jpeg', size: 5 } });
+      expect(photo.headers).toBeNull();
+      expect(voice.body).toMatchObject({ chat_id: '42', voice: { name: 'd.ogg', type: 'audio/ogg' } });
+      expect(JSON.parse(voice.body.reply_parameters)).toEqual({ message_id: 7, allow_sending_without_reply: true });
+      expect(results.every((r) => r?.ok === true)).toBe(true);
+      expect(bridge.wasSentByUs('tg:42', results[3].confirmedId)).toBe(true);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('sendMedia: a caption over the limit follows as a text reply; a refused upload is false with its reason, token scrubbed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-media-'));
+    try {
+      const api = fakeApi();
+      const { bridge, lines } = start(api);
+      const p = join(dir, 'x.png'); writeFileSync(p, 'png');
+      const r = await bridge.sendMedia('tg:42', p, { caption: 'c'.repeat(1500) });
+      const photo = api.of('sendPhoto')[0];
+      expect(photo.body.caption).toBeUndefined();
+      expect(api.of('sendMessage')[0].body).toMatchObject({ text: 'c'.repeat(1500), reply_parameters: { message_id: Number(r.messageId) } });
+      api.answers.sendPhoto = () => api.err(413, `Request Entity Too Large ${TOKEN}`);
+      expect(await bridge.sendMedia('tg:42', p, {})).toBe(false);
+      expect(bridge.sendFailure('tg:42')).toMatch(/Too Large/);
+      expect(lines.join('\n')).not.toContain(TOKEN);
+      expect(await bridge.sendMedia('!room:beeper.local', p, {})).toBe(false);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a reaction emoji is sent without U+FE0F (Telegram\'s set spells the heart bare)', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    await bridge.sendReaction('tg:42', '9', '❤️');
+    expect(api.of('setMessageReaction')[0].body.reaction).toEqual([{ type: 'emoji', emoji: '❤' }]);
     bridge.stop();
   });
 });

@@ -422,6 +422,23 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     expect(ran.map((x) => x.type)).toEqual(['react']);
   });
 
+  it('NO mouth, but the limb\'s account is the being\'s own (beingAccount, a Telegram bot): /react is a real reaction, no text', async () => {
+    const b = { ...fakeBridge(), beingAccount: true };
+    const a = createReplyActions({ bridge: b, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', onLog: () => {} });
+    const { ran } = await a.execute(a.parse('/react #7 🔥', EV).run, [], EV, { being: 'e' });
+    expect(b.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
+    expect(b.calls.send).toEqual([]);
+    expect(ran.map((x) => x.type)).toEqual(['react']);
+  });
+
+  it('a refused reaction on the being\'s own account is not said as text either', async () => {
+    const b = { ...fakeBridge(), beingAccount: true, react: async () => false };
+    const a = createReplyActions({ bridge: b, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', onLog: () => {} });
+    const { ran } = await a.execute(a.parse('/react #7 🎧', EV).run, [], EV, { being: 'e' });
+    expect(b.calls.send).toEqual([]);
+    expect(ran).toEqual([]);
+  });
+
   it('reply routes through send() with replyTo + persona stamp opts', async () => {
     const b = fakeBridge();
     const a = mk(b);

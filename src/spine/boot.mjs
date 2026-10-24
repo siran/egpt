@@ -2150,14 +2150,16 @@ export async function boot({
     const t = readTelegramToken(EGPT_HOME, connection);
     if (!t.token) { tlog(`limbs.telegram.${connection} is declared but ${t.path} is ${t.problem} — not wired. Write it with: node setup/telegram-token.mjs ${connection}`); return null; }
     if (t.warn) tlog(`${t.path}: ${t.warn}`);
+    // The node-level options every limb takes (media, transcription, 👂, readback); the 🎧 rides
+    // the one placement, as a Beeper connection's does (`outbound`, built below, read at call time).
     const port = await createBeeperBridgePort({
+      ...sharedBridgeOpts,
       telegramToken: t.token, connection,
-      isAllowedUser: sharedBridgeOpts.isAllowedUser, wakeWords, addressWithoutAt, resumedAt: sharedBridgeOpts.resumedAt,
-      bridgeSignatureOpen: sharedBridgeOpts.bridgeSignatureOpen, bridgeSignatureClose: sharedBridgeOpts.bridgeSignatureClose,
-      nodeName: node_name, plainOf: isPublicAgent,
+      outboundFor: (chatId) => outbound(null, chatId),
       onLog: tlog,
     }, { start: startTelegram ?? startTelegramBridge });
-    return sendGuard.wrap({ ...port, owns: isTelegramChatId });
+    // beingAccount: the bot is the being's own account, never the operator's, so it may react (sender.mjs makeOutbound).
+    return sendGuard.wrap({ ...port, owns: isTelegramChatId, beingAccount: true });
   })();
   const telegramLimbs = telegramPort ? [telegramPort] : [];
   // Bridge instances, keyed by ENDPOINT — the (base_url, token) pair, not the token alone

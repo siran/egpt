@@ -6,10 +6,13 @@
 // profile's `voice` key is the ONE home for "which voice is egpt's own voice".
 import { buildSynthesisPipeline } from '../synthesis-pipeline.mjs';
 import { synthesizeViaEndpoint } from '../tools/synthesizer.mjs';
+import { readSecret, SYNTH_TOKEN_FILE } from '../secrets.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';
 
 export function createVoiceSynthesis({
   getConfig = () => ({}),
   onLog = () => {},
+  home = EGPT_HOME,
 } = {}) {
   const cfg = getConfig() ?? {};
   const vsCfg = cfg.voice_service;
@@ -18,6 +21,7 @@ export function createVoiceSynthesis({
   const pipeline = buildSynthesisPipeline({
     profile,
     synthesizeViaEndpoint,
+    token: () => readSecret(home, SYNTH_TOKEN_FILE).token,
     reachable: async (url, ms) => { try { await fetch(url, { method: 'GET', signal: AbortSignal.timeout(ms) }); return true; } catch { return false; } },
     onLog,
   });

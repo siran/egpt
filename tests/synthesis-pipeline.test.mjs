@@ -24,6 +24,16 @@ function mk({ profile = FULL, ...overrides } = {}) {
 }
 
 describe('synthesis pipeline (declarative TTS fallback chain)', () => {
+  it('the HMAC key: the engine token, else the token() fallback (the secrets file)', async () => {
+    const keys = [];
+    const synthesizeViaEndpoint = async (t, v, { keyB64 }) => { keys.push(keyB64); return Buffer.from('A'); };
+    const own = buildSynthesisPipeline({ profile: FULL, synthesizeViaEndpoint, token: () => 'FILE' });
+    await own.synthesize('x', 'v');
+    const bare = buildSynthesisPipeline({ profile: { fallback_order: ['l'], l: { type: 'piper-server-remote', endpoint: 'http://127.0.0.1:23391' } }, synthesizeViaEndpoint, token: () => 'FILE' });
+    await bare.synthesize('x', 'v');
+    expect(keys).toEqual(['k', 'FILE']);
+  });
+
   it('returns the first engine in fallback_order that yields audio', async () => {
     const { pipe, calls } = mk();
     const audio = await pipe.synthesize('hola', 'voiceA');

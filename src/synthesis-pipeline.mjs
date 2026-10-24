@@ -16,6 +16,7 @@
 export function buildSynthesisPipeline({
   profile,
   synthesizeViaEndpoint,          // (text, voice, {endpoint, keyB64, timeoutMs}, log) -> Buffer (throws on fail)
+  token = () => null,             // the HMAC key for an engine whose config names none ($EGPT_HOME/secrets/synthesizer.token)
   reachable,                      // async (url, timeoutMs) -> bool — quick liveness probe (omit to skip probing)
   now = () => Date.now(),
   onLog = () => {},
@@ -35,7 +36,7 @@ export function buildSynthesisPipeline({
     }
     try {
       const audio = await synthesizeViaEndpoint(
-        text, voice, { endpoint: eng.endpoint, keyB64: eng.token, timeoutMs: eng.timeout_ms ?? 20_000 }, log);
+        text, voice, { endpoint: eng.endpoint, keyB64: eng.token ?? token(), timeoutMs: eng.timeout_ms ?? 20_000 }, log);
       breaker.delete(eng.name);                                 // healthy again
       return audio || null;
     } catch (e) {

@@ -51,27 +51,24 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody, voiceArrivalBody, voiceFailedBody, VOICE_ARRIVAL_MARK, VOICE_FAILED_MARK, POSTS_BACK_DELAY_MS, ECHO_MARKER } from '../incoming-media.mjs';
+import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
+import { startVoiceNote, readBack, savedEntry, withMediaLines, VOICE_NOTE_PLACEHOLDER } from './limb-intake.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
 import { stripNodeSignature, decodeNodeSignature, decodeBeingSignature } from '../node-signature.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
-import { bodyForMessageId } from '../transcript-log.mjs';
 import { mentionStatus, mentionHits } from '../auto-mode.mjs';
-import { mediaKind, MEDIA_LINE } from '../media-kind.mjs';
+import { mediaKind } from '../media-kind.mjs';
 import { sha256Hex } from '../tools/decode-once.mjs';
 import { shouldDownload } from '../media-save.mjs';
-import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { readFile, writeFile, unlink } from 'node:fs/promises';
-import { createHash, randomBytes } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
-import { cleanForSpeech } from '../speech-clean.mjs';
 import { shortChatId, fullChatId, isChatId } from './chat-id.mjs';
 import { createEarProbe, injectViaTelegram } from '../ear-probe.mjs';
 
@@ -106,21 +103,8 @@ const CREATE_GROUP_POLL_MS = 500;
 // dispatched. A constant, not a knob. It also bounds a restart (operator 2026-10-21): a gap since the
 // last alive beat up to this long is answered (the cutoff, below).
 const WAKE_ANSWER_WINDOW_MS = 15 * 60_000;
-// 🎧 THE LISTENING ACK (operator 2026-09-15: "put a reaction on voice message when listening, then
-// remove reaction when done"). Transcription runs HERE, in the bridge, before the spine ever sees
-// the message, and whisper-cli spends ~10s+ loading its model per note — so until this, a long
-// voice note left the chat with nothing on it at all for tens of seconds. ONE module-level
-// constant, so turning the ack into a SEQUENCE later is a one-place change.
-//
-// NOT 👂 (ECHO_MARKER, imported above): that is the transcript echo, a committed message saying
-// what was heard. This says only "I am listening", and comes off the moment it is no longer true.
-// The two must not look alike.
-//
-// Wholly BRIDGE-SIDE (operator: "bridge can react to ack, not model. model can't delete") — the
-// hand that adds it is the hand that removes it, so there is nothing a model can emit or forget.
-// Since 2026-09-16 that hand says it through the mouth, and only where the decode runs
-// (`listening`, in the voice path below).
-export const LISTENING_REACTION = '🎧';
+// The 🎧 mark and the voice-note lookup live in limb-intake.mjs, shared with the Telegram limb.
+export { LISTENING_REACTION, transcriptionForNoteId } from './limb-intake.mjs';
 
 // Normalize a body so a message WE posted can be FOUND AGAIN in the chat's message
 // list — the one text compare left in this file (_matchKey → resolveSentMessageId),
@@ -163,56 +147,6 @@ export function newerMsgId(a, b) {
   return String(b) > String(a) ? b : a;
 }
 
-// REUSE the ALREADY-MADE arrival transcription (operator 2026-07-20). A received
-// voice note is transcribed ONCE when it lands (dispatchMessage) and, since 2026-10-16,
-// recorded as TWO lines — its arrival under its id, then the marked transcript answering it:
-//   Sender@[chat].node (HH:MM) #<id>: (voice note, Ns — being transcribed…)
-//   Sender@[chat].node (HH:MM): [re #<id>] (voice transcription, Ns) <text…>
-// (bodyForMessageId resolves #<id> to the second; notes recorded earlier are one
-// `#<id>: (voice transcription, Ns) …` line, read the same way). The bare-@e
-// reply branch looks THAT text up by the quoted id instead of re-transcribing the audio
-// (which was a wasteful DOUBLE transcription).
-//
-// THE WALK IS NOT HERE ANY MORE (operator 2026-07-26): reading one recorded entry back by its
-// id is what a REPLY needs too (the quoted message's content, which Beeper never inlines — see
-// ~L1335), so the walk moved to transcript-log.bodyForMessageId, beside the module that defines
-// the shape of a transcript line. It was voice-specific for exactly ONE reason — this marker
-// test — so that is all that stayed behind. Returns the transcription text, or null when the id
-// has no VOICE-transcription entry (→ the branch falls through to @e→E; it never re-transcribes).
-const _VOICE_MARK = /^\(voice transcription(?:,[^)]*)?\)\s*/;
-// MEDIA-ANNOUNCEMENT line (operator 2026-08-10): the exact shape logged by withMedia
-// (~L1352) for a saved non-voice attachment — `(image foo.png) [saved: media/...]` — so the
-// bare-@e TEXT-mirror branch below can tell a real quoted PROSE reply apart from a quoted
-// image/video/audio/document announcement (which must never be synthesized to audio verbatim).
-const _MEDIA_MARK = MEDIA_LINE;
-// THE VOICE-NOTE PLACEHOLDERS — what the arrival path records when a voice note produced NO
-// transcript: the transcriber failed, or transcription is not running on this node (~L1919). ONE
-// definition, used at BOTH ends: the arrival WRITES these strings and the bare-wake-word reply
-// gate (~L2090) READS them, so the two can never drift into disagreeing about what a placeholder
-// looks like.
-//
-// THE BUG THIS CLOSES: neither placeholder carries _VOICE_MARK, so the gate's text-mirror branch
-// took `[voice note — transcription failed]` for ordinary PROSE and had the synthesizer read that
-// bookkeeping line aloud — the exact failure its own comment forbids ("a voice note … must never
-// be read aloud as if it were plain text"). A quoted placeholder IS a voice note with no
-// transcript, so it falls through to the normal @e→E turn on the existing "no voice-transcript
-// entry" line, the same way a quoted id with no entry at all does.
-// Since 2026-10-16 a failure is the note's outcome line (voiceFailedBody) and a note still being
-// transcribed reads as its arrival (voiceArrivalBody); the old failed placeholder is only READ now,
-// from history.
-const VOICE_NOTE_PLACEHOLDER = '[voice note]';
-const VOICE_NOTE_FAILED_PLACEHOLDER = '[voice note — transcription failed]';
-const _isVoicePlaceholder = (body) => {
-  const t = String(body ?? '').trim();
-  return t === VOICE_NOTE_PLACEHOLDER || t === VOICE_NOTE_FAILED_PLACEHOLDER || VOICE_ARRIVAL_MARK.test(t) || VOICE_FAILED_MARK.test(t);
-};
-
-export function transcriptionForNoteId(doc, noteId) {
-  const body = bodyForMessageId(doc, noteId);
-  const vm = body?.match(_VOICE_MARK);
-  if (!vm) return null;                                      // no entry, or the entry isn't a voice note
-  return body.slice(vm[0].length).trim() || null;
-}
 
 // ── CROSS-ACCOUNT CHAT IDENTITY ───────────────────────────────────────────
 // PURE, and deliberately so: everything below reads a chat payload and nothing else, closes
@@ -1424,16 +1358,9 @@ export async function startBeeperBridge(opts = {}) {
       if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
       const { kind } = meta;
       try {
-        const r = await onMedia({ ...meta, localPath });
-        // onMedia returns the saved path (string) OR, for a video (Route A), an
-        // augmented descriptor { savedPath, framePaths, transcript } — the host
-        // extracted keyframes + transcribed the audio so we can hand them to E.
-        const savedPath = (r && typeof r === 'object') ? r.savedPath : r;
-        const framePaths = (r && typeof r === 'object' && Array.isArray(r.framePaths)) ? r.framePaths : [];
-        const vTranscript = (r && typeof r === 'object') ? (r.transcript ?? null) : null;
         // inText: this attachment is the one the voice branch already transcribed
         // into `text` — don't ALSO announce its path (avoids a double mention).
-        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, inText: att === voiceAtt, framePaths, transcript: vTranscript });
+        saved.push(savedEntry(await onMedia({ ...meta, localPath }), { kind, localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, inText: att === voiceAtt }));
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
     return saved;
@@ -2164,130 +2091,26 @@ export async function startBeeperBridge(opts = {}) {
         // display name; muted = Beeper's flag). The transcript reaches the model
         // whenever enabled; postsBack only gates the 👂. See src/incoming-media.mjs.
         const svc = await resolveTranscriptionService(chatID);
-        const vmeta = {};
-        // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident): gate on the NOTE'S OWN
-        // timestamp (tsMs, computed above for the backlog gate) vs now — NOT bridge start, so a
-        // note that arrived during sleep still echoes on wake if the note itself is within the
-        // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
-        const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
-        if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
-        // 👂 ECHO PLAN (operator 2026-07-24; REAL HRW on a node-stable audio hash): this node's rank
-        // for the note over the co-account peer set, picked PER NOTE by rendezvous hashing. The key is
-        // the sha256 of the DOWNLOADED AUDIO BYTES at `path` — byte-identical on both co-account nodes
-        // (same Beeper attachment), so the two nodes compute the SAME ordering and AGREE on the winner:
-        // exactly ONE rank-1 posts now, a lower rank promotes only if the higher ranks are silent (NOT
-        // dedup). We key on the AUDIO, NOT msg.id (node-LOCAL — that very divergence is why the old HRW
-        // double-echoed) and NOT the transcript text (whisper engines can differ). crypto lives HERE,
-        // never in the pure echo-priority module. rank 0 = echo:false hard opt-out. The age bound is
-        // ORTHOGONAL — tooOldForEcho suppresses ANY post/promotion regardless of rank.
-        //
-        // NO KEY ⇒ NO ECHO (operator 2026-09-12). This FELL BACK to msg.id, i.e. to the node-LOCAL key
-        // the audio hash exists to replace — so the failure path silently reinstated the double-👂 the
-        // design prevents. Live cause: the S0 PRIMARY Beeper runs as LocalSystem, its media sits in
-        // LocalSystem's profile, and the session-1 spine reads it as EPERM — ONE node's hash fails while
-        // the peer's works. There is no honest substitute: a fallback key would have to be node-stable
-        // AND CHOSEN alike on both nodes, and "could I read the audio?" is itself node-local, so the peer
-        // keys on the audio and diverges whatever we pick (the payload timestamp included, node-stable
-        // though it is). crossAccountMsgKey is no help either — for a bare voice note it keys on the
-        // attachment's size and type, which is not the audio hash the peer ranks on, so the two nodes
-        // would still order differently. So we REFUSE, the discipline crossAccountChatKey and
-        // crossAccountMsgKey already use for a key that is not evidence: rank 0, i.e. the echo:false
-        // verdict — still transcribed + logged, never posted, never promoted. The cost is a DELAY, not
-        // the note: a peer that CAN read the audio still echoes on its own rank, and a rank>1 peer's
-        // ordered failover posts it ~echoTimeoutMs later (incoming-media.mjs).
-        let audioHash = null;
-        try { audioHash = sha256Hex(await readFile(path)); }
-        catch (e) { onLog(`beeper: 👂 NOT echoed [${info.title}] — the note's audio is unreadable, so this node cannot compute the co-account-stable echo key, and echoing on a node-local one double-👂s. Still transcribed + logged; a peer that can read the audio echoes it (${e?.message ?? e})`); }
-        // BASELINE OWN-VOICE FALLBACK (operator 2026-10-13). The two-account echo is dropped by
-        // SOURCE above (sender ∈ MOUTH). This narrow byte-key covers the ONE case SOURCE cannot: a
-        // SINGLE-account install (being and operator share the account, so `ours` is empty) that
-        // runs TTS — a being's own .ogg re-enters with a new id and no frame, but IDENTICAL bytes,
-        // which sendMedia recorded into _sentIds. Match it there (chat-qualified, local only — the
-        // cross-bridge fan is gone, SOURCE owns the split) and route into the own-output path:
-        // record THIS note's id as ours → the spine's kindOf==='echo' prompts nobody; rank 0 → no 👂.
-        const ownVoiceEcho = audioHash != null && !!msg.id && wasSentByUs(chatID, audioHash);
-        if (ownVoiceEcho) { onLog(`beeper: own voice reply re-entered [${info.title}] — recorded, prompts nobody`); rememberSent(msg.id, chatID); }
-        const plan = (audioHash == null || ownVoiceEcho) ? { rank: 0, winner: false } : echoPlan(audioHash);
-        const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
-        // 🎧 LISTENING (operator 2026-09-15; re-homed 2026-09-16, kg: `reaction 🎧 by An`). NOT placed
-        // by this connection because it RECEIVED the note: the mark belongs to the node that DECODES
-        // it, and it comes from the mouth. The transcriber calls `listening` when a decode starts ON
-        // THIS NODE (src/transcription-pipeline.mjs `walk`) — never for another node's worker, never
-        // for a second connection's arrival that joins the same decode — and calls what it returns
-        // when that decode ends, a throw included. Placement and removal both go through THE one
-        // placement (outboundFor → src/spine/sender.mjs makeOutbound `react`): the mouth on its own
-        // copy, named by the note's cross-account key; no mouth → this connection's own bridge. A
-        // mark the mouth cannot place is no mark anywhere, and says why there. A chat with
-        // transcription off never reaches the transcriber, so it gets no mark either.
-        const listening = async () => {
-          const out = outboundFor?.(chatID);
-          if (!out) return null;
-          let key = null;
-          const keyOf = () => (key ??= out.keyOf(msg.id, 'listening')());   // read once, for both halves
-          if (!(await out.react(msg.id, LISTENING_REACTION, keyOf, 'listening', { temporary: true }))) return null;
-          return () => out.react(msg.id, LISTENING_REACTION, keyOf, 'listening', { remove: true });
-        };
-        // …only where transcription_service.listening_reaction allows it (operator 2026-10-18): true, or
-        // `operator` for a note the operator sent (the `authorized` signal below). Off: nothing placed or removed.
-        _voiceListening = svc.listeningReaction === true || (svc.listeningReaction === 'operator' && (!!msg.isSender || isAllowedUser(msg.senderID, acct)));
-        const _transcription = _transcribing('whisper', () => transcribeVoiceNote({
-          localPath: path, audioCfg,
-          transcribe: (p, c, l, m) => transcribe(p, c, l, m, _voiceListening ? listening : null),
-          // The SHARED wrap (persona-wrap.mjs) brackets the '👂 <transcript>' core with the bridge +
-          // transcription layers — the same machinery a persona reply renders through (covers
-          // immediate/debounced/promoted echoes). The coverage query matches on WORD TOKENS, so it is
-          // position-independent — a wrap layer above the 👂 no longer breaks dedup.
-          // Through the node's outbound regulator (echoGate, above): an echo is a committed
-          // message and spends from the same budget as a persona reply — the port's wrap can't
-          // see this send, so it takes the send guard directly.
+        // The note itself — 🎧, transcription, 👂, its two lines — is the shared intake (limb-intake.mjs).
+        ({ text, pending: _voicePending, listening: _voiceListening } = await startVoiceNote({
+          path, chatId: chatID, title: info.title, msgId: msg.id, tsMs, durationSec: att?.duration,
+          author: senderDisplay(msg), muted: info.isMuted, operatorSent: () => !!msg.isSender || isAllowedUser(msg.senderID, acct),
+          svc, echoPlan, echoMaxAgeMs, echoTimeoutMs, postsBackDelayMs, audioCfg, transcribe, outboundFor, scheduler,
+          // BASELINE OWN-VOICE KEY (operator 2026-10-13): a single-account install's own .ogg re-enters
+          // with a new id but identical bytes, which sendMedia recorded into _sentIds.
+          ownEcho: (audioHash) => {
+            if (!msg.id || !wasSentByUs(chatID, audioHash)) return false;
+            onLog(`beeper: own voice reply re-entered [${info.title}] — recorded, prompts nobody`);
+            rememberSent(msg.id, chatID);
+            return true;
+          },
+          // Through the node's outbound regulator (echoGate): the echo spends from the same budget as a reply.
           reply: (t) => echoGate(() => sendMessage(chatID, wrapEcho(echoTag, t), { replyToMessageID: msg.id })),
-          enabled: svc.enabled,
-          // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
-          // (rank-1)*echoTimeoutMs (incoming-media). A non-winner still HEARS (transcribes + logs);
-          // only the POST is gated. rank 0 (echo:false) / too-old → echoOn false → neither posts nor
-          // promotes.
-          postsBack: echoOn ? svc.postsBack : false,
-          echoRank: plan.rank,          // 1 = rank-1 (post now); >1 = arm the ordered-failover promotion
-          echoTimeoutMs,                // per-rank promotion step
-          // ON-DEMAND COVERAGE (operator 2026-07-12): stand down if a reply to THIS note with a matching
-          // transcript is already in the chat — queried before the post AND re-queried when a promotion
-          // fires (noteCovered). Replaces the observed-set + arrival-lag/grace scaffold entirely.
+          // ON-DEMAND COVERAGE (operator 2026-07-12): stand down if a reply to THIS note already carries it.
           checkCovered: (t) => noteCovered(chatID, msg.id, t),
-          scheduler,                    // fake clock in tests; real setTimeout in prod
-          muted: info.isMuted,
-          // author on the 👂 ack (operator 2026-07-13): senderDisplay(msg) — for a LID
-          // sender (every WhatsApp group sender) that's the sender's OWN pushed/profile
-          // name, NEVER the operator's saved contact label (senderDisplay uses senderName
-          // only for a LID; a non-LID sender falls back to a number/id). Same value the
-          // MODEL envelope already carries.
-          author: senderDisplay(msg),
-          // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂
-          // transcript, posted as a reply to ITSELF (operator 2026-06-24), never coalesced.
-          debounceKey: `${chatID}:${msg.id}`,
-          // PER-CONVERSATION echo delay (operator 2026-07-16): the resolver returns this chat's
-          // own posts_back_delay_ms (conversations.yaml override → global default); fall back to
-          // the boot-global only when a resolver doesn't supply one.
-          postsBackDelayMs: svc.postsBackDelayMs ?? postsBackDelayMs,
-                    onLog: (m) => onLog(`beeper: ${m}`),
-          meta: vmeta,
+          serial: _transcribing,
+          onLog: (m) => onLog(`beeper: ${m}`),
         }));
-        // A VOICE NOTE IS TWO LINES (operator 2026-10-16): its ARRIVAL is delivered now (Beeper's
-        // attachment duration is in seconds), and the transcription — or why there is none —
-        // follows as its own line once whisper is done (the end of this function). A chat with
-        // transcription off has nothing pending: one `[voice note]` line, as before.
-        if (svc.enabled) {
-          _voicePending = _transcription.catch((e) => { vmeta.error ??= String(e?.message ?? e); return null; }).then((transcript) => {
-            if (!transcript) return { body: voiceFailedBody(vmeta.error ?? 'no transcript'), caption: null };
-            onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-            // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
-            // tell a voice note arrived — not an ordinary message. Duration comes
-            // from the ffmpeg WAV the transcriber already made (vmeta.durationSec),
-            // omitted when unknown. The bare transcript still feeds the 👂 ack + the
-            // media sidecar caption.
-            return { body: voiceTranscriptBody(transcript, { durationSec: vmeta.durationSec }), caption: transcript };
-          });
-          text = voiceArrivalBody({ durationSec: att?.duration });
-        } else { await _transcription; text = VOICE_NOTE_PLACEHOLDER; }
       } else { text = VOICE_NOTE_PLACEHOLDER; }
     }
 
@@ -2299,35 +2122,7 @@ export async function startBeeperBridge(opts = {}) {
     // transcription), at the end of this function.
     const withMedia = async (body, voiceCaption) => {
       const saved = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption });
-
-      // Surface non-voice media to the model (operator 2026-06-16 regression): a
-      // photo / gif / video / document must be ANNOUNCED so E sees it arrived and a
-      // vision brain can Read the saved file. Voice is already in `text` (the
-      // transcript), and audio is the transcribe path — skip both here. Without
-      // this, media was saved to disk but the bridge returned before onIncoming, so
-      // E never knew (e.g. "puedes ver lo que posteó ron?").
-      // Surface media paths RELATIVE to the chat's conversation folder
-      // (`media/<file>`), NEVER the absolute host path (GENOME §2.5; shared
-      // `relMediaPath`). Applies to the saved attachment AND the Route-A frames.
-      const lines = saved
-        // Announce every saved attachment EXCEPT the voice note already in `text`.
-        // (Was: `m.kind !== 'audio'` — which silently dropped a shared AUDIO FILE
-        // like an .mp3 that wasn't a voice note, so E never knew it arrived and it
-        // wasn't even logged — operator 2026-06-16. `inText` now excludes only the
-        // transcribed voice note, so non-voice audio files surface like any media.)
-        .filter((m) => m.savedPath && !m.isVoiceNote && !m.inText)
-        .map((m) => {
-          let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${relMediaPath(m.savedPath)}]`;
-          // ROUTE A: a video is handed to E on a silver platter — keyframes the
-          // host already extracted (Read them with your vision) + the audio
-          // transcript. E never had to run anything.
-          if (m.kind === 'video') {
-            if (Array.isArray(m.framePaths) && m.framePaths.length) line += `\nframes (Read these): ${m.framePaths.map(relMediaPath).join('  ')}`;
-            if (m.transcript) line += `\n(video transcription) ${m.transcript}`;
-          }
-          return line;
-        });
-      return lines.length ? [body, ...lines].filter(Boolean).join('\n') : body;
+      return withMediaLines(body, saved);
     };
     if (!_voicePending) text = await withMedia(text, null);
 
@@ -2381,135 +2176,19 @@ export async function startBeeperBridge(opts = {}) {
     }
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId)) || !!replyToBeing;
 
-    // BARE @e REPLY TO A VOICE NOTE → 👂 transcript, sent as a NEW message replying to the
-    // ORIGINAL voice note (operator 2026-07-18, reworked 2026-07-20, reworked again 2026-08-10:
-    // editing/deleting the TRIGGER message isn't reliably permitted on WhatsApp/Beeper when the
-    // trigger wasn't sent by OUR account — e.g. an allow-listed non-owner sender — so the trigger
-    // is now NEVER touched, in either branch of this gate). When a reply whose WHOLE text is just
-    // the wake-word (@e/@egpt) quotes a voice/audio note and comes from the OWNER — the same
-    // owner-signal `from.authorized` uses below (!!isSender || isAllowedUser): Beeper mis-tags the
-    // owner's OWN sends as isSender:false "even in the self-chat" (see the isSender caveats
-    // above), so isSender alone would let the operator's own @e silently miss — reply to the
-    // quoted voice note with '👂 <transcript>' as a fresh message and DON'T wake E: a
-    // deterministic, bridge-only shortcut, no persona involvement. Success is confirmed by the
-    // send's id ACTUALLY confirming — if it doesn't (sendMessage returns null, or confirmedId
-    // resolves falsy), we do NOT return, so the @e is never silently eaten.
-    //
-    // RETRIEVAL = REUSE, NOT RE-TRANSCRIBE (operator 2026-07-20): the note was already
-    // transcribed ONCE when it arrived (dispatchMessage ~L1096) and written to transcript.md.
-    // We look THAT text up by the quoted id (transcriptionForNoteId over readTranscript) instead
-    // of downloading + whisper-ing the audio a SECOND time. The transcript entry existing as a
-    // "(voice transcription…)" line both CONFIRMS the target was a voice note AND supplies the
-    // text — so no fetchMessageById / attachmentToLocalPath / transcribeVoiceNote here. This also
-    // gives UNBOUNDED lookback: any historical note in the transcript, not just the recent-50 API
-    // window the old on-demand fetch was capped at. ANY miss (not a reply, extra text beyond the
-    // bare wake-word, no voice-transcription entry for the id, a non-owner sender, or a send that
-    // never confirmed) falls through UNCHANGED, so a plain @e still wakes E below — and it NEVER
-    // re-transcribes.
-    const bareReply = (text || '').trim().toLowerCase();
-    // BOTH forms accepted (operator 2026-08-10): '@e'/'@egpt' AND the bare 'e'/'egpt' — unlike
-    // the @ev voice-out override (which needs '@' to avoid matching the word "ev" INSIDE ordinary
-    // prose), this gate already requires the WHOLE reply to be nothing but the wake-word, so a
-    // bare form carries no meaningful false-positive risk of its own.
-    // …and the list it scans is `replyWake`, NOT `wakeWords` (operator 2026-09-01): this gate is a
-    // different consumer, see replyWakeWords at the top of this file. `st`/atE above stay on
-    // `wakeWords` — a fallback token is the ROUTER's to judge, because only it can ask whether the
-    // peer account is in this chat.
-    const isReplyWakeWord = (w) => bareReply === `@${String(w).toLowerCase()}` || bareReply === String(w).toLowerCase();
-    if (replyToId && (!!msg.isSender || isAllowedUser(msg.senderID, acct)) && replyWake.some(isReplyWakeWord)) {
-      const doc = await readTranscript(chatID, { chatName: info.title, network: acct });
-      const t = transcriptionForNoteId(doc, replyToId);
-      if (t) {
-        const sent = await sendMessage(chatID, `${ECHO_MARKER} ${t}`, { replyToMessageID: replyToId });
-        const confirmedId = sent ? await sent.confirmedId : null;
-        if (confirmedId) {
-          onLog(`beeper: 👂 transcript sent [${info.title}] ↩${replyToId} (reused from transcript.md; trigger #${msg.id} untouched)`);
-          return;   // substitution replaces the @e→E routing for this message
-        }
-        onLog(`beeper: 👂 transcript send FAILED to confirm [${info.title}] #${msg.id} ↩${replyToId} — falling through to @e→E`);
-      } else {
-        // MIRROR (operator 2026-08-10): the quoted id isn't a VOICE note — before giving up, try
-        // it as ordinary TEXT. bodyForMessageId is the general chokepoint transcriptionForNoteId
-        // itself is built on (its own header says reading one recorded entry back by id is what a
-        // REPLY needs too), so this reuses it rather than re-walking transcript.md. Skip a hit that
-        // IS itself a voice-transcription entry (_VOICE_MARK) — a voice note that missed the branch
-        // above for some OTHER reason (e.g. the send failing) must never be read aloud as if it were
-        // plain text. synthesize/voice unwired (e.g. `do`, no voice_service configured) → this whole
-        // branch no-ops, same fall-through discipline as every other miss here. Synthesis takes real
-        // time, so an immediate ACK ('🔊 reading…') is posted FIRST, replying to the ORIGINAL quoted
-        // text — OUR OWN new message, so it's guaranteed deletable regardless of who sent the
-        // trigger (operator 2026-08-10: editing/deleting the TRIGGER isn't reliably permitted when
-        // it wasn't sent by our account). The trigger itself is NEVER touched; the ack is deleted
-        // once the audio reply lands (success) or immediately (failure), so nothing dangles.
-        // E's OWN reply lines carry NO id in transcript.md — since 2026-08-28 replyLine has an
-        // `#<id>` slot (it renders through the SAME formatter the inbound line does), but no
-        // caller can fill it: the spine records a reply BEFORE delivering it (record-first is
-        // durability), so at write time the surface has assigned no id. Structural, not an
-        // occasional miss. So quoting E's own prior message would otherwise always fall through
-        // to a normal @e→E turn instead of reading it back (live bug, 2026-08-10: "e" replying to
-        // E's own message woke E instead of reading it). _seenText (this file's own edit-
-        // detection cache, same msgKeyOf keying, seeded on FIRST SIGHT of any message incl. our
-        // own echoed-back sends — see _maybeEmitEdits above) already holds exactly this text,
-        // keyed by the REAL confirmed id — fall back to it when transcript.md has nothing.
-        const quotedText = bodyForMessageId(doc, replyToId) ?? _seenText.get(msgKeyOf(chatID, replyToId)) ?? null;
-        if (quotedText && _MEDIA_MARK.test(quotedText)) {
-          // The quoted entry is a MEDIA-ANNOUNCEMENT line (image/video/audio/document), not real
-          // prose — synthesizing it verbatim would read the saved-path bookkeeping aloud as
-          // garbage audio (operator 2026-08-10). Don't touch synthesize/sendMedia; instead swap
-          // the bare wake-word for a vision instruction and fall through to a normal @e→E turn.
-          // THE TOKEN IS KEPT AT THE HEAD (operator 2026-09-01): this is the ONE branch of this
-          // gate that hands the message on as a real TURN, so whoever the token addresses must
-          // still be readable in the body. A guarded fallback token (`e` on kg) is never in
-          // `wakeWords`, so atE is false for it and the ROUTER's membership guard is the only
-          // thing that can decide whether this node answers — and it decides by scanning ev.body.
-          // Replacing the whole text dropped that token, which left the default `mention` mode
-          // with a describe instruction addressed to nobody: silence. A DECLARED handle already
-          // carried atE=true and is unaffected either way.
-          text = `${(text || '').trim()} Describe what you see in the message you're replying to.`;
-          onLog(`beeper: 👁 quoted media announcement ↩${replyToId} [${info.title}] — falling through to @e→E with a describe instruction`);
-        // _isVoicePlaceholder is the SECOND half of the same rule _VOICE_MARK states: a voice note
-        // must never be read aloud as text. A note whose transcription FAILED (or that arrived on a
-        // node with transcription off) is recorded as a bare `[voice note …]` line carrying no
-        // mark, so without this the synthesizer read that placeholder out loud instead of the note.
-        // It is a voice note with no transcript — nothing to mirror — so it falls to the
-        // "no voice-transcript entry" line below and becomes a normal @e→E turn.
-        } else if (quotedText && !_VOICE_MARK.test(quotedText) && !_isVoicePlaceholder(quotedText) && synthesize && voice) {
-          const ack = await sendMessage(chatID, '🔊 reading…', { replyToMessageID: replyToId });
-          const ackId = ack ? await ack.confirmedId : null;
-          if (ackId) {
-            let audio = null;
-            try { audio = await synthesize(cleanForSpeech(quotedText), voice, onLog); }
-            catch (e) { onLog(`beeper: 🔊 synthesize threw ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
-            if (audio) {
-              const tmpPath = join(tmpdir(), `egpt-voice-quote-${randomBytes(8).toString('hex')}.ogg`);
-              let sent = false;
-              try {
-                await writeFile(tmpPath, audio);
-                sent = !!(await sendMedia(chatID, tmpPath, { replyTo: replyToId }));
-              } catch (e) { onLog(`beeper: 🔊 media send failed ↩${replyToId} [${info.title}] — ${e?.message ?? e}`); }
-              finally { try { await unlink(tmpPath); } catch { /* ignore */ } }
-              if (sent) {
-                await deleteMessage(chatID, ackId);
-                onLog(`beeper: 🔊 quoted text synthesized + sent [${info.title}] #${msg.id} ↩${replyToId} (ack cleaned up; trigger untouched)`);
-                return;   // substitution replaces the @e→E routing for this message
-              }
-              await deleteMessage(chatID, ackId);
-              onLog(`beeper: 🔊 quoted-text audio send FAILED ↩${replyToId} [${info.title}] — ack cleaned up, falling through to @e→E`);
-            } else {
-              await deleteMessage(chatID, ackId);
-              onLog(`beeper: 🔊 quoted-text synthesis declined/failed ↩${replyToId} [${info.title}] — ack cleaned up, falling through to @e→E`);
-            }
-          } else {
-            onLog(`beeper: 🔊 ack send FAILED to confirm ↩${replyToId} [${info.title}] — falling through to @e→E`);
-          }
-        }
-        // No transcript for the quoted id (voice OR text) → normal @e→E. A note whisper is still
-        // chewing on is no longer a silent miss (2026-10-16): its arrival line is on the record and
-        // reads "being transcribed", which is what E is quoted and what this says.
-        onLog(VOICE_ARRIVAL_MARK.test(String(quotedText ?? '').trim())
-          ? `beeper: 👂 ↩${replyToId} is still being transcribed [${info.title}] — falling through to @e→E`
-          : `beeper: 👂 no voice-transcript entry for ↩${replyToId} [${info.title}] — falling through to @e→E`);
-      }
+    // BARE NAME REPLY (contract 8.4): 👂 transcript / 🔊 reading / 👁 describe — the shared readback
+    // (limb-intake.mjs readBack). The owner signal is from.authorized's (Beeper's isSender is unreliable).
+    // E's own lines carry no id in transcript.md, so the quoted text falls back to _seenText.
+    {
+      const r = await readBack({
+        text, replyToId, ownerSent: () => !!msg.isSender || isAllowedUser(msg.senderID, acct), replyWake,
+        readTranscript, chatId: chatID, title: info.title, network: acct, msgId: msg.id,
+        quoted: () => _seenText.get(msgKeyOf(chatID, replyToId)),
+        send: sendMessage, sendMedia, deleteMessage, synthesize, voice,
+        onLog: (m) => onLog(`beeper: ${m}`),
+      });
+      if (r.done) return;   // substitution replaces the @e→E routing for this message
+      text = r.text;
     }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)

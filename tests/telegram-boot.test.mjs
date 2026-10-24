@@ -63,10 +63,11 @@ function fakeSession(opts) {
 function fakeTransport() {
   const built = [];
   const start = async (opts) => {
-    const spy = { opts, onIncoming: opts.onIncoming, sent: [], streams: [] };
+    const spy = { opts, onIncoming: opts.onIncoming, sent: [], streams: [], reactions: [] };
     built.push(spy);
     return {
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async sendReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, emoji }); return true; },
       startStreamMessage(init, o) {
         const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
         spy.streams.push(h); return h;
@@ -78,7 +79,7 @@ function fakeTransport() {
   return { start, built };
 }
 
-async function bootWith(config, { state, telegram = true } = {}) {
+async function bootWith(config, { state, telegram = true, session = fakeSession } = {}) {
   const beeper = fakeTransport();
   const tg = fakeTransport();
   const lines = [];
@@ -87,7 +88,7 @@ async function bootWith(config, { state, telegram = true } = {}) {
     readConfig: () => config,
     startBridge: beeper.start,
     ...(telegram ? { startTelegram: tg.start } : {}),
-    makeSession: fakeSession,
+    makeSession: session,
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => convState,
     writeState: async (s) => { convState = s; },
@@ -206,6 +207,46 @@ describe('a node with Beeper and Telegram', () => {
     expect(beeper[0].streams.map((s) => s.chatId)).toEqual([waFrom.chatId]);
     expect(tg[0].streams[0].finals[0]).toContain('hola tg');
     expect(beeper[0].streams[0].finals[0]).toContain('hola wa');
+    app.stop();
+  });
+});
+
+// The bot is the being's own account: its port says so (beingAccount), so the being's /react is a
+// real reaction on Telegram. A Beeper-only node's port never says it (no reaction, as before).
+describe('reactions: the bot reacts like E on kg', () => {
+  const reacting = (opts) => ({ ...fakeSession(opts), async turn(m, onUpdate) { onUpdate?.('/react #7 👍'); return { text: '/react #7 👍', sessionId: 'sess-1' }; } });
+
+  it('a beeperless Telegram node: /react #7 👍 lands as a reaction on the bot, never a text line', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R'), session: reacting });
+    expect(app.telegramPort.beingAccount).toBe(true);
+    await tg[0].onIncoming('hola E', tgFrom);
+    await vi.waitFor(() => expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '👍' }]));
+    expect(tg[0].sent.filter((s) => /👍 \(/.test(s.text))).toEqual([]);
+    app.stop();
+  });
+
+  it('a Beeper-only node (kg): /react is still the quoted text line, no reaction', async () => {
+    const { app, beeper } = await bootWith(BEEPER_ONLY(), { state: seedOn('whatsapp', waFrom.chatId, 'fam'), session: reacting });
+    await beeper[0].onIncoming('hola E', waFrom);
+    await vi.waitFor(() => expect(beeper[0].sent.some((s) => /👍 \(/.test(s.text))).toBe(true));
+    expect(beeper[0].reactions).toEqual([]);
+    app.stop();
+  });
+});
+
+// The Telegram limb takes the node-level media + voice options every Beeper connection takes, so
+// its intake (limb-intake.mjs) runs on the node's transcriber, verdicts, readback and placement.
+describe('the Telegram limb gets the shared intake\'s node options', () => {
+  it('transcriber, per-chat verdict, transcript reader, echo gate, onMedia and the one placement (its 🎧 reacts on the bot)', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R') });
+    const o = tg[0].opts;
+    for (const k of ['transcribe', 'resolveTranscriptionService', 'readTranscript', 'echoGate', 'echoPlan', 'onMedia', 'outboundFor']) expect(typeof o[k]).toBe('function');
+    expect((await o.resolveTranscriptionService('tg:42')).enabled).toBe(true);
+    const out = o.outboundFor('tg:42');
+    expect(await out.react('7', '🎧', out.keyOf('7', 'listening'), 'listening', { temporary: true })).toBe(true);
+    expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '🎧' }]);
     app.stop();
   });
 });

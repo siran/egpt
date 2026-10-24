@@ -509,7 +509,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         // NO MOUTH ON THIS NODE (operator 2026-10-18): the only account is the operator's, so the
         // reaction is said as a quoted line, "👌 (E)" — ordinary own output, never a reaction. No
         // being in its frame, so its echo wakes nobody (not even the being it quotes).
-        if (!peerMouth) {
+        if (!out.reacts()) {
           const text = `${a.emoji} (${labelOf(being) ?? being})`;
           const ok = await out.say(async (on, room, replyTo) => { const r = await on.send?.(room, text, { replyTo }); return !(r?.blocked || r == null); }, { msgId: a.targetId, text, what: 'react' });
           if (!ok) { onLog(`react: ${text} → #${a.targetId} not delivered`); await lost(out, ev, being, `/react #${a.targetId}`); }

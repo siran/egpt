@@ -1121,6 +1121,22 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(notes.filter((l) => /no mouth account on this node/.test(l))).toHaveLength(2);
   });
 
+  // A Telegram bot is the being's OWN account (EDW): its limb says so, and the acks are placed on it.
+  it('NO mouth, but the limb\'s account is the being\'s own (beingAccount): 📩 and 👀 are placed on it', async () => {
+    const bridge = { ...fakeBridge(), beingAccount: true };
+    const reactions = [];
+    bridge.react = async (chatId, msgId, emoji) => { reactions.push({ chatId, msgId, emoji }); return true; };
+    const turns = createTurns({ brain: steerable(), bridge });
+    turns.setLive(KEY, LIVE);
+
+    expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
+    await settled();
+    expect(reactions).toEqual([
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+    ]);
+  });
+
   it('a route that THROWS acks HERE — the fail-safe direction: the primary can never be the wrong answer', async () => {
     const bridge = fakeBridge();
     const notes = [];
