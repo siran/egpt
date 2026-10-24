@@ -67,6 +67,13 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 — AWS (operator: "the power is on the anthropic side; traffic is very low")
+- **Account:** EduWeb's, profile `eduweb` (331665579468, us-east-1, ECR `egpt` exists). Production runs there, so EDW gets its own VPC/SG with no inbound, tags Project=egpt-edw, and the scripts never touch untagged resources.
+- **Instance: t3.small to start** (2 vCPU / 2 GB, ~$15/mo on-demand, measured via the Pricing API 10-24); upgrade to t3a.medium (~$27) if it doesn't work, t3a.large (~$55) for comfortable voice.
+  - On t3.small whisper large-v3 does not fit (needs 3–4 GB), so transcription is OFF at cutover until resized.
+  - Measured idle use of `edw`: ~390 MB (Claude session ~125 MB, Beeper ~130 MB, which will be off).
+- **Plain EC2 + Docker, scripted** (build-push, provision, migrate, run; dry run by default). EGPT_BRANCH=edw, EGPT_BEEPER=off. Cutover: stop local `edw` first (one bot poller), move the volumes through a private encrypted S3 bucket, delete the objects. Scripts dispatched on feat/edw-aws.
+
 ## 10-24 03:30 — SI+EduWeb on Telegram; a real group per chatbox conversation
 - **SI+EduWeb on Telegram exists** (`tg:-5239545023`). The operator created it and added @edwsi_bot, and ED answered there.
   - ED is set as kg's E is in WhatsApp SI+EduWeb: `opus-xhigh`, `warm.keep`.
