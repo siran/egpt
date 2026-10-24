@@ -8,6 +8,8 @@
 // No invisible characters go out (visibleOnly; Telegram reads hidden text as spam, 2026-10-24): the
 // port's wrap adds no structural frame, and send/edit/caption strip what is left. So the bot's own
 // message is known by its sender, and the being who wrote it by its visible stamp (stampedBeing).
+// A being's Markdown goes out as Telegram HTML (md-to-tg-html.mjs); text Telegram cannot parse goes
+// once more as plain text.
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { join, basename, extname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +18,7 @@ import { secretPath, readSecret } from '../secrets.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripNodeSignature } from '../node-signature.mjs';
 import { stripInvisible } from '../invisible.mjs';
+import { mdToTgHtml } from '../md-to-tg-html.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { mediaKind, MIME_BY_EXT } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -168,6 +171,17 @@ export function startTelegramBridge({
       if (e.status !== 429 || !(e.retryAfter <= RETRY_AFTER_MAX_S) || stopped) throw e;
       await wait(e.retryAfter * 1000);
       return api(method, body);
+    }
+  }
+  // body(t) builds the request around the text t: first as HTML, then as written if Telegram cannot parse it.
+  async function callHtml(method, text, body) {
+    const html = body(stripInvisible(mdToTgHtml(text)));
+    if (html instanceof FormData) html.set('parse_mode', 'HTML'); else html.parse_mode = 'HTML';
+    try { return await call(method, html); }
+    catch (e) {
+      if (e.status !== 400 || !/can't parse|is empty/i.test(e.message)) throw e;
+      log(`${method}: Telegram could not parse the HTML (${e.message}) — sent once more as plain text`);
+      return call(method, body(text));
     }
   }
 
@@ -446,9 +460,8 @@ export function startTelegramBridge({
     let first = null;
     try {
       for (const [i, part] of chunks(text).entries()) {
-        const body = { chat_id: chat, text: part };
-        if (i === 0 && replyToMessageID != null) body.reply_parameters = { message_id: Number(replyToMessageID), allow_sending_without_reply: true };
-        const m = await call('sendMessage', body);
+        const reply = i === 0 && replyToMessageID != null ? { reply_parameters: { message_id: Number(replyToMessageID), allow_sending_without_reply: true } } : {};
+        const m = await callHtml('sendMessage', part, (t) => ({ chat_id: chat, text: t, ...reply }));
         noteSent(chatId, m.message_id);
         remember(chatId, m.message_id, part);
         first ??= String(m.message_id);
@@ -465,8 +478,8 @@ export function startTelegramBridge({
   async function editMessage(chatId, msgId, text) {
     const chat = apiChatId(chatId);
     if (chat == null || msgId == null) return false;
-    text = stripInvisible(text);
-    try { await call('editMessageText', { chat_id: chat, message_id: Number(msgId), text: chunks(text)[0] }); remember(chatId, msgId, chunks(text)[0]); return true; }
+    const head = chunks(stripInvisible(text))[0];
+    try { await callHtml('editMessageText', head, (t) => ({ chat_id: chat, message_id: Number(msgId), text: t })); remember(chatId, msgId, head); return true; }
     catch (e) {
       if (/not modified/i.test(e.message)) return true;
       log(`edit #${msgId} in ${chatId} failed — ${e.message}`);
@@ -518,12 +531,16 @@ export function startTelegramBridge({
     if (caption != null) caption = stripInvisible(caption);
     const long = !!caption && [...caption].length > CAPTION_MAX;
     try {
-      const form = new FormData();
-      form.append('chat_id', chat);
-      if (caption && !long) form.append('caption', caption);
-      if (replyTo != null) form.append('reply_parameters', JSON.stringify({ message_id: Number(replyTo), allow_sending_without_reply: true }));
-      form.append(field, new Blob([await readFile(filePath)], mime ? { type: mime } : {}), basename(String(filePath)));
-      const m = await call(method, form);
+      const file = new Blob([await readFile(filePath)], mime ? { type: mime } : {});
+      const form = (cap) => {
+        const f = new FormData();
+        f.append('chat_id', chat);
+        if (cap) f.append('caption', cap);
+        if (replyTo != null) f.append('reply_parameters', JSON.stringify({ message_id: Number(replyTo), allow_sending_without_reply: true }));
+        f.append(field, file, basename(String(filePath)));
+        return f;
+      };
+      const m = caption && !long ? await callHtml(method, caption, form) : await call(method, form(null));
       const id = String(m.message_id);
       noteSent(chatId, id);
       failures.delete(chatId);

@@ -1956,6 +1956,17 @@ describe('beeper bridge — short-id boundary', () => {
   });
 });
 
+// Telegram HTML is the Telegram limb's alone (md-to-tg-html.mjs); a Beeper send is never converted.
+describe('beeper bridge — Markdown leaves as written', () => {
+  it('a send with **bold**, `code` and <b> is byte-identical on the wire', async () => {
+    const { bridge } = await startBridge();
+    const text = '**bold** _it_ `code` <b>x</b> a & b';
+    expect((await sendSettled(bridge, text, { chatId: CHAT('chat-1') }))?.ok).toBe(true);
+    expect(fake.posts[0].text).toBe(text);
+    expect(fake.posts[0].parse_mode).toBeUndefined();
+  });
+});
+
 // PER-SURFACE AUTHORIZATION (operator 2026-07-02): ids are per-surface NAMESPACES —
 // a WhatsApp jid authorizes NOTHING on Telegram — so the bridge passes the message's
 // origin network to isAllowedUser(senderId, network) and the host resolves the

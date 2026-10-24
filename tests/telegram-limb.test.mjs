@@ -485,7 +485,7 @@ describe('telegram limb — outbound', () => {
     const api = fakeApi();
     const { bridge } = start(api);
     const r = await bridge.send('hi', { chatId: 'tg:-1001234', replyToMessageID: '8' });
-    expect(api.of('sendMessage')[0].body).toEqual({ chat_id: '-1001234', text: 'hi', reply_parameters: { message_id: 8, allow_sending_without_reply: true } });
+    expect(api.of('sendMessage')[0].body).toEqual({ chat_id: '-1001234', text: 'hi', parse_mode: 'HTML', reply_parameters: { message_id: 8, allow_sending_without_reply: true } });
     expect(r.messageId).toBe('500');
     expect(bridge.wasSentByUs('tg:-1001234', '500')).toBe(true);
     expect(bridge.wasSentByUs('tg:-1001234', '7')).toBe(false);
@@ -642,6 +642,117 @@ describe('telegram limb — outbound', () => {
     const { bridge } = start(api);
     await bridge.sendReaction('tg:42', '9', '❤️');
     expect(api.of('setMessageReaction')[0].body.reaction).toEqual([{ type: 'emoji', emoji: '❤' }]);
+    bridge.stop();
+  });
+});
+
+// A being writes Markdown; Telegram shows it only as HTML with parse_mode (operator 2026-10-24).
+describe('telegram limb — formatting: Markdown goes out as Telegram HTML', () => {
+  const CANT_PARSE = 'Bad Request: can\'t parse entities: Unsupported start tag "x" at byte offset 3';
+
+  it('REPRODUCE-FIRST: send converts **bold** and `code` and sets parse_mode HTML', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    await bridge.send('🦉 ED: **bold** and `x<y`', { chatId: 'tg:42' });
+    expect(api.of('sendMessage')[0].body).toEqual({ chat_id: '42', text: '🦉 ED: <b>bold</b> and <code>x&lt;y</code>', parse_mode: 'HTML' });
+    bridge.stop();
+  });
+
+  it('edit converts too; snake_case and 2*3*4 stay literal', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    expect(await bridge.editMessage('tg:42', '9', '_it_ ~~gone~~ my_var 2*3*4')).toBe(true);
+    expect(api.of('editMessageText')[0].body).toEqual({ chat_id: '42', message_id: 9, text: '<i>it</i> <s>gone</s> my_var 2*3*4', parse_mode: 'HTML' });
+    bridge.stop();
+  });
+
+  it('a caption converts, with parse_mode HTML on the upload', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-fmt-'));
+    try {
+      const api = fakeApi();
+      const { bridge } = start(api);
+      const p = join(dir, 'a.png'); writeFileSync(p, 'png');
+      await bridge.sendMedia('tg:42', p, { caption: '**look** <script>' });
+      expect(api.of('sendPhoto')[0].body).toMatchObject({ caption: '<b>look</b> &lt;script&gt;', parse_mode: 'HTML' });
+      await bridge.sendMedia('tg:42', p, {});
+      expect(api.of('sendPhoto')[1].body.parse_mode).toBeUndefined();
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a being\'s well-formed <b> passes, a <script> is shown as text', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    await bridge.send('<b>ok</b> <script>alert(1)</script>', { chatId: 'tg:42' });
+    expect(api.of('sendMessage')[0].body.text).toBe('<b>ok</b> &lt;script&gt;alert(1)&lt;/script&gt;');
+    bridge.stop();
+  });
+
+  it('streaming: a half-written **… or <b>… stays literal, never an unbalanced tag; the final converts', async () => {
+    const api = fakeApi();
+    let clock = 10_000;
+    const { bridge } = start(api, { now: () => clock });
+    const h = bridge.startStreamMessage('⏳', { chatId: 'tg:42' });
+    h.update('here is **bol');
+    await vi.waitFor(() => expect(api.of('editMessageText')).toHaveLength(1));
+    clock += 2000;
+    h.update('here is **bold** and <b>ha');
+    await vi.waitFor(() => expect(api.of('editMessageText')).toHaveLength(2));
+    await h.finish('here is **bold** and <b>half</b>');
+    expect(api.of('editMessageText').map((c) => c.body.text)).toEqual([
+      'here is **bol',
+      'here is <b>bold</b> and &lt;b&gt;ha',
+      'here is <b>bold</b> and <b>half</b>',
+    ]);
+    expect(h.delivered).toBe(true);
+    bridge.stop();
+  });
+
+  it('Telegram cannot parse it: retried once as the plain text, without parse_mode — never lost', async () => {
+    const api = fakeApi();
+    const real = api.answers.sendMessage;
+    api.answers.sendMessage = (b) => (b.parse_mode ? api.err(400, CANT_PARSE) : real(b));
+    const { bridge, lines } = start(api);
+    const r = await bridge.send('**bold**', { chatId: 'tg:42', replyToMessageID: '7' });
+    expect(r.messageId).toBe('500');
+    expect(api.of('sendMessage').map((c) => c.body)).toEqual([
+      { chat_id: '42', text: '<b>bold</b>', parse_mode: 'HTML', reply_parameters: { message_id: 7, allow_sending_without_reply: true } },
+      { chat_id: '42', text: '**bold**', reply_parameters: { message_id: 7, allow_sending_without_reply: true } },
+    ]);
+    expect(lines.some((l) => /can't parse/.test(l) && /plain/.test(l))).toBe(true);
+    bridge.stop();
+  });
+
+  it('the plain retry is once, for edits and captions too; any other 400 is not retried', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-fmt-'));
+    try {
+      const api = fakeApi();
+      api.answers.editMessageText = (b) => (b.parse_mode ? api.err(400, CANT_PARSE) : api.ok(true));
+      api.answers.sendPhoto = (b) => (b.parse_mode ? api.err(400, CANT_PARSE) : api.ok({ message_id: 600 }));
+      const { bridge } = start(api);
+      expect(await bridge.editMessage('tg:42', '9', '*it*')).toBe(true);
+      expect(api.of('editMessageText').map((c) => [c.body.text, c.body.parse_mode])).toEqual([['<i>it</i>', 'HTML'], ['*it*', undefined]]);
+      const p = join(dir, 'a.png'); writeFileSync(p, 'png');
+      expect((await bridge.sendMedia('tg:42', p, { caption: '*look*' })).ok).toBe(true);
+      expect(api.of('sendPhoto').map((c) => [c.body.caption, c.body.parse_mode])).toEqual([['<i>look</i>', 'HTML'], ['*look*', undefined]]);
+      api.answers.sendMessage = () => api.err(400, CANT_PARSE);
+      expect(await bridge.send('x', { chatId: 'tg:42' })).toBeNull();
+      expect(api.of('sendMessage')).toHaveLength(2);
+      api.answers.sendMessage = () => api.err(400, 'Bad Request: chat not found');
+      expect(await bridge.send('x', { chatId: 'tg:43' })).toBeNull();
+      expect(api.of('sendMessage')).toHaveLength(3);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('each chunk of a long text converts on its own', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    await bridge.send(`**a** ${'x'.repeat(4500)} **b**`, { chatId: 'tg:42' });
+    const texts = api.of('sendMessage').map((c) => c.body.text);
+    expect(texts).toHaveLength(2);
+    expect(texts[0].startsWith('<b>a</b> x')).toBe(true);
+    expect(texts[1].endsWith('x <b>b</b>')).toBe(true);
     bridge.stop();
   });
 });
