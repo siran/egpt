@@ -72,7 +72,10 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
    → verify: one conversation's VNC never shows another's window.
 2. Each display gets its own noVNC with its own password, handed out as a short-lived link in that chat (e.g. `/ed screen`).
    → verify: the link stops working when it expires.
-3. A way in from outside (EDW has no inbound by design). The operator decides: an on-demand tunnel, or one deliberately exposed HTTPS port.
+3. A way in from outside: **one HTTPS port** (operator: no Cloudflare). It is also the entry the website chatbox (limbs.http) needs, so a single HTTPS front (Caddy, automatic TLS) serves both.
+   - Behind it: the screen proxy and the chatbox endpoint only, never the spine.
+   - Links: long random tokens, short-lived; an empty 404 when no link is live; rate limits.
+   - It needs an Elastic IP and a name in Route 53 (EduWeb's account hosts eduweb.com.ve, eserviciosat.net, …). Proposed: `edw.eduweb.com.ve`.
 
 ## 10-24 04:30 — ED in SI+EduWeb gets full access, inside the wall (operator)
 - Only ED in SI+EduWeb gets full access. "SI+EduWeb is a circle of trust group: EduWeb developers and admins."
