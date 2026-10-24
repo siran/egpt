@@ -4,7 +4,7 @@
 // LIVE echo (the Phase 2 verify gate) is tests-manual/phase2-echo.mjs.
 import { describe, it, expect } from 'vitest';
 import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
-import { hasNodeSignature } from '../src/node-signature.mjs';
+import { hasNodeSignature, encodeNodeSignature } from '../src/node-signature.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 // A fake real-bridge that captures the host callbacks it was constructed with,
@@ -508,5 +508,25 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(spy.captured.bridgeSignatureClose).toBe('💸');
     expect(spy.captured.transcriptionOpen).toBe('T_open');    // reaches beeper.mjs for the 👂 echo wrap
     expect(spy.captured.transcriptionClose).toBe('T_close');
+  });
+
+  // Telegram's limb declares visibleOnly (2026-10-24); a Beeper transport does not, so kg/do keep
+  // the invisible structural frame on every outbound, byte for byte.
+  it('REGRESSION LOCK: a transport without visibleOnly (Beeper) keeps the invisible frame on every outbound', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', nodeName: 'kg' }, { start });
+    const e = { persona: 'egpt', bodyEmoji: '🐶', label: 'E' };
+    const frame = encodeNodeSignature('kg', 'egpt');
+    await port.send('!room', 'hola', e);
+    const s = port.startStream('!room', '⏳ Thinking…', e);
+    s.update('ho');
+    s.finish('hola');
+    await port.postStatus('!room', 'st');
+    expect(spy.sent[0].text).toBe(`🌉 🐶 E: hola 💸${frame}`);
+    expect(spy.streams[0].init).toBe(`🌉 🐶 E: ⏳ Thinking… 💸${frame}`);
+    expect(spy.streams[0].updates).toEqual([`🌉 🐶 E: ho 💸${frame}`]);
+    expect(spy.streams[0].finals).toEqual([`🌉 🐶 E: hola 💸${frame}`]);
+    expect(spy.statusPosts[0].text).toBe(`🌉 st 💸${encodeNodeSignature('kg')}`);
+    expect(port.renderFrame(e, 'x')).toBe(`🌉 🐶 E: x 💸${frame}`);
   });
 });

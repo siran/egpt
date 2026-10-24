@@ -40,6 +40,7 @@ import { encodeNodeSignature, stripNodeSignature, encodeChatCanary } from '../no
 // parseMesh — the SAME envelope test the spine applies inbound (mesh.isEnvelope), reused here so
 // there is one definition of "this is relay traffic, not chat". See isMeshEnvelope below.
 import { parseMesh } from '../mesh/relay.mjs';
+import { stripInvisible } from '../invisible.mjs';
 
 const _escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -48,6 +49,21 @@ export function personaStamp(bodyEmoji, label, text) {
   if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no header line
   const clean = String(text).replace(new RegExp(`^\\s*${_escapeRe(label)}\\s*[:：]\\s*`, 'i'), '');
   return `${bodyEmoji} ${label}: ${clean}`;      // persona header: "🐶 egpt:" then the reply, one line
+}
+
+// The being whose stamp ("<emoji> <name>:") is earliest in `text`, at a word start; null when none.
+// `beings`: [{ being, bodyEmoji, label }]. How a surface with no invisible frame (Telegram) names the author.
+export function stampedBeing(text, beings = []) {
+  const s = stripInvisible(text);
+  let best = null, at = Infinity;
+  for (const b of beings ?? []) {
+    if (!b?.bodyEmoji || !b?.label) continue;
+    const stamp = stripInvisible(`${b.bodyEmoji} ${b.label}:`);
+    for (let i = s.indexOf(stamp); i >= 0 && i < at; i = s.indexOf(stamp, i + 1)) {
+      if (i === 0 || /\s/.test(s[i - 1])) { best = b.being; at = i; break; }
+    }
+  }
+  return best;
 }
 
 // A mesh ENVELOPE is TRANSPORT, not a message to a surface — the one thing the "period" does not
@@ -74,12 +90,15 @@ const isMeshEnvelope = (t) => {
  */
 // plainOf(persona) (2026-10-15): true for a PUBLIC being (agents.<name>.public) — its sends carry
 // the text alone: no stamp, no visible layers, only the invisible structural frame.
-export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '', nodeName = '', plainOf = () => false } = {}) {
-  return (o, text) => {
+// visibleOnly (2026-10-24, a surface that reads hidden text as spam: Telegram): no structural frame
+// at all, and every invisible character is stripped from the frame (invisible.mjs).
+export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose = '', nodeName = '', plainOf = () => false, visibleOnly = false } = {}) {
+  const frame = (being, canary) => (visibleOnly ? '' : encodeNodeSignature(nodeName, being) + (canary ? encodeChatCanary(canary) : ''));
+  const wrap = (o, text) => {
     // Nothing to sign is not a message: an empty body (the mesh origin mirror opens its stream
     // with '') must stay empty, never become a signature with no content under it.
     if (!String(text ?? '').trim()) return text;
-    if (o.persona && plainOf(o.persona) === true) return stripNodeSignature(text) + encodeNodeSignature(nodeName, o.persona);
+    if (o.persona && plainOf(o.persona) === true) return stripNodeSignature(text) + frame(o.persona);
     const core = personaStamp(o.bodyEmoji, o.label, text);
     if (isMeshEnvelope(core)) return core;        // transport, not a surface send → never signed
     // skipSignature (operator 2026-10-04, the /send relay) — post back AS THE OPERATOR with NO node
@@ -105,6 +124,7 @@ export function makeWrapPersona({ bridgeSignatureOpen = '', bridgeSignatureClose
     // replyToBeing). `o.persona` is the being key the reply train already hands the stream
     // (src/spine/sender.mjs `tag`); a send with none keeps the node-only frame.
     // `o.canary` (a side group's opener): the group's ids (commands.postOpener), a second frame after the node one.
-    return stripNodeSignature(wrapped) + encodeNodeSignature(nodeName, o.persona) + (o.canary ? encodeChatCanary(o.canary) : '');
+    return stripNodeSignature(wrapped) + frame(o.persona, o.canary);
   };
+  return visibleOnly ? (o, text) => stripInvisible(wrap(o, stripInvisible(text))) : wrap;
 }

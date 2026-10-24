@@ -5,19 +5,23 @@
 // stays in one place. Media is downloaded (getFile) and goes through the same intake as Beeper's
 // (limb-intake.mjs: voice note, 👂, readback; the host's onMedia saves it).
 // Inside the spine a chat id is `tg:<chat id>`; the prefix is dropped only at the API call.
+// No invisible characters go out (visibleOnly; Telegram reads hidden text as spam, 2026-10-24): the
+// port's wrap adds no structural frame, and send/edit/caption strip what is left. So the bot's own
+// message is known by its sender, and the being who wrote it by its visible stamp (stampedBeing).
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { join, basename, extname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { secretPath, readSecret } from '../secrets.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
-import { decodeNodeSignature, decodeBeingSignature, stripNodeSignature } from '../node-signature.mjs';
+import { stripNodeSignature } from '../node-signature.mjs';
+import { stripInvisible } from '../invisible.mjs';
 import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { mediaKind, MIME_BY_EXT } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { makeWrapPersona } from './persona-wrap.mjs';
+import { makeWrapPersona, stampedBeing } from './persona-wrap.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { startVoiceNote, readBack, savedEntry, withMediaLines, VOICE_NOTE_PLACEHOLDER } from './limb-intake.mjs';
 
@@ -86,6 +90,7 @@ export function startTelegramBridge({
   wakeWords,
   addressWithoutAt = true,
   nodeName = '',
+  personaStamps = () => [],  // [{ being, bodyEmoji, label }]: reads a being off its stamp (stampedBeing)
   resumedAt = () => null,
   onIncoming,
   onMessageEdit = null,      // the raw edit hook (the mesh mirror), as on Beeper
@@ -130,7 +135,7 @@ export function startTelegramBridge({
   let stopped = false, alive = false, me = null, offset = 0, privacyNoted = false;
   const replyWake = (Array.isArray(replyWakeWords) && replyWakeWords.length) ? replyWakeWords : (wakeWords ?? []);
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
-  const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName });
+  const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName, visibleOnly: true });
   const echoTag = { agentSigOpen: transcriptionOpen, agentSigClose: transcriptionClose };
   const transcribing = makeSerialByKey();
 
@@ -171,6 +176,8 @@ export function startTelegramBridge({
     if (sent.size > SENT_MAX) sent.delete(sent.values().next().value);
   };
   const wasSentByUs = (chatId, msgId) => msgId != null && sent.has(`${chatId}#${msgId}`);
+  // A message of ours is this node's; its being is the one whose stamp it carries.
+  const authorOf = (ours, text) => (ours ? { replyToNode: String(nodeName).trim() || null, replyToBeing: stampedBeing(text, personaStamps()) } : { replyToNode: null, replyToBeing: null });
   // The text of every message seen or sent: a reaction names its target's text, an edit its old text.
   const seenText = new Map();
   const remember = (chatId, id, text) => {
@@ -201,15 +208,15 @@ export function startTelegramBridge({
     const name = nameOf(r.user, r.actor_chat?.title ?? userId);
     if (stale(r.date)) { log(`reaction by ${name} → #${msgKey} [${title}] is from before the wake window — not replayed`); return; }
     const target = seenText.get(`${chatId}#${msgKey}`) ?? '';
-    const replyToNode = decodeNodeSignature(target);
-    const replyToBeing = replyToNode != null && replyToNode === String(nodeName).trim() ? decodeBeingSignature(target) : null;
+    const ours = wasSentByUs(chatId, msgKey);
+    const { replyToNode, replyToBeing } = authorOf(ours, target);
     for (const emoji of fresh) {
       log(`reaction ${emoji} by ${name} → #${msgKey} [${title}]`);
       hand(reactionAction({ emoji, targetId: msgKey, snippet: stripNodeSignature(target) }), {
         chatId, chatName: title, chatType, network: 'telegram',
         userId, username: r.user?.username, firstName: name, senderName: name,
         isSender: false, authorized: !!userId && !!isAllowedUser(userId, 'telegram'),
-        atEStart: false, atEAnywhere: false, replyToBot: wasSentByUs(chatId, msgKey) || !!replyToBeing, replyToBeing, replyToNode,
+        atEStart: false, atEAnywhere: false, replyToBot: ours, replyToBeing, replyToNode,
         isReaction: true, isTranscriptFromVoice: false,
         msgKey,
       }, 'reaction');
@@ -292,9 +299,8 @@ export function startTelegramBridge({
     const quoted = m.reply_to_message ?? null;
     const replyToId = quoted?.message_id != null ? String(quoted.message_id) : null;
     const quotedText = String(quoted?.text ?? quoted?.caption ?? '');
-    const replyToNode = quoted ? decodeNodeSignature(quotedText) : null;
-    const replyToBeing = replyToNode != null && replyToNode === String(nodeName).trim() ? decodeBeingSignature(quotedText) : null;
-    const replyToBot = !!quoted && ((me?.id != null && quoted.from?.id === me.id) || wasSentByUs(chatId, replyToId) || !!replyToBeing);
+    const replyToBot = !!quoted && ((me?.id != null && quoted.from?.id === me.id) || wasSentByUs(chatId, replyToId));
+    const { replyToNode, replyToBeing } = authorOf(replyToBot, quotedText);
     const backlog = tsMs < Math.max(startedAt, resumedAt?.() ?? 0) - WAKE_WINDOW_MS;
     const chatType = group ? 'group' : 'private';
 
@@ -435,7 +441,8 @@ export function startTelegramBridge({
   async function send(text, { chatId, replyToMessageID = null } = {}) {
     const chat = apiChatId(chatId);
     if (chat == null) { log(`send refused — ${chatId} is not a telegram chat`); return null; }
-    if (!String(text ?? '').trim()) return null;
+    text = stripInvisible(text);
+    if (!text.trim()) return null;
     let first = null;
     try {
       for (const [i, part] of chunks(text).entries()) {
@@ -458,6 +465,7 @@ export function startTelegramBridge({
   async function editMessage(chatId, msgId, text) {
     const chat = apiChatId(chatId);
     if (chat == null || msgId == null) return false;
+    text = stripInvisible(text);
     try { await call('editMessageText', { chat_id: chat, message_id: Number(msgId), text: chunks(text)[0] }); remember(chatId, msgId, chunks(text)[0]); return true; }
     catch (e) {
       if (/not modified/i.test(e.message)) return true;
@@ -507,6 +515,7 @@ export function startTelegramBridge({
     const chat = apiChatId(chatId);
     if (chat == null || !filePath) { log(`media refused — ${chatId} is not a telegram chat or there is no file`); return false; }
     const { method, field, mime } = mediaMethod(filePath);
+    if (caption != null) caption = stripInvisible(caption);
     const long = !!caption && [...caption].length > CAPTION_MAX;
     try {
       const form = new FormData();
@@ -583,6 +592,7 @@ export function startTelegramBridge({
 
   return {
     startupReady,
+    visibleOnly: true,   // read by the port (beeper-port.mjs): its wrap adds no invisible frame here
     send,
     async sendAndGetId(text, { chatId } = {}) { return (await send(text, { chatId }))?.messageId ?? null; },
     editMessage,

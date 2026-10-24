@@ -77,6 +77,7 @@ function start(api, extra = {}) {
     telegramToken: TOKEN, connection: 'main', fetch: api.fetch,
     isAllowedUser: (id, net) => net === 'telegram' && id === '42',
     wakeWords: ['ed'], nodeName: 'EDW',
+    personaStamps: () => [{ being: 'lark', bodyEmoji: '🐦', label: 'Lark' }, { being: 'ed', bodyEmoji: '🦉', label: 'ED' }],
     onIncoming: (body, from) => { incoming.push({ body, from }); },
     onLog: (m) => lines.push(m),
     ...extra,
@@ -149,14 +150,21 @@ describe('telegram limb — inbound', () => {
     bridge.stop();
   });
 
-  it('a reply to the bot is replyToBot, carries its id, and names the quoted being from its frame', async () => {
+  // No invisible frame on Telegram: the bot's message is known by its sender, its being by the visible stamp.
+  it('a reply to the bot is replyToBot, carries its id, and names the quoted being from its visible stamp', async () => {
     const api = fakeApi();
     const { bridge, incoming } = start(api);
     await bridge.startupReady;
-    const quoted = { message_id: 5, from: { id: 99, is_bot: true }, text: `🐦 hi${encodeNodeSignature('EDW', 'ed')}` };
-    api.updates(groupMsg({ text: 'and then?', reply_to_message: quoted }));
-    await vi.waitFor(() => expect(incoming).toHaveLength(1));
+    const bot = { id: 99, is_bot: true };
+    api.updates(
+      groupMsg({ message_id: 20, text: 'and then?', reply_to_message: { message_id: 5, from: bot, text: '🌉 🦉 ED: hi, Lark said 🐦 Lark: no 💸' } }),
+      groupMsg({ message_id: 21, text: 'ok', reply_to_message: { message_id: 6, from: bot, text: '📨 status line' } }),
+      groupMsg({ message_id: 22, text: 'lol', reply_to_message: { message_id: 4, from: { id: 77 }, text: `🦉 ED: pasted${encodeNodeSignature('EDW', 'ed')}` } }),
+    );
+    await vi.waitFor(() => expect(incoming).toHaveLength(3));
     expect(incoming[0].from).toMatchObject({ replyToId: '5', replyToBot: true, replyToBeing: 'ed', replyToNode: 'EDW' });
+    expect(incoming[1].from).toMatchObject({ replyToId: '6', replyToBot: true, replyToBeing: null, replyToNode: 'EDW' });
+    expect(incoming[2].from).toMatchObject({ replyToId: '4', replyToBot: false, replyToBeing: null, replyToNode: null });
     bridge.stop();
   });
 
@@ -308,7 +316,7 @@ describe('telegram limb — inbound media (the shared intake)', () => {
       expect(incoming[1].body).toBe('(voice transcription, 3s) @ed hola');
       expect(incoming[1].from).toMatchObject({ voiceLine: 'outcome', isTranscriptFromVoice: true, atEAnywhere: true });
       const echo = api.of('sendMessage').find((c) => c.body.text.startsWith('👂'));
-      expect(echo.body.text).toContain('@ed hola');
+      expect(echo.body.text).toBe('👂 An R (3s): @ed hola');   // no invisible frame (nodeName is set)
       expect(echo.body.reply_parameters.message_id).toBe(7);
       expect(saved[0]).toMatchObject({ kind: 'audio', isVoiceNote: true, caption: '@ed hola' });
       expect(reacts).toEqual([
@@ -381,11 +389,11 @@ describe('telegram limb — inbound reactions and edits', () => {
     bridge.stop();
   });
 
-  it('a reaction to the bot\'s own message is replyToBot and names the being from its frame; a removed or unchanged one, and an old one, are not input', async () => {
+  it('a reaction to the bot\'s own message is replyToBot and names the being from its stamp; a removed or unchanged one, and an old one, are not input', async () => {
     const api = fakeApi();
     const { bridge, incoming } = start(api);
     await bridge.startupReady;
-    const r = await bridge.send(`🐦 hola${encodeNodeSignature('EDW', 'ed')}`, { chatId: 'tg:42' });
+    const r = await bridge.send(`🐦 Lark: hola${encodeNodeSignature('EDW', 'lark')}`, { chatId: 'tg:42' });
     api.raw(
       reaction({ message_id: Number(r.messageId), user: { id: 77, first_name: 'Diego' } }),
       reaction({ old_reaction: [{ type: 'emoji', emoji: '👍' }], new_reaction: [] }),
@@ -395,8 +403,9 @@ describe('telegram limb — inbound reactions and edits', () => {
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
     await new Promise((res) => setTimeout(res, 20));
     expect(incoming).toHaveLength(1);
-    expect(incoming[0].body).toBe(`reacted 👍 to #${r.messageId} "🐦 hola"`);
-    expect(incoming[0].from).toMatchObject({ replyToBot: true, replyToBeing: 'ed', authorized: false });
+    expect(incoming[0].body).toBe(`reacted 👍 to #${r.messageId} "🐦 Lark: hola"`);
+    expect(api.of('sendMessage')[0].body.text).toBe('🐦 Lark: hola');
+    expect(incoming[0].from).toMatchObject({ replyToBot: true, replyToBeing: 'lark', replyToNode: 'EDW', authorized: false });
     bridge.stop();
   });
 
@@ -637,23 +646,72 @@ describe('telegram limb — outbound', () => {
   });
 });
 
+// Telegram deleted two groups the bot posted in (2026-10-24); hidden text is a spam signal. So no
+// Telegram send or edit carries an invisible character: no structural frame, no zero-width, no BOM,
+// no bidi control. The visible stamp and the visible bridge layers stay; emoji stay intact.
+const INVISIBLE = /[\u{E0000}-\u{E007F}\u200B\u200C\u2060-\u2064\uFEFF\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
+const textsOut = (api) => api.calls.flatMap((c) => [c.body?.text, c.body?.caption]).filter((t) => typeof t === 'string');
+
 describe('telegram limb behind the shared port adapter (beeper-port createBeeperBridgePort, start injected)', () => {
-  it('the port signs every send with the node layer and streams through the limb', async () => {
+  const portOn = (api, extra = {}) => createBeeperBridgePort(
+    { telegramToken: TOKEN, connection: 'main', fetch: api.fetch, nodeName: 'EDW', bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', onLog: () => {}, ...extra },
+    { start: startTelegramBridge },
+  );
+  const ed = { persona: 'ed', bodyEmoji: '🦉', label: 'ED' };
+
+  it('REPRODUCE-FIRST: a persona send carries the visible stamp and layers, and no invisible character', async () => {
     const api = fakeApi();
-    const port = await createBeeperBridgePort(
-      { telegramToken: TOKEN, connection: 'main', fetch: api.fetch, nodeName: 'EDW', onLog: () => {} },
-      { start: startTelegramBridge },
-    );
-    await port.send('tg:42', 'hi', { replyTo: '7' });
+    const port = await portOn(api);
+    await port.send('tg:42', 'hola\u200B mundo\u2060', { ...ed, replyTo: '7' });
     const sent = api.of('sendMessage')[0].body;
-    expect(sent.text.startsWith('hi')).toBe(true);
-    expect(sent.text).toContain(encodeNodeSignature('EDW'));
+    expect(sent.text).toBe('🌉 🦉 ED: hola mundo 💸');
+    expect(sent.text).not.toMatch(INVISIBLE);
     expect(sent.reply_parameters.message_id).toBe(7);
+    port.stop();
+  });
+
+  it('every outbound path is clean: stream placeholder + edits, status, editOwn, caption, verbatim, raw edit, canary, skipSignature, a public being', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-clean-'));
+    try {
+      const api = fakeApi();
+      const port = await portOn(api, { plainOf: (b) => b === 'pub' });
+      const tagged = `🦉 ED: from the peer${encodeNodeSignature('kg', 'e')}\u200E`;
+      const h = port.startStream('tg:42', '⏳ Thinking…', ed);
+      h.update('a\u2060b');
+      await h.finish('final ❤️‍🔥 👩🏽‍💻 1️⃣\uFEFF');
+      const id = await port.postStatus('tg:42', '📨 status\u200C');
+      await port.editStatus('tg:42', id, '📨 done\u202E');
+      await port.editOwn('tg:42', id, 'fixed\u2066', ed);
+      const p = join(dir, 'a.png'); writeFileSync(p, 'png');
+      await port.sendMedia('tg:42', p, { ...ed, caption: 'look\u200B' });
+      await port.postVerbatim('tg:42', tagged);
+      const v = port.startStreamVerbatim('tg:42', tagged);
+      await v.finish(`${tagged} more`);
+      await port.editMessage('tg:42', id, `marker${encodeNodeSignature('EDW')}`);
+      await port.send('tg:42', 'opener', { ...ed, canary: { group: 'g1', origin: 'o1' } });
+      await port.send('tg:42', 'as the operator', { skipSignature: true });
+      await port.send('tg:42', 'public text\u200B', { persona: 'pub' });
+      const out = textsOut(api);
+      expect(out.length).toBeGreaterThanOrEqual(12);
+      for (const t of out) expect(t).not.toMatch(INVISIBLE);
+      expect(out).toContain('🌉 🦉 ED: ⏳ Thinking… 💸');
+      expect(out).toContain('🌉 🦉 ED: final ❤️‍🔥 👩🏽‍💻 1️⃣ 💸');
+      expect(out).toContain('🌉 🦉 ED: look 💸');
+      expect(out).toContain('🦉 ED: from the peer');
+      expect(out).toContain('public text');
+      expect(port.renderFrame(ed, 'x\u200B')).toBe('🌉 🦉 ED: x 💸');
+      port.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the port still streams through the limb and reacts', async () => {
+    const api = fakeApi();
+    const port = await portOn(api);
     const h = port.startStream('tg:42', '⏳ Thinking…', {});
     await h.finish('done');
     expect(h.delivered).toBe(true);
-    expect(await port.postStatus('tg:42', 'status')).toBe('502');
-    expect(await port.react('tg:42', '502', '👀')).toBe(true);
+    expect(await port.postStatus('tg:42', 'status')).toBe('501');
+    expect(await port.react('tg:42', '501', '👀')).toBe(true);
     port.stop();
   });
 });

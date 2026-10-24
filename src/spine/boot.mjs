@@ -2155,6 +2155,8 @@ export async function boot({
     const port = await createBeeperBridgePort({
       ...sharedBridgeOpts,
       telegramToken: t.token, connection,
+      // No invisible frame on Telegram: a quoted being is read off the stamp the sender wrote.
+      personaStamps: () => Object.keys(agents()).map((being) => ({ being, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) })),
       outboundFor: (chatId) => outbound(null, chatId),
       onLog: tlog,
     }, { start: startTelegram ?? startTelegramBridge });

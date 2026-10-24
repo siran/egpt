@@ -3,8 +3,8 @@
 // through ONE definition. These assertions are ported from the beeper-port wrap tests: the
 // shared module must behave identically to the code beeper-port carried before the move.
 import { describe, it, expect } from 'vitest';
-import { personaStamp, makeWrapPersona } from '../src/bridges/persona-wrap.mjs';
-import { hasNodeSignature } from '../src/node-signature.mjs';
+import { personaStamp, makeWrapPersona, stampedBeing } from '../src/bridges/persona-wrap.mjs';
+import { hasNodeSignature, encodeNodeSignature, encodeChatCanary } from '../src/node-signature.mjs';
 import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 describe('personaStamp — the bridge-enforced persona identifier', () => {
@@ -147,5 +147,51 @@ describe('makeWrapPersona — a mesh envelope is transport, never signed', () =>
   it('ordinary prose that merely ENDS in a provenance-looking line is still signed (the fence is required)', () => {
     const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉kg', bridgeSignatureClose: '🌉' });
     expect(wrap({}, 'shipping it\nby: An')).toBe('🌉kg shipping it\nby: An 🌉');
+  });
+});
+
+
+// visibleOnly (2026-10-24): the option a surface that takes no hidden text (Telegram) sets on THIS wrap.
+describe('makeWrapPersona — visibleOnly: no structural frame, no invisible character', () => {
+  const layers = { bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', nodeName: 'EDW' };
+  const ed = { persona: 'ed', bodyEmoji: '🦉', label: 'ED' };
+
+  it('the stamp and the visible layers stay; the frame, the canary and the being\'s own hidden characters go', () => {
+    const wrap = makeWrapPersona({ ...layers, visibleOnly: true });
+    expect(wrap({ ...ed, canary: { group: 'g', origin: 'o' } }, 'hola\u200B ❤️‍🔥\uFEFF')).toBe('🌉 🦉 ED: hola ❤️‍🔥 💸');
+    expect(wrap({}, `relayed${encodeNodeSignature('kg', 'e')}`)).toBe('🌉 relayed 💸');
+    expect(wrap({ skipSignature: true }, 'as the operator\u2060')).toBe('as the operator');
+    expect(wrap({}, '\u200B')).toBe('');
+  });
+
+  it('a public being: the text alone, no frame', () => {
+    const wrap = makeWrapPersona({ ...layers, plainOf: (b) => b === 'pub', visibleOnly: true });
+    expect(wrap({ persona: 'pub' }, 'hi\u200C there')).toBe('hi there');
+  });
+
+  it('REGRESSION LOCK (Beeper): without visibleOnly the frame, the being and the canary are still appended', () => {
+    const wrap = makeWrapPersona(layers);
+    expect(wrap({ ...ed, canary: { group: 'g', origin: 'o' } }, 'hola'))
+      .toBe(`🌉 🦉 ED: hola 💸${encodeNodeSignature('EDW', 'ed')}${encodeChatCanary({ group: 'g', origin: 'o' })}`);
+    expect(makeWrapPersona({ ...layers, plainOf: () => true })({ persona: 'pub' }, 'hi')).toBe(`hi${encodeNodeSignature('EDW', 'pub')}`);
+  });
+});
+
+// stampedBeing: who wrote a message, read off the visible stamp personaStamp writes.
+describe('stampedBeing — the being named by a visible stamp', () => {
+  const beings = [{ being: 'lark', bodyEmoji: '🐦', label: 'Lark' }, { being: 'ed', bodyEmoji: '🦉', label: 'ED' }, { being: 'relay', bodyEmoji: '🐶', label: '' }];
+
+  it('reads the stamp personaStamp writes, inside visible layers; the earliest stamp wins', () => {
+    expect(stampedBeing(personaStamp('🦉', 'ED', 'hola'), beings)).toBe('ed');
+    const wrap = makeWrapPersona({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸', visibleOnly: true });
+    expect(stampedBeing(wrap({ bodyEmoji: '🐦', label: 'Lark' }, 'as 🦉 ED: said'), beings)).toBe('lark');
+  });
+
+  it('no stamp, a stamp inside a word, another name, or a being with no name → null', () => {
+    expect(stampedBeing('📨 status', beings)).toBeNull();
+    expect(stampedBeing('x🦉 ED: no', beings)).toBeNull();
+    expect(stampedBeing('🦉 Eddy: no', beings)).toBeNull();
+    expect(stampedBeing('🐶 hola', beings)).toBeNull();
+    expect(stampedBeing('🦉 ED: hi', [])).toBeNull();
   });
 });

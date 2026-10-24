@@ -85,11 +85,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // characters and appended to every frame. The visible layers above are "prescindable"; THIS is
   // what identifies the node machine-readably, and boot refuses to start without a node_name.
   const nodeName = opts.nodeName ?? '';
-  // Wrap what this node posts concentrically: outer bridge layer (per-node, above), inner agent
-  // layer (per-being, from opts.agentSig*), around the stamped core. The composition lives in the
-  // shared persona-wrap module (used identically by shell-port and by the 👂 echo one layer down);
-  // this closure just binds this node's bridge-signature layer.
-  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName, plainOf: opts.plainOf });   // plainOf: a public being's sends are unstamped (persona-wrap.mjs)
   const real = await start({
     ...rest,
     // Forward inbound to the spine. This resolves when the message's TURN completes
@@ -107,6 +102,13 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // (or video descriptor) back, so return whatever the host hands us.
     onMedia: async (m) => (onMediaCb ? onMediaCb(m) : undefined),
   });
+  // Wrap what this node posts concentrically: outer bridge layer (per-node, above), inner agent
+  // layer (per-being, from opts.agentSig*), around the stamped core. The composition lives in the
+  // shared persona-wrap module (used identically by shell-port and by the 👂 echo one layer down);
+  // this closure just binds this node's bridge-signature layer.
+  // plainOf: a public being's sends are unstamped. visibleOnly: the limb says its surface takes no
+  // invisible characters (Telegram), so this one wrap adds no structural frame (persona-wrap.mjs).
+  const wrapPersona = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName, plainOf: opts.plainOf, visibleOnly: real.visibleOnly === true });
 
   return {
     onMessage(cb) { onMsg = cb; },

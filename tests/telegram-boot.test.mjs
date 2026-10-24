@@ -12,6 +12,7 @@ const _HOME = vi.hoisted(() => {
 
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { encodeNodeSignature } from '../src/node-signature.mjs';
 
 let boot, emptyState, ensureContact;
 beforeAll(async () => {
@@ -60,16 +61,17 @@ function fakeSession(opts) {
   return { sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { onUpdate?.(`↩ ${m}`); return { text: `↩ ${m}`, sessionId: this.sessionId }; }, close() {} };
 }
 // One spy per start call; the same fake "real bridge" shape serves both transports.
-function fakeTransport() {
+function fakeTransport(declared = {}) {
   const built = [];
   const start = async (opts) => {
     const spy = { opts, onIncoming: opts.onIncoming, sent: [], streams: [], reactions: [] };
     built.push(spy);
     return {
+      ...declared,
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
       async sendReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, emoji }); return true; },
       startStreamMessage(init, o) {
-        const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
+        const h = { init, delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
         spy.streams.push(h); return h;
       },
       wasSentByUs: () => false,
@@ -81,7 +83,7 @@ function fakeTransport() {
 
 async function bootWith(config, { state, telegram = true, session = fakeSession } = {}) {
   const beeper = fakeTransport();
-  const tg = fakeTransport();
+  const tg = fakeTransport({ visibleOnly: true });   // as the real limb declares (telegram.mjs)
   const lines = [];
   let convState = state ?? emptyState();
   const app = await boot({
@@ -247,6 +249,38 @@ describe('the Telegram limb gets the shared intake\'s node options', () => {
     const out = o.outboundFor('tg:42');
     expect(await out.react('7', '🎧', out.keyOf('7', 'listening'), 'listening', { temporary: true })).toBe(true);
     expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '🎧' }]);
+    app.stop();
+  });
+});
+
+// Telegram deleted groups the bot posted in (2026-10-24): no invisible character goes out there. The
+// limb declares visibleOnly and the port's one wrap honours it; Beeper keeps its frame. A quoted
+// being is read off its visible stamp, from the registry boot hands the limb.
+describe('no invisible frame on Telegram; Beeper unchanged', () => {
+  const NAMED = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], name: 'E', body_emoji: '🦉' } };
+
+  it('a Telegram reply carries the visible stamp and no tag character; a Beeper reply still carries the frame', async () => {
+    await writeToken();
+    let state = seedOn('whatsapp', waFrom.chatId, 'fam');
+    state = ensureContact(state, 'telegram', 'tg:42', { pushedName: 'An R', slugHint: 'An R' }).state;
+    state.contacts.telegram['tg:42'].agents = { egpt: { mode: 'on' } };
+    const { app, beeper, tg } = await bootWith({ ...MIXED(), agents: NAMED }, { state });
+    await tg[0].onIncoming('hola tg', tgFrom);
+    await beeper[0].onIncoming('hola wa', waFrom);
+    const tags = /[\u{E0000}-\u{E007F}]/u;
+    for (const t of [tg[0].streams[0].init, ...tg[0].streams[0].finals]) {
+      expect(t).toMatch(/^🦉 E: /);
+      expect(t).not.toMatch(tags);
+    }
+    expect(beeper[0].streams[0].finals[0]).toMatch(/^🦉 E: /);
+    expect(beeper[0].streams[0].finals[0].endsWith(encodeNodeSignature('kg', 'egpt'))).toBe(true);
+    app.stop();
+  });
+
+  it('the limb gets every being\'s stamp (key, body_emoji, name), read live', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...TELEGRAM_ONLY(), agents: NAMED });
+    expect(tg[0].opts.personaStamps()).toEqual([{ being: 'egpt', bodyEmoji: '🦉', label: 'E' }]);
     app.stop();
   });
 });
