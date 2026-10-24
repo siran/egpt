@@ -67,6 +67,12 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 04:30 — ED in SI+EduWeb gets full access, inside the wall (operator)
+- Only ED in SI+EduWeb gets full access. "SI+EduWeb is a circle of trust group: EduWeb developers and admins."
+- "We don't want SI+EduWeb to access all my claude conversations (which include my personal egpt usage). ED needs to be like E on my laptop, full access." That is kg's level `sandbox`: all's capability inside an OS box. On Linux this needs the per-conversation Unix-user wall (dispatched on `edw`).
+- ED stays `regular` until the wall lands, then `sandbox` in SI+EduWeb. It gets its own new ssh key (the operator authorizes it on EduWeb's servers); E's key stays on kg.
+- After the AWS cutover, refresh the SI+EduWeb history from kg, one way, through the transfer bucket.
+
 ## 10-24 — AWS (operator: "the power is on the anthropic side; traffic is very low")
 - **Account:** EduWeb's, profile `eduweb` (331665579468, us-east-1, ECR `egpt` exists). Production runs there, so EDW gets its own VPC/SG with no inbound, tags Project=egpt-edw, and the scripts never touch untagged resources.
 - **Instance: t3a.medium** (2 vCPU / 4 GB, ~$27/mo on-demand, Pricing API 10-24) with a 4 GB swap file. Operator: "we need to keep transcriptions". t3.small (~$15) was too small for large-v3. t3a.large (~$55) if voice notes struggle.
