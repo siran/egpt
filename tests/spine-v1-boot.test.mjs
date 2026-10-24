@@ -458,7 +458,7 @@ describe('boot() — heartbeats/: a being\'s own beats, end to end', () => {
 // (token / wakeWords / echoDecider / echoMaxAgeMs / isAllowedUser) and app.peerNodes.
 describe('boot() — config-shape migration', () => {
   const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
-  async function captureBoot(config) {
+  async function captureBoot(config, { state = null } = {}) {
     let opts = null;
     // optsList: EVERY startBridge call, in order (operator 2026-08-30, multi-connection Beeper —
     // boot now calls startBridge once per DISTINCT resolved token, not always once). `opts`
@@ -474,7 +474,7 @@ describe('boot() — config-shape migration', () => {
       // refuses to start without one), so the helper supplies a default; a case that cares about
       // the node name still sets its own, which the spread keeps.
       readConfig: () => ({ node_name: 'kg', ...config }), startBridge: start, makeSession: fakeSession,
-      loadState: async () => emptyState(), writeState: async () => {},
+      loadState: async () => state ?? emptyState(), writeState: async () => {},
       io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
     return { opts, optsList, app };
@@ -729,6 +729,25 @@ describe('boot() — config-shape migration', () => {
       don: { relay_channel: '!relay:beeper.local', handles: ['d'] },
     } });
     expect([...r.opts.replyWakeWords].sort()).toEqual(['e', 'ekg', 'ren', 'w']);
+    r.app.stop();
+  });
+
+  // PER-CHAT HANDLES (operator 2026-10-24): a chat whose entry sets agents.<being>.handles gets its
+  // own three sets through wakeWordsIn (router.mjs agentsInChat); every other chat gets null.
+  // contract 8.4
+  it('wakeWordsIn: the override chat\'s sets drop `e` (declared AND fallback) and keep `ekg`; any other chat → null', async () => {
+    const state = { contacts: { telegram: { 'team-tg': { slug: 'team', agents: { egpt: { handles: ['ekg'] } } } } } };
+    const r = await captureBoot({ agents: {
+      egpt: { configuration: 'egpt', handles: ['egpt', 'ekg'], fallback_handle: { handle: ['e'], unless_present: '+13472576794' }, voice_handles: ['perro'] },
+      wren: { configuration: 'egpt', handles: ['w'] },
+    } }, { state });
+    const here = await r.opts.wakeWordsIn('telegram', 'team-tg');
+    expect([...here.wakeWords].sort()).toEqual(['ekg', 'w']);
+    expect([...here.replyWakeWords].sort()).toEqual(['ekg', 'perro', 'w']);   // voice_handles stay node-wide
+    expect(here.voiceWakeWords).toEqual(['perro']);
+    expect(await r.opts.wakeWordsIn('telegram', 'other-chat')).toBeNull();
+    expect(await r.opts.wakeWordsIn('whatsapp', 'team-tg')).toBeNull();      // the entry is per surface
+    expect([...r.opts.replyWakeWords].sort()).toEqual(['e', 'egpt', 'ekg', 'perro', 'w']);   // the node sets are untouched
     r.app.stop();
   });
 

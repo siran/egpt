@@ -1274,6 +1274,9 @@ export function getBeing(state, surface, jid, being) {
     // room-outbox.resolveOutboxTarget is the one place that decides what it MEANS (unset ⇒ the
     // feature is OFF; unknown ⇒ off AND reported by name, never silently).
     outboxTo:           b?.outbox_to            ?? null,
+    // THIS being's handles IN THIS CHAT (operator 2026-10-24): set, it REPLACES the node-wide
+    // list here; [] = nothing names it here. RAW; router.mjs agentsInChat applies it.
+    handles:            b?.handles              ?? null,
   };
 }
 

@@ -63,7 +63,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, STRANGER_SEED, configWarnings, isLocalAgent } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
@@ -1466,15 +1466,30 @@ export async function boot({
   // LOCAL being's name — wake, fallback or voice token — to a voice note reads it back (👂) and
   // wakes nobody (src/bridges/beeper.mjs). Anything more is a normal wake.
   const replyWakeWords = [];
+  const wakeSetsOf = (map) => {
+    const all = Object.entries(map).filter(([n, a]) => a && typeof a === 'object' && !n.startsWith('_'));
+    const local = all.filter(([n, a]) => isLocalAgent(n, a));
+    return {
+      wakeWords: [...new Set([...addressableTokens(map), ...all.flatMap(([, a]) => fallbackWake(a)?.handles ?? [])])],
+      voiceWakeWords: [...new Set(all.flatMap(([, a]) => voiceWakeTokens(a)))],
+      replyWakeWords: [...new Set(local.flatMap(([n, a]) => [...wakeTokens(n, a), ...(fallbackWake(a)?.handles ?? []), ...voiceWakeTokens(a)]))],
+    };
+  };
   // Filled IN PLACE, and refilled on a config swap: both limbs hold these arrays.
   const fillWakeWords = () => {
-    const all = Object.entries(agents()).filter(([n, a]) => a && typeof a === 'object' && !n.startsWith('_'));
-    wakeWords.splice(0, Infinity, ...new Set([...addressableTokens(agents()), ...all.flatMap(([, a]) => fallbackWake(a)?.handles ?? [])]));
-    voiceWakeWords.splice(0, Infinity, ...new Set(all.flatMap(([, a]) => voiceWakeTokens(a))));
-    const local = all.filter(([n, a]) => isLocalAgent(n, a));
-    replyWakeWords.splice(0, Infinity, ...new Set(local.flatMap(([n, a]) => [...wakeTokens(n, a), ...(fallbackWake(a)?.handles ?? []), ...voiceWakeTokens(a)])));
+    const s = wakeSetsOf(agents());
+    wakeWords.splice(0, Infinity, ...s.wakeWords);
+    voiceWakeWords.splice(0, Infinity, ...s.voiceWakeWords);
+    replyWakeWords.splice(0, Infinity, ...s.replyWakeWords);
   };
   fillWakeWords();
+  // ONE CHAT's sets, where its conversations.yaml entry overrides a being's handles (router.mjs
+  // agentsInChat); null = no override there, the node's sets above apply.
+  const wakeWordsIn = async (network, chatId) => {
+    const base = agents();
+    const here = agentsInChat(base, await _loadState(), surfaceOf(network), chatId);
+    return here === base ? null : wakeSetsOf(here);
+  };
   // THE BARE-HANDLE SWITCH (operator 2026-07-27: "this addressing without the '@' must be an
   // option, easy to turn on/off globally") — dispatch.address_without_at, DEFAULT true, so a node
   // that configures nothing keeps the live behaviour. Read ONCE here and handed by the SAME route
@@ -2110,6 +2125,7 @@ export async function boot({
     wakeWords,                            // every agent's handles (+ fallback tokens): the limb's own mention flag + picker guard only — routing is the router's
     voiceWakeWords,                       // every agent's voice_handles, matched at the start of a transcript (same use)
     replyWakeWords,                       // every LOCAL being's wake + fallback + voice tokens — the BARE-REPLY readback gate's vocabulary ONLY (see the computation above)
+    wakeWordsIn,                          // (network, chatId) => that chat's three sets when it overrides a being's handles, else null
     synthesize: vx.synthesize,            // TTS for the bare-name-reply-to-TEXT mirror (operator 2026-08-10); null on a node with no voice_service, where that branch no-ops.
     voice: vx.voice,                      // the voice name, paired with synthesize above.
     addressWithoutAt,                     // dispatch.address_without_at (default true): may a BARE leading handle address, or is '@' required? Same value the shell limb + the router get.

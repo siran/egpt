@@ -3481,6 +3481,46 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-reg2', text: 'ekg', isSender: true, linkedMessageID: 'vn-reg' })] });
     await waitFor(() => fake.posts.some((p) => p.text === '👂 hola'));            // …a DECLARED handle is unaffected
   });
+
+  // PER-CHAT HANDLES (operator 2026-10-24): where a chat's entry sets E's handles to [ekg], boot hands
+  // the bridge that chat's sets (wakeWordsIn); there a bare `e` is no name of E's and `ekg` is.
+  describe('beeper bridge — per-chat handles (wakeWordsIn)', () => {
+    const NODE = { wakeWords: ['e', 'egpt', 'ekg'], replyWakeWords: ['e', 'egpt', 'ekg'] };
+    const HERE = { wakeWords: ['ekg'], voiceWakeWords: [], replyWakeWords: ['ekg'] };
+    const asked = [];
+    const wakeWordsIn = async (network, chatID) => { asked.push([network, chatID]); return chatID === 'chat-team' ? HERE : null; };
+    const team = (over) => liveMsg({ chatID: CHAT('chat-team'), isSender: true, ...over });
+
+    // contract 8.4
+    it('REPRODUCE-FIRST: in the override chat a bare `e` reply to a voice note reads nothing back; `ekg` does', async () => {
+      const doc = transcriptDoc(voiceLine('vn-pc', 'hola equipo'));
+      const { incoming } = await startBridge({ ...NODE, wakeWordsIn, readTranscript: async () => doc });
+      fake.emit({ type: 'message.upserted', entries: [team({ id: 'reply-pc-e', text: 'e', linkedMessageID: 'vn-pc' })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'reply-pc-e'));
+      expect(fake.posts.some((p) => (p.text || '').startsWith('👂'))).toBe(false);
+      expect(incoming.find((i) => i.from.msgKey === 'reply-pc-e').from.atEAnywhere).toBe(false);
+      fake.emit({ type: 'message.upserted', entries: [team({ id: 'reply-pc-ekg', text: 'ekg', linkedMessageID: 'vn-pc' })] });
+      await waitFor(() => fake.posts.some((p) => p.text === '👂 hola equipo'));
+      expect(asked).toContainEqual(['whatsapp', 'chat-team']);
+    });
+
+    it('the mention flag follows the chat\'s set: "e hola" there is atE=false, "ekg hola" atE=true', async () => {
+      const { incoming } = await startBridge({ ...NODE, wakeWordsIn });
+      fake.emit({ type: 'message.upserted', entries: [team({ id: 'pc-e', text: 'e hola', isSender: false })] });
+      fake.emit({ type: 'message.upserted', entries: [team({ id: 'pc-ekg', text: 'ekg hola', isSender: false })] });
+      await waitFor(() => incoming.some((i) => i.from.msgKey === 'pc-ekg') && incoming.some((i) => i.from.msgKey === 'pc-e'));
+      expect(incoming.find((i) => i.from.msgKey === 'pc-e').from.atEAnywhere).toBe(false);
+      expect(incoming.find((i) => i.from.msgKey === 'pc-ekg').from.atEStart).toBe(true);
+    });
+
+    // contract 8.4
+    it('LOCK: a chat with no override keeps the node sets — a bare `e` reads back', async () => {
+      const doc = transcriptDoc(voiceLine('vn-pc2', 'hola resto'));
+      await startBridge({ ...NODE, wakeWordsIn, readTranscript: async () => doc });
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'reply-pc2', text: 'e', isSender: true, linkedMessageID: 'vn-pc2' })] });
+      await waitFor(() => fake.posts.some((p) => p.text === '👂 hola resto'));
+    });
+  });
 });
 
 // The pure transcript.md parser the reuse path depends on (operator 2026-07-20). Locks the exact

@@ -1,5 +1,5 @@
 #!/bin/bash
-# run.sh [--tag edw] [--apply]
+# run.sh [--tag edw] [--recreate] [--apply]
 # (Re)starts EDW's container on the AWS instance from the ECR image.
 # On the instance (as root) it does the work; anywhere else (WSL) it sends itself
 # to the instance over SSM and runs there.
@@ -15,12 +15,13 @@ else
   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 fi
 
-TAG=edw
+TAG=edw RECREATE=
 while [ $# -gt 0 ]; do
   case $1 in
     --apply) APPLY=1 ;;
     --tag) TAG=${2:?--tag needs a value}; shift ;;
-    *) die "usage: run.sh [--tag edw] [--apply]" ;;
+    --recreate) RECREATE=--recreate ;;   # replace the container even when it already runs this image (new flags)
+    *) die "usage: run.sh [--tag edw] [--recreate] [--apply]" ;;
   esac
   shift
 done
@@ -28,11 +29,13 @@ done
 REGION=us-east-1
 SRV=/srv/egpt
 FLAGS=(-d --name edw --hostname edw --restart unless-stopped
-  --security-opt seccomp=unconfined --shm-size=1g --env-file "$SRV/vnc.env"
+  --security-opt seccomp=unconfined --security-opt systempaths=unconfined
+  --shm-size=1g --env-file "$SRV/vnc.env"
   -e EGPT_BRANCH=edw -e EGPT_BEEPER=off
   -p 127.0.0.1:5900:5900 -p 127.0.0.1:6080:6080
   -v "$SRV/egpt-home:/home/egpt/.egpt" -v "$SRV/egpt-claude:/home/egpt/.claude"
-  -v "$SRV/egpt-src:/home/egpt/src/egpt")
+  -v "$SRV/egpt-src:/home/egpt/src/egpt"
+  -v "$SRV/egpt-jsonl:/home/egpt/.egpt-jsonl")   # boxed beings' Claude sessions survive a recreate
 
 if [ $ON_HOST = 0 ]; then
   check_account
@@ -47,7 +50,7 @@ if [ $ON_HOST = 0 ]; then
   if [ "$APPLY" = 1 ]; then
     [ -n "$INST" ] || die "no instance tagged $PROJECT/edw-node (provision.sh --apply)"
     ssm_online "$INST" || die "$INST is not online in SSM"
-    ssm_send "$INST" "${BASH_SOURCE[0]}" $SRV/run.sh --apply --tag "$TAG"
+    ssm_send "$INST" "${BASH_SOURCE[0]}" $SRV/run.sh --apply --tag "$TAG" $RECREATE
   else
     log "[dry] copy run.sh to ${INST:-<the edw-node instance>}:$SRV/run.sh over SSM and run it with --apply --tag $TAG, which:"
     log "  writes $SRV/vnc.env (0600, random VNC password) if missing"
@@ -69,7 +72,7 @@ digest=$(aws ecr describe-images --region $REGION --repository-name egpt --image
 state=$(docker inspect -f '{{.State.Status}}' edw 2>/dev/null || true)
 have=$(docker inspect -f '{{.Image}}' edw 2>/dev/null | xargs -r docker image inspect -f '{{join .RepoDigests " "}}' 2>/dev/null || true)
 log "edw: ${state:-no container}; ECR egpt:$TAG = $digest"
-if [ "$state" = running ] && [[ " $have " == *"@$digest "* ]]; then
+if [ "$state" = running ] && [[ " $have " == *"@$digest "* ]] && [ -z "$RECREATE" ]; then
   log "edw already runs $IMAGE"
   exit 0
 fi
@@ -78,9 +81,14 @@ fi
 run sh -c "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REGISTRY"
 run docker pull "$IMAGE"
 if [ -n "$state" ]; then
+  # First run with the egpt-jsonl volume: carry the sessions over from the old container (owners kept).
+  if [ ! -d $SRV/egpt-jsonl ] && [ "$state" = running ]; then
+    run sh -c "rm -rf $SRV/egpt-jsonl.tmp && mkdir -p $SRV/egpt-jsonl.tmp && docker exec -u 0 edw sh -c 'mkdir -p /home/egpt/.egpt-jsonl && tar --numeric-owner -C /home/egpt/.egpt-jsonl -cf - .' | tar --numeric-owner -xpf - -C $SRV/egpt-jsonl.tmp && chown 1000:1000 $SRV/egpt-jsonl.tmp && mv $SRV/egpt-jsonl.tmp $SRV/egpt-jsonl"
+  fi
   run docker stop edw
   run docker rm -v edw
 fi
+[ -d $SRV/egpt-jsonl ] || run install -d -o 1000 -g 1000 $SRV/egpt-jsonl
 run docker run "${FLAGS[@]}" "$IMAGE"
 run docker image prune -f
 docker ps -a --filter name=^edw$ --format '{{.Names}} {{.Image}} {{.Status}}'

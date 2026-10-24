@@ -84,6 +84,12 @@ contacts:
           # global default, then to "reachable by anyone" (today's ordinary default).
           #allowed_users: []
 
+          # the names that address this agent IN THIS CHAT (@name, a leading bare name,
+          # /<name> commands, the bare-name readback). REPLACES config.yaml
+          # agents.<name>.handles here, its fallback_handle too; [] = no name addresses it
+          # here. voice_handles stay node-wide.
+          #handles: [ekg]
+
           # spine-written, don't hand-edit. Deleting threadId starts a new session
           # AND re-resolves this agent's engine/model/effort/tools fresh from
           # config.yaml (agents.<name>.configuration) - there is no per-conversation

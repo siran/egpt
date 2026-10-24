@@ -67,6 +67,52 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
+## 10-24 ~13:50 UTC — SI+EduWeb seeded; heartbeats moved to AWS
+- **Seed:** kg's whole WhatsApp SI+EduWeb folder went into ED's Telegram folder on AWS (3.1 GB): desktop/, scripts/, .tools/, .ssh/ (E's key, now owned by ED's box uid 200000, 0600), the history in whatsapp/ subfolders, all granted to the box. The Windows Chrome profile `.tools/chrome-headless-perfil` was left out (unreadable, and useless on Linux).
+- **Wall:** proven live. "ed ejecuta whoami" → `egpt-box-0`. ED is `sandbox` in SI+EduWeb. On EC2 it needed `--security-opt systempaths=unconfined` (c0db3ff) for the box's /proc.
+- **Heartbeats** (operator: "let it be AWS's container, disable KG's; KG is the working backup"):
+  - AWS: the 7 are active as `agent: ed` with `python3`. Only 2 are daily (chequeos-bd 06:30, agenda-diaria 07:45 Caracas); the 5 one-shot `when` beats are stale.
+  - kg: the 7 are paused in `heartbeats.paused/`. **To fall back:** move them back into `heartbeats/` on kg.
+  - First AWS run is tomorrow. E's scripts may need Python packages on Linux; ED can install them in its box.
+- Follow-ups: "❌ Sending failed" shown for a failed turn (wrong words); the readback falls into a turn while a note is still being transcribed (wait instead).
+
+## Next project (operator 10-24): a 3rd personal node in the cloud, VA
+- Like DO: the same two Beeper accounts (primary ear and secondary mouth, signed in over VNC), its own node name and its own beings with their own handles. It runs in the operator's **personal** AWS account (480854905773, profile default/anmichel), so EduWeb's admins cannot read it.
+- kg keeps wren, Drive and the laptop's files. kg/do config gains the third node in its node lists (e.g. echo peer_priority).
+- Needs: two Beeper profiles in one container (second API port), Beeper tokens in secrets/, the scripts pointed at the personal account, local transcription sized for personal voice traffic.
+- Names (operator 10-24): node **`VA`** (pronounceable; was `wb`); main being **Nova** ✨, handles `nova` + `v`, voice handle `nova` (written the same in es/en). Checked against every handle in use on kg/do/EDW: no collision.
+- Open: other beings; always-on duties or a plain peer.
+
+## Status 10-24 05:45 — EDW runs on AWS
+- **Instance:** i-02476c2d8b9173596, now **t3a.large** (~$55). It was resized after t3a.medium thrashed: two notes ran large-v3 CLI copies at once, plus a being's own whisper. Data volume `edw-data` vol-0c60425dcce01918b, 30 GB at /srv/egpt (egpt-home, egpt-claude, egpt-src).
+- **Image:** egpt:16597095 (= :edw, from branch edw): the wall, sudo/acl/openssh, Xvfb `-nolisten local`, the Claude token from secrets/. Checkout at 16597095.
+- **Transcription:** resident whisper-server (large-v3 loaded once, one note at a time, `-t 2`), CLI as fallback. Still slow on 2 vCPUs; improve later ("EDW is mostly text and images"). Ear-transcripts are not posted (`posts_back_delay_ms: -1`).
+- **lark → leo** 🦁 (handles leo, l). kg's llama dropped `l`, so leo owns it on kg/do/EDW. Cause: kg's llama `l` fired kg's readback into EDW's Telegram group, posting as the operator.
+- **SI+EduWeb history** refreshed from kg on AWS (to 10-23 22:55).
+- **Waiting on the operator:** `claude setup-token` → secrets/claude-oauth.token, then ED in SI+EduWeb goes to `sandbox`.
+
+## 10-24 — the chatbox (limbs.http), when built (operator)
+- It behaves as eGPT does now: each chatbox session is a conversation (a ROOM folder `conversations/http/<client>-<id>`, the session token is its chat id). ED answers within it, with memory and tools. The team watches and replies in the conversation's Telegram group. "Not a Claude proxy."
+- On EDW the being answers to `ed` (E's role, ED's handle).
+- Replies: SSE streaming plus a plain JSON reply.
+- The logged-in visitors' in-context info is discussed after SI+EduWeb is fully up.
+
+## 10-24 — queued after the wall: a browser screen per conversation (operator: "yes")
+1. Each conversation's Chrome gets its own virtual display (chrome-host sets DISPLAY per group; today every Chrome inherits :99).
+   → verify: one conversation's VNC never shows another's window.
+2. Each display gets its own noVNC with its own password, handed out as a short-lived link in that chat (e.g. `/ed screen`).
+   → verify: the link stops working when it expires.
+3. A way in from outside: **one HTTPS port** (operator: no Cloudflare). It is also the entry the website chatbox (limbs.http) needs, so a single HTTPS front (Caddy, automatic TLS) serves both.
+   - Behind it: the screen proxy and the chatbox endpoint only, never the spine.
+   - Links: long random tokens, short-lived; an empty 404 when no link is live; rate limits.
+   - It needs an Elastic IP and a name in Route 53 (EduWeb's account). Name: **`edw.eduweb.com.ve`** (operator, 10-24).
+
+## 10-24 04:30 — ED in SI+EduWeb gets full access, inside the wall (operator)
+- Only ED in SI+EduWeb gets full access. "SI+EduWeb is a circle of trust group: EduWeb developers and admins."
+- "We don't want SI+EduWeb to access all my claude conversations (which include my personal egpt usage). ED needs to be like E on my laptop, full access." That is kg's level `sandbox`: all's capability inside an OS box. On Linux this needs the per-conversation Unix-user wall (dispatched on `edw`).
+- ED stays `regular` until the wall lands, then `sandbox` in SI+EduWeb. It gets its own new ssh key (the operator authorizes it on EduWeb's servers); E's key stays on kg.
+- After the AWS cutover, refresh the SI+EduWeb history from kg, one way, through the transfer bucket.
+
 ## 10-24 — AWS (operator: "the power is on the anthropic side; traffic is very low")
 - **Account:** EduWeb's, profile `eduweb` (331665579468, us-east-1, ECR `egpt` exists). Production runs there, so EDW gets its own VPC/SG with no inbound, tags Project=egpt-edw, and the scripts never touch untagged resources.
 - **Instance: t3a.medium** (2 vCPU / 4 GB, ~$27/mo on-demand, Pricing API 10-24) with a 4 GB swap file. Operator: "we need to keep transcriptions". t3.small (~$15) was too small for large-v3. t3a.large (~$55) if voice notes struggle.
@@ -128,3 +174,47 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Rodz's WhatsApp linked devices (before step 2).** If Beeper runs the WhatsApp connection on each device, each install is one linked device, and WhatsApp allows 4. Count them on Rodz's phone: WhatsApp → Linked devices.
 - **The Claude token is visible to beings.** A being's CLI runs on the subscription token, so the being can read it. This is inherent. The token unlocks Claude only, not WhatsApp or the config.
 - **EDW stops at sign-out while it is local.** Docker Desktop runs in the operator's session, so EDW stops when the operator signs out. That lasts until EDW moves to a host that runs without a login.
+
+## 10-24 ~15:00 — Telegram deleted two groups; fixes
+- Telegram deleted SI+EduWeb twice (tg:-5239545023, tg:-5347384406: "the group chat was deleted"). The operator's account is clear (@SpamBot). The third group is "EduWeb" (tg:-5256478300), joined by invite link. It is re-pointed to ED's seeded folder (thread, sandbox, warm.keep, heartbeats).
+- **edw eaaa6cc: no invisible characters on Telegram.** No node/being frame, canary, zero-width, BOM or bidi; ZWJ/VS16 kept inside emoji. The bot's own messages are known by sender, the being by its visible stamp. Beeper signing unchanged (locked). Deployed to EDW.
+- **main b68356f: per-chat handles.** `agents.<being>.handles` in a chat's entry replaces the node-wide list there; `[]` = no name. One resolver (agentsInChat) for the router, commands, mention flags and readback. Deployed to kg and do.
+- **kg is fully silent in EduWeb** (fb85ZpUsf8lUl8jGjbU7): all 12 beings `mode: off` + `handles: []`. Operator: "the mouth has to be the bot, not my account". On Telegram, kg's only mouth is the operator's own account.
+- **Structural follow-up:** every new EDW Telegram group the operator joins is also seen by kg (his Telegram is in kg's Beeper). Either kg goes silent automatically in chats where an EDW bot is a member, or EduWeb's groups use a Telegram account that is not bridged into kg.
+
+## 10-24 ~15:15 — alignment (operator) and the rename lesson
+- **Groups:** EduWeb (Telegram, tg:-5256478300) is the team's main group: ED + leo through @edwsi_bot. WhatsApp SI+EduWeb is no longer the team's main group but still live: kg's E and the other beings answer there as before (heartbeats moved to ED). The operator disconnected Telegram from kg's Beeper, so kg sees no Telegram chats now.
+- **No ongoing sync** of WhatsApp SI+EduWeb into ED (E/ED recover context from files when needed). Later, not primary: maybe Telegram back on kg to keep conversations in sync.
+- **Cleanup:** the two orphan folders from the deleted groups were moved to conversations/archive/telegram/ on EDW.
+- **The courtesy rename exists** ([contacts] re-slug on name change; the path follows the folder). At 14:31 it renamed ED's folder SI+EduWeb-2610240312 → EduWeb-2610240312. It does NOT carry:
+  1. the box registry (state/box-users.tsv, root-owned, keyed by path). ED's next turn would have got a new uid that can't read its own .ssh or grants. Fixed by hand: 200000 → new path.
+  2. the boxed Claude session dir (projects/<cwd-slug>). Fixed by hand: copied under the new slug.
+  → **To build:** the launcher resolves a box uid by the folder's inode when the path is unknown, and moves the registry entry; the re-slug (or the launcher) links the session dir to the new slug.
+- **fd07259:** boxed beings' Claude sessions (~/.egpt-jsonl) live on the data volume (/srv/egpt/egpt-jsonl), so a recreate no longer wipes them.
+
+## 10-24 ~15:30 — EDW access and housekeeping
+- **f59fc6f (edw):** the shell/being-link token may live in secrets/shell.token. EDW had none, so the console port was off and a boxed ED got ECONNREFUSED on 127.0.0.1:23475 (no browser, no spine). Token generated on EDW (0600); the port now serves.
+- **ED's reach:**
+  - default `allowed_users: [88164392]` (the operator only), so a stranger's group or DM gets nothing;
+  - the EduWeb group allows everyone in it (`['*']`); its membership is the operator's.
+- **Operator to do:** @BotFather `/setjoingroups` → Disable, turned on only while adding the bot to a group.
+- **To build:** the bot leaves any group added by a non-allowed user.
+- **Next image:** unzip, gnupg, jq, awscli, plus ED's proposals (ED writes them in its folder; the box sees the repo read-only).
+
+## 10-24 ~16:35 — EDW small, no transcription (operator)
+- **EDW is t3a.small on-demand** with `transcription_service.enabled: false`. Idle use: 361 MB of 1.9 GB, swap unused. NV and EDW run without transcription; kg keeps DO's worker → its CLI.
+- **Monthly cost of ED in EduWeb's account** (Pricing API, us-east-1): EC2 13.72 + gp3 60 GB 4.80 + public IPv4 3.65 + ECR ~0.5–0.9 + egress ~0.1–0.5 ≈ **$23**. On Spot ≈ $14–16. Trimming volumes saves ~$2; deleting the old images ~$0.40.
+- **Operator direction:** "moving away from managing our EC2 boxes, moving to virtual when possible". Fargate can't host the box (no seccomp/systempaths unconfined); ECS on EC2 is the nearest step.
+- **Lambda** (asked): it doesn't fit a node's core (always-on, stateful, 15-min cap, no GUI/warm sessions). It may fit edges: Telegram webhook or chatbox front, occasional jobs.
+- **Encryption** (asked): no disk/KMS setting keeps an account's own admins out (they hold the keys and can open a shell). The boundary is the account. NV goes in the personal account (MFA on root and anmichel; note WSL ~/.aws holds long-lived admin keys).
+
+## 10-24 ~16:50 — NV backburnered; ECS on EC2 (operator prefers it to managing EC2)
+- **NV:** backburnered (operator).
+- **The box needs, from the kernel:**
+  1. user namespaces: Docker's default seccomp blocks unshare/clone flags, so the container runs seccomp=unconfined; Chrome's own sandbox needs the same;
+  2. a fresh /proc in the box: EC2 Docker masks /proc/acpi,/proc/scsi, so the container runs systempaths=unconfined;
+  3. pivot_root and bind mounts inside the namespace.
+  Fargate allows neither 1 nor 2.
+- **ECS on EC2:** orchestration is free; instances cost what EC2 costs (EDW ~$23, ~$14–16 on Spot). Its value is lifecycle (restarts, task revisions, an ASG replacing instances).
+  - ECS `dockerSecurityOptions` accepts only no-new-privileges / apparmor / label / credentialspec (API docs, ContainerDefinition). There is no seccomp or systempaths. Only `privileged: true` (EC2 launch type) gives the box what it needs, at the cost of root-level power over the host. Fine with EDW alone on its instance; not when packed with EduWeb's other containers.
+  - **Proposed later**, after ED is tested on the current setup: an ECS cluster with one t3a.small Spot instance in an ASG; EDW as one privileged task; its data on an EBS volume the instance re-attaches at boot.

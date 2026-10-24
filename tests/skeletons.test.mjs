@@ -255,7 +255,7 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
     // start with '#'. Strip the '#' from the option lines an operator would.
     const on = (t, key) => t.replace(new RegExp(`^(\\s*)#(${key}:.*)$`, 'm'), '$1$2');
     let t = text;
-    for (const k of ['posts_back_delay_ms', 'loop_guard', 'privileged_browser', 'warm', 'mode', 'send_to_egpt']) t = on(t, k);
+    for (const k of ['posts_back_delay_ms', 'loop_guard', 'privileged_browser', 'warm', 'mode', 'send_to_egpt', 'handles']) t = on(t, k);
 
     const state = parseConvState(t);
     const entry = getContact(state, 'whatsapp', 'EXAMPLE_CHAT_ID').entry;
@@ -271,6 +271,8 @@ describe('config/skeletons/conversations.yaml (the registry)', () => {
     // the per-agent pair — read by getBeing → src/spine/gating.mjs
     const b = getBeing(state, 'whatsapp', 'EXAMPLE_CHAT_ID', 'egpt');
     expect(AUTO_MODES).toContain(b.mode);
+    // read by getBeing → src/spine/router.mjs agentsInChat (per-chat handles)
+    expect(b.handles).toEqual(['ekg']);
 
     // and it must not have grown a phantom resident in the process
     expect(residentsOf(entry)).toEqual(['egpt']);
