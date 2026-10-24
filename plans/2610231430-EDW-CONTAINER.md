@@ -75,7 +75,7 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 3. A way in from outside: **one HTTPS port** (operator: no Cloudflare). It is also the entry the website chatbox (limbs.http) needs, so a single HTTPS front (Caddy, automatic TLS) serves both.
    - Behind it: the screen proxy and the chatbox endpoint only, never the spine.
    - Links: long random tokens, short-lived; an empty 404 when no link is live; rate limits.
-   - It needs an Elastic IP and a name in Route 53 (EduWeb's account hosts eduweb.com.ve, eserviciosat.net, …). Proposed: `edw.eduweb.com.ve`.
+   - It needs an Elastic IP and a name in Route 53 (EduWeb's account). Name: **`edw.eduweb.com.ve`** (operator, 10-24).
 
 ## 10-24 04:30 — ED in SI+EduWeb gets full access, inside the wall (operator)
 - Only ED in SI+EduWeb gets full access. "SI+EduWeb is a circle of trust group: EduWeb developers and admins."
