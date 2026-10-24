@@ -71,7 +71,8 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - Like DO: the same two Beeper accounts (primary ear and secondary mouth, signed in over VNC), its own node name and its own beings with their own handles. It runs in the operator's **personal** AWS account (480854905773, profile default/anmichel), so EduWeb's admins cannot read it.
 - kg keeps wren, Drive and the laptop's files. kg/do config gains the third node in its node lists (e.g. echo peer_priority).
 - Needs: two Beeper profiles in one container (second API port), Beeper tokens in secrets/, the scripts pointed at the personal account, local transcription sized for personal voice traffic.
-- Open: node name; beings and their handles; always-on duties or a plain peer.
+- Names (operator 10-24): node **`wb`**; main being **Nova** ✨, handles `nova` + `v`, voice handle `nova` (written the same in es/en). Checked against every handle in use on kg/do/EDW: no collision.
+- Open: other beings; always-on duties or a plain peer.
 
 ## Status 10-24 05:45 — EDW runs on AWS
 - **Instance:** i-02476c2d8b9173596, now **t3a.large** (~$55). It was resized after t3a.medium thrashed: two notes ran large-v3 CLI copies at once, plus a being's own whisper. Data volume `edw-data` vol-0c60425dcce01918b, 30 GB at /srv/egpt (egpt-home, egpt-claude, egpt-src).
