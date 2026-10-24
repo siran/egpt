@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 const homeAt = args.indexOf('--home');
 const home = homeAt >= 0 ? args[homeAt + 1] : EGPT_HOME;
 if (homeAt >= 0 && !home) fail('--home needs a path');
-const positional = args.filter((_, i) => i !== homeAt && i !== homeAt + 1);
+const positional = homeAt >= 0 ? args.filter((_, i) => i !== homeAt && i !== homeAt + 1) : args;
 
 // One line from the console, not echoed.
 function ask(question, { hidden = false } = {}) {

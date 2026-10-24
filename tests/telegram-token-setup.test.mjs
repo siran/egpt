@@ -31,6 +31,12 @@ describe('setup/telegram-token.mjs', () => {
     }
   });
 
+  it('without --home: the connection is the first argument and the token lands under EGPT_HOME', () => {
+    const r = spawnSync(process.execPath, [SCRIPT, 'main'], { input: TOKEN, encoding: 'utf8', env: { ...process.env, EGPT_HOME: home } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(join(home, 'secrets', 'telegram-main.token'), 'utf8')).toBe(`${TOKEN}\n`);
+  });
+
   it('replaces an existing token', () => {
     expect(run(['main'], TOKEN).status).toBe(0);
     const other = '987654321:BBHanother-fake-token-for-the-test_9876';
