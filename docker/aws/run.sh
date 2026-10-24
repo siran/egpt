@@ -34,7 +34,8 @@ FLAGS=(-d --name edw --hostname edw --restart unless-stopped
   -e EGPT_BRANCH=edw -e EGPT_BEEPER=off
   -p 127.0.0.1:5900:5900 -p 127.0.0.1:6080:6080
   -v "$SRV/egpt-home:/home/egpt/.egpt" -v "$SRV/egpt-claude:/home/egpt/.claude"
-  -v "$SRV/egpt-src:/home/egpt/src/egpt")
+  -v "$SRV/egpt-src:/home/egpt/src/egpt"
+  -v "$SRV/egpt-jsonl:/home/egpt/.egpt-jsonl")   # boxed beings' Claude sessions survive a recreate
 
 if [ $ON_HOST = 0 ]; then
   check_account
@@ -80,9 +81,14 @@ fi
 run sh -c "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REGISTRY"
 run docker pull "$IMAGE"
 if [ -n "$state" ]; then
+  # First run with the egpt-jsonl volume: carry the sessions over from the old container (owners kept).
+  if [ ! -d $SRV/egpt-jsonl ] && [ "$state" = running ]; then
+    run sh -c "rm -rf $SRV/egpt-jsonl.tmp && mkdir -p $SRV/egpt-jsonl.tmp && docker exec -u 0 edw sh -c 'mkdir -p /home/egpt/.egpt-jsonl && tar --numeric-owner -C /home/egpt/.egpt-jsonl -cf - .' | tar --numeric-owner -xpf - -C $SRV/egpt-jsonl.tmp && chown 1000:1000 $SRV/egpt-jsonl.tmp && mv $SRV/egpt-jsonl.tmp $SRV/egpt-jsonl"
+  fi
   run docker stop edw
   run docker rm -v edw
 fi
+[ -d $SRV/egpt-jsonl ] || run install -d -o 1000 -g 1000 $SRV/egpt-jsonl
 run docker run "${FLAGS[@]}" "$IMAGE"
 run docker image prune -f
 docker ps -a --filter name=^edw$ --format '{{.Names}} {{.Image}} {{.Status}}'
