@@ -67,11 +67,11 @@ Goal: eGPT stops depending on the laptop. A blueprint image carries the same sta
 - **EDW's public beings, marketer and support (`ed`), stay at `regular` at most.** So the per-conversation Unix-user wall is not needed for them now.
   - Note: `regular` confines them through the Claude CLI's permission rules. The tools are Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Task; there is no Bash; file tools are limited to the conversation folder. It is not an OS wall: they run as the same Unix user as the spine.
 
-## Next project (operator 10-24): a 3rd personal node in the cloud
+## Next project (operator 10-24): a 3rd personal node in the cloud, VA
 - Like DO: the same two Beeper accounts (primary ear and secondary mouth, signed in over VNC), its own node name and its own beings with their own handles. It runs in the operator's **personal** AWS account (480854905773, profile default/anmichel), so EduWeb's admins cannot read it.
 - kg keeps wren, Drive and the laptop's files. kg/do config gains the third node in its node lists (e.g. echo peer_priority).
 - Needs: two Beeper profiles in one container (second API port), Beeper tokens in secrets/, the scripts pointed at the personal account, local transcription sized for personal voice traffic.
-- Names (operator 10-24): node **`wb`**; main being **Nova** ✨, handles `nova` + `v`, voice handle `nova` (written the same in es/en). Checked against every handle in use on kg/do/EDW: no collision.
+- Names (operator 10-24): node **`VA`** (pronounceable; was `wb`); main being **Nova** ✨, handles `nova` + `v`, voice handle `nova` (written the same in es/en). Checked against every handle in use on kg/do/EDW: no collision.
 - Open: other beings; always-on duties or a plain peer.
 
 ## Status 10-24 05:45 — EDW runs on AWS
