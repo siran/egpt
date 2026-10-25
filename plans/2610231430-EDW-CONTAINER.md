@@ -373,3 +373,26 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 
   - EDW's image is x86 (Chrome, Beeper builds), so t4g doesn't fit EDW as is.
   - Mixing families (t3a + c7a/m7a) → Compute Savings Plan, not an EC2 Instance one.
+
+## 10-25 ~02:10 — PLAN: t3a, always responsive (operator: "let's go with the t3a")
+**A. EDW (egpt node + voice), on its own on-demand t3a instance**
+1. **Benchmark** (no effect on EDW): two tagged on-demand instances (t3a.medium, t3a.large, Name=edw-bench) run the egpt:edw image's whisper-server with large-v3, large-v3 q5_0 and large-v3-turbo on two real Spanish notes (~10 s, ~60 s) and one English note.
+   → verify: a table of seconds per audio minute + peak memory per model × size; both instances terminated afterwards (< $0.20).
+   → operator picks model and size.
+2. **Next image** (once, rare from then on): models leave the image and live on the volume (as leo's small does), so 4 GB → ~1 GB and pulls are faster. Adds unzip, gnupg, jq, awscli + ED's proposals.
+   → verify: image builds; same whoami/box test in a local run.
+3. **Whisper container:**
+   - a second ECS service (edw-whisper: same image, whisper-server on :8089 with the chosen model from the volume, host network, hard memory limit, CPU share below the node), placed on EDW's instance (attribute edw-data);
+   - EDW config: fallback_order [local, cli]; the node adopts :8089 (never spawns it).
+   → verify: a voice note in EduWeb transcribes through :8089 at the benchmarked speed; stopping edw-whisper falls back to the small CLI; the node is unaffected.
+4. **The swap** (one outage, ~5–8 min, at a quiet hour): ASG on-demand, the chosen t3a size only, launch template with the new image; replace the Spot instance.
+   → verify: on-demand t3a.X, hostname edw, task running, bot polling, box test, heartbeat; then edw-whisper starts beside it.
+5. **Cleanup** (operator's word): terminate edw-node i-02476c2d8b9173596 (its root volume goes with it); keep one image in ECR.
+   → verify: no stopped instances or orphan volumes tagged egpt-edw; ECR holds one image.
+6. **Savings Plan** (purchase on EduWeb's bill: operator buys, or an explicit go): EC2 Instance Savings Plan, t3a, us-east-1, 1-year, no upfront, $/h = EDW's instance. A second plan stacks when EduWeb's production moves.
+
+**B. EduWeb EB → ECS (its own project, after A)**
+7. Measure memory on the production hosts for a week (CloudWatch agent) → choose the production t3a size.
+8. Per app (edc5-api already Docker; edw PHP 7.4 on EB AL2; Portales-new): container image, ECS service with CPU share + hard memory limit, ALB, secrets; cut over DNS one app at a time; retire EB envs and Portales(OLD).
+   → verify per app: same responses before/after; EB environment terminated only after a quiet week.
+- Production gets its own capacity (a cluster or capacity provider), separate from EDW's privileged instance.
