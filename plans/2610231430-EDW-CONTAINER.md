@@ -317,3 +317,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **No container hand-off build** (operator): image updates will be rare in production; code changes go in place through /upgrade (it drains while still answering, then a ~2 s restart: spine start → bot listening in ~1.5 s on 10-25). Only root-level packages need a new image.
 - Remaining silence: an AWS hardware failure (EC2 auto-recovery, minutes; rare), and an image update through ECS (~1 min; at quiet hours).
 - Pending go: switch the ASG to on-demand and replace the Spot instance (one last ~5–8 min outage).
+- **Cheaper no-reclaim options for the node** (10-25, Pricing API + RI Marketplace listing, t3a.small Linux us-east-1; per month at 730 h):
+
+  | Option | Per month | Note |
+  |---|---|---|
+  | On-demand | $13.72 | |
+  | 1-year reservation, no upfront | $8.61 | all upfront: $96 ≈ $8.00/mo |
+  | 3-year reservation, no upfront | $5.91 | all upfront: $186 ≈ $5.17/mo |
+  | Spot | ~$4.23 | reclaimable, ruled out |
+
+  - **RI Marketplace** (other customers reselling the rest of their reservations): regional t3a.small at $0.0118/h with 90 and 180 days left. AZ-scoped ones (210 days, $37.92 / $61.25 all upfront) sit in us-east-1c and 1f; edw-data is in 1a.
+  - A regional reservation is a billing discount the ASG's on-demand instance gets automatically. It is a purchase on EduWeb's bill: operator's call.
