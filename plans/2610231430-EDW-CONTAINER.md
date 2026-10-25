@@ -396,3 +396,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 8. Per app (edc5-api already Docker; edw PHP 7.4 on EB AL2; Portales-new): container image, ECS service with CPU share + hard memory limit, ALB, secrets; cut over DNS one app at a time; retire EB envs and Portales(OLD).
    → verify per app: same responses before/after; EB environment terminated only after a quiet week.
 - Production gets its own capacity (a cluster or capacity provider), separate from EDW's privileged instance.
+
+## 10-25 15:48 — t3a Savings Plan bought; EduWeb's migration is ED's
+- **Bought** (operator "yes"): EC2 Instance Savings Plan 0ad87e23-04f4-4d02-a785-fa8b9ba15f86, t3a, us-east-1, 1 year, No Upfront, $0.0471/h ($34.38/mo, $412.60/yr). **Active** 2026-10-25 19:48 UTC → 2027-10-25.
+  - Covers one t3a.large-equivalent of on-demand use (Portales-new today, the ECS production host later): $54.90 → $34.38/mo, ~ −$20.50 from November.
+  - Not covered: Spot (EDW today), t2/t3 (the EB apps). The account had no prior plans or RIs. It is the Organization's management account, so the plan may also apply to member accounts' t3a.
+- **EB → ECS (part B) belongs to ED**, in the EduWeb Telegram group. Part A (EDW) stays with the orchestrator. Add a second plan for EDW's on-demand t3a once its size is chosen.
