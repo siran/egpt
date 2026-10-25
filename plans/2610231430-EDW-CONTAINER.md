@@ -511,3 +511,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - IAM user edw-whisper-waker (Update/DescribeServices on edw-whisper, List/DescribeTasks), key → EDW secrets/aws-whisper-waker;
   - nightly 03:00 Caracas Scheduler stop.
   - Agents: infra (worktree egpt-wt-gpu, feat/whisper-gpu; dry runs only) and the egpt engine `whisper-server-ecs` (egpt-wt-gpuclient, feat/whisper-ecs-engine): wake + resolve the task IP + tryLocal's request code, one shared wake, an idle stop, falling back to the small CLI.
+
+## 10-25 ~19:50 — ED's merge done; topics + GPU engine merged; ED's handles; deploys
+- **DB merge (ED):** educomp5-db deleted 23:37 UTC with a final snapshot `educomp5-db-final-20261025` (available); Aurora CPU 11–21 % max since. **edc5-api-prod (EB) still has `DB_HOST = educomp5-db…`, DB_NAME bertrand**, so edc5 can't reach its DB until ED points DB_HOST (and its user) at the Aurora cluster. Production change: ED's, with the operator's go. The ~$51/mo saving starts now.
+- **Merged:**
+  - 6a57a8e3 / 7319ddb9: topics (/split = forked topic + link), /join retired, chat-id move (moveChatId + closed_chats rename);
+  - 50d0f61e / 4d88a2ba: whisper-server-ecs engine (wake, shared wake, idle stop, cooldown_ms 10 min, SigV4 in-process).
+  - Suite on main: 7584/7584 (one load flake on the first run).
+- **ED's handles on EDW** (operator): handles [e, ed, edu]; voice_handles [ed, edu, eduweb, educomp, educor, edugüé]; live (backup config.yaml.pre-ed-handles-20261025T234532). kg is closed in every EduWeb group, so "e" no longer collides.
+- **Voice out:** piper (es_MX-claude-high) synthesizes in the container; voice_service → the local piper server :23391. A voice-triggered turn (or `@ev`) gets its text reply plus an audio reply.
+- **Deploying 4d88a2ba:** kg/do via upgrade.ps1 -Peer; EDW via `/upgrade` in state/ingest (drains, pulls, respawns).
+- **Voice test:** after the GPU infra (agent still running) is applied and EDW's config has fallback_order [gpu, cli].
