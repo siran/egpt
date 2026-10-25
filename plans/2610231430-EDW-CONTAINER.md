@@ -473,3 +473,15 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **/join and /split on Telegram don't work:** the limb's createGroup is a stub (bots can't create groups), so the command logs and aborts and the user sees nothing. Options: forum topics in the group (a bot that is admin with manage-topics can create them), or a user-account group factory (MTProto api_id/api_hash; parked 10-24).
 - **DB merge (operator: "two are running postgres, can't we merge?"):** yes. educomp5-db (RDS PG 18.3, ~idle) goes into the Aurora PG 17.7 cluster eduweb-2020 as its own database + role, then a final snapshot and delete. Saves ~$51/mo (instance $47.45 + 30 GB). Watch: a dump from 18 into 17 (test; edc5 is new, so little to check); Aurora peaks at 99 % CPU (db.t4g.large later; RIs are size-flexible). Then reserve 2: Aurora PG + MariaDB.
 - Voice via dolly: rejected (operator).
+
+## 10-25 ~18:40 — Transcribe test; DB merge in ED's brief; Telegram groups
+- **AWS Transcribe batch, es-US**, the operator's own EduWeb notes (S3 objects and jobs deleted):
+  - 4.5 s note → 8.3 s; 5.4 s → 9.7 s; 56.8 s → 10.6–11.1 s;
+  - 16.8 % of 137 words differ from kg's large-v3 text (short notes too short to judge). That is the small model's level (17–24 %) at about kg's speed (median 7 s).
+  - Before production: Organizations AI-services opt-out policy (persistent org setting; needs a go). Building it = a transcription backend type in fallback_order.
+- **ED's brief** gained "Bases de datos": the merge (Aurora 17.7 → 18 first, then dump/restore 18 → 18), the load caveat, and 2 reservations after the merge.
+  - Aurora PG 17.7 offers 18.3/18.4/18.6 as in-place major upgrades. An RI follows engine + class, not version.
+- **Telegram:**
+  - No t.me link creates a group (`t.me/<bot>?startgroup=…` only opens "add the bot to a group", where a person can create one).
+  - Topics belong to one group: every member sees every topic; outsiders need the group's link.
+  - Operator offered his own account as group maker. Caution: a user-API session for his whole account would live in EduWeb's AWS account, and API-created groups + direct member adds are the suspected cause of the 10-24 deletions. A dedicated account + invite links is safer.
