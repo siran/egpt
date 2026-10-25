@@ -458,7 +458,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     const calls = [];
     const port = await createBeeperBridgePort({ bridgeSignatureOpen: '🌉', bridgeSignatureClose: '💸' }, { start: async () => ({
       editMessage: async (...a) => { calls.push(['edit', ...a]); return true; },
-      createGroup: async (opts) => { calls.push(['create', opts]); return { success: true, chatID: '!new:beeper.com' }; },
+      createGroup: async (...a) => { calls.push(['create', ...a]); return { success: true, chatID: '!new:beeper.com' }; },
       archiveChat: async (...a) => { calls.push(['archive', ...a]); return true; },
       getChatName: (id) => (id === '!room' ? 'Proyecto X' : null),
       resolveUserIdByPhone: async (digits, opts) => { calls.push(['resolve', digits, opts]); return '@whatsapp_lid-99:beeper.local'; },
@@ -466,8 +466,10 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     }) });
     expect(typeof port.editMessage).toBe('function');     // the method the live node was missing
     expect(await port.editMessage('!room', 'm1', '🤖↔️🤔 ...')).toBe(true);
-    const created = await port.createGroup({ accountID: 'wa', participantIDs: ['@whatsapp_lid-99:beeper.local'], type: 'group', title: 'T' });
+    const opts = { accountID: 'wa', participantIDs: ['@whatsapp_lid-99:beeper.local'], type: 'group', title: 'T' };
+    const created = await port.createGroup('!room', opts);   // made from !room
     expect(created).toEqual({ success: true, chatID: '!new:beeper.com' });
+    expect(calls).toContainEqual(['create', opts, { chatId: '!room' }]);
     expect(await port.archiveChat('!room')).toBe(true);
     expect(port.getChatName('!room')).toBe('Proyecto X');
     // the create's participant is resolved from a phone → the person's Beeper user id
@@ -480,7 +482,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
   it('editMessage / createGroup / archiveChat / getChatName / resolveUserIdByPhone answer false/null on a transport without them', async () => {
     const port = await createBeeperBridgePort({}, { start: async () => ({ async send() { return { ok: true }; }, isAlive: () => true, stop() {} }) });
     expect(await port.editMessage('!room', 'm1', 'x')).toBe(false);
-    expect(await port.createGroup({})).toBe(null);
+    expect(await port.createGroup('!room', {})).toBe(null);
     expect(await port.archiveChat('!room')).toBe(false);
     expect(port.getChatName('!room')).toBe(null);
     expect(await port.resolveUserIdByPhone('1347', {})).toBe(null);

@@ -2,15 +2,15 @@
 #
 # <alias>: /<handle> <command> [args]. A message that STARTS with an alias (any case, whole words;
 # the longest alias wins) runs that command line with the rest of the message appended:
-#   "aparte viaje" → /e join viaje
+#   "aparte viaje" → /e split viaje
 # The handle's node runs it (any node's being may be named; every other node ignores it). Exactly
 # like typing the command: whoever may type it may use its alias, and nobody else. A being's own
 # output never triggers one. Any sentence that starts with an alias runs it, so pick words you
 # won't open a sentence with by accident.
 # Refused, one log line each: an alias starting with "/" or with a being handle, a target with no
-# being handle (/join) or that is not /<handle> <command>. Read on change: no restart. No file, or
+# being handle (/split) or that is not /<handle> <command>. Read on change: no restart. No file, or
 # nothing in it: no aliases.
 
-# aparte: /e join
-# nos vamos aparte: /e join
+# aparte: /e split
+# nos vamos aparte: /e split
 # reinicia: /e restart force

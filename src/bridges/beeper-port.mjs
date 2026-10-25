@@ -339,8 +339,9 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async editMessage(chat, msgId, text) {
       return real.editMessage ? await real.editMessage(chat, msgId, text) : false;
     },
-    async createGroup(opts) {
-      return real.createGroup ? await real.createGroup(opts) : null;
+    // `chat`: the chat the room is made from (a Telegram topic lives in it; Beeper ignores it).
+    async createGroup(chat, opts) {
+      return real.createGroup ? await real.createGroup(opts, { chatId: chat }) : null;
     },
     // PHONE → BEEPER USER ID (operator 2026-10-03) — a READ of this account's own rosters (like
     // chatRaw/listChatsRaw), forwarded so /fork can resolve Rodz's `@whatsapp_lid-…` id for the

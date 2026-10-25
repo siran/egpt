@@ -259,22 +259,16 @@ networks:
   telegram: { chat_ids: [], allowed_users: [] } # Telegram numeric user ids (limbs.telegram bot)
   signal:   { chat_ids: [], allowed_users: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
-# public_commands: [join, split, send, end]
+# public_commands: [split, send, end]
 
-# --- Side-group texts (/join, /split, /send) ---------------------------------
+# --- Side-group texts (/split, /send) ----------------------------------------
 # All optional; unset = the text shown. Each {word} listed is filled in; any other
 # {word} stays as written. Every template key: MANUAL.md "Templates".
-# group_title: "{group}-{name}"   # after "SI+". {group} the original chat's name, {name} the name typed after join/split (none: 5 random letters)
-# join:
-#   # what the /join message becomes. {name} the join name, {title} the new group's title, {group} the original chat's name, {by} who typed it, {handle} the handle it was typed to
-#   placeholder: "🔗 joined group {name}. You can join too: send /{handle} join {name}"
-#   exists: "🔗 group {name} already exists. Ask {by} to add you."   # as placeholder; {by} = who made that group
-#   limit: "🔗 you already have group {name} here."                   # as placeholder; {name} = the sender's groups here
-#   # the first message in the new group. {group} the original chat's name, {handle} the handle the command was typed to
-#   opener: "🔗 Side-room of {group} — same agents, same conversation. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."
+# group_title: "{group}-{name}"   # after "SI+". {group} the original chat's name, {name} the name typed after split (none: 5 random letters)
 # split:
-#   placeholder: "🍴🤖 ..."   # used as written, no {words}
-#   opener: "🍴 Fork of {group} — a diverging copy: same agents, its own thread from here. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."   # as join.opener
+#   placeholder: "🍴🤖 ..."   # {link} the topic's link (Telegram; unset there: "🍴 the fork is here: {link}")
+#   # the first message in the new group. {group} the original chat's name, {handle} the handle the command was typed to
+#   opener: "🍴 Fork of {group} — a diverging copy: same agents, its own thread from here. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."
 # send:
 #   origin_template: "↪ from {group}:\n"   # the line before a relayed message. {group} the side group's name
 

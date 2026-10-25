@@ -32,8 +32,8 @@ const CONFIG = {
 const ALIASES = join(HOME, 'config', 'commands_alias.yaml');
 const writeAliases = (text) => { mkdirSync(join(HOME, 'config'), { recursive: true }); writeFileSync(ALIASES, text, 'utf8'); };
 const DEFAULT_ALIASES = [
-  'aparte: /e join',
-  'nos vamos aparte: /e join',
+  'aparte: /e split',
+  'nos vamos aparte: /e split',
   'nos vamos: /e end',
   'reinicia: /e restart force',
   '',
@@ -50,9 +50,9 @@ const operator = (body, over = {}) => member(body, { senderId: '@an:beeper.com',
 function build() {
   let st = ensureContact({ contacts: {} }, 'whatsapp', GROUP, { pushedName: 'C' }).state;
   st = recordThread(st, 'whatsapp', GROUP, 'thread-1', '2026-10-19T00:00:00Z', 'e');
-  const calls = { create: [], edit: [], exit: [], audit: [], logs: [], transcript: [], brain: [], ran: [] };
+  const calls = { create: [], edit: [], exit: [], audit: [], logs: [], transcript: [], brain: [], ran: [], sent: [] };
   const real = createCommands({
-    getConfig: () => CONFIG, send: async () => {},
+    getConfig: () => CONFIG, send: async (chatId, text) => { calls.sent.push({ chatId, text }); },
     exit: async (code, o = {}) => { calls.exit.push({ code, force: !!o.force }); },
     loadState: async () => st, writeState: async (s) => { st = s; },
     forkBridge: {
@@ -94,15 +94,15 @@ beforeEach(() => {
 });
 
 describe('an alias runs its command line, with the rest of the message as arguments', () => {
-  it('a member\'s "aparte viaje" is /join viaje: the primary makes SI+C-viaje with Rodz + the member, aliased to C', async () => {
+  it('a member\'s "aparte viaje" is /split viaje: the primary makes SI+C-viaje with Rodz + the member, forked from C', async () => {
     const { say, calls, getState } = build();
     await say(member('aparte viaje'));
     expect(calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_ID, LULU], type: 'group', title: 'SI+C-viaje' }]);
-    expect(getState().contacts.whatsapp[SIDE]).toMatchObject({ join_name: 'viaje', join_by_id: LULU });
+    expect(getState().contacts.whatsapp[SIDE]).toMatchObject({ parent_chat: GROUP });
     expect(calls.brain).toEqual([]);
   });
 
-  it('not discreet: the operator\'s own alias edits his message into the placeholder, as typing /join does', async () => {
+  it('not discreet: the operator\'s own alias edits his message into the placeholder, as typing /split does', async () => {
     const { say, calls } = build();
     const ev = operator('aparte viaje');
     await say(ev);
@@ -116,14 +116,14 @@ describe('an alias runs its command line, with the rest of the message as argume
     await say(member('nos vamos aparte playa'));
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-playa']);
     await say(member('Nos  vamos   ya'));
-    expect(calls.ran).toEqual(['/join playa', '/end ya']);
+    expect(calls.ran).toEqual(['/split playa', '/end ya']);
     expect(calls.audit).toEqual([
-      "alias 'nos vamos aparte' → /join in C by Lulu",
+      "alias 'nos vamos aparte' → /split in C by Lulu",
       "alias 'nos vamos' → /end in C by Lulu → no-op — not a /join or /split side channel",
     ]);
   });
 
-  it('case-insensitive: "APARTE Viaje" is /join Viaje', async () => {
+  it('case-insensitive: "APARTE Viaje" is /split Viaje', async () => {
     const { say, calls } = build();
     await say(member('APARTE Viaje'));
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-Viaje']);
@@ -177,7 +177,7 @@ describe('the file: live, validated, optional', () => {
     const { say, calls } = build();
     await say(member('fuera viaje'));
     expect(calls.create).toEqual([]);
-    writeAliases('fuera: /e join\n');
+    writeAliases('fuera: /e split\n');
     await say(member('fuera viaje'));
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
     await say(member('aparte playa'));                 // gone with the edit
@@ -193,8 +193,8 @@ describe('the file: live, validated, optional', () => {
       'don ya: /end',
       'hola: /nonexistent',
       'bueno: hola',
-      'fuera: /join',
-      'aparte: /e join',
+      'fuera: /split',
+      'aparte: /e split',
       '',
     ].join('\n'));
     const { say, calls } = build();
@@ -236,9 +236,19 @@ describe('the file: live, validated, optional', () => {
     const { say, calls } = build();
     await say(member('aparte viaje'));
     expect(calls.transcript).toEqual(['aparte viaje']);
-    expect(calls.ran).toEqual(['/join viaje']);
+    expect(calls.ran).toEqual(['/split viaje']);
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
-    expect(calls.audit).toEqual(["alias 'aparte' → /join in C by Lulu"]);
+    expect(calls.audit).toEqual(["alias 'aparte' → /split in C by Lulu"]);
+  });
+
+  it('an alias to the retired /e join still loads, and answers with /split, making nothing', async () => {
+    writeAliases('aparte: /e join\n');
+    const { say, calls } = build();
+    await say(operator('aparte viaje'));
+    expect(aliasLogs(calls)).toEqual([]);
+    expect(calls.ran).toEqual(['/join viaje']);
+    expect(calls.create).toEqual([]);
+    expect(calls.sent).toEqual([{ chatId: GROUP, text: expect.stringContaining('/e split viaje') }]);
   });
 });
 
@@ -261,12 +271,12 @@ describe('/tab /close /activate /bans /unban are registry commands', () => {
 describe('regression locks', () => {
   it('typed /<handle> commands are unchanged', async () => {
     const { say, calls } = build();
-    await say(member('/e join viaje'));
+    await say(member('/e split viaje'));
     await say(operator('/e restart'));
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
     expect(calls.exit).toEqual([{ code: 43, force: false }]);
-    expect(calls.audit).toEqual(['/join in C by Lulu', '/restart in C by An']);
-    expect(calls.transcript).toEqual(['/e join viaje', '/e restart']);
+    expect(calls.audit).toEqual(['/split in C by Lulu', '/restart in C by An']);
+    expect(calls.transcript).toEqual(['/e split viaje', '/e restart']);
   });
 
   it('"e aparte" addresses the being, not the alias', async () => {

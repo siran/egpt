@@ -159,13 +159,13 @@ const seed = () => {
 const say = (spy, chatId, body, extra = {}) => spy.onIncoming(body, { chatId, chatName: chatId === ORIGIN ? 'Origen' : 'SI+Origen-x', network: 'whatsapp', userId: '@anrodriguez:beeper.com', senderName: 'An', authorized: true, isSender: true, msgKey: `k-${body}`, ...extra });
 
 describe('a side group\'s mouth room is learned from Rodz\'s copy of the opener, by id', () => {
-  it('/join: the primary makes P and posts the opener there; Rodz\'s copy in R makes R the mouth room; replies in P go out in R', async () => {
+  it('/split: the primary makes P and posts the opener there; Rodz\'s copy in R makes R the mouth room; replies in P go out in R', async () => {
     const { app, byConnection, state } = await bootWith(KG(), seed());
-    await say(byConnection.primary, ORIGIN, '/e join x');
+    await say(byConnection.primary, ORIGIN, '/e split x');
     await waitFor(() => state().contacts.whatsapp[P]?.mouth_chat);
     expect(byConnection.primary.created).toEqual([expect.objectContaining({ participantIDs: [RODZ_ID], title: 'SI+Origen-x' })]);
     expect(byConnection.primary.sent.map((m) => shortChatId(m.chatId))).toContain(P);   // the opener, from the creator
-    expect(state().contacts.whatsapp[P]).toMatchObject({ aliasOf: ORIGIN, mouth_chat: R });
+    expect(state().contacts.whatsapp[P]).toMatchObject({ parent_chat: ORIGIN, mouth_chat: R });
 
     await say(byConnection.primary, P, 'e hola', { atEStart: true, atEAnywhere: true, msgKey: 'k-2' });
     await waitFor(() => byConnection.secondary.streams.length || byConnection.secondary.sent.length);
@@ -333,15 +333,25 @@ describe('the other node links every side group from its opener; its beings\' re
     expect(n.dolly.byConnection.primary.streams).toEqual([]);
   }
 
-  it('REPRODUCE /join: do records the room as an alias of the origin with kg\'s transcript key and Rodz\'s room R; don\'s reply there is said by Rodz in R', async () => {
-    const n = await twoNodes();
-    await both(n, ORIGIN, '/e join x');
-    await waitFor(() => sideOn(n.dolly)?.mouth_chat && sideOn(n.kg)?.mouth_chat);
-    expect(sideOn(n.kg)).toMatchObject({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', join_name: 'x', mouth_chat: R });   // the creator, as before
-    expect(sideOn(n.dolly)).toEqual({ aliasOf: ORIGIN, transcript: sideOn(n.kg).transcript, mouth_chat: R });
+  // The opener of a /join room kg made before /join was retired (2026-10-25), as do hears it: on the
+  // primary in P (An's copy) and on Rodz's account in R.
+  const JOIN_OPENER = `🔗 Side-room of Origen${encodeNodeSignature('kg', 'egpt')}${encodeChatCanary({ group: P, origin: ORIGIN, kind: 'join', transcript: 'SI+Origen-x' })}`;
+  async function doAlone({ doState = doSeed(), ...world } = {}) {
+    const accounts = sharedAccounts(world);
+    const dolly = await bootOn(accounts, DO(), doState);
+    const primaryCopy = () => accounts.deliver(dolly.byConnection.primary, P, JOIN_OPENER, accounts.asAn);
+    const rodzCopy = () => accounts.deliver(dolly.byConnection.secondary, R, JOIN_OPENER, accounts.toRodz);
+    return { n: { dolly }, dolly, primaryCopy, rodzCopy };
+  }
+
+  it('REPRODUCE /join (a room made before the retirement): do records it as an alias of the origin with kg\'s transcript key and Rodz\'s room R; don\'s reply there is said by Rodz in R', async () => {
+    const { n, dolly, primaryCopy, rodzCopy } = await doAlone();
+    await Promise.all([primaryCopy(), rodzCopy()]);
+    await waitFor(() => sideOn(dolly)?.mouth_chat);
+    expect(sideOn(dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
     await donSaysItInR(n);
     doCreatedNothing(n);
-    n.stop();
+    dolly.app.stop();
   });
 
   it('REPRODUCE /split: do records its own conversation with parent_chat, don\'s thread forked by /split\'s copy code, and R', async () => {
@@ -376,14 +386,14 @@ describe('the other node links every side group from its opener; its beings\' re
   });
 
   it('REPRODUCE: a line in P between the primary\'s copy of the opener and Rodz\'s (live: 0.4–0.8 s apart) is answered by Rodz in R, never from the primary', async () => {
-    const n = await twoNodes({ gapMs: 400 });
-    const typed = both(n, ORIGIN, '/e join x');
-    await waitFor(() => n.dolly.byConnection.primary.arrivals.some((m) => m.chatID === P));   // the primary's copy is in; Rodz's is not yet
-    expect(n.dolly.byConnection.secondary.arrivals).toEqual([]);
+    const { n, dolly, primaryCopy, rodzCopy } = await doAlone();
+    const heard = primaryCopy();
+    expect(dolly.byConnection.secondary.arrivals).toEqual([]);   // the primary's copy is in; Rodz's is not yet
+    setTimeout(rodzCopy, 400);
     await donSaysItInR(n);
-    expect(sideOn(n.dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
-    await typed;
-    n.stop();
+    expect(sideOn(dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
+    await heard;
+    dolly.app.stop();
   });
 
   it('do after a restart (the linked group stored, nothing arrived in P since): don\'s reply is still Rodz\'s, in R', async () => {
@@ -395,12 +405,13 @@ describe('the other node links every side group from its opener; its beings\' re
   });
 
   it('REPRODUCE: Rodz\'s copy of the opener reaches do before the primary\'s — linked all the same, R found among what already arrived', async () => {
-    const n = await twoNodes({ secondaryFirst: true });
-    await both(n, ORIGIN, '/e join x');
-    await waitFor(() => sideOn(n.dolly)?.mouth_chat);
-    expect(sideOn(n.dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
+    const { n, dolly, primaryCopy, rodzCopy } = await doAlone();
+    await rodzCopy();
+    await primaryCopy();
+    await waitFor(() => sideOn(dolly)?.mouth_chat);
+    expect(sideOn(dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
     doCreatedNothing(n);
-    n.stop();
+    dolly.app.stop();
   });
 
   it('an automatic opener posted before 2026-10-19 (its canary: group + origin) still links on do, and Rodz\'s copy gives R', async () => {
@@ -415,23 +426,23 @@ describe('the other node links every side group from its opener; its beings\' re
   });
 
   it('REPRODUCE: a room do had only seen (a member spoke first, no being thread) is converted to the alias in place', async () => {
-    const n = await twoNodes({ doState: ensureContact(doSeed(), 'whatsapp', P, { pushedName: 'SI+Origen-x' }).state });
-    await both(n, ORIGIN, '/e join x');
-    await waitFor(() => sideOn(n.dolly)?.mouth_chat);
-    expect(sideOn(n.dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
-    n.stop();
+    const { dolly, primaryCopy, rodzCopy } = await doAlone({ doState: ensureContact(doSeed(), 'whatsapp', P, { pushedName: 'SI+Origen-x' }).state });
+    await Promise.all([primaryCopy(), rodzCopy()]);
+    await waitFor(() => sideOn(dolly)?.mouth_chat);
+    expect(sideOn(dolly)).toEqual({ aliasOf: ORIGIN, transcript: 'SI+Origen-x', mouth_chat: R });
+    dolly.app.stop();
   });
 
   it('a room do already answered in (its own entry, a being thread) is left alone and logged once', async () => {
     const own = recordThread(ensureContact(doSeed(), 'whatsapp', P, { pushedName: 'SI+Origen-x' }).state, 'whatsapp', P, 'th-do-p', '2026-10-18T00:00:00Z', 'don');
-    const n = await twoNodes({ doState: own });
-    await both(n, ORIGIN, '/e join x');
-    await waitFor(() => sideOn(n.kg)?.mouth_chat && n.dolly.lines.some((l) => /left for the operator/.test(l)));
+    const { dolly, primaryCopy, rodzCopy } = await doAlone({ doState: own });
+    await Promise.all([primaryCopy(), rodzCopy()]);
+    await waitFor(() => dolly.lines.some((l) => /left for the operator/.test(l)));
     await new Promise((r) => setTimeout(r, 100));
-    expect(sideOn(n.dolly)).toMatchObject({ agents: { don: { threadId: 'th-do-p' } } });
-    expect(sideOn(n.dolly).aliasOf).toBeUndefined();
-    expect(sideOn(n.dolly).mouth_chat).toBeUndefined();
-    expect(n.dolly.lines.filter((l) => /left for the operator/.test(l))).toHaveLength(1);
-    n.stop();
+    expect(sideOn(dolly)).toMatchObject({ agents: { don: { threadId: 'th-do-p' } } });
+    expect(sideOn(dolly).aliasOf).toBeUndefined();
+    expect(sideOn(dolly).mouth_chat).toBeUndefined();
+    expect(dolly.lines.filter((l) => /left for the operator/.test(l))).toHaveLength(1);
+    dolly.app.stop();
   });
 });

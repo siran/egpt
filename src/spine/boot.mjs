@@ -37,7 +37,7 @@ import { createSandboxCliSession, spawnBoxedCommand } from '../sandbox-cli-sessi
 import { connectCliHost } from '../cli-host.mjs';
 import { defaultIsAlive, heldExclusive } from '../daemon-singleton.mjs';
 import { raiseSelfToNormal } from '../process-priority.mjs';
-import { readConfigSync, configContentHashSync, beeperBlockOf } from '../tools/config-io.mjs';
+import { readConfigSync, configContentHashSync, beeperBlockOf, spliceYamlKey, CONFIG_YAML_PATH } from '../tools/config-io.mjs';
 import { restartKeysChanged, changedKeys } from './config-swap.mjs';
 import { createClosedChats } from './closed-chats.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
@@ -49,7 +49,7 @@ import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR } fro
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, LOBBY_SLUG, fixedSlugFor,
-  aliasMouthInfo, setAliasMouthChat,
+  aliasMouthInfo, setAliasMouthChat, mutateState, moveChatId,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
 import { createFloodBan } from '../flood-ban.mjs';
@@ -229,7 +229,7 @@ export const LIMB_ROUTED_METHODS = [
   'send', 'startStream', 'postStatus', 'editStatus', 'deleteStatus', 'react', 'unreact', 'sendMedia',
   'editOwn', 'editMessage', 'wasSentByUs', 'sendFailure', 'chatHasParticipant', 'getChatName',
   'postVerbatim', 'startStreamVerbatim', 'chatRaw', 'listMessagesRaw', 'recentMessages', 'awaitMessage',
-  'archiveChat', 'resolveChatId',
+  'archiveChat', 'resolveChatId', 'createGroup',
 ];
 export function makeLimbAwareBridge(bridge, ...limbs) {
   if (!limbs.length) return bridge;
@@ -2160,6 +2160,20 @@ export async function boot({
     earProbeTimeoutMs: parseFrequency(earCfg.timeout) ?? 45_000,
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   };
+  // A chat that carries on under a new id (Telegram: a group turned supergroup): its conversation moves
+  // (moveChatId), and a closed_chats rule naming it is renamed in config.yaml (one key, the splice).
+  const moveChat = (surface, from, to) => mutateState(_writeState, async () => {
+    const state = await _loadState();
+    const next = moveChatId(state, surface, from, to);
+    if (next !== state) await _writeState(next);
+    log.line?.(`[conversations] ${surface} ${from} → ${to}: ${next !== state ? 'its conversation moved with it' : state.contacts?.[surface]?.[to] ? `${to} already has a conversation — nothing moved, merge by hand` : `no conversation for ${from} — nothing to move`}`);
+  }).then(async () => {
+    if (!Object.hasOwn(getConfig()?.closed_chats?.[surface] ?? {}, from)) return;
+    try {
+      await writeFile(CONFIG_YAML_PATH, spliceYamlKey(await readFile(CONFIG_YAML_PATH, 'utf8'), ['closed_chats', surface], { from, to }), 'utf8');
+      log.line?.(`[conversations] closed_chats.${surface}: ${from} renamed ${to} in config.yaml`);
+    } catch (e) { log.line?.(`[conversations] closed_chats.${surface} names ${from}, not renamed ${to} (${e?.message ?? e}) — edit config.yaml`); }
+  });
   // THE TELEGRAM LIMB (limbs.telegram.<connection>: { account }): one bot, owner of every tg: chat.
   // Its token is a file, $EGPT_HOME/secrets/telegram-<connection>.token, never config. Same port
   // adapter as Beeper (the transport is injected), same send guard. Absent ⇒ null: nothing changes.
@@ -2181,6 +2195,7 @@ export async function boot({
       // No invisible frame on Telegram: a quoted being is read off the stamp the sender wrote.
       personaStamps: () => Object.keys(agents()).map((being) => ({ being, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) })),
       outboundFor: (chatId) => outbound(null, chatId),
+      onChatMoved: (from, to) => moveChat('telegram', from, to),
       onLog: tlog,
     }, { start: startTelegram ?? startTelegramBridge });
     // beingAccount: the bot is the being's own account, never the operator's, so it may react (sender.mjs makeOutbound).
@@ -3316,9 +3331,10 @@ export async function boot({
     forkBridge: {
       editMessage:   (chatId, msgId, text)            => earBridge.editMessage(chatId, msgId, text),
       // `via`: the account that makes the group — the primary, which has every contact (2026-10-18).
-      createGroup:   async (opts, { via = null } = {}) => {
+      // `origin`: the chat it is made from; a Telegram chat's room is a topic in it (its limb's).
+      createGroup:   async (opts, { via = null, origin = null } = {}) => {
         const on = postBridgeFor(via);
-        const created = await on.createGroup(opts);
+        const created = await on.createGroup(origin, opts);
         const id = created?.chatID ?? created?.chatId;
         if (id) holds(on, id);
         return created;
@@ -3343,6 +3359,7 @@ export async function boot({
       chatAccountId: async (chatId) => { try { return (await sideChatRaw(chatId))?.accountID ?? null; } catch { return null; } },
       chatRaw:       (chatId)                         => sideChatRaw(chatId),   // the side-group liveness check
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),
+      roomsInside:   (chatId)                         => !!telegramPort?.owns(chatId),   // a topic: everyone in the chat is in it
       listMessagesRaw: (chatId, opts = {})            => postBridgeFor(opts.via).listMessagesRaw(chatId, opts),   // /send reads the replied-to message's live text
       // RODZ'S BEEPER USER ID (operator 2026-10-03) — the create needs `@whatsapp_lid-…`, not a
       // +phone (the API rejects it). Resolved from config.beeper.secondary.phone by scanning this
