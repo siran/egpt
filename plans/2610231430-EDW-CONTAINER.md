@@ -260,3 +260,32 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   1. Operator test: ED in EduWeb, Nova in her group, "ed ejecuta whoami" → egpt-box-0.
   2. Terminate edw-node once ECS has proven itself (operator's word): `aws ec2 terminate-instances --instance-ids i-02476c2d8b9173596` (its root volume goes with it; edw-data stays).
   3. Image updates: build-push.sh, then ecs-deploy.sh. Code updates: /upgrade as before (the checkout is on the volume).
+
+## 10-25 ~00:30 — what a Spot replacement costs in downtime; EDW's monthly bill; transcription is on
+- **No overlap on a replacement.** Two things allow one EDW at a time: the data volume attaches to one instance, and the bot token allows one poller. On a Spot reclaim (2-minute notice), ECS drains the task (SIGTERM, 30 s), the ASG launches a new instance (CapacityRebalance is off), and user data waits for the volume. The 4 GB image is pulled after the mount, then the task starts. Expect ~5–8 min down.
+- **egpt does not finish its work on a container stop.** The drain (turns in flight, background agents, 30-min cap) exists only for /upgrade and /restart. A container stop is a SIGTERM that the entrypoint's bash doesn't pass on. tini exits, and everything in the container dies at once, so the turn in flight is lost. What survives: sessions and transcripts on the volume. Telegram keeps undelivered messages; on restart, those under 15 min old (WAKE_WINDOW_MS) are answered and older ones are backlog.
+- **Spot Advisor, us-east-1 Linux:** t3a.small and t3.small sit in the 15–20 %/month interruption band, ~2 reclaims a year. The 24 h price in us-east-1a is $0.0058/h vs $0.0188 on-demand. CPU credits are unlimited; the 36 h average was 7 % (baseline 20 %), so there were no surplus charges.
+- **Options to shorten or soften it** (not done):
+  1. ASG Capacity Rebalancing.
+  2. Pre-pull the image in user data, before the volume wait.
+  3. Drop large-v3 from EDW's image: 4 GB → ~1 GB. Unused here, since leo moved transcription to small on the volume.
+  4. The entrypoint forwards SIGTERM to the daemon, the spine drains on SIGTERM with a cap under the notice, and the task gets stopTimeout 120.
+  5. `--on-demand` (+$9.5/mo) removes reclaims.
+- **Monthly cost, measured 10-25** (730 h; Pricing API, Spot history, live volume and ECR sizes):
+
+  | Item | Now | After cleanup |
+  |---|---|---|
+  | t3a.small Spot | $4.23 | $4.23 |
+  | gp3 | 90 GB, $7.20 | 60 GB, $4.80 |
+  | Public IPv4 | $3.65 | $3.65 |
+  | ECR | 13 GB, $1.30 | 4 GB, $0.41 |
+  | Egress | <$1 | <$1 |
+  | ECS, SSM, ASG | $0 | $0 |
+  | **Total** | **≈ $17** | **≈ $13.5** |
+
+  "Now" still keeps the old instance's root volume (edw-root, 30 GB). "After cleanup" means the old instance is terminated and ECR keeps only the current image. On-demand instead of Spot: ≈ $23.
+  - Seen, not ours (no Project tag): 5 unattached Elastic IPs in EduWeb's account, ~$3.65 each/mo.
+- **Transcription is ON** (leo, 10-24 18:46–19:25, after the 16:33 "off"; backups pre-small, pre-audioctx):
+  - whisper-cli only, ggml-small on the volume (~/.egpt/models/whisper), language es, 2 threads, audio_ctx auto (a 5.5 s note: 57 s → 20 s);
+  - no resident server (small still held ~750 MB); ear posts -1.
+  - Data volume 4.5 of 30 GB used.
