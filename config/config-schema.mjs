@@ -1428,6 +1428,21 @@ export const CONFIG_SCHEMA = {
             Resident whisper.cpp server: command, model, host, port, language,
             extra_args, anti_repetition. LAZY-spawned the first time it is
             reached; cli covers the warm-up.
+          type: "whisper-server-ecs"
+            whisper-server in an ECS service that sleeps at desired count 0.
+              cluster, service, region, port (DEFAULT 8089)
+              credentials         secrets/<name>: line 1 key id, line 2 secret
+              wake_timeout_ms     a note waits at most this for a ready task,
+                                  then the next engine. DEFAULT: 240000
+              idle_stop_ms        desired 0 after this long with no note in
+                                  flight (also armed at boot). DEFAULT: 1200000
+              cooldown_ms         after a failed wake: one quick check per note
+                                  (a task already up?), no wait, no wake.
+                                  DEFAULT: 600000
+              poll_ms             task poll while waking. DEFAULT: 5000
+              connect_timeout_ms  GET / readiness probe. DEFAULT: 3000
+              timeout_ms          DECODE budget. DEFAULT: 120000
+              language            wins over the cli's language on this rung
           type: "whisper-cli"
             command, model_path, language, ffmpeg_command, threads — the
             always-available floor.

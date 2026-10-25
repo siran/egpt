@@ -1412,6 +1412,7 @@ export async function boot({
   // the transcription pipeline's cli rung asks before loading a second model.
   let whisperWatch = null;
   if (ingest) {
+    tx.boot();   // an ECS whisper worker left awake gets its idle stop
     const wport = whisperPortOf(cfg);
     if (shouldReapStrayWhisper(cfg)) {
       const killed = reapPortFn(wport, (m) => log.line?.(`[whisper-reap] ${m}`), STRAY_WHISPER_REAP);

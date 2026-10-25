@@ -9,6 +9,9 @@
 //   whisper-server-local  — resident whisper.cpp server. LAZY-spawned the first time it's
 //                           reached (i.e. an earlier engine failed); resident after. While
 //                           it warms, this engine "fails" and the chain falls through.
+//   whisper-server-ecs    — whisper-server in an on-demand ECS service: woken (desired 1) by a
+//                           note, slept (desired 0) after idle_stop_ms (src/tools/whisper-ecs.mjs);
+//                           decoded like whisper-server-local.
 //   whisper-cli           — per-note binary spawn; the floor — EXCEPT while a resident
 //                           whisper-server is serving on this node (see tryCli).
 //
@@ -42,6 +45,7 @@ export function buildTranscriptionPipeline({
   // decodes those bytes again (operator 2026-09-29: "dolly should identify them by hash"). Injected; null
   // (tests, or a node with no worker rung) turns reconciliation off, exactly like `reachable`.
   publishTranscript = null,
+  makeEcsWaker = null,            // (eng) -> { acquire, release, boot, stop } (src/tools/whisper-ecs.mjs); null skips the type
   now = () => Date.now(),
   onTransition = () => {},        // ({from, to, recovered}) -> void
   onLog = () => {},
@@ -52,6 +56,7 @@ export function buildTranscriptionPipeline({
 
   const breaker = new Map();       // remote name -> downUntil (ms)
   const local = new Map();         // local name -> { server, transcribe, starting, error }
+  const gpu = new Map();           // ecs name -> { waker, url, transcribe }
   const failReason = new Map();    // engine name -> last failure reason (surfaced to Self on fallback)
   const decodeOnce = createDecodeOnce({ now });
   // Local decodes waiting to be reconciled to a worker that was down when they were decoded (operator
@@ -141,9 +146,13 @@ export function buildTranscriptionPipeline({
       return null;                                               // warming → fall through (cli covers the gap)
     }
     if (!h.transcribe) return null;                              // still warming / failed → fall through
-    // SERIALIZE per server: whisper-server decodes ONE note at a time. Two concurrent
-    // POSTs corrupt its shared state ("failed to encode") and the second waits past its
-    // timeout. Chain each note behind the previous so a burst queues instead of colliding.
+    return decodeOn(eng, h, `local "${eng.name}"`, audioPath, cfg, log, meta, decodingHere);
+  }
+
+  // SERIALIZE per server: whisper-server decodes ONE note at a time. Two concurrent
+  // POSTs corrupt its shared state ("failed to encode") and the second waits past its
+  // timeout. Chain each note behind the previous so a burst queues instead of colliding.
+  async function decodeOn(eng, h, what, audioPath, cfg, log, meta, decodingHere) {
     const prev = h.tail ?? Promise.resolve();
     let release;
     h.tail = new Promise((r) => { release = r; });
@@ -161,10 +170,33 @@ export function buildTranscriptionPipeline({
       return t;
     } catch (e) {
       failReason.set(eng.name, e?.message ?? String(e));
-      onLog(`pipeline: local "${eng.name}" transcribe failed: ${e?.message ?? e}`);
+      onLog(`pipeline: ${what} transcribe failed: ${e?.message ?? e}`);
       return null;
     } finally {
       release();                                                 // let the next queued note run
+    }
+  }
+
+  function gpuOf(eng) {
+    let g = gpu.get(eng.name);
+    if (!g) { g = { waker: makeEcsWaker(eng), url: null, transcribe: null }; gpu.set(eng.name, g); }
+    return g;
+  }
+
+  // The worker's own `language` wins over the caller's cfg (the cli profile's): auto on the GPU, es on the cli.
+  async function tryEcs(eng, audioPath, cfg, log, meta, decodingHere) {
+    if (!makeEcsWaker) { onLog(`pipeline: "${eng.name}" is whisper-server-ecs but this node has no ECS waker — skipping`); return null; }
+    const g = gpuOf(eng);
+    try {
+      const { url, why } = await g.waker.acquire({ onWait: decodingHere });
+      if (!url) { failReason.set(eng.name, why); return null; }
+      if (g.url !== url) {
+        g.url = url;
+        g.transcribe = makeWhisperServerTranscriber({ url, ffmpeg: eng.ffmpeg_command, language: eng.language, timeoutMs: eng.timeout_ms });
+      }
+      return await decodeOn(eng, g, `gpu "${eng.name}"`, audioPath, eng.language != null ? { ...cfg, language: eng.language } : cfg, log, meta, decodingHere);
+    } finally {
+      g.waker.release();
     }
   }
 
@@ -231,6 +263,7 @@ export function buildTranscriptionPipeline({
           if (!t && eng.endpoint) failedWorkers.push({ name: eng.name, endpoint: eng.endpoint, keyB64: eng.token });
         }
         else if (eng.type === 'whisper-server-local') t = await tryLocal(eng, audioPath, cfg, log, meta, decodingHere);
+        else if (eng.type === 'whisper-server-ecs') t = await tryEcs(eng, audioPath, cfg, log, meta, decodingHere);
         else if (eng.type === 'whisper-cli') t = await tryCli(eng, audioPath, log, meta, decodingHere);
         else { onLog(`pipeline: "${eng.name}" has unknown type "${eng.type}" — skipping`); continue; }
         if (t) {
@@ -258,7 +291,15 @@ export function buildTranscriptionPipeline({
     }
   }
 
-  function stop() { for (const h of local.values()) { try { h.server?.stop(); } catch { /* best effort */ } } }
+  // Boot: an ECS worker a previous run left awake gets its idle stop.
+  function boot() {
+    return Promise.all(engines.filter((e) => e.type === 'whisper-server-ecs' && makeEcsWaker).map((e) => gpuOf(e).waker.boot()));
+  }
 
-  return { transcribe, stop };
+  function stop() {
+    for (const h of local.values()) { try { h.server?.stop(); } catch { /* best effort */ } }
+    for (const g of gpu.values()) g.waker.stop();
+  }
+
+  return { transcribe, stop, boot };
 }

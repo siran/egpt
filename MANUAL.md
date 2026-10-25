@@ -319,6 +319,18 @@ differs machine-to-machine). Engine `type`s:
 - `whisper-server-remote` — POST to another node's GPU worker (`endpoint` +
   shared HMAC `token`; a dead server just costs a fallback).
 - `whisper-server-local` — a resident whisper.cpp server (lazy-spawned).
+- `whisper-server-ecs` — a whisper.cpp server in an AWS ECS service that sleeps
+  at desired count 0 (`cluster`, `service`, `region`, `port`). A note sets it to 1
+  and waits up to `wake_timeout_ms` (default 240000) for a running task whose
+  server answers, then decodes there; notes arriving meanwhile share that wake.
+  After `idle_stop_ms` (default 1200000) with no note in flight it goes back to 0;
+  at boot an awake service gets the same idle stop. A timeout or AWS error falls
+  through to the next engine; for `cooldown_ms` (default 600000) after that, a
+  note makes one quick check (is a task already up and answering?) and never
+  waits or wakes. `credentials` names `secrets/<name>` (line 1 key id,
+  line 2 secret; needs ecs:UpdateService/DescribeServices on the service and
+  ecs:ListTasks/DescribeTasks in the cluster). Its `language` wins over the cli's.
+  Optional: `poll_ms` (5000), `connect_timeout_ms` (3000), `timeout_ms` (decode, 120000).
 - `whisper-cli` — per-note binary; the always-available floor.
 
 A change of *winning* engine posts one `⚠️`/`✅` to the operator Self-DM
