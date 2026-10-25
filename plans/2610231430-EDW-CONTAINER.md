@@ -405,3 +405,16 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **ED's brief** (operator asked): conversations/telegram/EduWeb-2610240312/desktop/migracion-ecs/BRIEF.md on EDW (Spanish; ED's box has rw).
   - Covers: decided (ECS on EC2, t3a, the plan); today's inventory; rules: egpt-edw resources off limits and production on its own capacity; measure memory first; per-container cpu/memory; one app at a time with DNS rollback; one ALB or one proxy; secrets in SSM/Secrets Manager; PHP 7.4 EOL; AWS access requested from An.
 - **Started 10-25 ~16:10:** step 1 (benchmark, agent) and step 2 (slim image, agent, worktree egpt-wt-slimimage, feat/edw-slim-image; no push).
+
+## 10-25 ~16:40 — SI+EduWeb (WhatsApp) brought up to date in ED, then silenced
+- **Synced kg → ED** (one way: tar → private S3 bucket → EDW host; object deleted, sha256 checked). Every file in kg's whatsapp/SI+EduWeb-2610111618 changed since the 10-24 seed, minus __pycache__, .ssh and the Windows Chrome profile: 10,136 files, 191 MB compressed. Jaime's work with E on 10-24: desktop/rds-educomp-20261024*, rds-explain-20261024, acumular-20261024, mr-fechgrab/edw-web (a git clone, 285 MB), CONTEXTO.md; one video; the group transcript.
+  - Mapping: transcript.md → transcripts/whatsapp/; media/* → media/whatsapp/; desktop/* → desktop/.
+  - Rule: new → copied; identical → skipped; ED's copy untouched since the seed → replaced; else → .from-kg beside it.
+  - Result: 10,133 new, 3 replaced (CONTEXTO.md, media index, transcript), 0 conflicts. Owner egpt; ED's box has rwx through the folder's default ACL.
+  - The transcript has had no messages since 10-24 21:16, so no top-up was needed.
+- **Silenced:** kRFlexa40IXSXTYb5AOA, every being of the node `mode: off` + `handles: []` (backups conversations.yaml.pre-si-off-20261025T203550).
+  - kg: egpt, eplus, ken, codex, sh, h, llama, pi, wren, carol, cara, don.
+  - do: don, den, dren, djh, pi.
+  - Live: conversations.yaml is re-read when its stat changes (stat-cache).
+  - Side groups not touched: on kg they are aliases of this entry; on do, nue11 and emely are entries of their own.
+- **Pending:** the "moved to Telegram" notice (needs the invite link; operator posts it, or an explicit go to send it as Rodz); then tell ED to read the new material and the brief.
