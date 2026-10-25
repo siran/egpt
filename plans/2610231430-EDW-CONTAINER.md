@@ -485,3 +485,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - No t.me link creates a group (`t.me/<bot>?startgroup=…` only opens "add the bot to a group", where a person can create one).
   - Topics belong to one group: every member sees every topic; outsiders need the group's link.
   - Operator offered his own account as group maker. Caution: a user-API session for his whole account would live in EduWeb's AWS account, and API-created groups + direct member adds are the suspected cause of the 10-24 deletions. A dedicated account + invite links is safer.
+- **Operator 10-25 ~19:00:**
+  - DB: reserve the Aurora PG one now (the priciest; it is a db.t4g.medium: $0.057/h, $41.61/mo, $499.32/yr; offering 6cb6e850-2443-4a8c-bc8f-55d0b714164d), then upgrade to 18 and merge; further reservations when needed.
+  - /join on Telegram = "bot: please click here" (a link anyone in the group can open). Topics: build started (agent, worktree egpt-wt-topics, feat/telegram-topics): createForumTopic behind the shared join/split core, {link} in the texts, /send → General, /end → closeForumTopic, a visible failure, and basic → supergroup migration (EduWeb tg:-5256478300 is a basic group, so enabling Topics changes its id).
+  - Real groups later with the soporte@eserviciosat.net number (tomorrow) as the group maker.
+- Transcribe vs large-v3, side by side (57 s note): Transcribe errs on "nombre de usuario" for "número de usuario" (twice), "No sea mucho más fino" for "Entonces es mucho más fino", "pum, pum" for "¡bum, bum!", and a filler "Este". The 16.8 % figure is inflated by the reference's "(voice transcription, 57s)" header and a split word.
