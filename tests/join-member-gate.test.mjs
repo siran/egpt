@@ -1,6 +1,7 @@
-// join-member-gate.test.mjs — widening /join to C's members must NOT widen /agents (operator 2026-10-16).
+// join-member-gate.test.mjs — opening the side-group commands to C's members must NOT widen /agents
+// (operator 2026-10-16). /join is retired (2026-10-25); /split carries the member gate now.
 //
-// /join is admitted for any sender at the command gate (isCommand) and joinGroup decides; every
+// /split is admitted for any sender at the command gate (isCommand) and splitGroup decides; every
 // other '/'-verb keeps the operator gate (isOperator: Self DM, ev.authorized from
 // networks.<surface>.allowed_users or isSender, or isSender). A per-agent allowed_users (either tier)
 // decides who may WAKE a being, never who may run /agents. Real isCommand + real run over in-memory
@@ -59,7 +60,7 @@ function build() {
   return { spine, ran, replies, real, state };
 }
 
-describe('/agents stays operator-only while /join is open to members', () => {
+describe('/agents stays operator-only while /split is open to members', () => {
   for (const body of ['/e agents rethread e', '/e agents reset e', '/e agents mode on e', '/e agents compact e', '/e agents stop e', '/e agents refresh e', '/e agents access_level all e', '/e agents e', '/e agents compact']) {
     it(`a member (not on networks allowed_users, not isSender) sending "${body}" runs nothing and changes nothing`, async () => {
       const { spine, ran, replies, state } = build();
@@ -77,8 +78,9 @@ describe('/agents stays operator-only while /join is open to members', () => {
     expect(await real.isCommand(real.commandOf(member('/e agents rethread e')))).toBe(false);
   });
 
-  it('the same member IS admitted for /join (the widening is /join alone)', async () => {
+  it('the same member IS admitted for /split (the widening is the side-group commands alone); the retired /join is not public', async () => {
     const { real } = build();
-    expect(await real.isCommand(real.commandOf(member('/e join emely')))).toBe(true);
+    expect(await real.isCommand(real.commandOf(member('/e split emely')))).toBe(true);
+    expect(await real.isCommand(real.commandOf(member('/e join emely')))).toBe(false);
   });
 });

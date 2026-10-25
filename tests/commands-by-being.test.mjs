@@ -111,19 +111,19 @@ const recordedOnly = (n, body) => {
 beforeEach(() => { rmSync(HOME, { recursive: true, force: true }); });
 
 describe('/<handle> <command>: the handle\'s node runs it, the other node ignores it', () => {
-  it('/e join viaje: kg creates SI+C-viaje; dolly records the line and creates nothing', async () => {
+  it('/e split viaje: kg creates SI+C-viaje; dolly records the line and creates nothing', async () => {
     const { kg, dolly, say } = pair();
-    await say(operator('/e join viaje'));
-    expect(kg.calls.ran).toEqual(['/join viaje']);
+    await say(operator('/e split viaje'));
+    expect(kg.calls.ran).toEqual(['/split viaje']);
     expect(kg.calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
     expect(dolly.calls.create).toEqual([]);
-    recordedOnly(dolly, '/e join viaje');
+    recordedOnly(dolly, '/e split viaje');
   });
 
-  it('/e join with no name: a random 5-character name (lowercase letters and digits)', async () => {
+  it('/e split with no name: a random 5-character name (lowercase letters and digits)', async () => {
     const { kg, say } = pair();
-    await say(operator('/e join'));
-    await say(operator('/e join'));
+    await say(operator('/e split'));
+    await say(operator('/e split'));
     const titles = kg.calls.create.map((c) => c.title);
     expect(titles).toHaveLength(2);
     for (const t of titles) expect(t).toMatch(/^SI\+C-[a-z0-9]{5}$/);
@@ -223,11 +223,11 @@ describe("/<handle> <command> follows the chat's own handles", () => {
 });
 
 describe('aliases target /<handle> <command>', () => {
-  it('"aparte: /e join": a member\'s "aparte viaje" makes SI+C-viaje on kg only', async () => {
-    writeAliases('aparte: /e join\n');
+  it('"aparte: /e split": a member\'s "aparte viaje" makes SI+C-viaje on kg only', async () => {
+    writeAliases('aparte: /e split\n');
     const { kg, dolly, say } = pair();
     await say(member('aparte viaje'));
-    expect(kg.calls.ran).toEqual(['/join viaje']);
+    expect(kg.calls.ran).toEqual(['/split viaje']);
     expect(kg.calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
     recordedOnly(dolly, 'aparte viaje');
   });

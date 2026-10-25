@@ -1,6 +1,6 @@
 // public-commands.test.mjs — who may run a command (operator 2026-10-19 ~14:20). The node's allowed
 // users run any command; anyone else in the chat runs only what public_commands names: config.yaml's
-// root list (DEFAULT join, split, send, end), or the chat's own conversations.yaml list, which
+// root list (DEFAULT split, send, end; join retired 2026-10-25), or the chat's own conversations.yaml list, which
 // replaces it. `/<handle> <not a command>` is no command and addresses nobody. One real node (kg):
 // real commands + real router + real spine, the chat in mention mode.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -105,12 +105,30 @@ describe('/<handle> <not a command> is ordinary text that addresses nobody', () 
   });
 });
 
-describe('the default public list: join, split, send, end', () => {
-  it('a member\'s "/e join x" runs', async () => {
+describe('the default public list: split, send, end', () => {
+  it('a member\'s "/e split x" runs', async () => {
     const n = node();
+    await n.say(member('/e split x'));
+    expect(n.calls.ran).toEqual(['/split x']);
+    expect(n.calls.create.map((c) => c.title)).toEqual(['SI+C-x']);
+  });
+
+  it('a member\'s retired "/e join x" is not public by default: no command, no reply, nothing made', async () => {
+    const n = node();
+    expect(await admitted(n, member('/e join x'))).toBe(false);
+    await n.say(member('/e join x'));
+    expect(n.calls.ran).toEqual([]);
+    expect(n.calls.sent).toEqual([]);
+    expect(n.calls.create).toEqual([]);
+  });
+
+  it('where public_commands still lists join, a member\'s "/e join x" answers with /split and makes nothing', async () => {
+    const n = node({ config: { public_commands: ['join', 'split', 'send', 'end'] } });
     await n.say(member('/e join x'));
     expect(n.calls.ran).toEqual(['/join x']);
-    expect(n.calls.create.map((c) => c.title)).toEqual(['SI+C-x']);
+    expect(n.calls.create).toEqual([]);
+    expect(n.calls.sent).toHaveLength(1);
+    expect(n.calls.sent[0]).toContain('/e split x');
   });
 
   it('a member\'s "/e recap" and bare "/e agents" are refused: no command, nobody woken', async () => {
@@ -159,13 +177,13 @@ describe('config.yaml public_commands replaces the default', () => {
 });
 
 describe('a chat\'s own public_commands replaces the global list there', () => {
-  it('[] in C: a member\'s "/e join" is refused in C and still runs in D', async () => {
+  it('[] in C: a member\'s "/e split" is refused in C and still runs in D', async () => {
     const n = node({ lists: { [GROUP]: [] } });
-    await n.say(member('/e join x'));
+    await n.say(member('/e split x'));
     expect(n.calls.ran).toEqual([]);
     expect(n.calls.create).toEqual([]);
-    await n.say(member('/e join x', { chatId: OTHER, chatName: 'D' }));
-    expect(n.calls.ran).toEqual(['/join x']);
+    await n.say(member('/e split x', { chatId: OTHER, chatName: 'D' }));
+    expect(n.calls.ran).toEqual(['/split x']);
   });
 
   it('[recap] in C over a global [join]: C runs recap, not join; D runs join, not recap', async () => {

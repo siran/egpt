@@ -18,7 +18,7 @@ not answered by the persona. Authorization = the surface's own `chat_id`
 (Self-DM), an entry in that surface's `allowed_users`, or the account owner.
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
-e.g. `/e restart`, `/don agents`, `/e join viaje`. The node that hosts that being
+e.g. `/e restart`, `/don agents`, `/e split viaje`. The node that hosts that being
 runs it; every other node records the line and does nothing. A bare `/restart`
 in a chat is ordinary text. `/<handle> <anything else>` (`/e hola`) is ordinary
 text too, and addresses nobody. The editor shell (the node's own console) and the ingest box
@@ -28,9 +28,22 @@ that being (`/e agents compact`). A chat whose conversations.yaml entry sets
 commands included (`[]` = by none).
 
 Anyone else in a chat runs only the commands `public_commands` names: the root
-key in config.yaml (default `[join, split, send, end]`), or the chat's own
+key in config.yaml (default `[split, send, end]`), or the chat's own
 conversations.yaml entry, which replaces it (`[]` = none). A listed `agents`
 opens only the bare list; its verbs stay authorized-only.
+
+`/join` is retired (2026-10-25): `/<handle> join` answers with `/<handle> split`,
+which makes a fork (same agents and files, its own thread; the main chat can read
+its transcript). Side rooms `/join` made before keep working with `/send` and
+`/end`; a `join:` block in config.yaml is ignored.
+
+On Telegram, `/split` makes a **topic** in the group instead of a new group (a
+bot cannot make groups), and the answer is the topic's link. The group needs
+Topics turned on and the bot as an admin with "Manage topics"; without them the
+command says so. A topic is its own chat, `tg:<chat>/<thread>`; General is the
+chat itself. `/send` in a topic copies to General; `/end` closes the topic.
+Turning Topics on makes a basic group a supergroup with a new id; the
+conversation (folder, threads, settings, a `closed_chats` rule) follows it.
 
 ```text
 /<handle> status                               compact node health (fenced yaml):
@@ -253,17 +266,15 @@ their very next turn (there is no per-conversation freeze).
 ### Templates
 
 These text keys take `{word}` variables. Only the words listed are filled in;
-any other `{word}` stays as written, so a typo shows. `split.placeholder` takes
-none. The list is `TEMPLATES` in `src/tools/template.mjs`; a test keeps it in
-step with the code.
+any other `{word}` stays as written, so a typo shows. The list is `TEMPLATES` in
+`src/tools/template.mjs`; a test keeps it in step with the code. Unset, a room
+with a link (a Telegram topic) answers `/split` with its link.
 
 | Key | Variables | Example |
 |---|---|---|
-| `group_title` | `{group}` the original chat's name, `{name}` the name typed after join/split (none: 5 random letters) | `{group}-{name}` → `SI+Familia-viaje` |
-| `join.placeholder` | `{name}` the join name, `{title}` the new group's title, `{group}` the original chat's name, `{by}` who typed the command, `{handle}` the handle it was typed to | `joined {name}: /{handle} join {name}` → `joined viaje: /e join viaje` |
-| `join.exists` | as `join.placeholder`; `{by}` = who made that group | `ask {by} to add you` → `ask An to add you` |
-| `join.limit` | as `join.placeholder`; `{name}` = the sender's groups here | `you have {name}` → `you have viaje, cine` |
-| `join.opener`, `split.opener` | `{group}` the original chat's name, `{handle}` the handle the command was typed to | `Side-room of {group}` → `Side-room of Familia` |
+| `group_title` | `{group}` the original chat's name, `{name}` the name typed after split (none: 5 random letters) | `{group}-{name}` → `SI+Familia-viaje` |
+| `split.placeholder` | `{link}` the link that opens the fork (a Telegram topic; empty on WhatsApp) | `open it: {link}` → `open it: https://t.me/c/1234/77` |
+| `split.opener` | `{group}` the original chat's name, `{handle}` the handle the command was typed to | `Fork of {group}` → `Fork of Familia` |
 | `send.origin_template` | `{group}` the side group's name | `↪ from {group}: ` → `↪ from SI+Familia-viaje: ` |
 | `compaction.handoff_prompt`, `compaction.welcome` | `{agent}` the being's handle, `{YYMMDD-HHMM}` the local time of the warning | `handoffs/{agent}.{YYMMDD-HHMM}.md` → `handoffs/e.261021-2030.md` |
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |

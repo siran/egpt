@@ -5147,7 +5147,7 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
       getConfig: () => ({ node_name: 'kg', node_role: 'primary', beeper: { primary: { phone: '+16468217865' } } }),
       send: async () => {}, loadState: async () => st, writeState: async (s) => { st = s; },
       forkBridge: {
-        createGroup: (o) => port.createGroup(o),
+        createGroup: (o, { origin = null } = {}) => port.createGroup(origin, o),
         postReply: (chatId, text, replyTo, { canary = null } = {}) => port.send(chatId, text, { replyTo, canary }),
         chatAccountId: async () => 'whatsapp',
         chatRaw: (id) => port.chatRaw(id),

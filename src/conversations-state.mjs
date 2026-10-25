@@ -1721,6 +1721,20 @@ export function dropContact(state, surface, jid) {
   return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
 }
 
+// A chat that carries on under a new id (a Telegram group turned supergroup, 2026-10-25): its entry
+// moves to `to` whole, in place (folder, threads, beings' settings), and every side room naming it
+// (aliasOf, parent_chat) follows. The same state when `from` has no entry or `to` already has one.
+export function moveChatId(state, surface, from, to) {
+  const bucket = state?.contacts?.[surface];
+  if (!bucket?.[from] || !to || bucket[to]) return state;
+  const next = {};
+  for (const [id, e] of Object.entries(bucket)) {
+    if (id === from) next[to] = e;
+    else next[id] = e?.aliasOf === from ? { ...e, aliasOf: to } : e?.parent_chat === from ? { ...e, parent_chat: to } : e;
+  }
+  return { ...state, contacts: { ...state.contacts, [surface]: next } };
+}
+
 // The primary a jid is an ALIAS OF, read RAW (not alias-resolved), or null when it is a primary
 // itself / unknown. Behind /send + /end's "is this a fork group, and what is its original?".
 export function aliasTargetOf(state, surface, jid) {

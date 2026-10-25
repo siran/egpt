@@ -32,7 +32,7 @@ async function beeperPortMethods() {
 }
 
 // Methods that take no chat as their first argument: they pass through, never routed.
-const NOT_CHAT_KEYED = ['onMessage', 'onEdit', 'onMedia', 'renderFrame', 'selfIdentities', 'listChats', 'listChatsRaw', 'createGroup', 'resolveUserIdByPhone', 'isAlive', 'setBeeperRestart', 'stop'];
+const NOT_CHAT_KEYED = ['onMessage', 'onEdit', 'onMedia', 'renderFrame', 'selfIdentities', 'listChats', 'listChatsRaw', 'resolveUserIdByPhone', 'isAlive', 'setBeeperRestart', 'stop'];
 
 describe('makeLimbAwareBridge with the shell only — exactly the old makeShellAwareBridge', () => {
   const SHELL = ['send', 'startStream', 'postStatus'];

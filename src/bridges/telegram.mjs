@@ -5,6 +5,8 @@
 // stays in one place. Media is downloaded (getFile) and goes through the same intake as Beeper's
 // (limb-intake.mjs: voice note, 👂, readback; the host's onMedia saves it).
 // Inside the spine a chat id is `tg:<chat id>`; the prefix is dropped only at the API call.
+// A forum topic is a chat of its own, `tg:<chat id>/<thread id>` (message_thread_id at the API); General
+// is the chat itself. /split makes a topic (createGroup), /end closes one (archiveChat).
 // No invisible characters go out (visibleOnly; Telegram reads hidden text as spam, 2026-10-24): the
 // port's wrap adds no structural frame, and send/edit/caption strip what is left. So the bot's own
 // message is known by its sender, and the being who wrote it by its visible stamp (stampedBeing).
@@ -30,7 +32,13 @@ import { startVoiceNote, readBack, savedEntry, withMediaLines, VOICE_NOTE_PLACEH
 
 export const TG_PREFIX = 'tg:';
 export const isTelegramChatId = (id) => String(id ?? '').startsWith(TG_PREFIX);
-const apiChatId = (id) => (isTelegramChatId(id) ? String(id).slice(TG_PREFIX.length) : null);
+const apiChatId = (id) => (isTelegramChatId(id) ? String(id).slice(TG_PREFIX.length).split('/')[0] : null);
+const threadOf = (id) => { const t = String(id ?? '').split('/')[1]; return t ? Number(t) : null; };
+const inThread = (id) => (threadOf(id) != null ? { message_thread_id: threadOf(id) } : {});
+// Opens a supergroup's topic for anyone in the group.
+const topicLink = (chat, thread) => `https://t.me/c/${String(chat).replace(/^-100/, '')}/${thread}`;
+// What a chat needs before the bot can make a topic in it (createGroup's reason).
+export const TOPICS_NEEDED = 'turn on Topics in this group and make me an admin with "Manage topics"';
 
 // The bot token lives in a file, never in config.yaml: $EGPT_HOME/secrets/telegram-<connection>.token
 export const telegramTokenPath = (home, connection) => secretPath(home, `telegram-${connection}.token`);
@@ -97,6 +105,7 @@ export function startTelegramBridge({
   resumedAt = () => null,
   onIncoming,
   onMessageEdit = null,      // the raw edit hook (the mesh mirror), as on Beeper
+  onChatMoved = null,        // (fromChatId, toChatId): a group turned supergroup carries on under a new id
   // The node-level media + voice options boot hands every limb (sharedBridgeOpts), as Beeper takes them.
   onMedia = null,
   media = {},
@@ -135,6 +144,7 @@ export function startTelegramBridge({
   const titles = new Map();
   const failures = new Map();
   const refused = new Set(), refusedLogged = new Set();   // reactions Telegram would not take
+  const movedChats = new Set();    // old ids already handed over (the move is said on both sides)
   let stopped = false, alive = false, me = null, offset = 0, privacyNoted = false;
   const replyWake = (Array.isArray(replyWakeWords) && replyWakeWords.length) ? replyWakeWords : (wakeWords ?? []);
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
@@ -194,16 +204,25 @@ export function startTelegramBridge({
   const authorOf = (ours, text) => (ours ? { replyToNode: String(nodeName).trim() || null, replyToBeing: stampedBeing(text, personaStamps()) } : { replyToNode: null, replyToBeing: null });
   // The text of every message seen or sent: a reaction names its target's text, an edit its old text.
   const seenText = new Map();
+  const topicOfMsg = new Map();   // `tg:<chat>#<id>` → its topic: a reaction names no topic
   const remember = (chatId, id, text) => {
     if (id == null) return;
     seenText.set(`${chatId}#${id}`, String(text ?? ''));
     if (seenText.size > SENT_MAX) seenText.delete(seenText.keys().next().value);
+    if (threadOf(chatId) == null) return;
+    topicOfMsg.set(`${TG_PREFIX}${apiChatId(chatId)}#${id}`, chatId);
+    if (topicOfMsg.size > SENT_MAX) topicOfMsg.delete(topicOfMsg.keys().next().value);
   };
-  const chatOf = (chat) => {
-    const chatId = TG_PREFIX + chat.id;
-    const title = chat.title ?? ([chat.first_name, chat.last_name].filter(Boolean).join(' ') || (chat.username ? `@${chat.username}` : chatId));
-    titles.set(chatId, title);
-    return { chatId, title, chatType: chat.type === 'group' || chat.type === 'supergroup' ? 'group' : 'private' };
+  // A topic message is its topic's. A topic's name rides its creation message, which every message
+  // there quotes unless it quotes another; never seen → null (no rename off a guess).
+  const chatOf = (chat, m = null) => {
+    const thread = m?.is_topic_message && m.message_thread_id != null ? m.message_thread_id : null;
+    const chatId = TG_PREFIX + chat.id + (thread != null ? `/${thread}` : '');
+    if (thread != null) {
+      const named = (m.forum_topic_created ?? m.forum_topic_edited ?? m.reply_to_message?.forum_topic_created)?.name;
+      if (named) titles.set(chatId, named);
+    } else titles.set(chatId, chat.title ?? ([chat.first_name, chat.last_name].filter(Boolean).join(' ') || (chat.username ? `@${chat.username}` : chatId)));
+    return { chatId, thread, title: titles.get(chatId) ?? null, chatType: chat.type === 'group' || chat.type === 'supergroup' ? 'group' : 'private' };
   };
   const nameOf = (u, fallback) => [u?.first_name, u?.last_name].filter(Boolean).join(' ') || (u?.username ? `@${u.username}` : fallback);
   const stale = (dateS) => (Number(dateS) || 0) * 1000 < Math.max(startedAt, resumedAt?.() ?? 0) - WAKE_WINDOW_MS;
@@ -213,11 +232,13 @@ export function startTelegramBridge({
   // Telegram never reports the bot's own reactions, and in groups reports them only to an admin bot.
   function reacted(r) {
     if (!r?.chat || r.chat.type === 'channel') return;
-    const { chatId, title, chatType } = chatOf(r.chat);
+    const msgKey = String(r.message_id);
+    const { chatId: mainId, chatType } = chatOf(r.chat);
+    const chatId = topicOfMsg.get(`${mainId}#${msgKey}`) ?? mainId;
+    const title = titles.get(chatId) ?? null;
     const before = new Set((r.old_reaction ?? []).filter((x) => x.type === 'emoji').map((x) => x.emoji));
     const fresh = (r.new_reaction ?? []).filter((x) => x.type === 'emoji' && !before.has(x.emoji)).map((x) => x.emoji);
     if (!fresh.length) return;
-    const msgKey = String(r.message_id);
     const userId = String(r.user?.id ?? r.actor_chat?.id ?? '');
     const name = nameOf(r.user, r.actor_chat?.title ?? userId);
     if (stale(r.date)) { log(`reaction by ${name} → #${msgKey} [${title}] is from before the wake window — not replayed`); return; }
@@ -241,7 +262,7 @@ export function startTelegramBridge({
   // never seen before (sent before this start) has no old text: recorded, not surfaced.
   async function edited(m) {
     if (!m?.chat || m.chat.type === 'channel') return;
-    const { chatId, title, chatType } = chatOf(m.chat);
+    const { chatId, title, chatType } = chatOf(m.chat, m);
     const msgKey = String(m.message_id);
     const cur = String(m.text ?? m.caption ?? '');
     const prev = seenText.get(`${chatId}#${msgKey}`);
@@ -291,13 +312,23 @@ export function startTelegramBridge({
     if (!m) return;
     const chat = m.chat ?? {};
     if (chat.type === 'channel') return;
-    const chatId = TG_PREFIX + chat.id;
-    const group = chat.type === 'group' || chat.type === 'supergroup';
-    const title = chat.title ?? ([chat.first_name, chat.last_name].filter(Boolean).join(' ') || (chat.username ? `@${chat.username}` : chatId));
-    titles.set(chatId, title);
+    const { chatId, thread, title, chatType } = chatOf(chat, m);
+    const group = chatType === 'group';
     const md = pickMedia(m);
     let text = String(m.text ?? m.caption ?? '');
     remember(chatId, m.message_id, text);
+    // A group turned supergroup (Topics on) says so on both sides; handed over before any later
+    // update is (not awaited), so the conversation has moved before the new id's first message.
+    const moved = m.migrate_to_chat_id != null ? [chat.id, m.migrate_to_chat_id] : m.migrate_from_chat_id != null ? [m.migrate_from_chat_id, chat.id] : null;
+    if (moved) {
+      const [from, to] = moved.map((id) => TG_PREFIX + id);
+      if (movedChats.has(from)) return;
+      movedChats.add(from);
+      log(`${from} is now ${to} (a supergroup)`);
+      try { Promise.resolve(onChatMoved?.(from, to)).catch((e) => log(`onChatMoved threw — ${e?.message ?? e}`)); }
+      catch (e) { log(`onChatMoved threw — ${e?.message ?? e}`); }
+      return;
+    }
     if (!text.trim() && !md) return;
     if (group && me && me.can_read_all_group_messages === false && !privacyNoted) {
       privacyNoted = true;
@@ -310,13 +341,13 @@ export function startTelegramBridge({
     const tsMs = (Number(m.date) || 0) * 1000 || now();
     const msgKey = m.message_id != null ? String(m.message_id) : null;
     const authorized = !!userId && !!isAllowedUser(userId, 'telegram');
-    const quoted = m.reply_to_message ?? null;
+    // In a topic, quoting the topic's creation message is quoting nothing.
+    const quoted = m.reply_to_message && !(thread != null && m.reply_to_message.message_id === thread) ? m.reply_to_message : null;
     const replyToId = quoted?.message_id != null ? String(quoted.message_id) : null;
     const quotedText = String(quoted?.text ?? quoted?.caption ?? '');
     const replyToBot = !!quoted && ((me?.id != null && quoted.from?.id === me.id) || wasSentByUs(chatId, replyToId));
     const { replyToNode, replyToBeing } = authorOf(replyToBot, quotedText);
     const backlog = tsMs < Math.max(startedAt, resumedAt?.() ?? 0) - WAKE_WINDOW_MS;
-    const chatType = group ? 'group' : 'private';
 
     // MEDIA: a voice/audio note is always fetched (it is transcribed); the rest per whatsapp.media.download.
     const policy = media.download ?? 'all';
@@ -461,7 +492,7 @@ export function startTelegramBridge({
     try {
       for (const [i, part] of chunks(text).entries()) {
         const reply = i === 0 && replyToMessageID != null ? { reply_parameters: { message_id: Number(replyToMessageID), allow_sending_without_reply: true } } : {};
-        const m = await callHtml('sendMessage', part, (t) => ({ chat_id: chat, text: t, ...reply }));
+        const m = await callHtml('sendMessage', part, (t) => ({ chat_id: chat, ...inThread(chatId), text: t, ...reply }));
         noteSent(chatId, m.message_id);
         remember(chatId, m.message_id, part);
         first ??= String(m.message_id);
@@ -514,6 +545,30 @@ export function startTelegramBridge({
     }
   }
 
+  // A side room is a topic of the chat it is made from: { success, chatID, link }, or { success: false, reason }.
+  async function createGroup({ title } = {}, { chatId } = {}) {
+    const chat = apiChatId(chatId);
+    if (chat == null) return null;
+    try {
+      const t = await call('createForumTopic', { chat_id: chat, name: String(title ?? '').slice(0, 128) });
+      const id = `${TG_PREFIX}${chat}/${t.message_thread_id}`;
+      titles.set(id, t.name);
+      log(`topic "${t.name}" made in ${chatId}: ${id}`);
+      return { success: true, chatID: id, link: topicLink(chat, t.message_thread_id) };
+    } catch (e) {
+      log(`createForumTopic in ${chatId} failed — ${e.message}`);
+      return { success: false, reason: e.status === 400 || e.status === 403 ? TOPICS_NEEDED : `Telegram did not make the topic (${e.message})` };
+    }
+  }
+
+  // /end closes a topic; a whole chat is never closed.
+  async function archiveChat(chatId) {
+    const chat = apiChatId(chatId);
+    if (chat == null || threadOf(chatId) == null) return false;
+    try { return !!(await call('closeForumTopic', { chat_id: chat, ...inThread(chatId) })); }
+    catch (e) { log(`closeForumTopic ${chatId} failed — ${e.message}`); return false; }
+  }
+
   // .ogg/.opus is a voice note; Telegram's audio player takes only mp3/m4a, so any other audio is a document.
   function mediaMethod(filePath) {
     const ext = extname(String(filePath)).slice(1).toLowerCase();
@@ -535,6 +590,7 @@ export function startTelegramBridge({
       const form = (cap) => {
         const f = new FormData();
         f.append('chat_id', chat);
+        if (threadOf(chatId) != null) f.append('message_thread_id', String(threadOf(chatId)));
         if (cap) f.append('caption', cap);
         if (replyTo != null) f.append('reply_parameters', JSON.stringify({ message_id: Number(replyTo), allow_sending_without_reply: true }));
         f.append(field, file, basename(String(filePath)));
@@ -619,6 +675,8 @@ export function startTelegramBridge({
     removeReaction: (chatId, msgId) => setReaction(chatId, msgId, []),
     sendMedia,
     startStreamMessage,
+    createGroup,
+    archiveChat,
     wasSentByUs,
     sendFailure: (chatId) => failures.get(chatId) ?? null,
     getChatName: (chatId) => titles.get(chatId) ?? null,
