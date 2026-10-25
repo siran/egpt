@@ -328,3 +328,24 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 
   - **RI Marketplace** (other customers reselling the rest of their reservations): regional t3a.small at $0.0118/h with 90 and 180 days left. AZ-scoped ones (210 days, $37.92 / $61.25 all upfront) sit in us-east-1c and 1f; edw-data is in 1a.
   - A regional reservation is a billing discount the ASG's on-demand instance gets automatically. It is a purchase on EduWeb's bill: operator's call.
+
+## 10-25 ~01:30 — one on-demand instance for the node and a whisper container (operator)
+- **Operator:** ECS on EC2 capacity. The transcriptor runs as a second container on the node's instance (no extra instance), on-demand.
+- **Shape:**
+  - a whisper-server task on the same instance (host network, :8089), with a hard memory limit so it can't starve the node;
+  - the node already adopts whatever answers on 127.0.0.1:8089 ("adopted the moment something answers, never spawned"), so this is config only: fallback_order [local, cli];
+  - piper and ffmpeg stay in the node.
+- **Fit:** the node idles at ~0.5 GB, plus Chrome and CLIs per active conversation.
+  - Full large-v3 (~3.1 GB model) doesn't fit beside it in 4 GB; large-v3 quantized (q5) or large-v3-turbo does.
+  - Full large-v3 needs t3a.large (8 GB).
+  - Speed on 2 burstable cores is unmeasured → benchmark first.
+- **Price per month** (Pricing API, us-east-1, 730 h):
+
+  | Instance | On-demand | 1-yr reserved, no upfront | 3-yr reserved, no upfront |
+  |---|---|---|---|
+  | t3a.small | 13.72 | 8.61 | 5.91 |
+  | t3a.medium | 27.45 | 17.23 | 11.83 |
+  | t3a.large | 54.90 | 34.38 | 23.73 |
+
+  - Plus ~$9 fixed: root + data gp3 60 GB $4.80, IPv4 $3.65, ECR ~$0.41 with one image (the worker reuses it).
+  - Changing size and switching to on-demand are one instance swap, so one outage.
