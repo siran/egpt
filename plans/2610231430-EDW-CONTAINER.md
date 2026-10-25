@@ -289,3 +289,25 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - whisper-cli only, ggml-small on the volume (~/.egpt/models/whisper), language es, 2 threads, audio_ctx auto (a 5.5 s note: 57 s → 20 s);
   - no resident server (small still held ~750 MB); ear posts -1.
   - Data volume 4.5 of 30 GB used.
+
+## 10-25 ~00:50 — near-zero handover for the node; a worker for voice (proposed, operator)
+- **Operator:** keep the node on a small Spot instance with no downtime when it is working; a separate, bigger ECS worker for voice (transcription es+en with a high model, piper, light ffmpeg).
+- **What AWS offers:**
+  - Capacity Rebalancing: the ASG replaces a Spot instance at elevated risk, usually before the 2-minute notice;
+  - ECS managed draining and task scale-in protection (a busy task holds off OUR deploys and scale-ins).
+  - Nothing defers a reclaim past its 2 minutes.
+  - With one disk and one poller per bot, the old and new copies can't overlap, so the floor is ~1 min of silence (messages wait in Telegram), not zero.
+- **Worker = the existing worker role** (transcriptor-worker.mjs: the same egpt serving signed POST /v1/transcribe, as dolly does for kg) plus the synthesizer worker role. EDW points `whisper-server-remote` at it, falling back to its local small CLI.
+- **Worker prices** (Pricing API + 24 h Spot max, us-east-1a; Spot Advisor band):
+
+  | Type | Cores, RAM | On-demand $/mo | Spot $/mo | Interrupt band |
+  |---|---|---|---|---|
+  | t3a.medium | 2 burst, 4 GB | 27.45 | 10.22 | >20% |
+  | t3a.large | 2 burst, 8 GB | 54.90 | 19.93 | >20% |
+  | c7a.large | 2, 4 GB | 74.93 | 24.53 | 5–10% |
+  | m7a.large | 2, 8 GB | 84.62 | 30.81 | >20% |
+  | c7a.xlarge | 4, 8 GB | 149.85 | 54.53 | 10–15% |
+  | c6a.xlarge | 4, 8 GB | 111.69 | 55.41 | 5–10% |
+
+  - Each instance adds ~$6/mo (30 GB root + IPv4).
+  - No CPU timings measured for large-v3 on these. Known points: small took 20 s for a 5.5 s note on t3a.small (2 threads); large-v3 "swapped for minutes" on t3a.medium; "still slow" on t3a.large.
