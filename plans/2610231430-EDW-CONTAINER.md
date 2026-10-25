@@ -500,3 +500,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Transcription, "same as KG":** KG runs on GPU. Dolly's whisper-server is the CUDA build (ggml-cuda.dll) on a GTX 1050 Ti, large-v3 f16, -l auto; CPU i7-8750H. AWS Transcribe: "garbage" (operator).
   - AWS equivalents (us-east-1, 730 h): g4dn.xlarge T4 $384 on-demand / $248 Spot in 1a (10–15 % band); g6.xlarge L4 $588/$422; c7a.4xlarge (16 cores, CPU) $599/$231. G-instance quotas: 768 on-demand / 64 Spot vCPUs.
   - Cheaper shapes: a GPU started on the first note and stopped after ~20 min idle (first note ~1 min, then seconds; a few $/mo at EduWeb's volume); business hours only; or a hosted large-v3 API (Groq: $0.111 per audio hour, 10 s minimum per request; audio leaves AWS).
+
+## 10-25 ~19:30 — /join evicted; GPU-on-demand transcription build
+- **/join evicted** (operator): "/split gives the context and folder with all previous files; /join pollutes a main thread; the main thread can read the transcript." On every surface; /split stays (Telegram: a forked topic + link). Folded into the topics agent (same files). Existing join side rooms keep working; they just can't be created.
+- **Bot rights:** the operator likes Change Group Info, Manage Video Chats and Post/Edit stories. Nothing is wrong with them; the only cost is reach: whoever holds the bot token (leo can read secrets) can do those too.
+- **kg's hardware:** Ryzen 7 7730U, integrated Radeon, no NVIDIA. kg's notes go to dolly's GTX 1050 Ti (real, CUDA).
+- **Transcription = GPU only when needed** (operator). Contract between two agents:
+  - ECS service `edw-whisper` (cluster edw, awsvpc, raw whisper-server :8089 large-v3 CUDA) on a g4dn.xlarge on-demand ASG with a warm pool (stopped instance); desired 0 = asleep (disk only), 1 = awake ($0.526/h);
+  - SG 8089 from edw-sg only;
+  - IAM user edw-whisper-waker (Update/DescribeServices on edw-whisper, List/DescribeTasks), key → EDW secrets/aws-whisper-waker;
+  - nightly 03:00 Caracas Scheduler stop.
+  - Agents: infra (worktree egpt-wt-gpu, feat/whisper-gpu; dry runs only) and the egpt engine `whisper-server-ecs` (egpt-wt-gpuclient, feat/whisper-ecs-engine): wake + resolve the task IP + tryLocal's request code, one shared wake, an idle stop, falling back to the small CLI.
