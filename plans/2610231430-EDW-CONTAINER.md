@@ -418,3 +418,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Live: conversations.yaml is re-read when its stat changes (stat-cache).
   - Side groups not touched: on kg they are aliases of this entry; on do, nue11 and emely are entries of their own.
 - **Pending:** the "moved to Telegram" notice (needs the invite link; operator posts it, or an explicit go to send it as Rodz); then tell ED to read the new material and the brief.
+- **Operator 10-25:** "disable a group with a message" must be configurable from config.yaml. Building `closed_chats` (agent, worktree egpt-wt-closed, feat/closed-chats):
+  - shape: closed_chats.<network>.<conversations.yaml id>.message;
+  - through agentsInChat / the per-chat mode resolution (no parallel gate);
+  - the notice is posted once through boot's sayOnce, with a marker in the chat's entry; a reminder to anyone who addresses a being, at most once a day; applies live.
+  - SI+EduWeb: kg carries the message (link https://t.me/+eotN-hXG5qUyNDlh); do carries it closed without one. The notice goes out when this deploys.
