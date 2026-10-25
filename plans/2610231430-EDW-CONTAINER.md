@@ -357,3 +357,19 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Keep EDW on its own instance** (same cluster, own capacity provider). EDW is `privileged` + host network. Root inside it is root over the host: every container's filesystem and env (DB passwords) and their ports. Today two layers stand in between (the box; the egpt user with one sudo line); client chatboxes will put strangers' text in front of beings.
 - **Commitment:** one EC2 Instance Savings Plan for t3a in us-east-1 covers both instances whatever their sizes. 1-yr no upfront, t3a.large: $0.0471/h vs $0.0752 on-demand (−37 %). A Compute Savings Plan (any family/size, Fargate too): $0.0542 (−28 %).
 - **Per-container limits (ECS on EC2):** container `cpu` = a share under contention (it may use idle CPU); task `cpu` = a hard ceiling; `memory` = a hard limit (only that container is OOM-killed); `memoryReservation` = soft.
+- **Operator:** no Fargate; EC2 capacity under ECS.
+- **Families** (AWS describe-instance-types + Pricing API, .large, us-east-1):
+
+  | Type | Physical cores | Clock | RAM | Burstable | $/mo |
+  |---|---|---|---|---|---|
+  | t3a.large (AMD) | 1, 2 threads | 2.2 GHz | 8 GB | yes | 54.90 |
+  | t3.large (Intel) | 1, 2 threads | 2.5 GHz | 8 GB | yes | 60.74 |
+  | t4g.large (ARM) | 2 | 2.5 GHz | 8 GB | yes | 49.06 |
+  | m6a.large | 1, 2 threads | 3.6 GHz | 8 GB | no | 63.07 |
+  | m7i.large | 1, 2 threads | 3.2 GHz | 8 GB | no | 73.58 |
+  | c7a.large | 2 | 3.7 GHz | 4 GB | no | 74.93 |
+  | m7a.large | 2 | 3.7 GHz | 8 GB | no | 84.62 |
+  | r7a.large | 2 | 3.7 GHz | 16 GB | no | 111.07 |
+
+  - EDW's image is x86 (Chrome, Beeper builds), so t4g doesn't fit EDW as is.
+  - Mixing families (t3a + c7a/m7a) → Compute Savings Plan, not an EC2 Instance one.
