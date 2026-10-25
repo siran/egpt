@@ -69,6 +69,11 @@ mkdir -p /etc/docker
 [ -s /etc/docker/daemon.json ] \
   || echo '{"log-driver":"json-file","log-opts":{"max-size":"50m","max-file":"3"}}' >/etc/docker/daemon.json
 
+# Host network: the task takes the host's name. Keep the old container's (sudo, Chrome profile locks).
+echo 'preserve_hostname: true' >/etc/cloud/cloud.cfg.d/99-edw-hostname.cfg
+hostnamectl set-hostname edw
+grep -q '[[:space:]]edw$' /etc/hosts || echo '127.0.0.1 edw' >>/etc/hosts
+
 if [ ! -f /swapfile ]; then
   dd if=/dev/zero of=/swapfile bs=1M count=4096
   chmod 600 /swapfile
