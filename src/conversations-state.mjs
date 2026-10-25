@@ -1148,6 +1148,7 @@ export function getContact(state, surface, jid) {
 export const CONTACT_BOOKKEEPING_KEYS = new Set([
   'slug', 'pushedName', 'firstSeenAt', 'aliasOf', 'jids', 'agents',
   'conversation_path', 'home_dir',
+  'closed',   // closed_chats' marker (src/spine/closed-chats.mjs)
 ]);
 
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
@@ -1167,6 +1168,7 @@ export function getBeing(state, surface, jid, being) {
   const alias = own?.aliasOf ? own : null;
   return {
     jid: c.jid, slug: c.slug, surface, being,
+    chatId:             jid,                    // the id asked about; `jid` follows an alias to its origin
     present:            !!b,
     mode:               _beingBlock(alias ?? {}, being)?.mode ?? b?.mode ?? null,
     threadId:           b?.threadId           ?? null,
