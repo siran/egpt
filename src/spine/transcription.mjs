@@ -4,6 +4,7 @@
 // with its real engines:
 //   whisper-server-remote  → transcribeViaEndpoint   (another node's server)
 //   whisper-server-local   → startWhisperServer       (a local whisper-server)
+//   whisper-server-ecs     → createEcsWaker           (an ECS whisper-server, woken on demand)
 //   whisper-cli            → transcribeAudioFile       (the cli fallback)
 // The active profile + its fallback_order come from config.transcription_service
 // [use_config]. The result `transcribe(audioPath, cfg, log, meta)` is what the
@@ -33,11 +34,15 @@ import { parseTranscriptionConfig } from '../transcription-service.mjs';
 import { POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { readState, CONV_YAML_PATH, getContact, slugDir } from '../conversations-state.mjs';
 import { routesToOwnTranscriptor } from './transcriptor-worker.mjs';
+import { createEcsWaker } from '../tools/whisper-ecs.mjs';
+import { createEcsClient, readAwsKeyPair } from '../tools/aws-ecs.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';
 
 export function createTranscription({
   getConfig = () => ({}),
   onLog = () => {},
   onTransition = () => {},
+  home = EGPT_HOME,               // secrets/<credentials> of a whisper-server-ecs engine
   // conv-state IO — DEFAULTS to a self-contained reader of CONV_YAML_PATH
   // (readState: parse file, missing → emptyState — same fallback boot's
   // _loadState uses). Boot calls createTranscription({ getConfig, onLog })
@@ -54,7 +59,7 @@ export function createTranscription({
   const txSvc = cfg.transcription_service;
   const profile = txSvc?.[txSvc?.use_config] ?? {};   // transcription_service is canonical (operator 2026-07-02)
 
-  const { transcribe, stop } = buildTranscriptionPipeline({
+  const { transcribe, stop, boot } = buildTranscriptionPipeline({
     profile,
     transcribeViaEndpoint,
     // reconcile a local fallback decode to the worker that was down, so it never re-decodes those bytes
@@ -66,6 +71,11 @@ export function createTranscription({
     cli: transcribeAudioFile,
     // Which remote rung is THIS node decoding (the 🎧 listening mark goes up only where the decode runs).
     ownTranscriptor: routesToOwnTranscriptor(cfg),
+    makeEcsWaker: (eng) => createEcsWaker({
+      eng,
+      api: createEcsClient({ region: eng.region, cluster: eng.cluster, service: eng.service, credentials: () => readAwsKeyPair(home, eng.credentials) }),
+      onLog,
+    }),
     onTransition,
     onLog,
   });
@@ -139,6 +149,7 @@ export function createTranscription({
   return {
     transcribe,
     stop,
+    boot,
     cliCfg,
     postsBackDelayMs,
     resolveTranscriptionService,

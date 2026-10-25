@@ -304,6 +304,19 @@ networks:
 #     gpu:   { type: whisper-server-remote, endpoint: "http://192.168.1.102:23390", token: "SHARED_SECRET" }
 #     local: { type: whisper-cli, command: C:\path\whisper-cli.exe, model_path: C:\path\ggml-large-v3.bin, language: es, ffmpeg_command: C:\path\ffmpeg.exe }
 #
+# A GPU woken only when a note needs it: whisper-server in an ECS service (desired 0 = asleep).
+#     fallback_order: [gpu, cli]
+#     gpu:
+#       type: whisper-server-ecs
+#       cluster: edw
+#       service: edw-whisper
+#       region: us-east-1
+#       port: 8089
+#       credentials: aws-whisper-waker   # secrets/<name>: line 1 key id, line 2 secret
+#       wake_timeout_ms: 240000          # a note waits at most this for the worker, then the next engine
+#       idle_stop_ms: 1200000            # desired 0 after this long with no note in flight
+#       language: auto                   # this rung's language, over the cli's
+#
 # To HOST the server for other nodes (the GPU box - the "transcriptor" worker role):
 # transcriptor:
 #   enabled: true                 # answer POST /v1/transcribe for a main spine (this node's WORKER role)
