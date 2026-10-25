@@ -8,6 +8,7 @@
 //   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'-'...' silence cosmetic
 //
 // `mode` resolves down ONE chain, most specific first (operator 2026-07-25):
+//   config.yaml         closed_chats.<surface>.<id>   'off' for every being (closed-chats.mjs)
 //   conversations.yaml  <conv>.agents.<name>.mode   per-conversation override (an alias room's own first)
 //   conversations.yaml  <conv>.<name>.mode          per-conversation block    (getBeing reads both)
 //   config.yaml         agents.<name>.mode          the AGENT's own default
@@ -23,6 +24,7 @@
 import { getBeing } from '../conversations-state.mjs';
 import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 import { beeperBlockOf } from '../tools/config-io.mjs';
+import { closedChat } from './closed-chats.mjs';
 
 // The mode an agent takes when its conversation says nothing. PER-AGENT FIRST (operator
 // 2026-07-25: "better to have in config.yaml the configuration per agent on its mode"): an
@@ -39,8 +41,9 @@ import { beeperBlockOf } from '../tools/config-io.mjs';
 // THE MODE A BEING RUNS UNDER, and which tier set it: the conversation's own mode when it names a
 // real one, else that ladder. Exported (operator 2026-09-24) so the room's config.readonly.yaml
 // states the mode decide() uses, and where it came from, without a second copy of this order.
-// `bv` is getBeing's view of the conversation (only `.mode` is read), null for "none".
+// `bv` is getBeing's view of the conversation (`.mode`, and `.surface`/`.chatId` for closed_chats), null for "none".
 export function resolveMode(bv, being, c = {}) {
+  if (closedChat(c, bv?.surface, bv?.chatId)) return { mode: 'off', source: 'closed' };
   if (isAutoMode(bv?.mode)) return { mode: bv.mode, source: 'conversation' };
   const own = c.agents?.[String(being ?? '').toLowerCase()]?.mode;
   if (isAutoMode(own)) return { mode: own, source: 'agent' };

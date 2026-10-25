@@ -72,7 +72,7 @@ untested id not in `contracts-gaps.json`.
 
    6.2 Each being's per-chat mode (`on` / `auto` /
    `mention` / `mention-direct` / `accum` / `mute` /
-   `off`), resolved conversation → `agents.<name>.mode` →
+   `off`), resolved `closed_chats` (→ `off`) → conversation → `agents.<name>.mode` →
    `dispatch.auto_default_mode`, decides that being's surfacing;
    `…` is a valid, logged silence.
 

@@ -167,6 +167,7 @@ export function createSpine({
   allBackground = null,                // optional, same shape — every live background task whoever holds the process (boot: the pool's); what a /standdown ends
   background = null,                   // optional registry (src/spine/background.mjs): pending voice notes at the ingestion point, agents mirrored on the tick
   beeperUpdate = null,                 // optional (src/tools/beeper-update.mjs): its 6-hourly Beeper check rides the tick
+  remindClosed = null,                 // optional (ev) => Promise — closed_chats' reminder (src/spine/closed-chats.mjs remind)
   say = null,                          // optional ({ chatId, text, what }) => Promise<boolean> — boot's sayOnce, i.e. THE outbound placement (sender.mjs makeOutbound `say`), the same one the STOP confirmation and the lifecycle lines go through. The ONE thing the spine says on its own account: the loop guard's pause notice (operator 2026-09-20: "if the bridge pauses, it must emit warning in the channel with instructions on how to recover, instead of leaving everybody hanging"). Null (tests, a bare pipe) ⇒ a pause is logged and nothing is posted.
   // RECENT CONTEXT read seam (operator 2026-07-26) — `(chatId, {chatName, network}) =>
   // Promise<string|null>`, the conversation's transcript.md. THE SAME function boot
@@ -1060,7 +1061,13 @@ export function createSpine({
 
     // 'off' for every being here → not received: not recorded, not processed (C4). Otherwise it IS
     // recorded at the ingestion point — a received message is never silently dropped (C1.2).
-    if (!received) return null;
+    // A human line that named a being here: a closed chat's message (closed_chats).
+    if (!received) {
+      if (remindClosed && humanTurn(ev) && targets.some((t) => !t.fallthrough)) {
+        Promise.resolve().then(() => remindClosed(ev)).catch((e) => note(`closed: ${guardChannel(ev)} — reminder failed: ${e?.message ?? e}`));
+      }
+      return null;
+    }
 
     // GUARD (C7.7): classify this received turn by PROVENANCE + gate a stopped channel. A
     // genuine human message RESETS the loop counter (so normal human↔bot talk never trips);

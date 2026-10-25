@@ -290,6 +290,12 @@ networks:
 #   address_without_at: true        # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
 #                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 
+# chats no being answers; message (optional) is posted there once, and again to anyone who addresses a being (at most once a day)
+# closed_chats:
+#   whatsapp:                       # surface -> chat id, as in conversations.yaml
+#     AbCdEfGhIjKlMnOpQrSt: { message: "This group moved to Telegram: https://t.me/..." }
+#     ZyXwVuTsRqPoNmLkJiHg: {}      # closed, silent
+
 # --- Transcription: a standalone LAN service ---------------------------------
 # By default eGPT launches a whisper-server to transcribe audio notes
 # (ask your AI to download models from: https://huggingface.co/ggerganov/whisper.cpp)

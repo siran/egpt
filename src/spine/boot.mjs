@@ -39,6 +39,7 @@ import { defaultIsAlive, heldExclusive } from '../daemon-singleton.mjs';
 import { raiseSelfToNormal } from '../process-priority.mjs';
 import { readConfigSync, configContentHashSync, beeperBlockOf } from '../tools/config-io.mjs';
 import { restartKeysChanged, changedKeys } from './config-swap.mjs';
+import { createClosedChats } from './closed-chats.mjs';
 import { reapPort } from '../tools/reap-port.mjs';
 // THE liveness question for a Beeper install, already written and already tested
 // (tests/beeper-whoami.test.mjs): GET /v1/accounts with a candidate's OWN token. Imported, never
@@ -3533,20 +3534,33 @@ export async function boot({
   // this account holds. Ears first, as connectionOfBridge is ordered. Only where there is a choice:
   // one connection holds everything this node can say. Nobody holds it → the record is left alone
   // and the log says so, loudly; the send then fails as it would have.
+  // `what`: the log prefix — '[heartbeat] <beat>' or '[closed]' (a closed chat's message, said before anything arrives).
+  const placeChat = async (chatId, what) => {
+    if (connectionOfBridge.size < 2) return;
+    if (!chatId || shellPort.owns(chatId) || connectionHolding(chatId)) return;
+    for (const [b, connection] of connectionOfBridge) {
+      let raw = null;
+      try { raw = await b.chatRaw?.(chatId); } catch { /* unreadable on this connection — ask the next */ }
+      if (!raw) continue;
+      rememberArrival(chatId, connection);
+      log.line?.(`${what}: ${chatId} is a chat on '${connection}' — recorded, so its sends start there`);
+      return;
+    }
+    log.line?.(`${what}: NO CONNECTION HOLDS ${chatId} — asked ${[...connectionOfBridge.values()].map((c) => `'${c}'`).join(', ')}; its sends will fail until the chat is reachable`);
+  };
   const placeHeartbeatChat = async ({ ns, name }) => {
     if (connectionOfBridge.size < 2) return;
     const target = chatIdForEntity(await _loadState(), ns);
-    if (!target || shellPort.owns(target.chatId) || connectionHolding(target.chatId)) return;
-    for (const [b, connection] of connectionOfBridge) {
-      let raw = null;
-      try { raw = await b.chatRaw?.(target.chatId); } catch { /* unreadable on this connection — ask the next */ }
-      if (!raw) continue;
-      rememberArrival(target.chatId, connection);
-      log.line?.(`[heartbeat] ${name}: ${target.chatId} is a chat on '${connection}' — recorded, so the beat's sends start there`);
-      return;
-    }
-    log.line?.(`[heartbeat] ${name}: NO CONNECTION HOLDS ${target.chatId} (${ns}) — asked ${[...connectionOfBridge.values()].map((c) => `'${c}'`).join(', ')}; its sends will fail until the chat is reachable`);
+    if (target) await placeChat(target.chatId, `[heartbeat] ${name}`);
   };
+
+  // closed_chats: the notice at boot and on every live swap, the reminder from spine classify.
+  const closedChats = createClosedChats({
+    getConfig, loadState: _loadState, writeState: _writeState, now,
+    say: async (chatId, text) => { await placeChat(chatId, '[closed]'); return sayOnce({ chatId, text, opts: { systemLine: true }, what: 'closed' }); },
+    onLog: (m) => log.line?.(`[closed] ${m}`),
+  });
+  const announceClosed = () => Promise.resolve().then(closedChats.announce).catch((e) => log.line?.(`[closed] notice failed: ${e?.message ?? e}`));
 
   // A BEING'S OWN COMMAND BEAT RUNS IN ITS BOX — see createHeartbeatBoxRunner. brainpool answers
   // "boxed?" with the same resolution a turn's OS session is picked by.
@@ -3694,6 +3708,7 @@ export async function boot({
     fillWakeWords();
     shellPort.setHeader(shellHeaderAt(commands.currentRoomOf(SHELL_SURFACE)));
     Promise.resolve(heartbeatLoader.reload()).catch((e) => log.line?.(`[config] heartbeat reload after the swap: ${e?.message ?? e}`));
+    announceClosed();
     return { changed };
   };
   // THE LAG PROBE (src/spine/lag-probe.mjs): the loop's delay + the queues, to log_to_group while it lags.
@@ -3706,7 +3721,7 @@ export async function boot({
   // backgroundWork: what a restart drain waits for. Held by the daemon, it survives a spine restart, so
   // there is nothing to wait for; spawned by this spine (no daemon host), it dies with it.
   // allBackground: all of it, whoever holds it — what a /standdown ends (the daemon ends its sessions).
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, advice, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, advice, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -3724,6 +3739,7 @@ export async function boot({
   spine.start();
   lagProbe.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once
+  announceClosed();
 
   // After adoption (a resumed note's turn must not open a key adoption is about to fill): reconcile the list,
   // then end each voice note the last spine left pending as a live one would (src/spine/background.mjs).

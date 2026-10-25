@@ -554,6 +554,24 @@ export const CONFIG_SCHEMA = {
       auto_paused        <- whatsapp.auto_e_paused
       auto_default_mode  <- whatsapp.auto_e_default
   `,
+  closed_chats: `
+    Chats no being answers (operator 2026-10-25). Keyed like conversations.yaml:
+    surface -> that chat's id. DEFAULT: unset (no chat closed). Applies live.
+
+      closed_chats:
+        whatsapp:
+          AbCdEfGhIjKlMnOpQrSt: { message: "This group moved to ..." }
+          ZyXwVuTsRqPoNmLkJiHg: {}          # closed, silent
+
+    Every being's mode there is "off" (src/spine/gating.mjs resolveMode, above
+    the conversation's own mode): no turn by mode, handle, quote or voice
+    handle, and the line is not recorded. \`message\` (optional) is said there
+    once by this node (src/spine/closed-chats.mjs; again when it changes) and
+    again to a human line that names a being, at most once a day. Marker: the
+    chat's own conversations.yaml entry, \`closed: { notice, at }\`. Removing
+    the chat reopens it on its conversations.yaml settings. By the chat's own
+    id: an alias side group is closed by its own id. Heartbeats are not gated.
+  `,
   whatsapp: `
     Beeper-transport bridge config — network-agnostic; the "whatsapp" name is
     legacy. A nested object; the bridge starts when this block is present (and
