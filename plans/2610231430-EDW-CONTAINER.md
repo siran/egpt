@@ -311,3 +311,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 
   - Each instance adds ~$6/mo (30 GB root + IPv4).
   - No CPU timings measured for large-v3 on these. Known points: small took 20 s for a 5.5 s note on t3a.small (2 threads); large-v3 "swapped for minutes" on t3a.medium; "still slow" on t3a.large.
+
+## 10-25 ~01:05 — rulings: always responsive; no container hand-off build
+- **"egpt can't go silent. always responsive."** The node runs **on-demand** (no Spot reclaims): +$9.50/mo, EDW ≈ $23/mo. The voice worker may stay on Spot, because the node falls back to its local small CLI.
+- **No container hand-off build** (operator): image updates will be rare in production; code changes go in place through /upgrade (it drains while still answering, then a ~2 s restart: spine start → bot listening in ~1.5 s on 10-25). Only root-level packages need a new image.
+- Remaining silence: an AWS hardware failure (EC2 auto-recovery, minutes; rare), and an image update through ECS (~1 min; at quiet hours).
+- Pending go: switch the ASG to on-demand and replace the Spot instance (one last ~5–8 min outage).
