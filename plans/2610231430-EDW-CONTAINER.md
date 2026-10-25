@@ -237,3 +237,15 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Nova ✨** is a being on EDW (handles nova, v; E's identity, opus-high; `regular`; allowed_users [operator]). She speaks through @edwsi_bot in the operator's own Telegram groups ("for a test… I can later move Nova"). Each group is its own conversation; leo can read them all; EduWeb's AWS admins could read them while she lives on EDW.
 - Her own group: `/nova agents mode on` there. Own bot later = multi-bot support for the Telegram limb (today one bot per node); then move her to her own node/account.
 - Also live (c5e62041 on all nodes): Telegram renders beings' Markdown (mdToTgHtml back, parse_mode HTML, plain fallback); browsers are never denied (8b21c11).
+
+## 10-24 ~23:35 — ECS scripts ready; many bots; what the Claude token exposes
+- **ECS scripts (bc197b83, main), not applied.** Run order, on the operator's go:
+  1. `bash docker/aws/ecs/ecs-provision.sh --apply`: cluster, launch template, ASG at 0, role, task def, service at 0. No downtime.
+     → verify: an `ecs-cutover.sh` dry run prints the plan.
+  2. `bash docker/aws/ecs/ecs-cutover.sh --apply`: 5–10 min down; beings restart mid-conversation.
+     → verify: task RUNNING, alive.txt fresh, ED answers in EduWeb, Nova in her group, "ed ejecuta whoami" → egpt-box-0.
+  3. `ecs-cutover.sh --rollback --apply` if the box or the first boot fails. edw-node stays stopped (not terminated) until the operator says.
+  - Untested: user-data first boot, the box under `privileged`, Spot capacity in us-east-1a.
+- **Many bots per node (operator):** each bot is a connection under `limbs.telegram`, like Beeper's primary/secondary (edw_marketing_bot, edw_support_bot, egpt_reve_bot…), each being speaking through its own. Build: the limb wires only the first connection today.
+- **"Are my personal conversations visible?" (the Claude token):** no. The setup-token runs new requests on the subscription. Claude Code sessions are local files per machine, so kg's stay on reve; to my knowledge the token can't list claude.ai chats. The exposure is usage: whoever holds it (EduWeb's admins, leo) can spend the subscription's limits. Revoke and reissue if that worries. Nova's test chats on EDW are readable by EduWeb's admins and leo.
+- **EDW at 23:34:** container up 11 h, heartbeat fresh, 884 of 1915 MB used, swap 379 MB.
