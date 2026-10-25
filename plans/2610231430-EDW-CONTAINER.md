@@ -349,3 +349,11 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 
   - Plus ~$9 fixed: root + data gp3 60 GB $4.80, IPv4 $3.65, ECR ~$0.41 with one image (the worker reuses it).
   - Changing size and switching to on-demand are one instance swap, so one outage.
+
+## 10-25 ~01:50 — EduWeb EB → ECS: shared reserved capacity (operator)
+- **Operator:** EduWeb is moving from Elastic Beanstalk to ECS. Reserve 1-year capacity and run many containers on it, with vCPU set per container.
+- **EduWeb today** (read-only, 10-25): Portales-new t3a.large (CPU avg 6 %, max 100 %), Portales(OLD) t3a.medium (0.7 %), edw-Sun260628 t2.medium (EB PHP 7.4, 2.1 %), edc5-api-prod t3.micro (EB Docker, 0.5 %); ≈ $124/mo on-demand. Memory unmeasured: EC2 doesn't report it without the CloudWatch agent.
+  - DBs stay on RDS: educomp5-db Postgres 18.3, eduweb-2020 Aurora PG 17.7, portal-institutions MariaDB. Postgres ≥ 14, so pg_read_all_data works.
+- **Keep EDW on its own instance** (same cluster, own capacity provider). EDW is `privileged` + host network. Root inside it is root over the host: every container's filesystem and env (DB passwords) and their ports. Today two layers stand in between (the box; the egpt user with one sudo line); client chatboxes will put strangers' text in front of beings.
+- **Commitment:** one EC2 Instance Savings Plan for t3a in us-east-1 covers both instances whatever their sizes. 1-yr no upfront, t3a.large: $0.0471/h vs $0.0752 on-demand (−37 %). A Compute Savings Plan (any family/size, Fargate too): $0.0542 (−28 %).
+- **Per-container limits (ECS on EC2):** container `cpu` = a share under contention (it may use idle CPU); task `cpu` = a hard ceiling; `memory` = a hard limit (only that container is OOM-killed); `memoryReservation` = soft.
