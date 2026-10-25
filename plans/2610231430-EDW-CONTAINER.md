@@ -423,3 +423,34 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - through agentsInChat / the per-chat mode resolution (no parallel gate);
   - the notice is posted once through boot's sayOnce, with a marker in the chat's entry; a reminder to anyone who addresses a being, at most once a day; applies live.
   - SI+EduWeb: kg carries the message (link https://t.me/+eotN-hXG5qUyNDlh); do carries it closed without one. The notice goes out when this deploys.
+
+## 10-25 ~18:00 — Whisper benchmark on t3a (step 1 done); DB reservations
+- **Benchmark** (agent; 2 tagged on-demand instances, 78 min; ~$0.14 + ~$0.16 surplus CPU credits; all terminated, S3 empty).
+  - Notes: Spanish 11.3 s and 56.8 s, English jfk 11 s; whisper-server -t 2.
+  - Medium and large give identical speed: one physical EPYC 7571 core, 2 threads. Size decides memory only.
+
+  | Model | Short es / long es (s) | Peak MB | Word difference vs large-v3 |
+  |---|---|---|---|
+  | large-v3 f16 | 381 / 809 | 3433 | reference |
+  | large-v3-q5_0 | 210 / 648 | 1504 | 0–3.8 % |
+  | turbo f16 | 317 / 954 | 1747 | 10–18 % |
+  | turbo-q5_0 | 174 / 522 | 741 | 10–18 % |
+  | small | 55 / 118 | 647 | 17–24 % |
+
+  - whisper-server always encodes full 30 s windows. EDW's CLI path trims the window (audio_ctx auto), which helps short notes; not measured with large models.
+  - `-t 1` is 1.39× slower.
+  - **On t3a, every high-quality model takes minutes per note.**
+- **DB reservations** (operator: "reservation in-kind for db compute", since all EduWeb/Portales compute needs a DB). Three db.t4g.medium single-AZ instances:
+  - eduweb-2020-instance-1: Aurora PG 17.7, standard storage; CPU 11 % avg, 27 conns max.
+  - portal-institutions: MariaDB; 4 %, 99 conns max.
+  - educomp5-db: Postgres 18.3, created 10-14; 4 %, 2 conns max.
+  - The Database Savings Plan (1-yr no upfront) covers no db.t4g rates (m7g/r7g yes), so RDS Reserved Instances are the option. 1-yr no upfront:
+
+  | Engine | Reserved | On-demand | Saves per month |
+  |---|---|---|---|
+  | Aurora PG | $0.057/h | $0.073 | $11.68 |
+  | PostgreSQL | $0.047/h | $0.065 | $13.14 |
+  | MariaDB | $0.047/h | $0.065 | $13.14 |
+
+  - Total $148.19 → $110.23/mo (−$37.96/mo); $1,322.76 committed over the year.
+  - Size-flexible within db.t4g for the same engine. An engine change or a move to another family drops the reservation.
