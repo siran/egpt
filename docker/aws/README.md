@@ -10,7 +10,7 @@ The move to ECS on EC2 is in [ECS on EC2](#ecs-on-ec2-ecs) below. After the cuto
 
 ## Order
 
-1. **`build-push.sh --apply`** builds the image from the checkout it sits in (the whisper model comes from `~/egpt-assets`), tags it `egpt:<sha>` and `egpt:edw`, and pushes both to ECR `egpt`. The image is ~6 GB; ~3 GB is the model layer, which later builds reuse.
+1. **`build-push.sh --apply`** builds the image from the checkout it sits in, tags it `egpt:<sha>` and `egpt:edw`, and pushes both to ECR `egpt`. The image is ~3.2 GB (~1.3 GB compressed); it carries no whisper model, since models live on the data volume.
 2. **`provision.sh [--type t3a.medium] --apply`** creates the VPC, subnet, internet gateway, route table, a security group with no inbound rules, the instance role, a 30 GB data volume and the instance, then prints the instance id, AZ and IPs. The first boot (a few minutes; log in `/var/log/cloud-init-output.log`) installs Docker, adds a 4 GB swap file, and mounts the data volume at `/srv/egpt`.
 3. **`migrate.sh --apply`** checks that the instance's targets are empty, then stops the local `edw` (restart=no). It tars egpt-home and egpt-claude, moves them through a private encrypted bucket into `/srv/egpt`, and deletes the S3 objects. Local volumes are not touched.
 4. **`run.sh --apply`** (from WSL) copies itself to the instance over SSM and starts `edw` from `egpt:edw` with `EGPT_BRANCH=edw` and `EGPT_BEEPER=off`. Run it again after each build-push to replace the container (stop, rm, run). `--tag <sha>` runs an older build.
@@ -65,7 +65,7 @@ The public IP changes (nothing depends on it), and Docker restarts `edw` on boot
 
 ## ECS on EC2 (`ecs/`)
 
-ECS runs EDW's container, so nobody manages the instance by hand. There is one container instance, from an Auto Scaling group (min = max = 1) in `edw-public` (us-east-1a, the data volume's AZ). By default it is Spot, from the t3a.small and t3.small pools. When Spot takes the instance back, the ASG launches another one, which re-attaches `edw-data`, and ECS starts the task there. That is a few minutes of downtime, mostly the ~4 GB image pull.
+ECS runs EDW's container, so nobody manages the instance by hand. There is one container instance, from an Auto Scaling group (min = max = 1) in `edw-public` (us-east-1a, the data volume's AZ). By default it is Spot, from the t3a.small and t3.small pools. When Spot takes the instance back, the ASG launches another one, which re-attaches `edw-data`, and ECS starts the task there. That is a few minutes of downtime, mostly the ~1.3 GB image pull.
 
 The rules are the same as above: dry run unless `--apply`, everything tagged `Project=egpt-edw`, and a `.cmd` beside each script.
 
