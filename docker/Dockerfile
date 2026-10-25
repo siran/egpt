@@ -3,8 +3,8 @@
 # that screen on :5900 for the one-time login; keep that port private.
 # No eGPT code and no secrets in the image: the checkout is cloned onto its own volume at first boot.
 #
-# Build (the whisper model comes from its own context, never the repo):
-#   docker build -f docker/Dockerfile --build-context models=$HOME/egpt-assets -t egpt:edw-dev .
+# Build (no whisper model in the image; models live on the data volume):
+#   docker build -f docker/Dockerfile -t egpt:edw-dev .
 
 ARG NODE_VERSION=24.13.1
 
@@ -24,12 +24,9 @@ RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NAT
 
 FROM node:${NODE_VERSION}-bookworm-slim
 
-# The large multilingual model, first so tool changes never re-copy it.
-COPY --from=models ggml-large-v3.bin /opt/whisper/models/ggml-large-v3.bin
-
 # Electron runtime libs, virtual display, VNC, and tools egpt shells out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git tini procps lsof \
+      ca-certificates curl git tini procps lsof unzip gnupg jq \
       xvfb x11vnc openbox xdotool imagemagick \
       libgtk-3-0 libnss3 libxss1 libasound2 libgbm1 libxshmfence1 libdrm2 \
       libsecret-1-0 libnotify4 libatspi2.0-0 libx11-xcb1 libxtst6 xdg-utils \
@@ -67,6 +64,18 @@ RUN python3 -m venv /opt/piper/venv \
 # noVNC: the same VNC screen as a browser tab on :6080 (vnc.html).
 RUN apt-get update && apt-get install -y --no-install-recommends novnc websockify \
   && rm -rf /var/lib/apt/lists/*
+
+# AWS CLI v2, PGP-verified with AWS's published key (docker/awscli.asc).
+ARG AWSCLI_VERSION=2.38.1
+ARG AWSCLI_KEY_FPR=FB5DB77FD5C118B80511ADA8A6310ACC4672475C
+RUN --mount=type=bind,source=docker/awscli.asc,target=/tmp/awscli.asc \
+    cd /tmp && export GNUPGHOME="$(mktemp -d)" \
+  && curl -fsSL -o awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-$AWSCLI_VERSION.zip" \
+  && curl -fsSL -o awscli.zip.sig "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-$AWSCLI_VERSION.zip.sig" \
+  && gpg --batch --quiet --import awscli.asc \
+  && gpg --batch --status-fd 1 --verify awscli.zip.sig awscli.zip | grep -q "^\[GNUPG:\] VALIDSIG $AWSCLI_KEY_FPR " \
+  && unzip -q awscli.zip && ./aws/install \
+  && rm -rf awscli.zip awscli.zip.sig aws "$GNUPGHOME"
 
 COPY --from=whisper /src/whisper.cpp/build/bin/whisper-cli /src/whisper.cpp/build/bin/whisper-server /usr/local/bin/
 COPY --from=whisper /src/whisper.cpp/samples/jfk.wav /opt/whisper/samples/jfk.wav

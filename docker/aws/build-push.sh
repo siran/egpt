@@ -10,9 +10,7 @@ check_account
 ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel) \
   || die "git cannot read this checkout from here (a Git Bash worktree?); use a plain one, e.g. ~/src/egpt in WSL"
 SHA=$(git -C "$ROOT" rev-parse --short HEAD)
-ASSETS=${EGPT_ASSETS:-$HOME/egpt-assets}
 REPO=$REGISTRY/egpt
-[ -f "$ASSETS/ggml-large-v3.bin" ] || die "missing $ASSETS/ggml-large-v3.bin (the whisper model)"
 [ -n "$(q ecr describe-repositories --repository-names egpt --query 'repositories[0].repositoryUri')" ] \
   || die "ECR repository egpt not found"
 
@@ -21,11 +19,11 @@ log "checkout $ROOT ($(git -C "$ROOT" rev-parse --abbrev-ref HEAD) $SHA)"
   || log "WARNING: docker/ has uncommitted changes; the image will not match $SHA"
 log "in ECR now: $(q ecr describe-images --repository-name egpt --query 'imageDetails[].imageTags[]' | tr -s '\t' ' ')"
 
-run docker build -f "$ROOT/docker/Dockerfile" --build-context "models=$ASSETS" \
+run docker build -f "$ROOT/docker/Dockerfile" \
   -t "egpt:$SHA" -t egpt:edw "$ROOT"
 
 if size=$(docker image inspect -f '{{.Size}}' "egpt:$SHA" 2>/dev/null); then
-  log "image egpt:$SHA is $(awk -v b="$size" 'BEGIN { printf "%.2f GB", b / 1e9 }') uncompressed (~3 GB is the whisper model)"
+  log "image egpt:$SHA is $(awk -v b="$size" 'BEGIN { printf "%.2f GB", b / 1e9 }') uncompressed"
 else
   log "image egpt:$SHA is not built yet; its size prints here after the build"
 fi
