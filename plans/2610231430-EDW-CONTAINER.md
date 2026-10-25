@@ -454,3 +454,18 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 
   - Total $148.19 → $110.23/mo (−$37.96/mo); $1,322.76 committed over the year.
   - Size-flexible within db.t4g for the same engine. An engine change or a move to another family drops the reservation.
+
+## 10-25 17:48 — closed_chats live; SI+EduWeb notice posted
+- **b56eb318 / 3f6471ea** (merged, deployed to kg and do; suite 334 files / 7566 tests green, run by the orchestrator):
+  - `closed_chats.<surface>.<chat id>: { message? }` in config.yaml;
+  - the closed rung is the top of gating.resolveMode (the one mode ladder);
+  - the notice goes through boot's sayOnce, marked as `closed: { notice, at }` in the chat's entry; a reminder to a line that names a being, at most once a day; applies live.
+- **Config:**
+  - kg: SI+EduWeb with the message + its 4 alias side groups (nue11, emely, mejoras-egpt, an) closed silently, as they had been quiet since 16:35 by inheritance.
+  - do: SI+EduWeb closed silently; do's own nue11/emely entries untouched (open).
+  - The hand-set mode/handles from 16:35 were removed, so the entries are back to their threads (backups *.pre-closed-20261025T2147*).
+- **Posted 17:47:54** by Rodz (the mouth, in its own room LZmluLTTwWUiy5ORT9AB) with kg's node signature: "📢 Este grupo se mudó a Telegram: https://t.me/+eotN-hXG5qUyNDlh. …"
+- **Follow-ups:**
+  1. Heartbeats aren't gated by closed_chats (they skip gating; a one-line check in heartbeatSay or the loader needs a ruling). SI+EduWeb has no live beats on kg.
+  2. The 👂 voice transcript and `/e` commands still work in a closed chat.
+  3. do's side groups: close them too?
