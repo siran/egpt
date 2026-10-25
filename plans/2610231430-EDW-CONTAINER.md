@@ -249,3 +249,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Many bots per node (operator):** each bot is a connection under `limbs.telegram`, like Beeper's primary/secondary (edw_marketing_bot, edw_support_bot, egpt_reve_bot…), each being speaking through its own. Build: the limb wires only the first connection today.
 - **"Are my personal conversations visible?" (the Claude token):** no. The setup-token runs new requests on the subscription. Claude Code sessions are local files per machine, so kg's stay on reve; to my knowledge the token can't list claude.ai chats. The exposure is usage: whoever holds it (EduWeb's admins, leo) can spend the subscription's limits. Revoke and reissue if that worries. Nova's test chats on EDW are readable by EduWeb's admins and leo.
 - **EDW at 23:34:** container up 11 h, heartbeat fresh, 884 of 1915 MB used, swap 379 MB.
+
+## 10-25 ~00:00 — EDW runs on ECS over EC2
+- **Cutover done** (23:41–23:49, ~5 min down): edw stopped on edw-node (i-02476c2d8b9173596, now stopped, not terminated), edw-data moved, ASG edw-ecs-asg launched i-08ea6b24bff581adc (**t3a.small Spot**, ECS agent 1.108.0), service edw at 1 (task def edw:1, image d8ec5f50…).
+- **Verified:** daemon up, @edwsi_bot polling, heartbeat fresh, 455 of 1919 MB used, 4 GB swap; only root reaches IMDS (iptables).
+- **The box works under `privileged`:** egpt-box as ED's folder → uid 200000 egpt-box-0; config, /srv and other conversations invisible; IMDS unreachable (000); pid 1 tini.
+- **Found and fixed (200179a6):** host network gives the task the instance's hostname (ip-10-…). sudo couldn't resolve it, and Chrome would refuse chrome/profiles/shared (stale `SingletonLock -> edw-531` = "in use on another computer"). User data now sets hostname edw + /etc/hosts + preserve_hostname (launch template v2); applied by hand on the running host; task redeployed.
+- **VNC:** the password now comes from secrets/vnc.password on the volume; /srv/egpt/vnc.env is unused.
+- **Next:**
+  1. Operator test: ED in EduWeb, Nova in her group, "ed ejecuta whoami" → egpt-box-0.
+  2. Terminate edw-node once ECS has proven itself (operator's word): `aws ec2 terminate-instances --instance-ids i-02476c2d8b9173596` (its root volume goes with it; edw-data stays).
+  3. Image updates: build-push.sh, then ecs-deploy.sh. Code updates: /upgrade as before (the checkout is on the volume).
