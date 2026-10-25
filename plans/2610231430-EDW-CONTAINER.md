@@ -402,3 +402,6 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Covers one t3a.large-equivalent of on-demand use (Portales-new today, the ECS production host later): $54.90 → $34.38/mo, ~ −$20.50 from November.
   - Not covered: Spot (EDW today), t2/t3 (the EB apps). The account had no prior plans or RIs. It is the Organization's management account, so the plan may also apply to member accounts' t3a.
 - **EB → ECS (part B) belongs to ED**, in the EduWeb Telegram group. Part A (EDW) stays with the orchestrator. Add a second plan for EDW's on-demand t3a once its size is chosen.
+- **ED's brief** (operator asked): conversations/telegram/EduWeb-2610240312/desktop/migracion-ecs/BRIEF.md on EDW (Spanish; ED's box has rw).
+  - Covers: decided (ECS on EC2, t3a, the plan); today's inventory; rules: egpt-edw resources off limits and production on its own capacity; measure memory first; per-container cpu/memory; one app at a time with DNS rollback; one ALB or one proxy; secrets in SSM/Secrets Manager; PHP 7.4 EOL; AWS access requested from An.
+- **Started 10-25 ~16:10:** step 1 (benchmark, agent) and step 2 (slim image, agent, worktree egpt-wt-slimimage, feat/edw-slim-image; no push).
