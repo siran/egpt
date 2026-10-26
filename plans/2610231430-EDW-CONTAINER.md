@@ -603,3 +603,18 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - a refusal carrying migrate_to_chat_id retries on the new id and hands the move over (self-heals a missed move);
   - contacts.resolve files a moved id under its new conversation (in memory);
   - heartbeat and background-wake lines carry the chat's stored name and node tag (identity.spineEvent): [EduWeb].tg / [SI+EduWeb].wa instead of [telegram].telegram / [whatsapp].whatsapp.
+
+## 10-26 ~09:15 — status after ED's work; leo again; Docker guide posted
+- **ED (overnight/day):**
+  - Step 1 done (desktop/transcripcion-ed/: paso1-benchmark.md, tabla.md, textos.json); step 2 not started (no whisper service or key on oficina): waits for An's OK.
+  - Security: a leaked engine key in active use → GitLab MR !437 (mitigation) + Trello card; Portales-Old access via SSM Parameter Store (SecureString from Jaime).
+  - Trello backlog cards; daily agenda heartbeat ran (11:45 UTC).
+  - Two turns cut by the 10-min turn limit (#345, #364), so ED's FYI answer about edc5's DB user may be pending.
+  - **Conflict to reconcile:** at 23:27 UTC 10-25 An told ED "no lo conectes por ahora" (edc5 → Aurora); later An told the orchestrator "please do", and DB_HOST was switched at 00:43 UTC.
+- **Topics:** EduWeb is a forum; `/e split an` → "🍴 the fork is here: https://t.me/c/4408163350/42".
+- **leo committed in EDW's live checkout again** (b69d1634, `group_title_prefix`: the "SI+" prefix in config, "" = none). Ported to main as **09120ddb** (suite 7602/7602); original kept on branch leo-local-20261026; EDW rewound and /upgraded to main. Until leo has the GitHub token: a separate worktree + branch, never the live checkout.
+- **Docker image for a friend:** everything is on main (docker/: Dockerfile, entrypoint, egpt-box, aws/ecs); the repo is public. Guide posted in "An y Dando" (tg:-5556643826) via @edwsi_bot, messages #410–#411 (direct Bot API, so not in egpt's transcript):
+  - requirements (x86-64, Docker 20.10+, a Claude subscription, a Telegram bot);
+  - build, bind-mount folders + secrets files, `docker run` (seccomp/systempaths unconfined, EGPT_BEEPER=off, VNC 6080 on loopback);
+  - config (limbs.telegram.main.account, node_name, user_name, networks.telegram.allowed_users);
+  - "e hola"; extras (VNC, piper, a whisper model, updating, security).
