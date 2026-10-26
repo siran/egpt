@@ -39,7 +39,7 @@
 // instance (wren, operator 2026-09-01). It reads `being` and nothing else. It was predicted
 // here before it was written, and it went in without this contract changing — same
 // `resolveScope(being, surface, chatId)`, same `{surface, chatId}` or null.
-import { SHELL_SURFACE, surfaceOf } from './identity.mjs';
+import { surfaceOf } from './identity.mjs';
 
 /**
  * @param {object} deps
@@ -97,14 +97,14 @@ export function createIdentityScope({ resolveMembers, getConfig = () => ({}), on
     // to whichever room config/rooms.yaml happened to list first. It keeps its own instance
     // (today's behavior, and the safe direction) and the log says why.
     if (rooms.length !== 1) {
-      if (rooms.length > 1) onLog(`${surface}/${chatId} is a wa-group member of ${rooms.length} rooms (${rooms.join(', ')}) — no single instance to join, so it keeps its own`);
+      if (rooms.length > 1) onLog(`${surface}/${chatId} is a chat member of ${rooms.length} rooms (${rooms.map((r) => r.chatId).join(', ')}) — no single instance to join, so it keeps its own`);
       return null;
     }
-    // A room's own conversation lives on surface `room`, addressed by its NAME — the slug
-    // half of the `room/<slug>` rooms.yaml key the reverse lookup already returns. That is
-    // byte-for-byte the address room-relay.mjs's tunnelOf re-enters the group's message at,
-    // which is the point: the group's OWN turn and the tunnelled ROOM turn now land on one
-    // thread, one warm process and one queue instead of racing each other across two.
-    return { surface: SHELL_SURFACE, chatId: rooms[0] };
+    // The inviting conversation's own address, as the reverse lookup returns it (a room: surface
+    // `room`, addressed by its NAME). That is byte-for-byte the address room-relay.mjs's tunnelOf
+    // re-enters the group's message at, which is the point: the group's OWN turn and the
+    // tunnelled ROOM turn now land on one thread, one warm process and one queue instead of
+    // racing each other across two.
+    return { surface: rooms[0].surface, chatId: rooms[0].chatId };
   };
 }

@@ -66,13 +66,15 @@
 // Everything external is injected so the whole fan-out is exercisable against fakes (no live
 // Chrome, no socket): resolveMembers (the room roster), adapterOf (the driver module),
 // streamFromTab (the CDP relay engine), openStream (the member-stamped sender).
+import { CHAT_MEMBER_KINDS } from '../room-core.mjs';
 
 export function createRoomRelay({
   resolveMembers,   // (surface, chatId) => Promise<member[]> — the room's members[] (room-core)
   adapterOf,        // (adapterName) => Promise<{ injectScript, pollScript }|null> — the web-brain driver
   streamFromTab,    // ({ targetId, injectScript, pollScript, onUpdate }, ev) => Promise<text> — CDP engine (fake in tests); ev picks the room's browser group
-  openStream,       // (memberId, chatId, { replyTo }) => { update, finish, fail } — member-stamped sender
+  openStream,       // (memberId, chatId, { replyTo, asBeing }) => { update, finish, fail } — member-stamped sender (asBeing: the being's own stamp)
   activateTarget = async () => {},  // (targetId, ev) => Promise<void> — best-effort tab focus before inject (CDP, fake in tests)
+  showsMembers = () => false,       // (chatId) => does this conversation's own chat show its chat members' lines (a chatbox's widget)
   onLog = () => {},
 } = {}) {
   if (typeof resolveMembers !== 'function') throw new Error('createRoomRelay: resolveMembers is required');
@@ -131,12 +133,13 @@ export function createRoomRelay({
     };
   }
 
-  // The synthetic that carries an invited group's message INTO the room it joined, addressed at
-  // the room's OWN conversation — `{ network: 'room', chatId: <room name> }`, byte-for-byte the
+  // The synthetic that carries an invited group's message INTO the conversation it joined, addressed
+  // at that conversation's OWN address `to` ({ surface, chatId, chatName }, boot.mjs
+  // createMemberResolver) — for a room `{ network: 'room', chatId: <room name> }`, byte-for-byte the
   // re-addressing boot.mjs's redirectShellToRoom already applies when the console fans prose into
   // the room it has joined, and the very address the retired logRoomTranscript wrote its record
-  // to (so the room's transcript.md is the same file it always was). Everything else is the
-  // ORIGIN's: the body, and who said it.
+  // to (so the room's transcript.md is the same file it always was); for a chatbox its http: chat.
+  // Everything else is the ORIGIN's: the body, and who said it.
   //
   // `authorized`/`isSender` stay FALSE, as they do for a brain reply: a tunnelled line is not the
   // operator commanding THIS node. Otherwise commands.isOperator would read a `/status` typed in
@@ -147,17 +150,17 @@ export function createRoomRelay({
   // holds ev.body the structural signature is gone. Without carrying it, one of our own sends
   // that escaped the bridge's echo gate would read HUMAN inside the room and reset the very
   // counter that has to bound it (lock 2 in the header).
-  const tunnelOf = (roomName, ev) => ({
+  const tunnelOf = (to, ev) => ({
     body: ev.body,
     from: {
-      network: 'room', chatId: roomName, chatName: roomName,
+      network: to.surface, chatId: to.chatId, chatName: to.chatName,
       userId: ev.senderId, senderName: ev.senderName,
       authorized: false, isSender: false, msgKey: null,
-      // kind is 'wa-group' BY CONSTRUCTION: the reverse lookup that produced tunnelRooms matches
-      // only wa-group members (boot.mjs createMemberResolver). A person talking, so the guard
+      // kind is a CHAT member's BY CONSTRUCTION: the reverse lookup that produced tunnelRooms
+      // matches only those (boot.mjs createMemberResolver). A person talking, so the guard
       // keeps counting it human — six group messages must not auto-STOP the room they were
       // invited to wake.
-      fromMember: { id: ev.chatId, kind: 'wa-group' },
+      fromMember: { id: ev.chatId, kind: to.member.kind },
       fromNode: ev.fromNode,
       // …AND WHETHER IT WAS SPOKEN (operator 2026-09-12), carried for exactly the reason `fromNode`
       // above and `origin`/`connection` below are: this payload is rebuilt from scratch, so a fact
@@ -219,12 +222,18 @@ export function createRoomRelay({
       // — boot.mjs skips the reverse lookup on surface `room` — but a fan-out that recurses only
       // because its roster source is well-behaved is not a design). It is also what keeps
       // tunnelOf's `kind` honest: only a GENUINE inbound is ever tunnelled, so the member it comes
-      // from is always the wa-group the reverse lookup matched.
+      // from is always the chat member the reverse lookup matched.
       if (!ev.fromMember && typeof reenter === 'function' && Array.isArray(members?.tunnelRooms)) {
-        for (const roomName of members.tunnelRooms) {
+        for (const to of members.tunnelRooms) {
           if (blocked()) break;                               // guard tripped — stop tunnelling
-          try { await reenter(tunnelOf(roomName, ev)); }
-          catch (e) { onLog(`tunnel '${roomName}': ${e?.message ?? e}`); }
+          // A chatbox's own chat (the visitor's widget) shows the line too, in the member's name
+          // (its roster title, e.g. the team), before the turn it starts can answer it.
+          if (showsMembers(to.chatId)) {
+            try { await openStream(to.member.title || speakerOf(ev), to.chatId, {}).finish({ text: ev.body }); }
+            catch (e) { onLog(`show in '${to.chatId}': ${e?.message ?? e}`); }
+          }
+          try { await reenter(tunnelOf(to, ev)); }
+          catch (e) { onLog(`tunnel '${to.chatId}': ${e?.message ?? e}`); }
         }
       }
       for (const m of (Array.isArray(members) ? members : [])) {
@@ -237,10 +246,10 @@ export function createRoomRelay({
         // room, where the chatId is the room's and no longer the group's.
         if (m.id === ev.chatId) continue;
         if (ev.fromMember && ev.fromMember.id === m.id) continue;
-        // A CHAT member (a WhatsApp group invited into this room): the room is the tunnel, so the
-        // message is SENT to that group's own chat id — not injected into ev.chatId the way a
-        // brain member's tab is driven.
-        if (m.kind === 'wa-group') {
+        // A CHAT member (a WhatsApp group or a Telegram topic invited into this room): the room is
+        // the tunnel, so the message is SENT to that chat's own id — not injected into ev.chatId
+        // the way a brain member's tab is driven.
+        if (CHAT_MEMBER_KINDS.includes(m.kind)) {
           const text = admits(m, ev);
           if (text == null) continue;                         // this member's mode doesn't admit the message
           const out = openStream(speakerOf(ev), m.id, {});    // replyTo omitted: ev.msgId belongs to ANOTHER chat
@@ -284,6 +293,22 @@ export function createRoomRelay({
         // chokepoint, it reaches the other brains (this same fanOut, minus the author) and E.
         try { if (typeof reenter === 'function') await reenter(syntheticOf(m, ev, finalText)); }
         catch (e) { onLog(`reenter '${m.id}': ${e?.message ?? e}`); }
+      }
+    },
+
+    // A being's finished reply in this conversation, said in the being's own voice to each chat
+    // member seated with `replies: true` whose mode admits it (a chatbox's team topic). A member
+    // without the field gets the room's received lines only, as before. Never throws.
+    async fanOutReply(ev, being, text) {
+      let members;
+      try { members = await resolveMembers(ev.surface, ev.chatId); }
+      catch (e) { onLog(`resolveMembers ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); return; }
+      for (const m of (Array.isArray(members) ? members : [])) {
+        if (m.replies !== true || !CHAT_MEMBER_KINDS.includes(m.kind)) continue;
+        const said = admits(m, { body: text });
+        if (said == null) continue;
+        try { await openStream(being, m.id, { asBeing: true }).finish({ text: said }); }
+        catch (e) { onLog(`reply to '${m.id}': ${e?.message ?? e}`); }
       }
     },
   };
