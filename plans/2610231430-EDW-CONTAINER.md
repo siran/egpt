@@ -641,3 +641,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Suite 7628/7629 (telegram-topics node test flaky under load; passes alone).
   - Deploy together with the /split fix. Notes: EDW's /upgrade doesn't run migrations (EDW beings already have lists: check before); kg/do have a few-second owner-only window between the bounce and 0050.
 - **Ruling: no `owner` token** (operator: "WTF?! remove this"). A list holds ids or '*' only. Consequence: brainpool's refusal of an access_level 'all' being with no list goes (absent now = owners only, which is safe); the skeleton's wren needs no list. Agent fix/no-owner-token (expect a net deletion). Deploy all three together: owner default + no token + /split folder fix.
+- **Merged cd305112 (e09474ad): /split forks share the parent's folder** (same slug/conversation_path/box uid, own thread, own transcript-<key>.md via the alias `transcript` field, parent_chat; isForkEntry = parent_chat + transcript).
+  - Each being's chat settings are inherited.
+  - The copied session lands where --resume finds it; a missing one already retried fresh (ED did answer in topic "an" at 09:39).
+  - turn_timeout_ms default 0; drain without cap; /restart force and /upgrade force now skip turns too; /standdown still waits for them. Suite 7651/7651.
+  - EDW hand-fix after deploy: forks /42, /55, /66 → the parent's conversation_path, `transcript: <title>`, ed's non-thread settings copied, no threadId.
+- Deploy order once fix/no-owner-token lands: kg/do (upgrade.ps1 -Peer runs 0050) and EDW (ingest /upgrade; check its beings' lists first, since EDW doesn't run migrations), then the EDW fork hand-fix.
