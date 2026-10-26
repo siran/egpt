@@ -1396,7 +1396,7 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
       await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body });
       // The refusal NAMES EVERY LEVEL, because it is built from ACCESS_LEVELS. It used to say
       // all|regular, which hid the third tier from the one person guaranteed to be reading it.
-      expect(sent[0].text).toBe('usage: /e agents access_level regular|all|sandbox [<handle>|force all]');
+      expect(sent[0].text).toBe('usage: /e agents access_level regular|all|sandbox|reader [<handle>|force all]');
       expect(sent[0].text).not.toMatch(/recognized/);
     }
   });
@@ -1437,8 +1437,18 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
     expect(sent[0].text).not.toMatch(/^usage:/);
   });
 
+  // REPRODUCE-FIRST (2026-10-26, chatboxes): the fourth tier, reachable through the same validator.
+  it("/agents access_level reader e sets accessLevel: 'reader' through the same validator and eviction", async () => {
+    const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
+    const { cmds, sent, evicts, getState } = harness({ state });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents access_level reader e' });
+    expect(getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e').accessLevel).toBe('reader');
+    expect(evicts).toHaveLength(1);
+    expect(sent[0].text).toMatch(/e access here → reader \(Read, Glob and Grep in its own folder only\)/);
+  });
+
   it('AGENTS_USAGE names EVERY level — the usage line is built from ACCESS_LEVELS, so a fourth tier can never leave it stale', async () => {
-    expect(AGENTS_USAGE).toMatch(/access_level <regular\|all\|sandbox>/);
+    expect(AGENTS_USAGE).toMatch(/access_level <regular\|all\|sandbox\|reader>/);
     const state = seedAccessState('whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' });
     const { cmds, sent } = harness({ state });
     await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents', authorized: true });   // the operator's; anyone else's bare /agents is the public list

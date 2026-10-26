@@ -45,7 +45,7 @@ import { resolveOutboxTarget } from '../room-outbox.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
-import { loadPermissionLevel, isAccessLevel } from './permission-levels.mjs';
+import { loadPermissionLevel, isAccessLevel, isDeskOnly } from './permission-levels.mjs';
 import { readSecret, CLAUDE_OAUTH_TOKEN_FILE } from '../secrets.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
@@ -660,6 +660,9 @@ export function resolveSandboxed(args) {
 // why a being is boxed without a second copy of the order. resolveSandboxed is this, minus the rung.
 export function resolveSandboxedRung({ accessLevel, conversationValue, agentDefaultValue, platform }) {
   if (accessLevel === 'sandbox') return { value: true, rung: 'level' };                        // 1. the LEVEL forces the box (2026-09-05)
+  // ...and 'reader' forces it OFF (2026-10-26): a boxed turn drops the CLI gate (osConfined) and
+  // the box mounts src/ and global_read_paths, so its folder stops being its boundary.
+  if (isDeskOnly(accessLevel)) return { value: false, rung: 'level' };
   if (conversationValue != null) return { value: conversationValue, rung: 'conversation' };  // 2. this being, in THIS conversation (conversations.yaml)
   if (agentDefaultValue != null) return { value: agentDefaultValue, rung: 'agent' };         // 3. agents.<being>.conversation_defaults.sandboxed (config.yaml)
   return { value: platform === 'win32', rung: 'platform' };                                  // 4. nobody asked → the platform-aware default (2026-09-04)
@@ -688,9 +691,9 @@ export function createBrainPool({
   isDeadSession = isDeadSessionError,
   resolveConfig = () => ({}),       // (convDir) -> that conversation's RESOLVED config doc (src/spine/config-resolver.mjs configFor). ONE namespace, three rungs; boot injects the live resolver, tests a canned doc.
   resolveScope = null,              // (being, surface, chatId) -> {surface, chatId}|null — THE IDENTITY SCOPE (src/spine/identity-scope.mjs, operator 2026-08-31). null — the default, and every caller that wires none — means every conversation is its own scope: the four keys below derive from exactly the inputs they derive from today, with no extra read.
-  loadFeed = readIdentityFeed,      // (personality, config) -> the persona's full feed
+  loadFeed = readIdentityFeed,      // (personality, config, {publicOnly}) -> the persona's full feed (publicOnly: a reader's)
   labelOf = () => '',               // (being) -> its DISPLAY NAME — THE resolver (boot.mjs labelOf: the agents-registry `name:`, NEVER the map key, c346d8e), the SAME function the sender and the transcript service are handed, so the card stamps the name the chat stamps. Fed to the kickoff as {{agent_name}} (feedConfig below). Default '' — an unwired caller (a test) renders that line AWAY rather than leaking a key into an identity card
-  seedLayers = seedIdentityLayers,  // (room, personality, {io}) -> copy the SHARED fed layers into <room>/directives
+  seedLayers = seedIdentityLayers,  // (room, personality, {io, overwrite, publicOnly}) -> copy the SHARED fed layers into <room>/directives
   writeCard = writeConfigCard,      // (room, being, block, {io, onLog}) -> <room>/directives/config.readonly.yaml when it changed
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
@@ -877,6 +880,9 @@ export function createBrainPool({
     // where a value came from. The same two inputs and the same `conversation ?? agent default ??
     // built-in` order as the fields themselves: `!= null` is exactly `??`'s fall-through test.
     const cd = getConfig()?.agents?.[being]?.conversation_defaults ?? {};
+    if (isDeskOnly(accessLevel) && (convSandboxed ?? cd.sandboxed) === true) {
+      onLog(`brainpool: ${being} access_level 'reader' runs unboxed, held to its own folder by the CLI — sandboxed: true is dead config here`);
+    }
     const box = resolveSandboxedRung({ accessLevel, conversationValue: convSandboxed, agentDefaultValue: cd.sandboxed ?? null, platform });
     const tierOf = (conv, agent) => (conv != null ? 'conversation' : agent != null ? 'agent' : 'default');
     return {
@@ -1159,9 +1165,15 @@ export function createBrainPool({
             narrowedTools = own.filter((t) => granted.has(toolBase(t).toLowerCase()));
           }
           def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: narrowedTools ?? perm.allowedTools };
+        } else if (isDeskOnly(accessLevel)) {
+          throw new Error(`brainpool: ${being} is access_level 'reader' but config/permissions/reader.md is missing or unparseable — refusing the turn`);
         }
       }
+      // 'reader': its own folder and nothing else — no path grant from any tier, no pinned workspace.
+      const desk = isDeskOnly(accessLevel);
+      if (desk) def = { ...def, allowed_paths: undefined, cwd: undefined };
       const engine = def.type ?? brainType;
+      if (desk && engine !== 'ccode') throw new Error(`brainpool: ${being} is access_level 'reader' on engine '${engine}' — only ccode can hold it to its tools (--tools); refusing the turn`);
       // The identity-feed selector (operator 2026-07-02): a property of the resolved
       // agent-type def, NOT the conversation. `def.personality` is ALREADY the whole ladder by
       // the time it gets here (personalityFor, applied in shapeDef): config.yaml's agent-level
@@ -1191,14 +1203,15 @@ export function createBrainPool({
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/directivesDir resolve off convDir too.
-      await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh });
+      await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh, publicOnly: desk });
       // HOW THIS BEING IS CONFIGURED HERE, beside those layers (operator 2026-09-24): its block in
       // ./directives/config.readonly.yaml, rendered from the values THIS turn runs with and written
       // only when it changed — see being-config-card.mjs. Before the spawn, so a fresh thread's
       // first turn already finds it. Best-effort by contract (writeConfigCard never throws).
       // `verbose` is the one reading of verbose_thinking, shared with baseOpts below.
+      // A 'reader' gets none: the card names the node, handles and allowed_users.
       const verbose = (verboseThinking ?? def.verbose_thinking) === true;
-      await writeCard(Room.forChat(scope.surface, slug), being, renderConfigBlock({
+      if (!desk) await writeCard(Room.forChat(scope.surface, slug), being, renderConfigBlock({
         being, config: getConfig() ?? {}, scoped: scope.scoped, configuration, def, engine,
         model: runModel, effort: runEffort, accessLevel, sandboxed, sandboxedRung,
         mode: resolveMode({ mode }, being, getConfig() ?? {}),
@@ -1254,11 +1267,14 @@ export function createBrainPool({
       // unboxed turn runs as the operator in his own. Read per turn like the credential above, so
       // an invalid entry is named in this turn's log.
       const sandboxReadMounts = sandboxed === true ? globalReadPathsOf(getConfig()?.global_read_paths, onLog) : [];
+      // The tools that exist (--tools): a type's narrowed list, or a 'reader''s whole grant.
+      const toolsOnly = narrowedTools ?? (desk ? def.allowed_tools : null);
       const baseOpts = {
         engine,
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
-        ...(narrowedTools ? { tools: [...new Set(narrowedTools.map(toolBase))] } : {}),
+        ...(toolsOnly ? { tools: [...new Set(toolsOnly.map(toolBase))] } : {}),
+        ...(desk ? { strictMcpConfig: true } : {}),
         ...(runModel ? { model: runModel } : {}),
         ...(runEffort ? { effort: runEffort } : {}),
         ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
@@ -1329,7 +1345,8 @@ export function createBrainPool({
         // (sandbox-cli-session.mjs), spawn env for an unboxed one (warm-cli-session.mjs). Every
         // being gets its chat's group browser (operator 2026-10-11); `boxed` decides whether its CDP
         // is filtered. Absent link (no boot wiring, every test that passes none) contributes nothing.
-        ...(beingLink ? { beingLink: beingLink.forBeing({ being, surface: scope.surface, slug, boxed: sandboxed === true }) } : {}),
+        // A 'reader' gets no browser.
+        ...(beingLink && !desk ? { beingLink: beingLink.forBeing({ being, surface: scope.surface, slug, boxed: sandboxed === true }) } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,
@@ -1348,7 +1365,7 @@ export function createBrainPool({
         // config passed so the cards can quote it ({{chrome.bin}} etc.) — plus THIS being's own
         // name and handles (feedConfig above), so 00-identity can be one shipped template every
         // agent on every node renders correctly instead of a per-node hand-edit.
-        let feed = (await loadFeed(personality, feedConfig(being))) || '';
+        let feed = (await loadFeed(personality, feedConfig(being), { publicOnly: desk })) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
         // 'mode: auto': append the operator-role instruction layer to the kickoff feed so
         // a fresh auto thread learns the stance up front. Best-effort (a missing layer just

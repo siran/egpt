@@ -14,7 +14,7 @@
 // explicit read/write helpers at the bottom that take paths. Easy to
 // test, easy to call from any host.
 
-import { readFile, writeFile, mkdir, stat, rename, appendFile, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, rename, appendFile, readdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1990,6 +1990,12 @@ async function _identityLayers(name) {
 // skeletonIdentityFiles, so "what gets written" and "what counts as the skeleton" cannot drift.
 const _sharedLayers = (layers) => layers.filter(({ file }) => file !== IDENTITY_SLOT);
 
+// The shared layers that name nothing internal — all an access_level `reader` being is fed or finds
+// in its directives/ (2026-10-26, chatboxes). 30-pointers names src, Chrome, the spine helper and
+// ssh keys, so it is out. An allowlist: a layer added later stays out until someone judges it.
+export const PUBLIC_LAYERS = Object.freeze(['10-actions.md', '40-rules.md']);
+const _publicLayers = (layers) => layers.filter(({ file }) => file === IDENTITY_SLOT || PUBLIC_LAYERS.includes(file));
+
 // Seed the room's SHARED directive layers into a Room's OWN folder — a chat conversation or
 // an operator-named room alike, since both ARE Rooms (operator 2026-07-25: "they
 // all get to model at the beginning, but should also be copied for local consult, since by
@@ -2044,13 +2050,15 @@ const _sharedLayers = (layers) => layers.filter(({ file }) => file !== IDENTITY_
 //
 // NEVER throws — a seeding hiccup must not break a turn (or a /rooms create). Returns the
 // filenames it wrote.
-export async function seedIdentityLayers(room, name, { io = {}, overwrite = false } = {}) {
+export async function seedIdentityLayers(room, name, { io = {}, overwrite = false, publicOnly = false } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const mkdirFn = io.mkdir ?? mkdir;
+  const unlinkFn = io.unlink ?? unlink;
   const wrote = [];
   try {
-    const layers = _sharedLayers(await _identityLayers(name));
+    const shared = _sharedLayers(await _identityLayers(name));
+    const layers = publicOnly ? _publicLayers(shared) : shared;
     const dir = room.directivesDir;
     // The Room's WHOLE tree — directives/ AND media/ files/ scripts/ — through the
     // abstraction's own ensureTree, the SAME call /rooms create makes (operator 2026-07-26:
@@ -2073,6 +2081,13 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
       }
       await writeFileFn(fp, text, 'utf8');
       wrote.push(file);
+    }
+    // A public desk holds no card its being is not fed — an /agents refresh|reset or an earlier
+    // level may have filed one there.
+    if (publicOnly) {
+      for (const { file } of shared.filter((l) => !layers.includes(l))) {
+        try { await unlinkFn(join(dir, file)); } catch (e) { if (e?.code !== 'ENOENT') throw e; }
+      }
     }
   } catch (e) { console.error(`!! seedIdentityLayers(${room?.baseDir?.() ?? '?'}): ${e?.message ?? e}`); }
   return wrote;
@@ -2112,8 +2127,9 @@ export function fillCardPlaceholders(text, config = {}) {
     .join('\n');
 }
 
-export async function readIdentityFeed(name, config = {}) {
-  const raw = (await _identityLayers(name)).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
+export async function readIdentityFeed(name, config = {}, { publicOnly = false } = {}) {
+  const layers = await _identityLayers(name);
+  const raw = (publicOnly ? _publicLayers(layers) : layers).map(({ text }) => text.trim()).filter(Boolean).join('\n\n');
   return fillCardPlaceholders(raw, config);
 }
 

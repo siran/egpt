@@ -32,12 +32,16 @@ export const PERMISSIONS_DIR = fileURLToPath(new URL('../../config/permissions/'
 // so this reads the way a human should meet the tiers — 'regular' confined, 'all' unconfined,
 // 'sandbox' unconfined-but-boxed. A FOURTH tier is a file in config/permissions/ plus a name
 // here; there is no string left to hunt for.
-export const ACCESS_LEVELS = Object.freeze(['regular', 'all', 'sandbox']);
+export const ACCESS_LEVELS = Object.freeze(['regular', 'all', 'sandbox', 'reader']);
 
 // The shared guard. Same shape as auto-mode.mjs's AUTO_MODES/isAutoMode pair, deliberately:
 // a closed set of names owned by the module that resolves them, and one predicate everyone
 // else calls. Total — a null/undefined/miscased level is simply not one.
 export function isAccessLevel(level) { return ACCESS_LEVELS.includes(level); }
+
+// 'reader' (2026-10-26, chatboxes) is held to its own conversation folder; brainpool.mjs applies
+// what config/permissions/reader.md cannot say (see that file).
+export function isDeskOnly(level) { return level === 'reader'; }
 
 // Pure parse: text -> { dangerouslySkipPermissions, allowedTools } or null when the file
 // doesn't open with the required `dangerously_skip_permissions:` line.
