@@ -13,6 +13,7 @@ import {
 } from '../src/spine/transcriptor-worker.mjs';
 import { startWhisperServer as realStartWhisperServer, makeWhisperServerTranscriber as realMakeTranscriber } from '../src/tools/whisper-server.mjs';
 import { startTranscriptorServer as realStartTranscriptorServer, transcribeViaEndpoint } from '../src/tools/transcriptor.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 // Fake process-boundary seams: record the opts each spawner was called with, hand back handles
 // whose stop/close increment counters. NOTHING spawns, NOTHING binds.
@@ -239,7 +240,7 @@ describe('transcriptor worker — serves :23390 in front of an ADOPTED resident 
       }
       res.writeHead(200); res.end('whisper.cpp server');
     });
-    await new Promise((r) => resident.listen(0, '127.0.0.1', r));
+    await freeSafeHttpPort().then((p) => new Promise((r) => resident.listen(p, '127.0.0.1', r)));
   });
   afterEach(() => { resident.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -259,7 +260,7 @@ describe('transcriptor worker — serves :23390 in front of an ADOPTED resident 
         serviceFor: async () => null,
       }),
       makeWhisperServerTranscriber: (o) => realMakeTranscriber({ ...o, convert: async (p) => p }),
-      startTranscriptorServer: async (o) => { askedPort = o.port; bound = await realStartTranscriptorServer({ ...o, port: 0 }); return bound; },
+      startTranscriptorServer: async (o) => { askedPort = o.port; bound = await realStartTranscriptorServer({ ...o, port: await freeSafeHttpPort() }); return bound; },
       onLog: (m) => logs.push(m),
     });
     await w.start();

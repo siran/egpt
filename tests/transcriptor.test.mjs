@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import {
   startTranscriptorServer, transcribeViaEndpoint, makeRemoteFirstTranscriber, signAudio, publishTranscript,
 } from '../src/tools/transcriptor.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';   // base64url, any 32ish bytes
 const OTHER_KEY = 'b3RoZXIta2V5LW90aGVyLWtleS1vdGhlci0wMA';
@@ -28,7 +29,7 @@ afterEach(() => {
 async function startServer(extra = {}) {
   const calls = [];
   const s = await startTranscriptorServer({
-    port: 0, bind: '127.0.0.1', keyB64: KEY,
+    port: await freeSafeHttpPort(), bind: '127.0.0.1', keyB64: KEY,
     transcribe: async (path) => { calls.push(readFileSync(path)); return 'hola desde el worker'; },
     ...extra,
   });
@@ -427,7 +428,7 @@ describe('transcriptor — "do you have this sha?" first, and a memory that outl
       req.on('data', (c) => { r.bytes += c.length; });
       req.pipe(up);
     });
-    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    await freeSafeHttpPort().then((p) => new Promise((resolve) => srv.listen(p, '127.0.0.1', resolve)));
     servers.push({ close: () => { srv.closeAllConnections?.(); srv.close(); } });
     return { seen, endpoint: `http://127.0.0.1:${srv.address().port}` };
   }
@@ -528,7 +529,7 @@ describe('transcriptor — "do you have this sha?" first, and a memory that outl
       req.resume();
       req.on('end', () => json(200, { ok: true, transcript: 'hola desde el worker viejo', durationSec: 1.5, ms: 3 }));
     });
-    await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+    await freeSafeHttpPort().then((p) => new Promise((resolve) => old.listen(p, '127.0.0.1', resolve)));
     servers.push({ close: () => { old.closeAllConnections?.(); old.close(); } });
     const meta = {};
     const t = await transcribeViaEndpoint(audioPath, { endpoint: `http://127.0.0.1:${old.address().port}`, keyB64: KEY }, () => {}, meta);
@@ -749,7 +750,7 @@ describe('transcriptor — a locally-decoded transcript published to the worker 
   it('publishTranscript against an OLD worker with no publish route returns false, without throwing', async () => {
     // The old worker's routing (958e88b): only POST /v1/transcribe; everything else 404.
     const old = createServer((req, res) => { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'not found' })); });
-    await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+    await freeSafeHttpPort().then((p) => new Promise((resolve) => old.listen(p, '127.0.0.1', resolve)));
     servers.push({ close: () => { old.closeAllConnections?.(); old.close(); } });
     expect(await publishTranscript(`http://127.0.0.1:${old.address().port}`, { keyB64: KEY, sha: 'd'.repeat(64), transcript: 'x' })).toBe(false);
   });

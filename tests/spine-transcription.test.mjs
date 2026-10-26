@@ -10,6 +10,7 @@ import { createTranscription } from '../src/spine/transcription.mjs';
 import { POSTS_BACK_DELAY_MS } from '../src/incoming-media.mjs';
 import { createConfigResolver } from '../src/spine/config-resolver.mjs';
 import { slugDir } from '../src/conversations-state.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const config = {
   transcription_service: {
@@ -252,7 +253,7 @@ describe('createTranscription — the own-transcriptor rung is the one routesToO
       req.resume();
       req.on('end', () => res.end(JSON.stringify({ ok: true, transcript: 'hola' })));
     });
-    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    await freeSafeHttpPort().then((p) => new Promise((r) => server.listen(p, '127.0.0.1', r)));
     const port = server.address().port;
     const dir = mkdtempSync(join(tmpdir(), 'egpt-tx-own-'));
     const cfgFor = (transcriptorPort) => ({

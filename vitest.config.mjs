@@ -19,8 +19,9 @@ export default defineConfig({
     //    killed at 5s though its own wait had not expired. 20s lets it finish; a real hang still fails.
     //  · maxWorkers: this box has 16 CPUs and the suite runs ~100 real loopback HTTP servers across
     //    its files; at the default (one worker per CPU) the saturated event loop made loopback fetch()
-    //    intermittently throw `fetch failed` / `bad port` (undici mislabelling a transient connect
-    //    failure — the base URL is constant and most calls on the same bridge succeed). Not a product
+    //    intermittently throw `fetch failed` (the base URL is constant and most calls on the same bridge
+    //    succeed). `bad port` was not load: listen(0) handed out one of fetch's blocked ports from reve's
+    //    1024-15000 ephemeral range; tests bind tests/free-safe-http-port.mjs's port instead. Not a product
     //    bug, the bridge fails open correctly, but the tests assume the local call lands. Capping at 8
     //    keeps the suite PARALLEL (8 files at once), cuts those failures sharply (~40% of runs at 16 →
     //    a fraction of that), and is a hair faster for less contention.

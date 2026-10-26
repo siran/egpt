@@ -46,6 +46,7 @@ import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { superChannelAlive } from '../src/spine/gating.mjs';
 import { startTranscriptorServer } from '../src/tools/transcriptor.mjs';
 import { startSynthesizerServer } from '../src/tools/synthesizer.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const CHATS_PER_PAGE = 2;   // fake /v1/chats page size (live it's 25) — small so page 2 is readable
 
@@ -222,7 +223,7 @@ async function startFakeBeeper() {
       res.statusCode = 404; res.end('{}');
     });
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await freeSafeHttpPort().then((p) => new Promise((r) => server.listen(p, '127.0.0.1', r)));
   const port = server.address().port;
   const wss = new WebSocketServer({ server, path: '/v1/ws' });
   const sockets = [];
@@ -4593,10 +4594,10 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
 
     // dolly's two workers, real endpoints: only the engines behind them are fakes.
     const heard = [], spoken = [];
-    const transcriptor = await startTranscriptorServer({ port: 0, keyB64: KEY, transcribe: async (p) => { heard.push(p); return 'hola desde la nota'; } });
+    const transcriptor = await startTranscriptorServer({ port: await freeSafeHttpPort(), keyB64: KEY, transcribe: async (p) => { heard.push(p); return 'hola desde la nota'; } });
     const voicesDir = mkdtempSync(join(stateDir, 'voices-'));
     writeFileSync(join(voicesDir, 'ona.onnx'), 'model');
-    const synthesizer = await startSynthesizerServer({ port: 0, keyB64: KEY, pythonPath: 'python.exe', voicesDir, synthesize: async (text) => { spoken.push(text); return Buffer.from('OGG-AUDIO'); } });
+    const synthesizer = await startSynthesizerServer({ port: await freeSafeHttpPort(), keyB64: KEY, pythonPath: 'python.exe', voicesDir, synthesize: async (text) => { spoken.push(text); return Buffer.from('OGG-AUDIO'); } });
 
     const config = {
       node_name: 'kg',
