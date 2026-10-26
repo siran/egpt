@@ -482,6 +482,7 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     expect(n.state().contacts.telegram[SUPER].slug).toBe(before.slug);
     // the migrate pair made no folder; the lines after the move carry the group's title
     expect((await dirs()).filter((d) => !dirsBefore.includes(d) && d !== before.slug)).toEqual([]);
+    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8')).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ /));
     const tx = await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8');
     expect(tx).toMatch(/An R@\[EduWeb\]\.tg \(\d\d:\d\d\) #2: seguimos aquí/);
     expect(tx).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ /);

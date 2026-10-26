@@ -15,6 +15,7 @@ import vm from 'node:vm';
 import { WebSocketServer } from 'ws';
 import { setCdpHostGetter, streamFromTab } from '../src/tools/cdp.mjs';
 import { pollScript, injectScript } from '../config/brains/chatgpt-cdp.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const TAB = 'reasoning-tab-1';
 const ANSWER = 'Yes. Physically it may neutralize the motivation behind the problem.';
@@ -68,7 +69,7 @@ beforeAll(async () => {
       });
     });
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await freeSafeHttpPort().then((p) => new Promise((r) => server.listen(p, '127.0.0.1', r)));
   port = server.address().port;
   setCdpHostGetter(() => `127.0.0.1:${port}`);
 });

@@ -1,7 +1,7 @@
 // Worker-spine text-to-speech: HMAC auth, voice whitelist (path-traversal guard), the
 // piper/ffmpeg failure path, and the client round-trip / error contract. Mirrors
 // tests/transcriptor.test.mjs's DI-injection shape — no real python/piper/ffmpeg process
-// is spawned and no real port is exposed beyond an ephemeral loopback listener (port: 0).
+// is spawned and no real port is exposed beyond an ephemeral loopback listener (freeSafeHttpPort).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import {
   startSynthesizerServer, synthesizeViaEndpoint,
 } from '../src/tools/synthesizer.mjs';
 import { signAudio } from '../src/tools/transcriptor.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';   // base64url, any 32ish bytes
 const OTHER_KEY = 'b3RoZXIta2V5LW90aGVyLWtleS1vdGhlci0wMA';
@@ -28,7 +29,7 @@ afterEach(() => {
 async function startServer(extra = {}) {
   const calls = [];
   const s = await startSynthesizerServer({
-    port: 0, bind: '127.0.0.1', keyB64: KEY,
+    port: await freeSafeHttpPort(), bind: '127.0.0.1', keyB64: KEY,
     pythonPath: 'C:\\fake\\python.exe', voicesDir,
     synthesize: async (text, opts) => { calls.push({ text, ...opts }); return Buffer.from('fake-ogg-bytes'); },
     ...extra,

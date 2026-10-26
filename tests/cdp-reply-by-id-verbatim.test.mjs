@@ -20,6 +20,7 @@ import vm from 'node:vm';
 import { WebSocketServer } from 'ws';
 import { setCdpHostGetter, streamFromTab } from '../src/tools/cdp.mjs';
 import * as chatgpt from '../config/brains/chatgpt-cdp.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const TAB = 'verbatim-tab-1';
 const OLD = 'Of course. Where do you want to pick it up: the toroidal basis?';
@@ -91,7 +92,7 @@ beforeAll(async () => {
       });
     });
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await freeSafeHttpPort().then((p) => new Promise((r) => server.listen(p, '127.0.0.1', r)));
   port = server.address().port;
   setCdpHostGetter(() => `127.0.0.1:${port}`);
 });

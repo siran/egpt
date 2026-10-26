@@ -11,6 +11,7 @@ import { makeWhisperServerTranscriber } from '../src/tools/whisper-server.mjs';
 import { createEcsWaker } from '../src/tools/whisper-ecs.mjs';
 import { signV4, createEcsClient, readAwsKeyPair } from '../src/tools/aws-ecs.mjs';
 import { createTranscription } from '../src/spine/transcription.mjs';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
@@ -59,7 +60,7 @@ const gpuCli = (port) => ({ fallback_order: ['gpu', 'cli'], gpu: gpuEngine(port)
 let ws, port, dir;
 beforeAll(async () => {
   ws = fakeWhisperServer();
-  await new Promise((r) => ws.server.listen(0, '127.0.0.1', r));
+  await freeSafeHttpPort().then((p) => new Promise((r) => ws.server.listen(p, '127.0.0.1', r)));
   port = ws.server.address().port;
 });
 afterAll(() => new Promise((r) => ws.server.close(r)));

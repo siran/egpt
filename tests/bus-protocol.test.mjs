@@ -29,10 +29,11 @@ import { createServer } from 'node:http';
 import { setCdpHostGetter } from '../src/tools/cdp.mjs';
 import * as bus from '../src/tools/bus.mjs';
 import { WebSocketServer } from 'ws';
+import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 // ── mock CDP server ─────────────────────────────────────────────
 
-function startMockCdp() {
+function startMockCdp(port) {
   const TAB_ID = 'bus-tab-1';
   const sessions = new Set();   // every active WS to /devtools/page/<TAB_ID>
   const eventLog = [];          // server-side ring buffer mimicking bus.html's
@@ -121,7 +122,7 @@ function startMockCdp() {
   });
 
   return new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(port, '127.0.0.1', () => {
       resolve({
         server,
         port: server.address().port,
@@ -156,7 +157,7 @@ function broadcastBusEvent(sessions, ev) {
 let mock;
 
 beforeAll(async () => {
-  mock = await startMockCdp();
+  mock = await startMockCdp(await freeSafeHttpPort());
   setCdpHostGetter(() => `localhost:${mock.port}`);
 });
 
