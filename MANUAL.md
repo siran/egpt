@@ -95,11 +95,12 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                reseed pristine — next message
                                                starts fresh
 /<handle> agents[=<slug>] auto <mode> <handle>|all  set a being's reply mode
-/<handle> agents[=<slug>] access_level <regular|all|sandbox> <handle>|all
+/<handle> agents[=<slug>] access_level <regular|all|sandbox|reader> <handle>|all
                                                point a being at a confinement
                                                tier: this node's regular
-                                               default, the unconfined one, or
-                                               the OS-sandboxed one (see below)
+                                               default, the unconfined one,
+                                               the OS-sandboxed one, or the
+                                               read-only desk (see below)
 /<handle> restart [force]                      bounce the node (daemon respawns
                                                the current checkout); waits for
                                                turns and background work in
@@ -148,10 +149,20 @@ very next turn — no `/restart` needed.
 being at `config/permissions/sandbox.md`, which is `all.md`'s grant byte for
 byte, but the spine forces `sandboxed: true` for that level, so the being only
 ever runs inside the OS sandbox — the kernel holds the boundary instead of the
-CLI's own flags, and no config rung can unbox it. `regular`, `all` and
-`sandbox` are the whole set (`ACCESS_LEVELS`, src/spine/permission-levels.mjs);
-the command's usage line is built from it, so it can never name fewer than
-exist.
+CLI's own flags, and no config rung can unbox it.
+
+`/agents <handle>|all access_level reader` is the fourth, for public chatbox
+beings: Read, Glob and Grep inside the being's own conversation folder and
+nothing else (`config/permissions/reader.md`). It runs unboxed (the box would
+drop the CLI gate and mount `src/` and the global read paths), sends its tools
+as `--tools` with `--strict-mcp-config`, and ignores every `allowed_paths`
+grant — the type's, the node's and the conversation's. Its kickoff feed is its
+identity plus `10-actions` and `40-rules` only; `30-pointers` is neither fed
+nor kept in its `directives/`, and it gets no config card and no browser.
+
+`regular`, `all`, `sandbox` and `reader` are the whole set (`ACCESS_LEVELS`,
+src/spine/permission-levels.mjs); the command's usage line is built from it,
+so it can never name fewer than exist.
 
 ### The three lifecycle verbs
 

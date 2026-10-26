@@ -1857,7 +1857,7 @@ describe("permission-levels — the 'sandbox' level (operator 2026-09-05)", () =
   //    lives HERE now, once; every other site is downstream of it, so these pin the list
   //    itself (order included — it is what the user-facing usage text is built from). ──
   it('ACCESS_LEVELS is THE list — frozen, in human order (confined → unconfined → boxed), and every name in it resolves to a real permissions file', () => {
-    expect(ACCESS_LEVELS).toEqual(['regular', 'all', 'sandbox']);
+    expect(ACCESS_LEVELS).toEqual(['regular', 'all', 'sandbox', 'reader']);   // reader (2026-10-26) appended: the usage line keeps its old order
     expect(Object.isFrozen(ACCESS_LEVELS)).toBe(true);
     for (const level of ACCESS_LEVELS) {
       expect(isAccessLevel(level)).toBe(true);

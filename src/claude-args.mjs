@@ -62,6 +62,7 @@
 //                                     also --add-dir'd so READS still work.
 //   tools (a type's list narrowing its level, brainpool) → --tools "<a,b,c>": unlisted tools
 //                                     do not exist, in every tier above (2026-10-15)
+//   strictMcpConfig (access_level reader) → --strict-mcp-config: no MCP server from any config
 //   model   → --model ;  effort → --effort ;  sessionId → --resume ;
 //   appendSystemPrompt → --append-system-prompt
 //
@@ -157,6 +158,7 @@ export function buildClaudeArgs(options = {}) {
     args.push('--permission-mode', 'bypassPermissions');
   }
   if (Array.isArray(options.tools)) args.push('--tools', options.tools.join(','));
+  if (options.strictMcpConfig === true) args.push('--strict-mcp-config');
 
   // ── tool permission + confinement (mirror buildSdkOptions) ──
   //

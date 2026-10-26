@@ -1918,7 +1918,7 @@ export const CONFIG_SCHEMA = {
             independent of ev.authorized/isSender (the per-NETWORK owner
             concept); only an unset list reads the node's owners.
           access_level
-            ENUM: regular | all | sandbox. Points this agent at
+            ENUM: regular | all | sandbox | reader. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
             resolved fresh every turn (brainpool.mjs) - never a freeze.
 
@@ -1936,7 +1936,7 @@ export const CONFIG_SCHEMA = {
             --tools so unlisted tools do not exist, boxed or not (2026-10-15).
             A type with no list gets the level's whole list.
 
-            All three are the SAME values /agents <handle>|all
+            All four are the SAME values /agents <handle>|all
             access_level <level> writes per-conversation - that validator and
             this enum are the same list, ACCESS_LEVELS in
             src/spine/permission-levels.mjs, so a fourth tier cannot reach one
@@ -1965,6 +1965,18 @@ export const CONFIG_SCHEMA = {
               boundary instead of two overlapping ones: the kernel-enforced box
               REPLACES the CLI-enforced confinement rather than layering over
               it, so the CLI-level one is dropped on purpose.
+
+            reader
+              (2026-10-26, chatboxes) Read, Glob and Grep inside the being's own
+              conversation folder, nothing else. FORCES sandboxed: false (the
+              box drops the CLI gate and mounts src/ and global_read_paths), so
+              an explicit sandboxed: true is dead config and is logged per turn.
+              Its tools go out as --tools with --strict-mcp-config; every
+              allowed_paths grant (type, node, conversation) and a type's cwd
+              are ignored; no browser link, no config card, and its feed and
+              directives/ carry only PUBLIC_LAYERS (src/conversations-state.mjs:
+              no 30-pointers). A missing reader.md or a non-ccode engine refuses
+              the turn.
 
           sandboxed
             boolean (operator 2026-08-20). UNSET is PLATFORM-AWARE (operator

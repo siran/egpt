@@ -2157,6 +2157,7 @@ export function createCommands({
       regular: 'confined default tools',
       all: 'unconfined: full filesystem, bare Bash',
       sandbox: "all's capability, but only ever inside the OS sandbox",
+      reader: 'Read, Glob and Grep in its own folder only',
     }[target] ?? `see config/permissions/${target}.md`;
     await send?.(ev.chatId, `✅ ${named} access ${whereWrote(scopes, where)} → ${target} (${blurb})`);
   }
