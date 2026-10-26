@@ -5,7 +5,8 @@
 //     (a returned promise holds the reply). A thrown error becomes a CDP error. `received` = every
 //     message in.
 //   fakePipeChrome(browserOf) — a fake `chromeHost` (connectChromeHost's shape) over such children,
-//     for createCommands. A function `(launchOpts) => browser` picks one per launch.
+//     for createCommands. A function `(launchOpts) => browser` picks one per launch. `plain` = every
+//     launchPlain's opts + pid + close() (its Chrome exits); `events` = kill/launch/plain in order.
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { createPipeChannel } from '../src/tools/cdp.mjs';
@@ -54,11 +55,20 @@ export function fakeChromeChild(browser = {}, pid = 0) {
 export function fakePipeChrome(browserOf = {}) {
   const calls = [];
   const handles = [];
+  const plain = [];
+  const events = [];
   const live = new Map();
   const exits = new Set();
   let pid = 1000;
   const chromeHost = {
+    async launchPlain(opts) {
+      events.push(`plain:${opts.group}`);
+      const p = { ...opts, pid: ++pid, close: () => { for (const cb of exits) cb({ group: opts.group, pid: p.pid, code: 0, signal: null }); } };
+      plain.push(p);
+      return { pid: p.pid };
+    },
     async launch(opts) {
+      events.push(`launch:${opts.group}`);
       calls.push(opts);
       const child = fakeChromeChild(typeof browserOf === 'function' ? browserOf(opts) : browserOf, ++pid);
       live.set(opts.group, child);
@@ -70,8 +80,8 @@ export function fakePipeChrome(browserOf = {}) {
       return { pid: child.pid, channel: createPipeChannel({ writable: child.stdio[3], readable: child.stdio[4] }) };
     },
     list: async () => [],
-    kill: (group) => { live.get(group)?.kill(); },
+    kill: (group) => { events.push(`kill:${group}`); live.get(group)?.kill(); },
     onExit: (cb) => { exits.add(cb); },
   };
-  return { chromeHost, calls, handles };
+  return { chromeHost, calls, handles, plain, events };
 }

@@ -113,6 +113,10 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                restarts Beeper (eGPT stays up),
                                                one result line in log_to_group;
                                                else the one-line Beeper state
+/<handle> browser refresh [url]                close this chat's browser and open
+                                               a normal Chrome window on its
+                                               profile, to sign in or pass a
+                                               check yourself (see below)
 ```
 
 **Reply modes** (`/agents … auto <mode>`): `on` (receive every burst, reply per
@@ -257,6 +261,28 @@ with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). Nobod
 else in the chat sees your line, only the answer. An id with no conversations.yaml
 entry, or a file with no text, is logged and ignored. The box sits under
 `~/.egpt`, so only the node's owner can write it; a sandboxed being cannot.
+
+### `/<handle> browser refresh [url]` — sign in yourself
+
+Some sites refuse eGPT's browser because it is automated: Google says "This
+browser or app may not be secure", and some captchas loop. Pass them yourself in
+a normal Chrome window on the same profile. eGPT's browser then reuses the
+session.
+
+`/<handle> browser refresh [url]` (owners only) closes eGPT's browser for this
+chat's group and opens a normal Chrome window on that group's profile at `url`
+(default `about:blank`; a bare host means `https://`). The window opens on the
+desktop of the node that runs the being. On a container node, open its VNC
+(`:6080`) to see it. Sign in or pass the check, then close the window. Until that
+window's Chrome exits, eGPT does not open the browser again, and a being that
+asks for it is told the browser is held for sign-in. When it exits, the chat
+gets one line: "browser <group> is back — signed-in session will be used". eGPT
+uses no stealth and solves no captchas. You pass the check yourself.
+
+On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
+[url]` (default `brain`, Google sign-in). It closes the Chrome processes on that
+profile, opens the same normal window, and prints the steps. It does not keep
+eGPT off the profile, so prefer the command while the node runs.
 
 ---
 

@@ -53,7 +53,7 @@ import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config
 import { isRestartKey } from './config-swap.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { createCdpClient, createChannelTransport } from '../tools/cdp.mjs';
-import { resolveBrainProfile, chromePipeArgs, stampGroupProfile, profileHolder as defaultProfileHolder } from '../tools/chrome-launcher.mjs';
+import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder } from '../tools/chrome-launcher.mjs';
 import { connectChromeHost } from '../chrome-host.mjs';
 import { admitLaunch, estimateChromeBytes, BRAIN_GROUP, SHARED_GROUP, isSafeGroupName, chromeConversationOf } from './chrome-pool.mjs';
 import { freemem } from 'node:os';
@@ -168,6 +168,11 @@ const CCODE = 'ccode';
 // How many of Chrome's tabs /chrome lists before it collapses the rest into a
 // "+N more" — this report lands in a chat window, not a terminal.
 const CHROME_TAB_LIMIT = 5;
+// A sign-in window's page: http(s) or about:, a bare host as https. Never a Chrome switch.
+const signinUrlOf = (raw) => {
+  try { const u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`); return /^(https?|about):$/.test(u.protocol) ? u.href : null; }
+  catch { return null; }
+};
 const trunc = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 
 // Compact uptime: "2h13m" / "13m05s" / "42s". Whole seconds; drops the finest
@@ -976,6 +981,11 @@ export function createCommands({
     const loginMatch = /^\/login\s+(\S+)\s*$/i.exec(line);
     if (loginMatch) { await send?.(ev.chatId, await loginCmd(ev, loginMatch[1])); return; }
 
+    // /browser refresh [url] — this chat's browser profile in a plain Chrome window, for a human
+    // sign-in or check (browserRefresh). Pre-catch-all.
+    const browserMatch = /^\/browser\b[ \t]*(.*)$/i.exec(line);
+    if (browserMatch) { await send?.(ev.chatId, await browserCmd(ev, browserMatch[1].trim())); return; }
+
     // /rooms — bare: list the saved rooms. Otherwise `/rooms <verb> [<room>]`, routed to the
     // same room() the singular /rooms used to reach. /rooms itself is retired (operator
     // 2026-08-29: "keep only '/agents', '/rooms'") and now answers the plural question below.
@@ -1100,6 +1110,7 @@ export function createCommands({
   // The daemon holds each Chrome (chromeHost); every decision is here, and ships with /upgrade.
   const _groups = new Map();     // profileDir → { group, channel, client, pid, lastUsedAt, busy }
   const _ensuring = new Map();   // profileDir → in-flight launch (per-profile single-flight)
+  const _signin = new Map();     // profileDir → { group, pid, chatId }: a plain Chrome holds it (/browser refresh)
   const chromeAlive = (e) => !!e && !e.channel.closed;
   const evictable = (e) => !e.busy && chromeAlive(e) && e.group !== BRAIN_GROUP && e.group !== SHARED_GROUP;
   const launchEstimateBytes = () => (Number(cfg()?.chrome?.launch_estimate_mb) || CHROME_LAUNCH_ESTIMATE_MB) * MB;
@@ -1130,10 +1141,12 @@ export function createCommands({
     if (!chromeHost) return;
     chromeHost.onExit(({ group, pid, code, signal }) => {
       for (const [dir, e] of _groups) if (e.pid === pid) _groups.delete(dir);
+      for (const [dir, h] of _signin) if (h.pid === pid) signinDone(dir, h);
       onChromeLog(`"${group}" Chrome (pid ${pid}) exited (${signal ? `signal ${signal}` : `code ${code}`}) — nothing restarted; it relaunches on next need`);
     });
     try {
       for (const g of await chromeHost.list()) {
+        if (g.plain) { _signin.set(g.profileDir, { group: g.group, pid: g.pid, chatId: null }); onChromeLog(`"${g.group}" held for sign-in: plain Chrome pid ${g.pid}, held by the daemon`); continue; }
         track(g.group, g.profileDir, g);
         onChromeLog(`re-attached "${g.group}" Chrome ${g.profileDir} (pid ${g.pid}), held by the daemon`);
       }
@@ -1150,15 +1163,20 @@ export function createCommands({
   // already holds → no browser + one log line. Never throws.
   // Resolves { group, profileDir, client, pid, launched, running, why? }.
   function ensureChrome(conversation, opts) { return _reattached.then(() => ensureGroupChrome(conversation, opts)); }
+  // A conversation's group and profile dir; no usable profile → profileDir null + why, logged.
+  function groupProfileOf(conversation) {
+    const group = conversation ? conversation.group : BRAIN_GROUP;
+    const profileDir = chromeProfileOf(cfg(), conversation);
+    if (profileDir && (group === BRAIN_GROUP || profileDir !== chromeProfileOf(cfg()))) return { group, profileDir };
+    const why = conversation?.why || `browser group "${group}" ${profileDir ? 'is the brain profile dir' : 'is unusable'}`;
+    onChromeLog(`no browser for "${conversation?.name ?? ''}": ${why}`);
+    return { group, profileDir: null, why };
+  }
   function ensureGroupChrome(conversation, { launch = true } = {}) {
     conversation ??= { key: '', name: '', group: BRAIN_GROUP };
-    const { group } = conversation;
-    const profileDir = chromeProfileOf(cfg(), conversation);
-    if (!profileDir || (group !== BRAIN_GROUP && profileDir === chromeProfileOf(cfg()))) {
-      const why = conversation.why || `browser group "${group}" ${profileDir ? 'is the brain profile dir' : 'is unusable'}`;
-      onChromeLog(`no browser for "${conversation.name ?? ''}": ${why}`);
-      return Promise.resolve({ group, profileDir: null, client: null, launched: false, running: false, why });
-    }
+    const { group, profileDir, why } = groupProfileOf(conversation);
+    if (!profileDir) return Promise.resolve({ group, profileDir: null, client: null, launched: false, running: false, why });
+    if (_signin.has(profileDir)) return Promise.resolve({ group, profileDir, client: null, launched: false, running: false, why: `the "${group}" browser is held for sign-in: the operator is using it in a normal Chrome window; it is back when they close that window` });
     const live = _groups.get(profileDir);
     if (chromeAlive(live)) { live.lastUsedAt = now(); return Promise.resolve({ group, profileDir, client: live.client, pid: live.pid, launched: false, running: true }); }
     if (!launch) return Promise.resolve({ group, profileDir, client: null, launched: false, running: false, why: `the "${group}" browser is not running` });
@@ -1222,6 +1240,51 @@ export function createCommands({
     return { conversation, client, why };
   }
   const chatClientOf = async (ev, opts) => (await chatChromeOf(surfaceOf(ev), ev.chatId, opts)).client;
+
+  // /browser refresh [url] — sites refuse the pipe Chrome (Google sign-in, captchas), so a human does
+  // it in a PLAIN Chrome on the group's profile: eGPT's Chrome closes through the daemon, the plain one
+  // opens there, and the group is held until it exits. No stealth, no captcha solving here.
+  async function browserCmd(ev, args) {
+    const [verb, raw, extra] = args.split(/\s+/);
+    const url = signinUrlOf(raw ?? 'about:blank');
+    if (verb.toLowerCase() !== 'refresh' || extra || !url) return `usage: ${hintOf('browser refresh [url]', ev)} — close my browser for this chat and open a normal Chrome window on its profile, for you to sign in or pass a check`;
+    return browserRefresh(ev, url);
+  }
+  async function browserRefresh(ev, url) {
+    const { group, profileDir, why } = groupProfileOf(await browserConversationOf(surfaceOf(ev), ev.chatId));
+    if (!profileDir) return `no browser for this chat — ${why}`;
+    if (!chromeHost) return `no browser for this chat — ${NO_CHROME_HOST}`;
+    await _reattached;
+    if (_signin.has(profileDir)) return `the "${group}" browser is already held for sign-in — close that Chrome window first`;
+    const hold = { group, pid: null, chatId: ev.chatId };
+    _signin.set(profileDir, hold);
+    await _ensuring.get(profileDir);
+    const live = _groups.get(profileDir);
+    const closed = chromeAlive(live);
+    if (closed) chromeHost.kill(group);
+    // Gone = the daemon reported its exit (onExit drops it) and the profile lock is free.
+    const holderOf = () => (closed && _groups.get(profileDir) === live ? `pid ${live.pid}, closing` : profileHolder(profileDir));
+    let holder = holderOf();
+    for (let i = 0; holder && closed && i < 40; i++) { await new Promise((r) => setTimeout(r, 250)); holder = holderOf(); }
+    try {
+      if (holder) throw new Error(`another Chrome holds the "${group}" profile (${holder}) — close it first`);
+      hold.pid = (await chromeHost.launchPlain({ group, profileDir, bin: chromeBinOf(cfg()), argv: chromePlainArgs({ userDataDir: profileDir, url }) })).pid;
+    } catch (e) {
+      _signin.delete(profileDir);
+      onChromeLog(`"${group}" sign-in window not opened — ${e?.message ?? e}`);
+      return `/browser refresh: ${e?.message ?? e}`;
+    }
+    onChromeLog(`"${group}" held for sign-in: plain Chrome pid ${hold.pid} on ${profileDir}`);
+    const lead = closed ? `I closed my browser for ${group}.` : `My browser for ${group} was not open.`;
+    const vnc = process.platform === 'win32' ? '' : ' Open VNC (:6080) to see it.';
+    return `${lead} A normal Chrome window opened on ${cfg().node_name ?? 'this node'} at ${url}: sign in / pass the check yourself, then close that window — I'll use the session next time.${vnc}`;
+  }
+  // The plain window's Chrome exited: the group is eGPT's again.
+  function signinDone(dir, h) {
+    _signin.delete(dir);
+    onChromeLog(`"${h.group}" sign-in window (pid ${h.pid}) closed — its Chrome relaunches on next need`);
+    if (h.chatId) Promise.resolve(send?.(h.chatId, `browser ${h.group} is back — signed-in session will be used`)).catch((e) => onChromeLog(`"${h.group}" back line not posted — ${e?.message ?? e}`));
+  }
 
   // A BOXED BEING'S `browser start` (src/spine/being-link.mjs): the launch path above and nothing
   // else — no arguments reach it from the being, and it lists no tabs (that is the operator's
