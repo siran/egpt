@@ -451,8 +451,9 @@ export const CONFIG_SCHEMA = {
         STABLE sender ids that may command this node ON TELEGRAM — a network
         jid / Beeper room id, NEVER a display name, since a chat title is
         attacker-controllable.
-        EMPTY = deny (fail-closed). The account owner (isSender) is always
-        authorized regardless.
+        Set, it REPLACES the top-level conversation_defaults.allowed_users here;
+        unset, that list applies. EMPTY = deny (fail-closed). The account owner
+        (isSender) is always authorized regardless.
 
     Ids are per-surface NAMESPACES — a WhatsApp jid authorizes NOTHING here.
 
@@ -481,8 +482,9 @@ export const CONFIG_SCHEMA = {
       allowed_users
         STABLE sender ids that may command this node ON SIGNAL — a network jid /
         Beeper room id, NEVER a display name.
-        EMPTY = deny (fail-closed). The account owner (isSender) is always
-        authorized regardless.
+        Set, it REPLACES the top-level conversation_defaults.allowed_users here;
+        unset, that list applies. EMPTY = deny (fail-closed). The account owner
+        (isSender) is always authorized regardless.
 
     Ids are per-surface NAMESPACES — a WhatsApp/Telegram id authorizes NOTHING
     here.
@@ -1200,6 +1202,22 @@ export const CONFIG_SCHEMA = {
     IDENTITY across two accounts, and is deliberately out of scope.
   `,
 
+  conversation_defaults: `
+    The node's own defaults (operator 2026-10-26: "join networks.telegram.allowed_users
+    into conversation_defaults.allowed_users").
+
+    KEYS:
+      allowed_users
+        THE NODE'S OWNERS: stable sender ids of any network, mixed. They may
+        command this node, and a being whose own allowed_users is unset (at
+        the conversation and at agents.<name>.conversation_defaults) answers
+        only them. networks.<surface>.allowed_users, when set, replaces this
+        list on that surface. Unset or [] = nobody (the account owner, and the
+        authenticated console, always pass). "*" names nobody here.
+        The token \`owner\` in any being's allowed_users expands to this
+        resolved list (src/spine/router.mjs ownersOf / mayWake).
+  `,
+
   networks: `
     Per-surface config wrapper (operator 2026-07-09).
 
@@ -1209,12 +1227,15 @@ export const CONFIG_SCHEMA = {
           STABLE command-channel ids — chats that accept /agents, /restart, … ; a
           LIST; a node may own several.
         allowed_users
-          STABLE sender ids that may command this node on THIS surface — jids /
-          Beeper room ids, NEVER display names.
-          [] = deny (fail-closed). The account owner is always allowed.
+          OPTIONAL. This surface's owners — STABLE sender ids that may command
+          this node on THIS surface, and whom a being with no list of its own
+          answers here — jids / Beeper room ids, NEVER display names. Set, it
+          REPLACES the top-level conversation_defaults.allowed_users on this
+          surface; unset, that list applies. [] = deny (fail-closed). The
+          account owner is always allowed.
 
     Ids are per-surface NAMESPACES (a WhatsApp jid authorizes nothing on
-    Telegram). ONE resolver reads this.
+    Telegram). ONE resolver reads this (src/spine/router.mjs ownersOf).
 
     BACK-COMPAT: the OLD top-level whatsapp: / telegram: / signal: blocks plus a
     SINGULAR chat_id are still accepted (a singular chat_id normalizes to a
@@ -1864,9 +1885,11 @@ export const CONFIG_SCHEMA = {
           allowed_users
             A list of sender ids (same shape/normalization as
             networks.*.allowed_users - matched via shortChatId, so a short or
-            legacy full-form id both work). UNSET = reachable by anyone who
-            could normally address this agent (today's ordinary default for a
-            plain agent). Set = ONLY a sender whose id is in the list can
+            legacy full-form id both work). UNSET = [owner] (operator
+            2026-10-26): only the node's owners (top-level
+            conversation_defaults.allowed_users, or networks.<surface>.allowed_users
+            where set). \`owner\` inside a list expands to them; ["*"] = anyone;
+            [] = nobody. Set = ONLY a sender whose id is in the list can
             reach it; every other sender's @mention falls through exactly as
             if it never matched (silent, same convention as the surface pin).
             No mode is above it (operator 2026-10-16): such a sender never
@@ -1878,10 +1901,9 @@ export const CONFIG_SCHEMA = {
             'dangerous' key is mistake"). dangerously_skip_permissions: true on
             a type file is STILL a real, meaningful flag - see CONFINEMENT
             below - it is just no longer a reachability gate; who may trigger an agent is
-            controlled here and by access_level instead. Independent of
-            ev.authorized/isSender (the existing per-NETWORK allowed_users/
-            account-owner concept, networks.*.allowed_users) - this is a
-            narrower, per-being gate and never reuses that signal.
+            controlled here and by access_level instead. An explicit id list is
+            independent of ev.authorized/isSender (the per-NETWORK owner
+            concept); only \`owner\`, and an unset list, read the node's owners.
           access_level
             ENUM: regular | all | sandbox. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
@@ -1935,7 +1957,7 @@ export const CONFIG_SCHEMA = {
 
               EXEMPT from the allowed_users requirement 'all' carries, also on
               purpose: the blast radius of a 'sandbox' turn is one ACL'd folder,
-              so such a being may be left reachable by anyone with no list set.
+              so such a being needs no list (unset = the owners; ['*'] = anyone).
               brainpool.mjs's gate therefore tests === 'all' and must keep
               testing exactly that.
 

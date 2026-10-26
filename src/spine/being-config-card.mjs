@@ -20,7 +20,7 @@
 import { readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, mkdir as fsMkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
-import { wakeTokens } from './router.mjs';
+import { wakeTokens, OWNER } from './router.mjs';
 import { compactionRatio } from './compaction.mjs';
 
 export const CONFIG_CARD_FILE = 'config.readonly.yaml';
@@ -88,7 +88,7 @@ export function renderConfigBlock({
     out.push(line(2, 'allowed_paths', undefined, 'its type file, plus any node-wide grant'));
     for (const [root, tools] of paths) out.push(line(4, root, tools));
   }
-  if (Array.isArray(allowedUsers)) out.push(line(2, 'allowed_users', allowedUsers, FROM[sources.allowedUsers]));
+  out.push(line(2, 'allowed_users', Array.isArray(allowedUsers) ? allowedUsers : [OWNER], FROM[sources.allowedUsers]));
   const own = (compaction && typeof compaction === 'object' && !Array.isArray(compaction)) ? compaction : null;
   out.push(own
     ? line(2, 'compaction', own, FROM[sources.compaction])

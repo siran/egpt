@@ -21,13 +21,14 @@ import { createStopGuard } from '../src/stop-guard.mjs';
 import { createRouter } from '../src/spine/router.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 
-const AGENTS = {
+// Every agent answers anyone here, as on kg after migration 0050.
+const AGENTS = Object.fromEntries(Object.entries({
   egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },   // the persona
   wren: { configuration: 'egpt-xhigh', handles: ['wren', 'w'] },   // the meta engineer on kg
   codex: { configuration: 'codex' },
   dren: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'dren.do' },   // do's meta engineer, reached by relay
   don: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do' },     // do's persona, reached by relay
-};
+}).map(([k, a]) => [k, { ...a, conversation_defaults: { allowed_users: ['*'] } }]));
 
 const ADMIN = 'trYqoMoH7jETBozvcOQh';
 const CH = `whatsapp:${ADMIN}`;

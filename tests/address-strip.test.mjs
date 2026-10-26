@@ -205,9 +205,9 @@ describe('the router carries the matched handle out', () => {
   it('addressed() reports the token, and targetFor turns a START hit into the target `address`', async () => {
     expect(addressed('e e', AGENTS)).toEqual([{ name: 'e', agent: AGENTS.e, token: 'e', atStart: true, anywhere: true }]);
     const router = createRouter({ getAgents: () => AGENTS, getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }) });
-    expect(await router.resolve({ body: 'egpt hola', mention: {} })).toMatchObject({ being: 'e', address: 'egpt' });
-    expect(await router.resolve({ body: 'dile a @e algo', mention: {} })).toMatchObject({ being: 'e', address: null });
-    expect(await router.resolve({ body: 'hola gente', mention: {} })).toMatchObject({ being: 'e', address: null });
+    expect(await router.resolve({ body: 'egpt hola', mention: {}, authorized: true })).toMatchObject({ being: 'e', address: 'egpt' });
+    expect(await router.resolve({ body: 'dile a @e algo', mention: {}, authorized: true })).toMatchObject({ being: 'e', address: null });
+    expect(await router.resolve({ body: 'hola gente', mention: {}, authorized: true })).toMatchObject({ being: 'e', address: null });
   });
 });
 
@@ -543,7 +543,7 @@ async function deliverToFarNode(body, to = 'don.mo') {
     getConfig: () => ({ node_name: 'mo', agents: { don: { configuration: 'sonnet-high' } } }),
   });
   await mesh.handle({
-    surface: 'whatsapp', chatId: 'RELAY', msgId: 'w1',
+    surface: 'whatsapp', chatId: 'RELAY', msgId: 'w1', isSender: true,   // the peer node, on this account
     body: encodeMesh({ by: 'An', body, from: CHAT_NAME, from_node: 'kg', ...(to ? { to } : {}), post_id: 'p1' }),
   });
   await flush(); await flush();

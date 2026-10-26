@@ -25,9 +25,10 @@ import { createStopGuard } from '../src/stop-guard.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
 
 // THIS node is 'kg' with a persona `egpt` (@e/@egpt) and a sibling `eplus` (@eplus). 'do' is a PEER.
+const ANYONE = { allowed_users: ['*'] };   // open beings, as on kg after migration 0050
 const AGENTS = {
-  egpt:  { handles: ['e', 'egpt'] },
-  eplus: { handles: ['eplus'] },
+  egpt:  { handles: ['e', 'egpt'], conversation_defaults: ANYONE },
+  eplus: { handles: ['eplus'], conversation_defaults: ANYONE },
 };
 // fromThisNode exactly as boot wires it: fromNode set AND the node is ours ('kg').
 const fromThisNode = (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === 'kg';

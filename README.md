@@ -60,8 +60,9 @@ default `~/.egpt`).
    ```
 
    Then edit `~/.egpt/config/config.yaml`: paste your `beeper_token`, set
-   `user_name`, and add each surface's `chat_id` + `allowed_users` (empty =
-   deny; your own account-owner messages are always authorized). Every key is
+   `user_name`, add each surface's `chat_id`, and put your ids in the top-level
+   `conversation_defaults.allowed_users` (empty = nobody; your own account-owner
+   messages are always authorized): beings answer only those owners by default. Every key is
    documented inline and registered in [`config/config-schema.mjs`](config/config-schema.mjs).
    The `agents:` block is required — the shipped default makes `egpt` the persona
    (the warm Claude Code CLI, using your `claude` login; no API key for the core

@@ -6,9 +6,10 @@ import { describe, it, expect } from 'vitest';
 import { createRouter, agentsInChat } from '../src/spine/router.mjs';
 import { getBeing } from '../src/conversations-state.mjs';
 
+const ANYONE = { allowed_users: ['*'] };   // the team reaches both
 const AGENTS = {
-  egpt: { configuration: 'egpt', handles: ['e', 'egpt', 'ekg'] },
-  wren: { configuration: 'egpt', handles: ['w'] },
+  egpt: { configuration: 'egpt', handles: ['e', 'egpt', 'ekg'], conversation_defaults: ANYONE },
+  wren: { configuration: 'egpt', handles: ['w'], conversation_defaults: ANYONE },
 };
 const TEAM = 'team-tg';
 const OTHER = 'other-chat';
@@ -54,7 +55,7 @@ describe('per-chat handles: the router', () => {
   });
 
   it('the override drops the being\'s fallback_handle there too (kg\'s live shape: e as a fallback token)', async () => {
-    const kg = { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+13472576794' } } };
+    const kg = { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+13472576794' }, conversation_defaults: ANYONE } };
     const r = routerOn(state, kg, { isPresent: async () => false });
     expect(await beings(r, ev('e hola'))).toEqual([]);
     expect(await beings(r, ev('ekg hola'))).toEqual(['egpt']);
@@ -89,7 +90,7 @@ describe('per-chat handles: agentsInChat + getBeing', () => {
     const st = stateWith({ egpt: { handles: ['ekg'] } });
     const here = agentsInChat(AGENTS, st, 'telegram', TEAM);
     expect(here).not.toBe(AGENTS);
-    expect(here.egpt).toEqual({ configuration: 'egpt', handles: ['ekg'] });
+    expect(here.egpt).toEqual({ configuration: 'egpt', handles: ['ekg'], conversation_defaults: ANYONE });
     expect(here.wren).toBe(AGENTS.wren);
     expect(AGENTS.egpt.handles).toEqual(['e', 'egpt', 'ekg']);
   });

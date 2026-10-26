@@ -31,7 +31,7 @@ import { createRoomRelay } from '../src/spine/room-relay.mjs';
 // the peer account (do, on the second Beeper account "Rodz") is not a participant. Plus the
 // shell-pinned relay whose whole reason to exist is that `do` hears @don itself on Beeper.
 const KG = {
-  egpt: { handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+  egpt: { handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' }, conversation_defaults: { allowed_users: ['*'] } },   // the group's members reach E
   don: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do', surface: 'shell' },
 };
 const PEER = '+13472576794';
@@ -171,7 +171,7 @@ describe('the tunnel carries the origin, and nothing else changes', () => {
 // bridge settled at arrival). ──
 describe('REPRODUCE-FIRST — a tunnelled VOICE NOTE is still a voice note', () => {
   // ken's live shape: a NON-persona agent whose only match here is a `voice_handles` entry.
-  const WITH_KEN = { ...KG, ken: { configuration: 'opus-xhigh', handles: ['king', 'ken', 'k'], voice_handles: ['king', 'ken', 'kenny', 'rey', 'mirey'] } };
+  const WITH_KEN = { ...KG, ken: { configuration: 'opus-xhigh', handles: ['king', 'ken', 'k'], voice_handles: ['king', 'ken', 'kenny', 'rey', 'mirey'], conversation_defaults: { allowed_users: ['*'] } } };
   // The real arrival shape: the bridge's flag, and the body already marked by voiceTranscriptBody.
   const spokenInGroup = () => identity.build({
     body: '(voice transcription, 3s) Rey, ¿estás por ahí, Ken?',
@@ -213,7 +213,7 @@ describe('REPRODUCE-FIRST — a tunnelled VOICE NOTE is still a voice note', () 
 
 describe('BYTE-IDENTICAL — a conversation in no room (no `origin`)', () => {
   it('both gates read the identical object they always read: same targets, same lookups', async () => {
-    const AGENTS = { ...KG, wren: { configuration: 'sonnet-high' }, tg: { configuration: 'relay', relay_channel: 'x', to: 'y.do', surface: 'telegram' } };
+    const AGENTS = { ...KG, wren: { configuration: 'sonnet-high', conversation_defaults: { allowed_users: ['*'] } }, tg: { configuration: 'relay', relay_channel: 'x', to: 'y.do', surface: 'telegram', conversation_defaults: { allowed_users: ['*'] } } };
     const cases = [
       identity.build({ body: '@wren hola', from: { network: 'whatsapp', chatId: '!c1', chatName: 'fam', userId: 'u' } }),
       identity.build({ body: '@tg hola', from: { network: 'telegram', chatId: 'tg1', chatName: 'tgchat', userId: 'u' } }),

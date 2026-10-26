@@ -11,10 +11,11 @@ const CHAT = { surface: 'whatsapp', chatId: '!g', chatName: 'grupo', kind: 'text
 const msg = (body, extra = {}) => ({ ...CHAT, body, msgId: `m-${Math.random()}`, ts: 1, mention: {}, ...extra });
 
 function build(modes = {}) {
+  const anyone = { allowed_users: ['*'] };   // the group's members reach every being
   const agents = {
-    egpt: { configuration: 'egpt', handles: ['e', 'egpt'] },
-    wren: { configuration: 'wren', handles: ['wren'] },
-    eplus: { configuration: 'egpt', handles: ['plus'] },
+    egpt: { configuration: 'egpt', handles: ['e', 'egpt'], conversation_defaults: anyone },
+    wren: { configuration: 'wren', handles: ['wren'], conversation_defaults: anyone },
+    eplus: { configuration: 'egpt', handles: ['plus'], conversation_defaults: anyone },
   };
   const state = { contacts: { whatsapp: { '!g': { slug: 'grupo', agents: Object.fromEntries(Object.entries(modes).map(([b, mode]) => [b, { mode }])) } } } };
   const config = { agents, dispatch: { auto_default_mode: 'mention' } };

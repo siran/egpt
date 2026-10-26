@@ -37,12 +37,8 @@ import { personaStamp, makeWrapPersona } from '../bridges/persona-wrap.mjs';
 // findAgentByToken below is a single-already-parsed-token lookup (bare form, addressWithoutAt),
 // not a free-text scan — this file used to carry its own hand-rolled wake-token loop, which is
 // how the two could drift.
-import { addressed } from './router.mjs';
-// ALLOWED_USERS GATE (operator 2026-08-15) — the RESPONDER-side half of router.mjs's own
-// two-tier reachability rule (see its ALLOWED_USERS GATE comment in resolve()): getBeing reads
-// the per-conversation override, allowedUsersPermits (shared with router.mjs, operator
-// 2026-08-16) does the sender-id match, including the "*" wildcard.
-import { getBeing, allowedUsersPermits } from '../conversations-state.mjs';
+// ALLOWED_USERS GATE — the RESPONDER-side half of router.mjs's reachability rule: mayWake.
+import { addressed, mayWake } from './router.mjs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
 // local copy of `bridgeOf(being, chatId) ?? bridge`. Every send, stream and status this service
 // places asks it; see the createMeshService header below for what each one passes.
@@ -106,8 +102,8 @@ export function createMeshService({
   // the same way (mirrored, not duplicated). Absent (tests, a caller that doesn't need per-
   // conversation overrides) → relayDispatch's allowed_users gate simply never reads a per-
   // conversation override, and a being's reachability falls straight to its global
-  // agents.<handle>.conversation_defaults.allowed_users default (or unrestricted, when neither
-  // tier is set) — today's behaviour for a caller that supplies nothing.
+  // agents.<handle>.conversation_defaults.allowed_users default (or [owner], when neither
+  // tier is set).
   loadState = null,
   // THE SPINE'S OWN TURN MACHINERY (src/spine/turns.mjs, operator 2026-08-31), THE SAME INSTANCE
   // createSpine got — boot.mjs builds it once, above both. A relayed turn is a turn: it belongs on
@@ -193,24 +189,18 @@ export function createMeshService({
   // ORIGIN before a mesh envelope is ever sent: a per-conversation override (conversations.yaml
   // agents.<being>.allowed_users, read via getBeing off ONE state read) REPLACES — never merges
   // with — the node's global default (config.yaml's NESTED
-  // agents.<handle>.conversation_defaults.allowed_users). UNSET at both tiers = no restriction
-  // (today's default, unchanged). Returns the denial string to surface, or null when the turn
+  // agents.<handle>.conversation_defaults.allowed_users). UNSET at both tiers = [owner] (operator
+  // 2026-10-26), judged on route.ev. Returns the denial string to surface, or null when the turn
   // may proceed. Checked in relayDispatch BEFORE brain.turn ever runs for a local being — never
   // for a relay hop (those don't reach here).
   //
   // EXPLICIT DENIAL, deliberately unlike router.mjs's silent drop: this file's own convention is
   // "NEVER silence" — the requester here is a DIFFERENT,
   // already-trusted node peer (it got this far through the mesh), so it gets a reason instead of
-  // going quiet. The sender-id
-  // match itself (including the "*" wildcard) is the shared allowedUsersPermits predicate
-  // (conversations-state.mjs, operator 2026-08-16) — the same one router.mjs's resolve() uses.
+  // going quiet. The test itself is router.mjs's mayWake — the same one its resolve() uses.
   const allowedUsersDenial = async (being, route, surface, chatId) => {
     const state = loadState ? await loadState().catch(() => null) : null;
-    const conv = state ? (() => { try { return getBeing(state, surface, chatId, being); } catch { return null; } })() : null;
-    const convAllowed = Array.isArray(conv?.allowedUsers) ? conv.allowedUsers : null;
-    const globalAllowed = Array.isArray(agents()[being]?.conversation_defaults?.allowed_users) ? agents()[being].conversation_defaults.allowed_users : null;
-    const allowedUsers = convAllowed ?? globalAllowed;
-    if (!allowedUsersPermits(allowedUsers, route?.ev?.senderId)) return `not authorized to reach ${being}.${node}`;
+    if (!mayWake(being, agents()[being], route?.ev, { state, config: getConfig() ?? {}, surface, chatId })) return `not authorized to reach ${being}.${node}`;
     return null;
   };
   const chatOf = (route) => {

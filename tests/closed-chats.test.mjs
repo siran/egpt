@@ -34,8 +34,8 @@ const OPEN = 'ZyXwVuTsRqPoNmLkJiHg';
 const SIDE = 'SiDeGrOuPaLiAs000001';
 const MSG = '📢 Este grupo se mudó a Telegram: https://t.me/+x. Aquí los agentes ya no responden.';
 const AGENTS = {
-  egpt: { configuration: 'egpt', handles: ['e', 'egpt'], voice_handles: ['ene'] },
-  wren: { configuration: 'wren', handles: ['wren'] },
+  egpt: { configuration: 'egpt', handles: ['e', 'egpt'], voice_handles: ['ene'], conversation_defaults: { allowed_users: ['*'] } },   // the group reaches both
+  wren: { configuration: 'wren', handles: ['wren'], conversation_defaults: { allowed_users: ['*'] } },
 };
 const SURFACES = ['whatsapp', 'telegram'];
 const DAY = 24 * 3600_000;

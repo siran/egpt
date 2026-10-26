@@ -15,7 +15,13 @@ API**. You operate it from your **Self-DM** on any surface.
 
 A slash command typed in an authorized chat is intercepted by the node itself,
 not answered by the persona. Authorization = the surface's own `chat_id`
-(Self-DM), an entry in that surface's `allowed_users`, or the account owner.
+(Self-DM), an owner (the node's `conversation_defaults.allowed_users`, or
+`networks.<surface>.allowed_users` where that surface sets one), or the account owner.
+
+The same owners are whom a being answers by default: a being with no
+`allowed_users` (in the chat's entry or its `agents.<name>.conversation_defaults`)
+wakes only for them. `[owner]` in a list means them, `[owner, "<id>"]` adds one,
+`['*']` is anyone, `[]` is nobody; the nearest list wins (2026-10-26).
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
 e.g. `/e restart`, `/don agents`, `/e split viaje`. The node that hosts that being
@@ -245,7 +251,8 @@ default; commented blocks are optional overrides.
 | `user_name` | Your handle, shown in cross-surface mirroring as `<user_name>@<surface>`. |
 | `emojis` | Author tags for mirroring: `user` / `egpt` / `persona` / `human`. |
 | `agents` | **Required.** The unified registry: persona, local beings, and mesh relays. Each agent = `{ configuration, personality?, handles, relay_channel? }`. `configuration` names an agent-type file (`config/agents/<type>.yaml`), an inline map, or the literal `relay`. `personality` names `config/agents/identities/<name>.md` and sits BESIDE `configuration` — a being composes a shared brain def with its own identity, no per-being type file needed; it outranks a `personality:` written inside the def, and absent both it is `egpt`. A node without an `agents` block or a persona entry (handles include `e`/`egpt`) refuses to boot. |
-| `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }` (empty = deny). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
+| `conversation_defaults` | `allowed_users`: the node's owners, ids of any network mixed. They may command the node, and a being with no list of its own answers only them. Unset or `[]` = nobody (the account owner always passes). |
+| `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }`. A surface's `allowed_users`, when set, replaces the node's `conversation_defaults.allowed_users` there (empty = deny). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
 | `default_time_zone` | Interprets timezone-less heartbeat `when:` times (IANA name or an alias like `ET`/`PT`). |
 | `warm` | Warm-session policy: `max` (how many chats stay resident) + `idle_ttl_by_class.conversation` (quiet-time before eviction; default 15m, `-1` = never evict, `0` = always). A chat overrides its own TTL in its folder's `config.yaml`. |
 | `loop_guard` | Both loop limits. `inbound: { turns, window }`: `turns` (6) non-human turns within `window` (2) minutes, or the same line repeated, pauses that chat until `resume`; -1 = off. `outbound`: over `messages` per `window_ms` node-wide STOPS the node. Per chat, any of three rules pauses THAT chat until `resume`: `chat_similar_count` (5) near-identical sends in `chat_similar_window_ms` (2 s); `chat_burst_count` (10) sends in `chat_burst_window_ms` (2 s); `chat_messages` (5) in each of two consecutive `chat_window_ms` (3 s). ≤0 = that rule off. |

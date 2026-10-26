@@ -29,8 +29,8 @@ const BASE = {
   group_title: '{group}-{name}', peer_nodes: ['kg', 'do'],
 };
 const NODES = {
-  kg: { ...BASE, node_name: 'kg', node_role: 'primary', agents: { egpt: { handles: ['e', 'egpt'] } } },
-  do: { ...BASE, node_name: 'do', node_role: 'secondary', agents: { egpt: { handles: ['d', 'don'] } } },
+  kg: { ...BASE, node_name: 'kg', node_role: 'primary', agents: { egpt: { handles: ['e', 'egpt'], conversation_defaults: { allowed_users: ['*'] } } } },   // members reach E
+  do: { ...BASE, node_name: 'do', node_role: 'secondary', agents: { egpt: { handles: ['d', 'don'], conversation_defaults: { allowed_users: ['*'] } } } },
 };
 const ALIASES = join(HOME, 'config', 'commands_alias.yaml');
 const writeAliases = (text) => { mkdirSync(join(HOME, 'config'), { recursive: true }); writeFileSync(ALIASES, text, 'utf8'); };

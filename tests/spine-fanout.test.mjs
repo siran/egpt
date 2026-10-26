@@ -17,7 +17,7 @@ import { createGating } from '../src/spine/gating.mjs';
 import { replyAllowed } from '../src/auto-mode.mjs';
 
 const ev = (body, extra = {}) => ({
-  body,
+  body, senderId: 'u',
   mention: { atEStart: false, atEAnywhere: false, replyToBot: false },
   ...extra,
 });
@@ -34,7 +34,7 @@ const AGENTS = {
   off:   { configuration: 'sonnet-high', enabled: false },
   _note: 'a comment key, never routable',
 };
-const arouter = createRouter({ getAgents: () => AGENTS });
+const arouter = createRouter({ getAgents: () => AGENTS, getConfig: () => ({ conversation_defaults: { allowed_users: ['u'] } }) });   // u (An) owns the node
 
 describe('REPRODUCE-FIRST — the two live failures', () => {
   it('`@e and @don you here?` addresses BOTH — a local being AND a mesh target from one message', async () => {

@@ -55,7 +55,7 @@ function streamingBridge() {
 // reply mode here.
 function node(name, { entry = {}, mode = 'mention' } = {}) {
   const { role, being, handles } = NODES[name];
-  const agents = { [being]: { handles } };
+  const agents = { [being]: { handles, conversation_defaults: { allowed_users: ['*'] } } };   // the group's members reach it
   const config = {
     beeper: { primary: { phone: AN }, secondary: { phone: RODZ } },
     node_name: name, node_role: role, group_title: '{group}-{name}', agents, dispatch: { auto_default_mode: mode },

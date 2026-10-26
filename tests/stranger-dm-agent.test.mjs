@@ -109,7 +109,7 @@ function fakeSession(opts) {
 
 const MARKETER = () => ({
   configuration: 'egpt', personality: 'edw-marketer', handles: [], name: 'EduWeb', body_emoji: '🎓',
-  conversation_defaults: { access_level: 'regular', sandboxed: false },
+  conversation_defaults: { access_level: 'regular', sandboxed: false, allowed_users: ['*'] },   // it answers strangers
 });
 
 // kg: An's account is the ear, Rodz's a per-chat ear; the persona in accum, as live.
@@ -123,7 +123,7 @@ const KG = ({ rule = true } = {}) => ({
   networks: { whatsapp: { allowed_users: [AN, '@anrodriguez:beeper.com'] } },
   dispatch: { auto_default_mode: 'accum', ...(rule ? { stranger_agent: { secondary: 'edw-marketer' } } : {}) },
   agents: {
-    egpt: { configuration: 'egpt', handles: ['e', 'egpt', 'rodz'], name: 'E', body_emoji: '🐶' },
+    egpt: { configuration: 'egpt', handles: ['e', 'egpt', 'rodz'], name: 'E', body_emoji: '🐶', conversation_defaults: { allowed_users: ['*'] } },   // kg after 0050
     ken: { configuration: 'egpt', handles: ['k', 'ken'], name: 'K', body_emoji: '🤴', conversation_defaults: { allowed_users: [FRIEND] } },
     'edw-marketer': MARKETER(),
   },

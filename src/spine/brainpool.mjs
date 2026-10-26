@@ -1060,7 +1060,8 @@ export function createBrainPool({
       // (unrestricted reachability) — that combination is caught here, structurally, rather
       // than left to "unrestricted by default". The escape hatch is the SAME literal "*"
       // wildcard router.mjs/mesh.mjs's allowedUsersPermits recognizes: an explicit ['*'] is a
-      // non-empty array, so it already satisfies this check.
+      // non-empty array, so it already satisfies this check. Unset reaches only the owners since
+      // 2026-10-26, and an 'all' being must STILL state its list; `[owner]` is one.
       //
       // The former gate #1 here ("accessLevel must be structurally 'all' or 'regular', or the
       // turn refuses") is REMOVED, not left as unreachable dead code: resolveConv's own
@@ -1075,7 +1076,7 @@ export function createBrainPool({
       // a 'sandbox' being may therefore be reachable by anyone with no allowed_users set. Do NOT
       // "fix" this later by adding 'sandbox' to the condition: that deletes the tier's point.
       if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
-        throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users, or ['*'] to explicitly allow anyone)`);
+        throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users: [owner] for this node's owners, ids, or ['*'] for anyone)`);
       }
       // A HEARTBEAT A BEING WROTE NEVER WAKES AN 'all' BEING (2026-09-25). `ev.beingWritten` marks a
       // turn scheduled from <entity>/heartbeats/ (heartbeat-loader.mjs) — a folder a sandboxed being

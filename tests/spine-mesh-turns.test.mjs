@@ -79,7 +79,7 @@ function countingBrain({ allow = 'same_sender', steerTakes = true, seams = true 
 const CHANNEL = 'egpt-mesh-do-kg';
 const GROUP = 'perrito traducciones';
 const chatIds = { [GROUP]: 'do-perrito' };
-const persona = { e: { configuration: 'egpt', name: 'e' } };
+const persona = { e: { configuration: 'egpt', name: 'e', conversation_defaults: { allowed_users: ['*'] } } };   // any asker reaches e
 const req = (body, post_id, by = 'An') => encodeMesh({ by, body, from: GROUP, from_node: 'kg', to: 'e.do', post_id });
 
 function responder({ brain, wired = true } = {}) {
