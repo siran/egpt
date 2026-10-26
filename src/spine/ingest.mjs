@@ -25,8 +25,10 @@
 //   ed, resume the thread above
 //
 // The chat must already have a conversations.yaml entry; an unknown id or empty text is ignored.
-import { readdir as fsReaddir, readFile as fsReadFile, unlink as fsUnlink, mkdir as fsMkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+// `/file <path>` lines attach files. ingest.show posts the line in the chat; ingest.auto false holds
+// it until an owner answers the posted question (boot ingestTo / answerIngest).
+import { readdir as fsReaddir, readFile as fsReadFile, unlink as fsUnlink, mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 
 export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = () => {} } = {}) {
   if (!dir) throw new Error('createIngest: dir is required');
@@ -78,11 +80,53 @@ export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = 
 export const SHELL_CONNECT_MARKER = '/shell-connect';
 export function isShellConnectMarker(line) { return String(line ?? '').trim() === SHELL_CONNECT_MARKER; }
 
-// `/to <chatId>` + message lines → { chatId, text }; null = not a /to file.
+// `/to <chatId>` + message lines → { chatId, text, files }; `/file <path>` lines are the files.
+// null = not a /to file.
 export function toLine(content) {
   const [head, ...rest] = String(content ?? '').split(/\r?\n/);
   const m = /^\/to\s+(\S+)$/.exec(head.trim());
-  return m ? { chatId: m[1], text: rest.join('\n').trim() } : null;
+  if (!m) return null;
+  const files = [];
+  const text = rest.filter((l) => { const f = /^\/file\s+(.+)$/.exec(l.trim()); if (f) files.push(f[1].trim()); return !f; });
+  return { chatId: m[1], text: text.join('\n').trim(), files };
+}
+
+// The question under a `/to` line while ingest.auto is false (config ingest.ask overrides it).
+export const INGEST_ASK = 'received message, dispatch? reply yes / no';
+
+const YES = new Set(['yes', 'si', 'sí', 'y', 'ok', '👍']);
+const NO = new Set(['no', 'n', '👎']);
+// An owner's answer to that question: true = dispatch, false = drop, null = not an answer.
+export function answerOf(text) {
+  const t = String(text ?? '').trim().toLowerCase().replace(/[\u{1F3FB}-\u{1F3FF}\uFE0F]/gu, '').replace(/[.!]+$/, '');
+  return YES.has(t) ? true : NO.has(t) ? false : null;
+}
+
+// The open questions — { chatId, ids (the posts that ask it), body } — kept in `path` so a restart
+// keeps them. No expiry. Rewritten whole, temp + rename.
+export function createIngestAsks({ path, io = {}, onLog = () => {} }) {
+  const readFile = io.readFile ?? fsReadFile;
+  const writeFile = io.writeFile ?? fsWriteFile;
+  const rename = io.rename ?? fsRename;
+  const mkdir = io.mkdir ?? fsMkdir;
+  let asks = [];
+  let chain = Promise.resolve();
+  const persist = () => (chain = chain.then(async () => {
+    const tmp = `${path}.tmp-${process.pid}`;
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(tmp, `${JSON.stringify(asks, null, 2)}\n`, 'utf8');
+    await rename(tmp, path);
+  }).catch((e) => onLog(`could not write ${path}: ${e?.message ?? e}`)));
+  return {
+    async load() {
+      try { const d = JSON.parse(await readFile(path, 'utf8')); asks = Array.isArray(d) ? d.filter((a) => a?.chatId && Array.isArray(a.ids)) : []; }
+      catch (e) { if (e?.code !== 'ENOENT') onLog(`${path} unreadable (${e?.message ?? e}) — no open questions`); }
+    },
+    add(ask) { asks = [...asks, ask]; return persist(); },
+    // A reaction on Telegram names no topic: `tg:<chat>` finds a question asked in `tg:<chat>/<topic>`.
+    find(chatId, id) { return id == null ? null : asks.find((a) => (a.chatId === chatId || a.chatId.startsWith(`${chatId}/`)) && a.ids.includes(String(id))) ?? null; },
+    take(ask) { asks = asks.filter((a) => a !== ask); return persist(); },
+  };
 }
 
 // Map a command line to the daemon exit code (+ side effect). Returns the exit

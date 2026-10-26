@@ -142,6 +142,8 @@ export function reactionAction({ emoji, targetId, snippet } = {}) {
   const snip = String(snippet ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
   return `reacted ${e} to #${id}${snip ? ` "${snip}"` : ''}`;
 }
+// …and its emoji back; null for any other body.
+export function reactionEmoji(body) { return /^reacted (\S+) to #/.exec(String(body ?? ''))?.[1] ?? null; }
 
 // The body of an EDIT stage-direction (MESSAGES-FIRST-CLASS-PLAN): a message's
 // text changed after it was sent → a two-line git-style diff:
