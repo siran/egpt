@@ -742,7 +742,8 @@ describe('being-cdp — /json and ws://…/devtools over the link, everything el
     // A call that slipped past the shim would reach this box's real :9221 — make it fail instead.
     const realFetch = globalThis.fetch, RealWS = globalThis.WebSocket;
     globalThis.fetch = () => { throw new Error('dialled the real fetch'); };
-    globalThis.WebSocket = class { constructor() { throw new Error('dialled the real WebSocket'); } };
+    // The /being link itself dials with the built-in WebSocket, so only a :9221 dial is refused.
+    globalThis.WebSocket = class extends RealWS { constructor(u, p) { if (/:9221\//.test(String(u))) throw new Error('dialled the real WebSocket'); super(u, p); } };
     try {
       await browser.openTab('https://example.com/');
       expect(shared.of('Target.createTarget')[0].params).toEqual({ url: 'https://example.com/' });

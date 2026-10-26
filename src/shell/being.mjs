@@ -45,10 +45,12 @@ export function isBeingDial(req) { return dialsPath(req, BEING_PATH); }
 //   EGPT_BEING_TOKEN  THIS session's own secret — never the node's shell token
 //   EGPT_ASK_SPINE    the client script, so the command a being is told is the same on every node
 //   EGPT_CDP          file URL of src/tools/being-cdp.mjs — a script's `fetch`/`WebSocket` for :9221, over this link
+//   EGPT_NATIVE_WEBSOCKET  "0" only when config shell.being_native_websocket is false: the client dials with `ws`
 export const SPINE_PORT_ENV = 'EGPT_SPINE_PORT';
 export const BEING_TOKEN_ENV = 'EGPT_BEING_TOKEN';
 export const ASK_SPINE_ENV = 'EGPT_ASK_SPINE';
 export const CDP_MODULE_ENV = 'EGPT_CDP';
+export const NATIVE_WS_ENV = 'EGPT_NATIVE_WEBSOCKET';
 
 /** THE REQUEST. `ask` + `action`, plus the one optional `site` (browser login only, module
  * header); omitted when empty, so every other request is byte-identical to before. */

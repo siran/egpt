@@ -17,11 +17,14 @@
 // the spine's end is the enforcement point. It lives in the eGPT checkout every pool profile
 // mounts, because that is the tree a pool account's Node can actually load a script from
 // (askSpineClientPath's header, src/spine/being-link.mjs).
-import { WebSocket as WS } from 'ws';
+//
+// It dials with Node's built-in WebSocket and imports only node: builtins and relative files, so an
+// `npm install` emptying node_modules mid-turn cannot cut the link (2026-10-26). `ws` is loaded only
+// when config shell.being_native_websocket is false.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseAuthFrame, responseFrame } from '../shell/auth.mjs';
-import { BEING_PATH, SPINE_PORT_ENV, BEING_TOKEN_ENV, askFrame, parseAskFrame } from '../shell/being.mjs';
+import { BEING_PATH, SPINE_PORT_ENV, BEING_TOKEN_ENV, NATIVE_WS_ENV, askFrame, parseAskFrame } from '../shell/being.mjs';
 
 const USAGE = 'usage: node "$EGPT_ASK_SPINE" browser start | node "$EGPT_ASK_SPINE" browser login [site]';
 // The spine waits up to 20 s for a cold Chrome to bind its CDP port (commands.mjs), so the client
@@ -33,10 +36,10 @@ const ANSWER_TIMEOUT_MS = 60_000;
  * @param {object} o
  * @param {string[]} o.argv   the words after the script: exactly `browser start`
  * @param {object}   o.env    the environment (process.env) — the spine's three variables live here
- * @param {typeof WS} [o.WebSocket]  INJECTION SEAM — the `ws` client constructor
+ * @param {typeof globalThis.WebSocket} [o.WebSocket]  INJECTION SEAM — default: the built-in, or `ws` when EGPT_NATIVE_WEBSOCKET=0
  * @param {number} [o.timeoutMs]
  */
-export function askSpine({ argv = [], env = {}, WebSocket = WS, timeoutMs = ANSWER_TIMEOUT_MS } = {}) {
+export function askSpine({ argv = [], env = {}, WebSocket, timeoutMs = ANSWER_TIMEOUT_MS } = {}) {
   const fail = (line) => Promise.resolve({ code: 1, line: `ask-spine: ${line}` });
   const [ask = '', action = '', ...rest] = argv;
   // The requests, spelled exactly. Anything else is refused HERE rather than sent: the spine would
@@ -66,12 +69,16 @@ export function askSpine({ argv = [], env = {}, WebSocket = WS, timeoutMs = ANSW
 // THE DIAL, shared with cdp.mjs's createLinkTransport: one request, resolved { ws, result } at an ok
 // answer — the socket left open, so a `browser cdp` answer is a tunnel from then on — else
 // { line, result? }. Never throws.
-export function dialSpine({ env, ask, action, site = '', WebSocket = WS, timeoutMs = ANSWER_TIMEOUT_MS }) {
+export async function dialSpine({ env, ask, action, site = '', WebSocket, timeoutMs = ANSWER_TIMEOUT_MS }) {
   const fail = (line) => Promise.resolve({ line });
   const secret = String(env[BEING_TOKEN_ENV] ?? '').trim();
   const port = Number(env[SPINE_PORT_ENV]);
   if (!secret || !Number.isInteger(port) || port <= 0 || port >= 65536) {
     return fail(`not a boxed session — this environment carries no ${BEING_TOKEN_ENV}/${SPINE_PORT_ENV}, which the spine hands only to a boxed being's session. Nothing was asked.`);
+  }
+  if (!WebSocket) {
+    try { WebSocket = env[NATIVE_WS_ENV] === '0' ? (await import('ws')).WebSocket : globalThis.WebSocket; }
+    catch (e) { return fail(`${NATIVE_WS_ENV}=0 and the ws package will not load — ${e?.message ?? e}`); }
   }
 
   const where = `127.0.0.1:${port}`;
@@ -81,19 +88,22 @@ export function dialSpine({ env, ask, action, site = '', WebSocket = WS, timeout
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (result?.ok) { ws.removeAllListeners('message'); resolve({ ws, result }); return; }
+      if (result?.ok) { ws.removeEventListener('message', onMessage); resolve({ ws, result }); return; }
       try { ws?.close?.(); } catch { /* closing */ }
       resolve({ line, result });
     };
     try { ws = new WebSocket(`ws://${where}${BEING_PATH}`); }
     catch (e) { done(`spine unreachable on ${where} — ${e?.message ?? e}`); return; }
     timer = setTimeout(() => done(`the spine on ${where} gave no answer within ${Math.round(timeoutMs / 1000)}s`), timeoutMs);
-    ws.on('open', () => { opened = true; });
-    ws.on('error', (e) => done(opened
-      ? `the connection to the spine on ${where} failed — ${e?.message ?? e}`
-      : `spine unreachable on ${where} — ${e?.message ?? e}`));
-    ws.on('message', (buf) => {
-      const auth = parseAuthFrame(buf);
+    // The built-in's error event carries no detail; ws's does.
+    const why = (e) => (e?.message ? ` — ${e.message}` : '');
+    ws.addEventListener('open', () => { opened = true; });
+    ws.addEventListener('error', (e) => done(opened
+      ? `the connection to the spine on ${where} failed${why(e)}`
+      : `spine unreachable on ${where}${why(e)}`));
+    // Text frames arrive as strings, from both clients.
+    const onMessage = ({ data }) => {
+      const auth = parseAuthFrame(data);
       if (auth?.auth === 'challenge') {
         // The answer and the request go out together: the limb reads them in order, and a request
         // it receives before trusting this connection is dropped, never replayed.
@@ -101,12 +111,13 @@ export function dialSpine({ env, ask, action, site = '', WebSocket = WS, timeout
         ws.send(askFrame({ ask, action, site }));
         return;
       }
-      const r = parseAskFrame(buf);
+      const r = parseAskFrame(data);
       if (r?.ask === 'result') done('', r);
-    });
+    };
+    ws.addEventListener('message', onMessage);
     // A close with no answer, after the connection was up: the limb drops a being whose secret it
     // does not recognise without a word — a stranger is told nothing — so this is the refusal.
-    ws.on('close', () => done(opened
+    ws.addEventListener('close', () => done(opened
       ? `REFUSED — the spine on ${where} closed the connection without an answer: this session's credential is unknown to it or was revoked (a spine restart forgets every credential; the next turn's session gets a new one)`
       : `spine unreachable on ${where}`));
   });

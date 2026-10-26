@@ -1091,6 +1091,12 @@ export const CONFIG_SCHEMA = {
               HMAC handshake, defined once in src/shell/auth.mjs and imported by
               BOTH ends. The secret never rides the wire; a captured response is
               useless on the next connection.
+      being_native_websocket
+              A being's link to this port (src/tools/ask-spine.mjs, EGPT_CDP)
+              dials with Node's built-in WebSocket, so it never loads
+              node_modules — an npm install mid-turn emptied them (2026-10-26).
+              DEFAULT true; only false switches to the ws package, for sessions
+              opened after the restart (EGPT_NATIVE_WEBSOCKET=0).
 
     REQUIRED — with no token the spine does not SERVE the console AT ALL (fail
     closed, no unauthenticated fallback). That is deliberate (operator 2026-08-21):

@@ -2685,6 +2685,7 @@ export async function boot({
     // call time, like startBrowser above, since no being can dial before boot finishes.
     requestLogin: (site, o) => requestLogin(site, o),
     resolveConfig: configResolver.configFor,   // privileged_browser, per conversation
+    nativeWebSocket: cfg.shell?.being_native_websocket !== false,
     onLog: (m) => log.line?.(`[being] ${m}`),
   });
 

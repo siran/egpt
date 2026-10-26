@@ -23,18 +23,19 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WebSocket as WsPackage, WebSocketServer } from 'ws';
 import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { responseFrame, authMac, macMatches } from '../src/shell/auth.mjs';
 import { MOUTH_PATH } from '../src/shell/mouth.mjs';
-import { BEING_PATH, isBeingDial, askFrame, askResultFrame, parseAskFrame, SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV, CDP_MODULE_ENV } from '../src/shell/being.mjs';
+import { BEING_PATH, isBeingDial, askFrame, askResultFrame, parseAskFrame, SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV, CDP_MODULE_ENV, NATIVE_WS_ENV } from '../src/shell/being.mjs';
 import { createBeingLink, askSpineClientPath } from '../src/spine/being-link.mjs';
 import { createLoginLimb } from '../src/spine/login.mjs';
 import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { fakePipeChrome } from './fake-pipe-chrome.mjs';
-import { askSpine } from '../src/tools/ask-spine.mjs';
+import { askSpine, dialSpine } from '../src/tools/ask-spine.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLIENT = join(REPO, 'src', 'tools', 'ask-spine.mjs');
@@ -173,6 +174,13 @@ describe('the link: a secret per boxed session, and one request', () => {
     // a replayed answer to ANOTHER nonce, and the operator's shell token, are nobody
     expect(link.identify(authMac(secret, 'n1'), 'n2')).toBe(null);
     expect(link.identify(authMac(SHELL_TOKEN, 'n1'), 'n1')).toBe(null);
+  });
+
+  it('shell.being_native_websocket: false mints a fifth entry, EGPT_NATIVE_WEBSOCKET=0', () => {
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), nativeWebSocket: false });
+    const { env } = link.forBeing(E_IN_ACIM).mint();
+    expect(env).toHaveLength(5);
+    expect(env.at(-1)).toBe(`${NATIVE_WS_ENV}=0`);
   });
 
   it('two sessions get two secrets, and revoking one leaves the other live', () => {
@@ -463,9 +471,9 @@ describe('browser start goes through /chrome\'s own launch path', () => {
 // A REAL limb on a real ephemeral loopback port, the real link, and the client over a real socket —
 // in-process, and once as the script a being actually runs.
 describe('ask-spine: the client a boxed being runs, against a real in-process spine', () => {
-  async function spine(startBrowser) {
+  async function spine(startBrowser, linkOpts = {}) {
     const logs = [];
-    const link = createBeingLink({ port: 0, startBrowser, onLog: (m) => logs.push(m) });
+    const link = createBeingLink({ port: 0, startBrowser, onLog: (m) => logs.push(m), ...linkOpts });
     const port = createShellPort({ port: 0, token: SHELL_TOKEN, reapPort: () => 0, onBeing: link, onLog: () => {} });
     const wss = port.start();
     await new Promise((r) => wss.once('listening', r));
@@ -552,6 +560,76 @@ describe('ask-spine: the client a boxed being runs, against a real in-process sp
     expect(out).toEqual({ code: 0, stdout: 'ask-spine: browser start — already running: already answering\n', stderr: '' });
     port.stop();
   });
+
+  it('a spine that never answers: exit 1 at the deadline', async () => {
+    const silent = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise((r) => silent.once('listening', r));
+    const p = silent.address().port;
+    const r = await askSpine({ argv: ['browser', 'start'], env: { [BEING_TOKEN_ENV]: 'x', [SPINE_PORT_ENV]: String(p) }, timeoutMs: 200 });
+    expect(r).toEqual({ code: 1, line: `ask-spine: the spine on 127.0.0.1:${p} gave no answer within 0s` });
+    await new Promise((r) => silent.close(r));
+  });
+
+  it('dials with Node\'s built-in WebSocket by default; EGPT_NATIVE_WEBSOCKET=0 imports ws and still works', async () => {
+    const on = await spine(async () => ({ ok: true, alreadyRunning: true, detail: 'up' }));
+    const a = await dialSpine({ env: on.envFor().env, ask: 'browser', action: 'start' });
+    expect(a.result.ok).toBe(true);
+    expect(a.ws).toBeInstanceOf(globalThis.WebSocket);
+    expect(a.ws).not.toBeInstanceOf(WsPackage);
+    a.ws.close();
+    on.port.stop();
+
+    const off = await spine(async () => ({ ok: true, alreadyRunning: true, detail: 'up' }), { nativeWebSocket: false });
+    const { env } = off.envFor();
+    expect(env[NATIVE_WS_ENV]).toBe('0');
+    const b = await dialSpine({ env, ask: 'browser', action: 'start' });
+    expect(b.ws).toBeInstanceOf(WsPackage);
+    b.ws.close();
+    expect(await askSpine({ argv: ['browser', 'start'], env })).toEqual({ code: 0, line: 'ask-spine: browser start — already running: up' });
+    off.port.stop();
+  });
+
+  // The live failure: an /upgrade's npm install emptied node_modules while a being was mid-checkout.
+  it('AS THE SCRIPT, with every package unresolvable: still exits 0', async () => {
+    const NO_PACKAGES = `data:text/javascript,${encodeURIComponent("import{registerHooks}from'node:module';registerHooks({resolve(s,c,n){if(!/^(node:|file:|\\.\\.?\\/)/.test(s))throw new Error('node_modules is gone: '+s);return n(s,c)}})")}`;
+    const { port, envFor } = await spine(async () => ({ ok: true, alreadyRunning: true, detail: 'already answering' }));
+    const out = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--import', NO_PACKAGES, CLIENT, 'browser', 'start'], { env: { ...process.env, ...envFor().env }, windowsHide: true });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+    expect(out).toEqual({ code: 0, stdout: 'ask-spine: browser start — already running: already answering\n', stderr: '' });
+    port.stop();
+  });
+});
+
+// The regression lock for the same failure: everything a being's link loads — ask-spine.mjs and
+// $EGPT_CDP's being-cdp.mjs, through every relative import — names only node: builtins and
+// relative files. The one package is ws, import()ed only behind the switch.
+describe('the being link never depends on node_modules', () => {
+  const IMPORT = /^\s*(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]|\bimport\(\s*(?:new URL\(\s*)?['"]([^'"]+)['"]/gm;
+  const chain = new Map();
+  for (const todo = [CLIENT, join(REPO, 'src', 'tools', 'being-cdp.mjs')]; todo.length;) {
+    const file = todo.pop();
+    const key = relative(REPO, file).replaceAll('\\', '/');
+    if (chain.has(key)) continue;
+    const specs = [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(([, from, plain, dyn]) => ({ spec: from ?? plain ?? dyn, dynamic: !!dyn }));
+    chain.set(key, specs);
+    for (const { spec } of specs) if (spec.startsWith('.')) todo.push(join(dirname(file), spec));
+  }
+
+  it('walks the whole chain', () => {
+    expect([...chain.keys()]).toEqual(expect.arrayContaining(['src/tools/ask-spine.mjs', 'src/tools/being-cdp.mjs', 'src/tools/cdp.mjs', 'src/shell/auth.mjs', 'src/shell/being.mjs', 'src/shell/mouth.mjs']));
+  });
+
+  it('no bare specifier but the switched-off ws', () => {
+    const bare = [...chain].flatMap(([file, specs]) => specs
+      .filter(({ spec }) => !spec.startsWith('node:') && !spec.startsWith('.'))
+      .map(({ spec, dynamic }) => `${file} ${dynamic ? 'import()s' : 'imports'} ${spec}`));
+    expect(bare).toEqual(['src/tools/ask-spine.mjs import()s ws']);
+  });
 });
 
 // ── 6. BOOT HANDS ONE LINK TO BOTH ENDS ───────────────────────────────────────────────────────
@@ -569,6 +647,9 @@ describe('boot wires ONE being link into the brain and the console limb', () => 
   // browser login reuses the SAME requestLogin /login calls — one limb, wired into the being link.
   it('the auto-login limb /login uses is handed to the being link as requestLogin', () => {
     expect(BOOT_SRC).toMatch(/requestLogin: \(site, o\) => requestLogin\(site, o\),/);
+  });
+  it('shell.being_native_websocket reaches the link, on unless exactly false', () => {
+    expect(BOOT_SRC).toMatch(/nativeWebSocket: cfg\.shell\?\.being_native_websocket !== false,/);
   });
 });
 
