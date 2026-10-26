@@ -365,7 +365,8 @@ describe('the other node links every side group from its opener; its beings\' re
     expect(split.agents.don.threadId).toMatch(/^[0-9a-f-]{36}$/);   // a new, diverging thread for do's own being
     expect(split.agents.egpt).toBeUndefined();                         // never kg's
     expect(n.dolly.state().contacts.whatsapp[ORIGIN].agents.don.threadId).toBe(DON_THREAD);
-    expect(n.dolly.lines.some((l) => l.includes(`split: can't find don's thread store for #${DON_THREAD}`))).toBe(true);   // /split's own copy step ran
+    expect(split.slug).toBe(n.dolly.state().contacts.whatsapp[ORIGIN].slug);   // a fork in do's own folder of the chat
+    expect(n.dolly.lines.some((l) => l.includes(`split: can't find don's session for #${DON_THREAD}`))).toBe(true);   // /split's own copy step ran
     await donSaysItInR(n);
     doCreatedNothing(n);
     n.stop();

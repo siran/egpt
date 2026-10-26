@@ -3,7 +3,7 @@
 // (createWarmPool + the conversation's stored claude session), carrying the §7
 // invariants that live at the turn boundary:
 //
-//   - warm key  `<being>:<engine>:<surface>:<slug>`  (engine = the conversation's
+//   - warm key  `<being>:<engine>:<surface>:<slug>[:<fork>]`  (engine = the conversation's
 //     brain type, ccode by default; matches dispatch.mjs + compact-being + the
 //     warm-sessions tests — the compactor reseeds the SAME key).
 //   - session-identity guard: we pass the conversation's stored sessionId as
@@ -26,7 +26,7 @@
 // the brains registry, never frozen into readonly. Every one gets the kickoff feed for
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
-import { slugDir, getBeing, getContact, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, recordAgentTurn, turnUser, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { slugDir, getBeing, getContact, forkKeyOf, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, recordAgentTurn, turnUser, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
@@ -882,6 +882,7 @@ export function createBrainPool({
     return {
       scope,
       slug,
+      fork: state ? forkKeyOf(state, scope.surface, scope.chatId) : null,   // a /split fork in the parent's folder: its own log + warm key
       sessionId: b?.threadId ?? null,
       sources: {
         accessLevel: tierOf(b?.accessLevel, cd.access_level),
@@ -1048,7 +1049,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
+      const { scope, slug, fork, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
       meter.scope = scope;
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
@@ -1152,7 +1153,7 @@ export function createBrainPool({
       // rolls when this being starts a fresh thread and the named thread is the one being replaced —
       // never while it names ANOTHER being's live thread, whose un-resumed record (accum's gap, the
       // quoted-message lookup) would be archived out from under it. Never throws by contract.
-      if (fresh) await rollTranscript(scope.surface, slug, { io, keep: await liveThreadsBesides(being, scope) });
+      if (fresh) await rollTranscript(scope.surface, slug, { io, keep: await liveThreadsBesides(being, scope), key: fork });
       meter.model = runModel ?? null;
       // ACCESS-LEVEL OVERRIDE (operator 2026-08-14, was /e access all|regular; phase 2, same
       // day: no longer persona-only — every being's OWN accessLevel, read per-being above via
@@ -1235,7 +1236,7 @@ export function createBrainPool({
         allowedUsers, compaction: compactionOver, sources, outboxTarget, threadId: sessionId,
       }), { io, onLog });
 
-      const key = `${being}:${engine}:${scope.surface}:${slug}`;
+      const key = `${being}:${engine}:${scope.surface}:${slug}${fork ? `:${fork}` : ''}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
       // ...and under the SCOPE's address too when the two differ (operator 2026-08-31). evict()
       // and steer() below resolve NO SCOPE OF THEIR OWN — their target is a key LOOKUP, never a
@@ -1476,7 +1477,7 @@ export function createBrainPool({
         // any thread exists, so the slot can only be filled once the turn mints one. A turn
         // that throws never gets here, and an un-stamped transcript is exactly what the roll
         // above refuses to touch. Never throws by contract.
-        await stampThreadId(scope.surface, slug, newSession, { io });
+        await stampThreadId(scope.surface, slug, newSession, { io, key: fork });
         // Mirror the freshly-minted thread into the per-chat stats file's branchable history
         // (state/stats/<surface>/<chatId>.yaml — a changed threadId appends; the old id stays
         // addressable so a conversation can be branched from it). Keyed by the SCOPE's chatId
@@ -1629,8 +1630,8 @@ export function createBrainPool({
     // warm.keep for the conversation a warm key is for (`being:engine:surface:slug`, the dir its turns
     // read warm: from), asked live by the pool's idle and LRU checks.
     keepsWarm(key) {
-      const [, , surface, ...slug] = String(key).split(':');
-      return parseWarmBlock(resolveConfig(slugDir(surface, slug.join(':')))).keep;
+      const [, , surface, slug] = String(key).split(':');   // a fork's key adds :<fork>
+      return parseWarmBlock(resolveConfig(slugDir(surface, slug))).keep;
     },
 
     // The background tasks still running on this conversation's warm session ([{ description, since }]),

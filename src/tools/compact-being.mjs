@@ -40,7 +40,7 @@ import { pathToFileURL } from 'node:url';
 // THE readers of the per-being conversation shape — imported, never re-derived here: residentsOf
 // knows which object-valued keys are residents and which are contact-level containers
 // (readonly/agents/guard), and getBeing layers the `agents.<name>` override over the block.
-import { residentsOf, getBeing, findThreadJsonl } from '../conversations-state.mjs';
+import { residentsOf, getBeing, findThreadJsonl, forkKeyOf } from '../conversations-state.mjs';
 import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 
 // Context window is PER-MODEL: haiku is 200k, the large-context 4.x models
@@ -264,7 +264,7 @@ export function compactableConversations(state, model = 'haiku', { config = null
           try { own = modelOf({ being, surface, slug, beingView: b }) ?? null; } catch { own = model; }
         }
         const { window, ratio } = compactionPolicy(config, own, compactionOverrideOf(b, config, being));
-        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, being, sessionId: b.threadId, engine: null, model: own, window, ratio });
+        out.push({ name: `${surface}/${slug}#${being}`, surface, slug, fork: forkKeyOf(state, surface, jid), being, sessionId: b.threadId, engine: null, model: own, window, ratio });
       }
     }
   }
@@ -314,7 +314,7 @@ export function compactionTargets({ config, convState, slugDir, convBrainType = 
   const model = config?.default_brain?.model || 'haiku';
   for (const c of compactableConversations(convState, model, { config, modelOf })) {
     const cwd = typeof slugDir === 'function' ? slugDir(c.surface, c.slug) : null;
-    targets.push({ name: c.name, key: `${c.being}:${c.engine ?? convBrainType}:${c.surface}:${c.slug}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, ratio: c.ratio, klass: 'conversation' });
+    targets.push({ name: c.name, key: `${c.being}:${c.engine ?? convBrainType}:${c.surface}:${c.slug}${c.fork ? `:${c.fork}` : ''}`, sessionId: c.sessionId, cwd, model: c.model, window: c.window, ratio: c.ratio, klass: 'conversation' });
   }
   return targets;
 }

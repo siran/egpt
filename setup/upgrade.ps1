@@ -4,9 +4,9 @@
 # the daemon then does git pull + build + respawn (src/spine/ingest.mjs). That is the whole
 # deploy. This script adds the part that is tedious by hand: proving it actually landed.
 # Since 2026-09-28 the spine first finishes any turn in flight (state/draining.json says so
-# while it waits, capped at 30 min) -- this script waits that out before counting down.
-# Since 2026-10-16 it also waits for the beings' background work, with no cap; -Force skips
-# that wait (drops '/upgrade force'), turns are still finished.
+# while it waits) -- this script waits that out before counting down. Since 2026-10-16 it
+# also waits for the beings' background work. Neither has a cap (2026-10-26); -Force skips
+# both (drops '/upgrade force').
 #
 # Use setup/deploy.ps1 INSTEAD when the change alters what the SUPERVISOR spawns (an
 # entry-point rename, daemon-runtime appPath). That one restarts the service and needs UAC.
@@ -216,8 +216,8 @@ Write-Host ""
 # --- THE SPINE MAY BE DRAINING (operator 2026-09-28: "yes, restart should wait for turns in
 #     progress"; 2026-10-16: and for background work). /upgrade and /restart no longer leave the
 #     moment they are read: the spine keeps serving until no turn and no background task is in
-#     flight, and says so in state/draining.json -- { since, busy, turns, cap, background } -- until
-#     it exits, rewriting it every ~30 s. Background work has no cap, so the record is live while
+#     flight, and says so in state/draining.json -- { since, busy, turns, background } -- until
+#     it exits, rewriting it every ~30 s. The wait has no cap, so the record is live while
 #     it is FRESH, else $null: a file a spine left behind by dying mid-drain (boot clears it too)
 #     can never hold a deploy. ---
 $DrainMarginSec = 120
@@ -276,7 +276,7 @@ function Invoke-Bounce([string]$Command) {
       $beat0 = (Get-Item $alive).LastWriteTime
       if (-not $drainSeen) { $drainSeen = Get-Date }
       if (-not $drainTold -or ((Get-Date) - $drainTold).TotalSeconds -ge 30) {
-        if ($d.turns -gt 0) { Write-Host ("  the spine is waiting for " + $d.turns + " turn(s) to finish: " + (@($d.busy) -join ', ')) -ForegroundColor DarkYellow }
+        if ($d.turns -gt 0) { Write-Host ("  the spine is waiting for " + $d.turns + " turn(s) to finish, no cap -- rerun with -Force to skip them: " + (@($d.busy) -join ', ')) -ForegroundColor DarkYellow }
         $bg = @($d.background | Where-Object { $_ })
         if ($bg.Count -gt 0) {
           Write-Host ("  the spine is waiting for " + $bg.Count + " background task(s), no cap -- rerun with -Force to skip them:") -ForegroundColor DarkYellow

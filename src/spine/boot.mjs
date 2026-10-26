@@ -49,7 +49,7 @@ import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR } fro
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, LOBBY_SLUG, fixedSlugFor,
-  aliasMouthInfo, setAliasMouthChat, mutateState, moveChatId,
+  aliasMouthInfo, setAliasMouthChat, mutateState, moveChatId, isForkEntry,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
 import { createFloodBan } from '../flood-ban.mjs';
@@ -637,7 +637,7 @@ export function chatIdForEntity(state, ns) {
   const slug = String(ns).slice(i + 1);
   if (!surface || !slug) return null;
   for (const [jid, entry] of Object.entries(state?.contacts?.[surface] ?? {})) {
-    if (!entry || entry.aliasOf || entry.slug !== slug) continue;
+    if (!entry || entry.aliasOf || isForkEntry(entry) || entry.slug !== slug) continue;   // a fork's folder is its parent's
     return { surface, chatId: jid };
   }
   if (fixedSlugFor(surface, slug) === slug) return { surface, chatId: slug };
@@ -2813,7 +2813,7 @@ export async function boot({
   // 43/42 WAIT (operator 2026-09-28, verbatim: "yes, restart should wait for turns in
   // progress" — after a deploy killed being Ken's live turn on kg): the spine's restart drain
   // (spine.mjs drainForRestart) keeps SERVING while it waits, calls back at the first moment no
-  // turn is in flight — at once when none is — or at its cap, and goDown then runs unchanged. What it publishes while waiting goes to state/draining.json
+  // turn is in flight — at once when none is; `force` skips the wait — and goDown then runs unchanged. What it publishes while waiting goes to state/draining.json
   // for setup/upgrade.ps1. A second /restart or /upgrade during the drain starts no second one, but
   // an /upgrade arriving during a /restart's drain makes it leave as the /upgrade (42 outranks 43):
   // otherwise the pull that deploy is waiting for would silently never happen. 44 still leaves on
@@ -2842,7 +2842,8 @@ export async function boot({
       spine.drainForRestart(() => { leave(restartCode).catch((e) => log.line?.(`[drain] ${e?.message ?? e}`)); }, {
         // temp → rename, the ingest box's own rule for its writers: upgrade.ps1 never reads half a file.
         onWait: async (rec) => { await writeFile(`${drainingFile}.tmp`, JSON.stringify(rec), 'utf8'); await rename(`${drainingFile}.tmp`, drainingFile); },
-        force: force || code === 45,   // /restart force, and every /standdown: skip the wait for background work
+        force,                         // /restart force: wait for nothing
+        background: code !== 45,       // /standdown: background work is not waited for
       });
       return;
     }
@@ -3708,11 +3709,8 @@ export async function boot({
   // agent's relay_channel is TRANSIT (no record, no chat dispatch — the messages live in Beeper),
   // and a frame carrying ANOTHER node's signature wakes nobody here. Own-node frames are
   // untouched: the room relay's tunnel carries this node's own fromNode across deliberately.
-  // The per-turn backstop (DEFECT 2), operator-tunable via config turn_timeout_ms
-  // (config/config-schema.mjs): absent -> 600000 (today's 10-min wedge guard, the spine
-  // factory's own default); -1 or any value <= 0 flows through to runTurnWithTimeout's
-  // `!(turnTimeoutMs > 0)` disable so a turn runs uncapped.
-  const turnTimeoutMs = Number.isFinite(cfg.turn_timeout_ms) ? cfg.turn_timeout_ms : 600_000;
+  // Per-turn timeout, opt-in (config turn_timeout_ms): absent/≤0 = none (operator 2026-10-26).
+  const turnTimeoutMs = Number.isFinite(cfg.turn_timeout_ms) ? cfg.turn_timeout_ms : 0;
   // CONFIG WITHOUT RESTART (step B, 2026-10-16): the spine hands a changed config.yaml here (its tick,
   // and every message arrival). Same reader, same assertions as boot. Only restart-only keys
   // (config-swap.mjs RESTART_KEYS) leave the running config in place for the drained /restart,
@@ -3786,12 +3784,12 @@ export async function boot({
   if (cliHost) (async () => {
     for (const h of await cliHost.list()) {
       const m = h.meta ?? {};
-      const [being, , surface, ...slug] = String(h.key ?? '').split(':');
+      const [being, , surface, slug] = String(h.key ?? '').split(':');   // a fork's key adds :<fork>
       if (!m.opened || pool.has(h.key)) { log.line?.(`[cli-host] ending held ${h.key} pid ${h.pid} — ${m.opened ? 'the key is already open' : 'nothing to adopt it with'}`); cliHost.kill(h.hid); continue; }
       if (!defaultIsAlive(h.pid)) { log.line?.(`[cli-host] dropping held ${h.key} pid ${h.pid} — its process is gone`); cliHost.kill(h.hid); continue; }
       try {
         const a = await cliHost.adopt(h.hid);
-        const link = m.link && beingLink.forBeing({ being, surface, slug: slug.join(':'), boxed: m.opened.sandboxed === true });
+        const link = m.link && beingLink.forBeing({ being, surface, slug, boxed: m.opened.sandboxed === true });
         brain.adoptKey(h.key, m.conv);
         pool.adopt(h.key, { brainOptions: { ...m.opened, sessionId: a.sessionId ?? m.sessionId ?? null, adopt: a, ...(link ? { beingLink: { mint: () => link.mint(m.link) } } : {}) }, klass: m.klass, idleTtlMs: m.idleTtlMs, opened: m.opened });
         log.line?.(`[cli-host] adopted ${h.key} pid ${a.pid}${a.background?.length ? ` (${a.background.length} background task(s))` : ''}${a.orphan ? ' — a turn still running' : ''}`);

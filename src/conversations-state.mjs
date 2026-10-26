@@ -146,13 +146,15 @@ export function slugTranscriptPath(surface, slug) {
 // the main roll and this function's return (the main dest, or null) are byte-identical to before
 // for every caller — a side-room that can't be filed is left behind, never failing the main roll.
 // `keep` (2026-10-23): thread ids the file must NOT roll away from — another being's live thread.
-export async function rollTranscript(surface, slug, { io = {}, keep = null } = {}) {
+// `key` (2026-10-26): a /split fork's own transcript-<key>.md rolls alone. A side-room log stamped
+// with another thread (a fork's) is not rolled with the main file.
+export async function rollTranscript(surface, slug, { io = {}, keep = null, key = null } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const renameFn = io.rename ?? rename;
   const readdirFn = io.readdir ?? readdir;
   const room = Room.forChat(surface, slug);
-  const src = room.transcriptPath;   // the Room's own getter — same file slugTranscriptPath names
+  const src = room.transcriptPathFor(key);   // the Room's own getter — transcript.md without a key
   try {
     let text = null;
     try { text = await readFileFn(src, 'utf8'); } catch { return null; }   // no transcript yet → nothing to roll
@@ -169,11 +171,12 @@ export async function rollTranscript(surface, slug, { io = {}, keep = null } = {
       for (let n = 2; n <= 99 && await taken(dest); n++) dest = join(room.transcriptsDir, `${base}-${n}.md`);
       return (await taken(dest)) ? null : dest;
     };
-    const dest = await archiveDest(id);
+    const dest = await archiveDest(key ? `${id}--${sanitizeSlug(key)}` : id);
     if (!dest) return null;                                                // 99 archives of one id: leave it alone
     await room.ensureTree({ io: { mkdir: io.mkdir ?? mkdir } });
     await renameFn(src, dest);
     await writeFileFn(src, renderFrontMatter({ ...head, thread_id: null }), 'utf8');
+    if (key) return dest;
     // ALSO roll every side-room alias log (transcript-<key>.md) in this folder, keyed off the SAME
     // thread_id. Walled off so it can never change `dest` (already final) or the return value.
     try {
@@ -186,6 +189,8 @@ export async function rollTranscript(surface, slug, { io = {}, keep = null } = {
         const aliasSrc = room.transcriptPathFor(key);                      // the Room's own getter — the file readdir named
         let aliasText = '';
         try { aliasText = (await readFileFn(aliasSrc, 'utf8')) ?? ''; } catch { continue; }   // vanished mid-roll → skip
+        const own = parseFrontMatter(aliasText).thread_id;
+        if (own && String(own) !== String(head.thread_id)) continue;      // a fork's log: its own thread
         const aliasDest = await archiveDest(`${id}--${key}`);
         if (!aliasDest) continue;                                          // 99 archives of this alias → leave it
         await renameFn(aliasSrc, aliasDest);
@@ -209,12 +214,12 @@ export async function rollTranscript(surface, slug, { io = {}, keep = null } = {
 // are appending to, so it runs exactly once per thread.
 // NEVER THROWS (like rollTranscript / seedIdentityLayers): a failed stamp logs and the turn
 // continues. Returns true when it wrote.
-export async function stampThreadId(surface, slug, threadId, { io = {} } = {}) {
+export async function stampThreadId(surface, slug, threadId, { io = {}, key = null } = {}) {
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const id = String(threadId ?? '').trim();
   if (!id) return false;
-  const src = Room.forChat(surface, slug).transcriptPath;
+  const src = Room.forChat(surface, slug).transcriptPathFor(key);
   try {
     let text = '';
     try { text = (await readFileFn(src, 'utf8')) ?? ''; } catch { text = ''; }   // no transcript yet → the block is born here
@@ -1377,7 +1382,7 @@ export function recentContacts(state, { limit = 10, offset = 0, recencyOf } = {}
 function _findByslug(state, surface, slug) {
   const bucket = state.contacts?.[surface] ?? {};
   for (const [jid, entry] of Object.entries(bucket)) {
-    if (entry?.aliasOf) continue;
+    if (entry?.aliasOf || isForkEntry(entry)) continue;   // a fork shares its parent's slug
     if (entry?.slug === slug) return { primaryJid: jid, entry };
   }
   return null;
@@ -1593,7 +1598,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     let renamedFrom = null, renamedTo = null;
     const nameBase = sanitizeSlug(ctx.pushedName);
     const curBase = String(cur.slug ?? '').replace(/-\d{10}$/, '');
-    if (!viaAlias && !fixed && nameBase && nameBase !== 'contact' && nameBase !== curBase) {
+    if (!viaAlias && !fixed && !isForkEntry(cur) && nameBase && nameBase !== 'contact' && nameBase !== curBase) {
       const suffix = String(cur.slug).match(/-(\d{10})$/)?.[1]
         || slugSuffix(cur.firstSeenAt ? new Date(cur.firstSeenAt) : new Date());
       const candidate = suffix ? `${nameBase}-${suffix}` : nameBase;
@@ -1710,6 +1715,28 @@ export function aliasContact(state, surface, jid, primaryJid, extra = {}) {
   const prevBucket = state.contacts?.[surface] ?? {};
   const nextBucket = { ...prevBucket, [jid]: { aliasOf: primaryJid, ...extra } };
   return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+}
+
+// A /split FORK (operator 2026-10-26: "/split gives the context and folder with all previous files"):
+// its own entry and thread in its parent's folder — the parent's slug, so conversation_path, the box
+// uid and every file are the parent's — with parent_chat, and its own log transcript-<transcript>.md.
+// A /split entry without `transcript` is a fork made before this, in a folder of its own.
+export function isForkEntry(entry) {
+  return !!entry && !entry.aliasOf && !!entry.parent_chat && typeof entry.transcript === 'string' && !!entry.transcript;
+}
+// The fork's transcript key (also what keeps its warm session apart from the parent's), else null.
+export function forkKeyOf(state, surface, jid) {
+  const entry = state?.contacts?.[surface]?.[jid];
+  return isForkEntry(entry) ? entry.transcript : null;
+}
+// Write `jid` as a fork of `parentJid` (replacing whatever entry it had). No-op when the parent is unknown.
+export function forkContact(state, surface, jid, parentJid, { pushedName = '', transcript } = {}) {
+  assertPathSafeSurface(surface, 'forkContact');
+  const parent = _resolveByJid(state, surface, parentJid);
+  if (!jid || !parent || !transcript) return state;
+  const { slug } = parent.entry;
+  const entry = { slug, conversation_path: conversationPathOf(surface, slug), home_dir: homeDirMsys(), pushedName, parent_chat: parentJid, transcript };
+  return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: { ...(state.contacts?.[surface] ?? {}), [jid]: entry } } };
 }
 
 // Remove a jid's OWN entry (used by /end to close the fork room). No-op when absent.
