@@ -582,3 +582,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **BotFather** (screenshot): Allow Groups on, Group Privacy off (the bot sees every group message, which ED needs), admin rights 7/13. No change.
 - **Repos:** egpt on GitHub (leo's PRs there); EduWeb's code on GitLab (ED's). ED manages Trello; tokens still travel as files, not cards.
 - **Portales → ECS:** part of ED's EB → ECS brief (one app at a time onto the reserved t3a host).
+- **00:46 — edw:2 deployed** (7f80324a / 1bface43): the `oficina-tunnel` sidecar.
+  - Same image, non-essential; tini; ≥ 65 s runs so ECS's restart policy retries; read-only home.
+  - Running beside edw (restart ~20 s); it waits for secrets/oficina-tunnel.target (logs "waiting 5 min").
+  - known_hosts entries are `[oficina.eserviciosat.net]:35547` (correct for a non-22 port).
+  - Remaining, after ED's service and key line: write the target LAST (oficina runs fail2ban), check 127.0.0.1:18089 from EDW, set EDW's transcription to [oficina] (whisper-server-local, port 18089, large-v3 only), test with a note.
