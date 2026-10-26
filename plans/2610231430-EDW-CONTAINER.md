@@ -618,3 +618,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - build, bind-mount folders + secrets files, `docker run` (seccomp/systempaths unconfined, EGPT_BEEPER=off, VNC 6080 on loopback);
   - config (limbs.telegram.main.account, node_name, user_name, networks.telegram.allowed_users);
   - "e hola"; extras (VNC, piper, a whisper model, updating, security).
+- **"E must only listen to its owner by default" (operator):**
+  - Finding: networks.<surface>.allowed_users gates COMMANDS only. Who wakes a being is agents.<b>.conversation_defaults.allowed_users (or the chat's own), and absent = anyone. The skeleton ships egpt/ken/wren with conversation_defaults commented out, so a fresh install answers strangers.
+  - The friend's guide got a correction in An y Dando (#418: add conversation_defaults.allowed_users per being).
+  - Fix dispatched (feat/owner-only-default): an `owner` token in allowed_users expands to networks.<surface>.allowed_users; the skeleton ships `[owner]` on every being. Existing nodes unchanged (absent still = anyone). Adopting it on kg/do would need a chat-by-chat review: operator's call.
+- **edc5:** stays connected to Aurora (operator: "connected if it makes sense, like before the change"); ED to verify that the bertrand user/password work and the API returns real data.
+- **Turns cut:** turn_timeout_ms 600000 (10 min) on EDW, the per-turn backstop. ED's long ops (tracing keys across servers, the benchmark set-up) run past it inside one turn, and the reply dies with the turn. Proposal: raise EDW's to 30 min (live key) and keep jobs over 30 min in background agents.
