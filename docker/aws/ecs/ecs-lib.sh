@@ -18,19 +18,19 @@ ATTR=edw-data                # instance attribute, set once $SRV is mounted; the
 MEM_MIB=1024                 # memoryReservation (soft); t3a.small registers ~1.9 GiB
 
 # oficina-tunnel sidecar: 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
-# Waits while a secrets file is missing. Each run lasts >= 65 s: ECS never restarts a container
-# that exits before restartAttemptPeriod (60 s).
+# Never exits on its own: waits for its secrets and retries ssh every minute. ECS's restart policy
+# is only a backstop (it did not restart a clean exit 0, 2026-10-26).
 TUNNEL_SH='s=/home/egpt/.egpt/secrets
-for f in oficina-tunnel.key oficina.known_hosts oficina-tunnel.target; do
-  [ -s $s/$f ] || { echo "oficina-tunnel: no secrets/$f yet; waiting 5 min"; sleep 300; exit 0; }
-done
-t=$(date +%s)
-ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$s/oficina.known_hosts -i $s/oficina-tunnel.key -L 127.0.0.1:18089:127.0.0.1:8089 -p 35547 "$(tr -d "[:space:]" <$s/oficina-tunnel.target)"
-rc=$?
-echo "oficina-tunnel: ssh exited $rc"
-n=$((t + 65 - $(date +%s)))
-[ $n -le 0 ] || sleep $n
-exit $rc'
+while :; do
+  missing=
+  for f in oficina-tunnel.key oficina.known_hosts oficina-tunnel.target; do [ -s $s/$f ] || missing=$f; done
+  if [ -n "$missing" ]; then echo "oficina-tunnel: no secrets/$missing yet; checking again in 1 min"
+  else
+    ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$s/oficina.known_hosts -i $s/oficina-tunnel.key -L 127.0.0.1:18089:127.0.0.1:8089 -p 35547 "$(tr -d "[:space:]" <$s/oficina-tunnel.target)"
+    echo "oficina-tunnel: ssh exited $?; retrying in 1 min"
+  fi
+  sleep 60
+done'
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
