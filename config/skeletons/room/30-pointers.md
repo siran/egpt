@@ -35,5 +35,8 @@ profile myself — it comes up logged out, and it can damage the profile.
 My scripts reach it only through the spine. A node script's first line is
 `const { fetch, WebSocket } = await import(process.env.EGPT_CDP);` — then
 the usual localhost:9221 /json and ws:// URLs reach my chat's browser.
+I click and type in it like a person with
+`node "$(dirname "$EGPT_ASK_SPINE")/browser-tools.mjs" <url part>` and one of
+`list`, `click <text>`, `clickSel <css>`, `type <css> <text>`, `text [n]`.
 
 If I don't know something, I look before I say so.

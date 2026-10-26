@@ -751,6 +751,22 @@ describe('being-cdp — /json and ws://…/devtools over the link, everything el
     } finally { globalThis.fetch = realFetch; globalThis.WebSocket = RealWS; port.stop(); }
   });
 
+  it('browser-tools as a shell command: finds the tab by url, brings it up, reads it, and exits by itself', async () => {
+    const { shared, port } = await realSpine();
+    const tool = join(import.meta.dirname, '..', 'src', 'tools', 'browser-tools.mjs');
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [tool, 'mail.google', 'text', '12'], { env: { ...process.env, [CDP_MODULE_ENV]: SHIM } });
+      let out = '', err = '';
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { err += d; });
+      const kill = setTimeout(() => child.kill(), 10000);
+      child.on('close', (code) => { clearTimeout(kill); resolve({ code, out, err }); });
+    });
+    expect(run).toEqual({ code: 0, out: 'location.href || document.title || (document.qu\n', err: '' });   // the fake Chrome echoes each expression
+    expect(shared.of('Target.activateTarget').at(-1).params).toEqual({ targetId: 'T-page' });
+    port.stop();
+  });
+
   it('a script 0038 migrated runs as a being runs it — its own node, the minted env — and exits by itself', async () => {
     const { shared, port } = await realSpine();
     const script = join(mkdtempSync(join(tmpdir(), 'egpt-0038-run-')), 'tab-peek.mjs');
