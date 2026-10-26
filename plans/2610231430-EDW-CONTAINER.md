@@ -647,3 +647,7 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - turn_timeout_ms default 0; drain without cap; /restart force and /upgrade force now skip turns too; /standdown still waits for them. Suite 7651/7651.
   - EDW hand-fix after deploy: forks /42, /55, /66 → the parent's conversation_path, `transcript: <title>`, ed's non-thread settings copied, no threadId.
 - Deploy order once fix/no-owner-token lands: kg/do (upgrade.ps1 -Peer runs 0050) and EDW (ingest /upgrade; check its beings' lists first, since EDW doesn't run migrations), then the EDW fork hand-fix.
+- **10:20 Caracas — deployed 4311f0e0 everywhere** (suite 7651/7651): owner-only default + no owner token + /split folder fix + no turn limits.
+  - kg/do via upgrade.ps1 -Peer: migration 0050 applied (kg: ['*'] on egpt, ken, codex, sh, h, llama, carol, cara, don; do: 3 beings; backups config.yaml.bak-0050-*); an extra restart to load it; heads 4311f0e0, trees clean, alive fresh.
+  - EDW via ingest /upgrade (its beings already had lists: leo [4 owner ids], ed/nova [88164392]).
+- **EDW topics moved onto EduWeb's folder:** /42 → transcript `si-eduweb-an`, /55 → `an`, /66 → `jfernandez`. conversation_path = the parent's; ed's settings (configuration, access_level, allowed_users) copied; no threadId (fresh). Old topic transcripts copied into EduWeb-2610240312/transcript-<key>.md; old folders archived (conversations/archive/telegram/); backup conversations.yaml.pre-forkfolder-20261026T142020.
