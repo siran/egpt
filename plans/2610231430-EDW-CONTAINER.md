@@ -560,3 +560,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Step 1: benchmark at night (whisper.cpp v1.9.5 with -ac trimmed, faster-whisper int8; large-v3 f16/q5, turbo; 6 and 4 threads; everything on /home).
   - Step 2: the service + tunnel key, after An's OK. EDW's tunnel and config: orchestrator.
 - **Open on EDW's side:** a supervised outbound tunnel in the container (no egpt mechanism yet); check that boot's whisper-reap never kills the tunnel's listener.
+
+## 10-25 ~23:35 — EDW on-demand; Topics migrated; ED's benchmark
+- **EDW on-demand t3a.small** (operator go): ASG policy 100 % on-demand, task drained (03:25:43 UTC), the Spot instance terminated, new i-04cfa983beb5d3ddb (t3a.small, on-demand) stable 03:29:57; ~4 min silent. Verified: hostname edw, alive, wall OK, IMDS blocked, swap. $13.72/mo on-demand, not covered by the t3a SP (Portales-new uses it all); a second SP $0.0118/h ($8.61/mo, $103.37/yr) would cover it (pending yes).
+- **Topics:** EduWeb turned supergroup; at 01:40:50 UTC egpt moved the conversation tg:-5256478300 → **tg:-1004408163350** (same folder, threads, settings). Glitch: transcript lines after the move label the chat `[telegram]` instead of `[EduWeb]` (the name isn't re-read after the id change). Follow-up.
+- **ED's benchmark on oficina** (22:41–23:11; seconds with the model loaded; WER vs kg's large-v3):
+  - whisper.cpp large-v3 q5_0: 6 threads 7.6 / 8.0 / 71.4 s; 4 threads 9.8 / 9.7 / 85.6 s; 1.9 GB; WER 0 / 0 / 4.5 %. f16: same accuracy and speed, 3.8 GB.
+  - faster-whisper large-v3 int8: 6 threads 8.5 / 8.6 / 39.9 s; 4 threads 8.9 / 9.2 / 40.3 s; 4.3 GB; WER 33 (one word: "Clark") / 0 / 3.8 %.
+  - turbo discarded (it repeated a whole phrase; twice the errors).
+  - ED proposes whisper.cpp large-v3 q5_0, 4 threads (no egpt change); faster-whisper halves long notes but needs 4.3 GB and an /inference shim.
+- The brief folders were 755 (ED couldn't write; ED used desktop/transcripcion-ed/); fixed to g+rwx.
+- **GitHub:** gh isn't installed on reve, so no repo admin from here. Branch protection and the leo token are the operator's (steps given). Token delivery: a file in the secrets folder, not Trello.
