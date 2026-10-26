@@ -593,3 +593,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Stray from the move:** the old id tg:-5256478300 had been re-registered as a new empty conversation (EduWeb-2610260140, header only). Archived to conversations/archive/telegram/, entry removed (backup conversations.yaml.pre-stray-20261026T050519).
 - **Fix dispatched** (fix/telegram-move-glitches): the migration service message must not register the old id; the moved chat keeps its title (the transcript shows [telegram] since the move).
 - **Back to a normal group:** EduWeb → settings → Topics off. It stays a supergroup with the same id (no second move; egpt unaffected). Without Topics, /split on Telegram answers "turn on Topics…" until real groups via a group-maker account (the soporte number) exist.
+- **Move-glitch diagnosis** (agent, fix/telegram-move-glitches):
+  - The stray old-id conversation came from a turn still running when the group moved: its reply lines were filed under the old id via contacts.resolve → ensureContact (not from the migration message, which already dispatches nothing).
+  - Confirmed live: the archived stray transcript holds **ED's 01:46 UTC reply to #364** ("Listo, el colegio ya no está en la tarjeta…"), sent to the old id, so almost certainly never delivered.
+  - Fix: contacts.resolve maps moved ids (in memory). Rulings sent: the limb forwards sends old → new, and a 400 carrying migrate_to_chat_id retries on the new id and triggers the move.
+  - The "[telegram].telegram" label is pre-existing and on every surface: spine-originated events (heartbeats, background wakes) carry no chat name. Ruling (a): those builders carry the stored name and the node tag (one shared helper).
