@@ -1,31 +1,26 @@
-// The chatbox widget (served by http.mjs as widget.js, called with its client's config).
+// The chatbox loader (served by http.mjs as widget.js, called with its client's config): a bubble and a
+// panel holding Deep Chat (C.deepChat), wired to this limb. The server's log is the one source of
+// truth: on open the panel shows GET messages, then follows GET events; Deep Chat keeps no browser copy.
 function egptChat(C, base) {
   base = base || document.currentScript.src.replace(/widget\.js(?:[?#].*)?$/, '');
   if (!document.body) { document.addEventListener('DOMContentLoaded', function () { egptChat(C, base); }); return; }
   var S = C.strings;
   var KEY = 'egpt-chat:' + C.client;
-  var token = null, es = null, since = 0, els = {};
+  var token = null, chat = null, sig = null, es = null, since = 0, starting = false, wantFocus = false, inflight = 0, held = [];
+  var at = {};   // message id → { i: its index in chat.getMessages(), text }
   var store = function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
   try { token = localStorage.getItem(KEY); } catch (e) { token = null; }
 
   var css = '.egc{position:fixed;right:16px;bottom:16px;z-index:2147483000;font:15px/1.4 system-ui,sans-serif}'
     + '.egc-bubble{width:56px;height:56px;border-radius:50%;border:0;background:#1f6feb;color:#fff;font-size:26px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}'
-    + '.egc-panel{position:absolute;right:0;bottom:68px;width:360px;height:520px;max-height:calc(100vh - 100px);display:flex;flex-direction:column;background:#fff;color:#111;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.25);overflow:hidden}'
+    + '.egc-panel{position:absolute;right:0;bottom:68px;width:360px;height:520px;max-height:calc(100vh - 100px);display:flex;flex-direction:column;background:#f6f8fa;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.25);overflow:hidden}'
     + '.egc-panel[hidden]{display:none}'
     + '.egc-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1f6feb;color:#fff;font-weight:600}'
     + '.egc-x{background:none;border:0;color:#fff;font-size:22px;cursor:pointer}'
-    + '.egc-log{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:#f6f8fa}'
-    + '.egc-msg{max-width:85%;padding:8px 11px;border-radius:10px;white-space:pre-wrap;word-wrap:break-word}'
-    + '.egc-visitor{align-self:flex-end;background:#1f6feb;color:#fff}'
-    + '.egc-being{align-self:flex-start;background:#fff;border:1px solid #d0d7de}'
-    + '.egc-live{opacity:.75}'
-    + '.egc-being a{color:#0969da}'
-    + '.egc-form{display:flex;gap:6px;padding:8px;border-top:1px solid #d0d7de}'
-    + '.egc-form textarea{flex:1;resize:none;border:1px solid #d0d7de;border-radius:8px;padding:8px;font:inherit}'
-    + '.egc-form button{border:0;border-radius:8px;background:#1f6feb;color:#fff;padding:0 14px;cursor:pointer}'
-    + '.egc-err{padding:6px 12px;color:#b42318;font-size:13px}'
+    + '.egc-body{flex:1;min-height:0}'
+    + '.egc-err{padding:12px;color:#b42318;font-size:13px}'
     + '@media (max-width:480px){.egc-panel{position:fixed;inset:0;width:auto;height:auto;max-height:none;border-radius:0}'
-    + '.egc-panel:not([hidden])~.egc-bubble{display:none}.egc-form textarea{font-size:16px}}';
+    + '.egc-panel:not([hidden])~.egc-bubble{display:none}}';
   var style = document.createElement('style');
   style.textContent = css;
   document.head.appendChild(style);
@@ -33,76 +28,148 @@ function egptChat(C, base) {
   var root = document.createElement('div');
   root.className = 'egc';
   root.innerHTML = '<div class="egc-panel" role="dialog" hidden><div class="egc-head"><span></span><button type="button" class="egc-x">×</button></div>'
-    + '<div class="egc-log" aria-live="polite"></div><div class="egc-err" hidden></div>'
-    + '<form class="egc-form"><textarea rows="2"></textarea><button type="submit"></button></form></div>'
+    + '<div class="egc-err" hidden></div><div class="egc-body"></div></div>'
     + '<button type="button" class="egc-bubble">💬</button>';
   var q = function (sel) { return root.querySelector(sel); };
-  var panel = q('.egc-panel'), log = q('.egc-log'), err = q('.egc-err'), form = q('.egc-form'), input = q('textarea');
+  var panel = q('.egc-panel'), err = q('.egc-err'), body = q('.egc-body');
   q('.egc-head span').textContent = S.title;
   q('.egc-x').setAttribute('aria-label', S.close);
   q('.egc-bubble').setAttribute('aria-label', S.open);
-  q('.egc-form button').textContent = S.send;
-  input.placeholder = S.placeholder;
-  input.maxLength = C.maxChars;
   document.body.appendChild(root);
 
-  var fill = function (el, text) {
-    el.textContent = '';
-    String(text).split(/(https?:\/\/[^\s<>"]+)/).forEach(function (part, i) {
-      if (i % 2) { var a = document.createElement('a'); a.href = part; a.target = '_blank'; a.rel = 'noopener'; a.textContent = part; el.appendChild(a); }
-      else if (part) el.appendChild(document.createTextNode(part));
+  // Deep Chat's markdown: links only to http(s)/mailto/tel, and bare URLs become links (it has no linkify).
+  var links = function (md) {
+    md.core.ruler.push('egpt_links', function (state) {
+      state.tokens.forEach(function (b) {
+        if (b.type !== 'inline') return;
+        var out = [], depth = 0;
+        b.children.forEach(function (t) {
+          if (t.type === 'link_open') { depth++; if (!/^(https?:|mailto:|tel:)/i.test(t.href)) t.href = '#'; }
+          if (t.type === 'link_close') depth--;
+          if (t.type !== 'text' || depth) return out.push(t);
+          t.content.split(/(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)'"])/).forEach(function (part, k) {
+            if (k % 2) out.push({ type: 'link_open', href: part, level: t.level }, { type: 'text', content: part, level: t.level + 1 }, { type: 'link_close', level: t.level });
+            else if (part) out.push({ type: 'text', content: part, level: t.level });
+          });
+        });
+        b.children = out;
+      });
     });
   };
+  (window.remarkable_plugins = window.remarkable_plugins || []).push({ plugin: links });
+
+  var lib = null;
+  var loadLib = function () {
+    return lib = lib || new Promise(function (ok, no) {
+      if (window.customElements.get('deep-chat')) return ok();
+      var s = document.createElement('script');
+      s.type = 'module';
+      s.src = C.deepChat.url;
+      s.integrity = C.deepChat.integrity;
+      s.crossOrigin = 'anonymous';
+      s.onload = ok;
+      s.onerror = function () { lib = null; s.remove(); no(); };
+      document.head.appendChild(s);
+    });
+  };
+  var fetchLog = function () {
+    if (!token) return Promise.resolve([]);
+    return fetch(base + 'messages?session=' + encodeURIComponent(token)).then(function (r) {
+      if (r.status === 404) { token = null; store(KEY, null); return { seq: 0, messages: [] }; }
+      return r.ok ? r.json() : Promise.reject(r.status);
+    }).then(function (j) { since = j.seq; return j.messages; });
+  };
+
+  var role = function (m) { return m.from === 'visitor' ? 'user' : 'ai'; };
+  // A frame: a new message is added, a known one edited or removed in place. The visitor's own lines
+  // are already on screen (Deep Chat put them there), so while a POST is out their frames wait for its id.
   var show = function (m) {
     if (m.seq > since) since = m.seq;
-    var el = els[m.id];
-    if (m.deleted) { if (el) { el.remove(); delete els[m.id]; } return; }
-    if (!el) { el = els[m.id] = document.createElement('div'); log.appendChild(el); }
-    el.className = 'egc-msg egc-' + (m.from === 'visitor' ? 'visitor' : 'being') + (m.done ? '' : ' egc-live');
-    fill(el, m.text);
-    log.scrollTop = log.scrollHeight;
+    var k = at[m.id];
+    if (k) {
+      if (k.gone || (!m.deleted && (!m.text || m.text === k.text))) return;
+      k.gone = !!m.deleted;
+      k.text = m.text;
+      chat.updateMessage(m.deleted ? {} : { text: m.text }, k.i);
+      return;
+    }
+    if (m.deleted || !m.text) return;
+    if (m.from === 'visitor' && inflight) { held.push(m); return; }
+    chat.addMessage({ role: role(m), text: m.text });
+    at[m.id] = { i: chat.getMessages().length - 1, text: m.text };
   };
   var listen = function () {
     if (es) es.close();
     es = null;
-    if (!token || !window.EventSource) return;
+    if (!token || !chat || panel.hidden || !window.EventSource) return;
     es = new EventSource(base + 'events?session=' + encodeURIComponent(token) + '&since=' + since);
     es.onmessage = function (e) { show(JSON.parse(e.data)); };
   };
-  var load = function () {
-    if (!token) return;
-    fetch(base + 'messages?session=' + encodeURIComponent(token) + '&since=' + since).then(function (r) {
-      if (r.status === 404) { token = null; store(KEY, null); return null; }
-      return r.ok ? r.json() : null;
-    }).then(function (j) { if (j) { j.messages.forEach(show); listen(); } }).catch(function () { /* offline: the next send retries */ });
-  };
-  var fail = function (status) {
-    err.textContent = status === 413 ? S.too_long : status === 429 ? S.too_many : S.error;
-    err.hidden = false;
-  };
-  var send = function () {
-    var text = input.value;
-    if (!text.trim()) return;
-    err.hidden = true;
-    input.value = '';
+  var send = function (req) {
+    var text = req.messages[req.messages.length - 1].text;
+    var i = chat.getMessages().length - 1;
+    inflight++;
     fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (j) {
+        at[j.message.id] = { i: i, text: j.message.text };
+        if (j.message.seq > since) since = j.message.seq;
         var renewed = j.session !== token;
         if (renewed) { token = j.session; store(KEY, token); }
-        show(j.message);
         if (renewed || !es) listen();
       })
-      .catch(function (status) { input.value = text; fail(status); });
+      .catch(function (status) { sig.onResponse({ error: status === 413 ? S.too_long : status === 429 ? S.too_many : S.error }); })
+      .then(function () { if (!--inflight) held.splice(0).forEach(show); });
   };
+
+  // Every property is set before the element renders: a later set re-renders Deep Chat from scratch.
+  var build = function (messages) {
+    var hist = [];
+    messages.forEach(function (m) {
+      if (m.deleted || !m.text) return;
+      at[m.id] = { i: hist.length, text: m.text };
+      hist.push({ role: role(m), text: m.text });
+    });
+    chat = document.createElement('deep-chat');
+    chat.history = hist;
+    // websocket mode: the handler runs once; input stays open while replies arrive at any time.
+    chat.connect = { websocket: true, handler: function (_, signals) {
+      sig = signals;
+      signals.newUserMessage.listener = send;
+      signals.onOpen();
+      listen();
+      if (wantFocus) chat.focusInput();
+    } };
+    chat.requestBodyLimits = { maxMessages: 1 };
+    chat.errorMessages = { displayServiceErrorMessages: true };
+    chat.textInput = { characterLimit: C.maxChars, placeholder: { text: S.placeholder }, styles: { text: { fontSize: '16px' } } };
+    chat.submitButtonStyles = { tooltip: { text: S.send } };
+    // A fontFamily of our own also keeps Deep Chat from adding a Google Fonts link to the page.
+    chat.chatStyle = { display: 'block', width: '100%', height: '100%', border: 'none', backgroundColor: '#f6f8fa', fontFamily: 'system-ui, sans-serif', fontSize: '15px' };
+    chat.messageStyles = { default: {
+      shared: { bubble: { maxWidth: '85%' } },
+      user: { bubble: { backgroundColor: '#1f6feb', color: '#fff' } },
+      ai: { bubble: { backgroundColor: '#fff', color: '#111', border: '1px solid #d0d7de' } },
+    } };
+    body.appendChild(chat);
+  };
+
   var open = function (on, focus) {
     panel.hidden = !on;
     store(KEY + ':open', on ? '1' : null);
-    if (on) { load(); if (focus) input.focus(); } else if (es) { es.close(); es = null; }
+    if (!on) { if (es) { es.close(); es = null; } return; }
+    if (chat) { listen(); chat.scrollToBottom(); if (focus) chat.focusInput(); return; }
+    if (starting) return;
+    starting = true;
+    wantFocus = !!focus;
+    err.hidden = true;
+    Promise.all([loadLib(), fetchLog()]).then(function (r) { build(r[1]); }, function () {
+      starting = false;
+      err.textContent = S.unavailable;
+      err.hidden = false;
+    });
   };
   q('.egc-bubble').onclick = function () { open(panel.hidden, true); };
   q('.egc-x').onclick = function () { open(false); };
-  form.onsubmit = function (e) { e.preventDefault(); send(); };
-  input.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
   try { if (localStorage.getItem(KEY + ':open')) open(true); } catch (e) { /* private mode */ }
 }

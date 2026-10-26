@@ -6,11 +6,13 @@
 //   POST <path>/<client>/messages        {session?, text} → {session, message}
 //   GET  <path>/<client>/messages?session=&since=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=     SSE: each message as it is posted, edited, settled
-//   GET  <path>/<client>/widget.js
+//   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the three above
+// A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
+// GET after a restart still returns them.
 import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
@@ -26,12 +28,19 @@ export const HTTP_DEFAULTS = Object.freeze({ path: '/chat', maxChars: 4000, rate
 export const HTTP_STRINGS = Object.freeze({
   title: 'Chat', open: 'Abrir chat', close: 'Cerrar', placeholder: 'Escribe tu mensaje…', send: 'Enviar',
   error: 'No se pudo enviar. Intenta de nuevo.', too_long: 'El mensaje es demasiado largo.', too_many: 'Demasiados mensajes. Espera unos minutos.',
+  unavailable: 'No se pudo abrir el chat. Intenta de nuevo.',
 });
 const SESSION_IDLE_MS = 30 * 24 * 3600_000;   // an idle session past this is expired: its token starts a new one
 const LOG_MAX = 200;                           // messages a session keeps for replay
 const PING_MS = 25_000;                        // SSE keep-alive, under common proxy idle timeouts
 const SESSIONS_FILE = 'http-sessions.json';
+const MESSAGES_DIR = 'http-messages';
 const WIDGET_SRC = readFileSync(new URL('./http-widget.js', import.meta.url), 'utf8');
+// github.com/OvidijusParsiunas/deep-chat (MIT), 2.5.1 of 2026-08-27; integrity = sha384 of that file.
+export const DEEP_CHAT = Object.freeze({
+  url: 'https://cdn.jsdelivr.net/npm/deep-chat@2.5.1/dist/deepChat.bundle.js',
+  integrity: 'sha384-djz34nrOoloJkHQBH1qoINnqdsX56zqoFpMpT0m3ghPF0o0otOUvWZEFwUViT9iF',
+});
 
 const sidOf = (token) => createHash('sha256').update(String(token)).digest('hex').slice(0, 16);
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
@@ -47,7 +56,7 @@ function clientConfig(name, c = {}) {
     rateMs: posInt(c.rate?.minutes, HTTP_DEFAULTS.rateMinutes) * 60_000,
     newCount: posInt(c.new_sessions?.count, HTTP_DEFAULTS.newSessions),
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
-    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings })});\n`,
+    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT })});\n`,
   };
 }
 
@@ -72,25 +81,52 @@ export async function startHttpBridge({
     clients.set(name, clientConfig(name, c));
   }
 
-  // sid → { client, lastAt, log, subs, posts }; client + lastAt persist across restarts.
+  // sid → { sid, client, lastAt, log, subs, posts }; client + lastAt persist across restarts, log in its own file.
   const sessions = new Map();
   const sessionsPath = stateDir ? join(stateDir, SESSIONS_FILE) : null;
+  const messagesDir = stateDir ? join(stateDir, MESSAGES_DIR) : null;
+  const logPath = (sid) => join(messagesDir, `${sid}.json`);
   const live = (s, n = now()) => !!s && n - s.lastAt < SESSION_IDLE_MS;
-  const fresh = (client, lastAt) => ({ client, lastAt, log: [], subs: new Set(), posts: [] });
+  const fresh = (client, lastAt, sid, log = []) => ({ sid, client, lastAt, log, subs: new Set(), posts: [] });
+  // A reply cut by the restart is settled as it stood.
+  const readLog = async (sid) => {
+    try { return JSON.parse(await readFile(logPath(sid), 'utf8')).slice(-LOG_MAX).map((m) => ({ ...m, done: true })); }
+    catch (e) { if (e?.code !== 'ENOENT') log(`${logPath(sid)} unreadable (${e?.message ?? e}) — that session starts with no history`); return []; }
+  };
   if (sessionsPath) {
     try {
       const saved = JSON.parse(await readFile(sessionsPath, 'utf8'));
-      for (const [sid, s] of Object.entries(saved ?? {})) if (clients.has(s?.client) && live(s)) sessions.set(sid, fresh(s.client, s.lastAt));
+      for (const [sid, s] of Object.entries(saved ?? {})) if (clients.has(s?.client) && live(s)) sessions.set(sid, fresh(s.client, s.lastAt, sid, await readLog(sid)));
     } catch (e) { if (e?.code !== 'ENOENT') log(`${sessionsPath} unreadable (${e?.message ?? e}) — starting with no sessions`); }
+    for (const f of await readdir(messagesDir).catch(() => [])) {
+      if (!sessions.has(f.replace(/\.json$/, ''))) await unlink(join(messagesDir, f)).catch((e) => log(`could not remove ${f} — ${e?.message ?? e}`));
+    }
   }
+  // Every state write goes through one chain. A change rewrites its session's file; changes made
+  // before that write starts ride along in it.
   let saving = Promise.resolve();
+  const saveLog = (s) => {
+    if (!messagesDir || s.dirty) return;
+    s.dirty = true;
+    const file = logPath(s.sid);
+    saving = saving.then(async () => {
+      s.dirty = false;
+      await mkdir(messagesDir, { recursive: true });
+      await writeFile(`${file}.tmp`, JSON.stringify(s.log), 'utf8');
+      await rename(`${file}.tmp`, file);
+    }).catch((e) => log(`could not save ${file} — ${e?.message ?? e}`));
+  };
+  const forget = (sid) => {
+    sessions.delete(sid);
+    if (messagesDir) saving = saving.then(() => unlink(logPath(sid))).catch((e) => { if (e?.code !== 'ENOENT') log(`could not remove ${logPath(sid)} — ${e?.message ?? e}`); });
+  };
   const persist = () => {
     if (!sessionsPath) return;
     const n = now();
     const out = {};
     for (const [sid, s] of sessions) {
       if (live(s, n)) out[sid] = { client: s.client, lastAt: s.lastAt };
-      else if (!s.subs.size) sessions.delete(sid);
+      else if (!s.subs.size) forget(sid);
     }
     saving = saving.then(() => mkdir(stateDir, { recursive: true }).then(() => writeFile(sessionsPath, JSON.stringify(out), 'utf8')))
       .catch((e) => log(`could not save ${sessionsPath} — ${e?.message ?? e}`));
@@ -98,6 +134,7 @@ export async function startHttpBridge({
 
   // One clock for ids and cursors: increasing, and past every value from before a restart.
   let tick = 0;
+  for (const s of sessions.values()) for (const m of s.log) tick = Math.max(tick, m.seq);
   const nextTick = () => (tick = Math.max(tick + 1, now()));
   const put = (res, chunk) => { if (!res.writableEnded) res.write(chunk); };
   const view = (m) => (m.deleted ? { id: m.id, deleted: true, seq: m.seq } : { id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
@@ -106,6 +143,7 @@ export async function startHttpBridge({
     m.id ??= String(m.seq);
     const frame = `id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`;
     for (const res of s.subs) put(res, frame);
+    saveLog(s);
   };
   const append = (s, from, text, done) => {
     const m = { id: null, from, text, done, seq: 0 };
@@ -128,7 +166,7 @@ export async function startHttpBridge({
     const s = sessions.get(sid);
     if (s?.client !== c.name) return null;
     if (live(s)) return { sid, s };
-    sessions.delete(sid);
+    forget(sid);
     return null;
   };
 
@@ -179,7 +217,8 @@ export async function startHttpBridge({
       }
       opened.set(key, [...times, n]);
       do token = randomBytes(24).toString('base64url'); while (sessions.has(sidOf(token)));
-      hit = { sid: sidOf(token), s: fresh(c.name, n), isNew: true };
+      hit = { sid: sidOf(token), isNew: true };
+      hit.s = fresh(c.name, n, hit.sid);
       sessions.set(hit.sid, hit.s);
       log(`new session ${c.name}-${hit.sid}`);
     }
@@ -347,13 +386,15 @@ export async function startHttpBridge({
     sendFailure: (chatId) => failures.get(chatId) ?? null,
     getChatName: (chatId) => { const hit = CHAT_RE.exec(String(chatId ?? '')); return hit ? `${hit[1]}-${hit[2]}` : null; },
     isAlive: () => alive && !stopped,
+    // Settles once the state files are written.
     stop: () => {
-      if (stopped) return;
+      if (stopped) return saving;
       stopped = true;
       clearInterval(ping);
       for (const s of sessions.values()) { for (const res of s.subs) res.end(); s.subs.clear(); }
       server.close();
       server.closeAllConnections?.();
+      return saving;
     },
   };
 }
