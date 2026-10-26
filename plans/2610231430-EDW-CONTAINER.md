@@ -635,3 +635,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Live: ED in topic "an" (own folder an-2610261304) had no files, keys or history, and its commands needed approval (no inherited access_level).
   - Design: the same conversation_path as the parent (same box uid, desktop, .ssh, tools); its own thread diverging at the split; its own transcript file in the folder (transcript-<fork>.md); per-being settings inherited; the thread resumable.
   - Sent to the /split agent (feat/no-turn-limits), with the existing EDW forks /42, /55, /66 to re-point afterwards.
+- **Merged, not deployed: a8532b69 owner-only by default** (6a1264b5).
+  - A being with no list answers only the owners: networks.<surface>.allowed_users ?? the new top-level conversation_defaults.allowed_users ?? nobody (the account owner and the console still pass). Commands use the same list; `owner` in any list expands to it. One helper (router mayWake) instead of three copies.
+  - Migration 0050 writes ['*'] where existing beings relied on "unset = anyone" (skips 'all' beings with no list).
+  - Suite 7628/7629 (telegram-topics node test flaky under load; passes alone).
+  - Deploy together with the /split fix. Notes: EDW's /upgrade doesn't run migrations (EDW beings already have lists: check before); kg/do have a few-second owner-only window between the bounce and 0050.
