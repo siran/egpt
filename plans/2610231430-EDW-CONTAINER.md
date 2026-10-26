@@ -640,3 +640,4 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Migration 0050 writes ['*'] where existing beings relied on "unset = anyone" (skips 'all' beings with no list).
   - Suite 7628/7629 (telegram-topics node test flaky under load; passes alone).
   - Deploy together with the /split fix. Notes: EDW's /upgrade doesn't run migrations (EDW beings already have lists: check before); kg/do have a few-second owner-only window between the bounce and 0050.
+- **Ruling: no `owner` token** (operator: "WTF?! remove this"). A list holds ids or '*' only. Consequence: brainpool's refusal of an access_level 'all' being with no list goes (absent now = owners only, which is safe); the skeleton's wren needs no list. Agent fix/no-owner-token (expect a net deletion). Deploy all three together: owner default + no token + /split folder fix.
