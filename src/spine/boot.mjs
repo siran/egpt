@@ -78,7 +78,7 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
-import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker } from './ingest.mjs';
+import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine } from './ingest.mjs';
 import { createCommands, loginProfilePathOf } from './commands.mjs';
 import { createLoginLimb } from './login.mjs';
 import { readChromeCredential } from '../tools/chrome-creds.mjs';
@@ -117,7 +117,7 @@ import { createConfigResolver, parseEntityConfig, readHeartbeatFiles } from './c
 import { seedSkeletons } from './seed.mjs';
 import { readRoomConfig, readRoomsFile, roomsFilePath, agentsFilePath } from '../rooms-file.mjs';
 import { RACY_MS } from '../stat-cache.mjs';
-import { isSilenceReply } from '../auto-mode.mjs';
+import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
@@ -3856,32 +3856,51 @@ export async function boot({
   // line already lands — through the same one placement.
   if (ingest) Promise.resolve().then(() => outboxDrain.atBoot({ chatId: selfChatId() })).catch((e) => log.line?.(`[outbox] boot sweep: ${e?.message ?? e}`));
 
+  // `/to <chatId>` (2026-10-26): the text enters that chat as the owner's line, through the limbs'
+  // own entry. Only a chat conversations.yaml already holds — the box never creates one.
+  async function ingestTo({ chatId, text }) {
+    const state = await _loadState();
+    const surface = Object.keys(state?.contacts ?? {}).find((s) => state.contacts[s]?.[chatId]);
+    if (!surface || !text) { log.line?.(`[ingest] /to ${chatId} ignored: ${surface ? 'no text' : 'no conversation with that id'}`); return; }
+    const st = mentionStatus(text, wakeWords, { addressWithoutAt });
+    // not awaited, as the shell limb: the turn must not hold the box (a /restart behind it)
+    spine.handleInbound({ body: text, from: {
+      chatId, chatName: state.contacts[surface][chatId].pushedName ?? null,
+      network: surface === SHELL_SURFACE ? 'shell' : surface,
+      userId: ownersOf(cfg, surface)[0] ?? null, senderName: cfg.user_name ?? null,
+      authorized: true, via: 'ingest', msgKey: null, atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
+    } }).catch((e) => log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`));
+  }
+
   // Command ingest: drop /restart, /upgrade or /rewind <ref> into
   // EGPT_HOME/state/ingest (operator 2026-07-03: the ingest box lives under state/ now).
+  const ingestLine = async (line) => {
+    // The shell editor's self-announce — poke the shell-port limb. Normally a no-op (the
+    // limb has held the console port since boot); it matters when the BIND failed and the
+    // limb is backing off, where this makes it re-listen NOW so the editor has something
+    // to dial. Not a lifecycle command.
+    if (isShellConnectMarker(line)) { shellPort.poke(); return; }
+    const to = toLine(line);
+    if (to) { await ingestTo(to); return; }
+    const hold = holdLine(line);   // Beeper handover (setup/beeper-window.ps1)
+    if (hold != null) {
+      const ok = await beeperUpdate?.hold(hold);
+      log.line?.(`[ingest] ${line} -> ${ok ? (hold ? 'held' : 'released') : 'refused'}`);
+      return;
+    }
+    const code = lifecycleExit(line, {
+      writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
+    });
+    if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code, { force: lifecycleForce(line) }); }
+    else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);
+  };
   let ingestWatcher = null;
   if (ingest) {
     ingestWatcher = createIngest({
       dir: join(EGPT_HOME, 'state', 'ingest'),
       io,
       onLog: (m) => log.line?.(`[ingest] ${m}`),
-      handle: async (line) => {
-        // The shell editor's self-announce — poke the shell-port limb. Normally a no-op (the
-        // limb has held the console port since boot); it matters when the BIND failed and the
-        // limb is backing off, where this makes it re-listen NOW so the editor has something
-        // to dial. Not a lifecycle command.
-        if (isShellConnectMarker(line)) { shellPort.poke(); return; }
-        const hold = holdLine(line);   // Beeper handover (setup/beeper-window.ps1)
-        if (hold != null) {
-          const ok = await beeperUpdate?.hold(hold);
-          log.line?.(`[ingest] ${line} -> ${ok ? (hold ? 'held' : 'released') : 'refused'}`);
-          return;
-        }
-        const code = lifecycleExit(line, {
-          writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
-        });
-        if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code, { force: lifecycleForce(line) }); }
-        else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);
-      },
+      handle: ingestLine,
     });
     await ingestWatcher.start();
   }
@@ -3895,6 +3914,7 @@ export async function boot({
     logToGroup,                                          // the per-command audit sink (config.log_to_group) — exposed for the same reason: the generalized resolve+post is assertable without running the whole dispatch
     requestLogin,                                        // the spine's being-facing auto-login entry ("egpt can request to log in") — exposed so its outcome is assertable without a live Chrome
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
+    ingestLine,                                          // the ingest box's handler — exposed so a dropped file is assertable without the watcher
 
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's

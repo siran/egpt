@@ -242,6 +242,22 @@ to a temp name then rename for atomicity (the sweep skips dotfiles + `*.tmp`).
 This is how `/restart` / `/upgrade` / `/rewind <ref>` work when you can't reach a
 chat.
 
+`/to <chatId>` on the first line types the rest of the file into that chat as
+you (the node's owner), as if you had sent it there:
+
+```
+/to tg:-1004408163350/55
+ed, pick up the invoice thread above
+```
+
+The chat id is its conversations.yaml key (a Telegram topic, a WhatsApp chat id,
+a room). The line takes the normal path: addressing and the chat's mode decide
+who answers, the answer goes to that chat, and the transcript records the line
+with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). Nobody
+else in the chat sees your line, only the answer. An id with no conversations.yaml
+entry, or a file with no text, is logged and ignored. The box sits under
+`~/.egpt`, so only the node's owner can write it; a sandboxed being cannot.
+
 ---
 
 ## 2. Config (`~/.egpt/config/config.yaml`)
