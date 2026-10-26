@@ -34,7 +34,7 @@ export function buildTranscriptionPipeline({
   transcribeViaEndpoint,          // (audioPath, {endpoint, keyB64, timeoutMs}, log, meta) -> transcript (throws on fail)
   reachable,                      // async (url, timeoutMs) -> bool — quick liveness probe (omit to skip probing)
   startWhisperServer,             // async ({command, model, host, port, language, extraArgs, antiRepetition, onLog}) -> {url, stop}
-  makeWhisperServerTranscriber,   // ({url, ffmpeg, language}) -> (audioPath, cfg, log, meta) -> transcript
+  makeWhisperServerTranscriber,   // ({url, ffmpeg, language, audio_ctx}) -> (audioPath, cfg, log, meta) -> transcript
   cli,                            // transcribeAudioFile(audioPath, cfg, log, meta) -> transcript
   residentServing = residentWhisperServer,   // () -> {url} of a whisper-server serving in this process, or null
   // routesToOwnTranscriptor(cfg) (src/spine/transcriptor-worker.mjs) — { at, endpoint } of the remote
@@ -140,7 +140,7 @@ export function buildTranscriptionPipeline({
         // default, so large-v3-on-CPU notes longer than that aborted mid-encode →
         // "whisper_full_with_state: failed to encode" + a local→cli flap). Set it
         // generously in config; cli stays the floor for anything still stuck.
-        h.transcribe = makeWhisperServerTranscriber({ url: s.url, ffmpeg: eng.ffmpeg_command, language: eng.language, timeoutMs: eng.timeout_ms });
+        h.transcribe = makeWhisperServerTranscriber({ url: s.url, ffmpeg: eng.ffmpeg_command, language: eng.language, audio_ctx: eng.audio_ctx, timeoutMs: eng.timeout_ms });
         onLog(`pipeline: local "${eng.name}" resident at ${s.url}`);
       }).catch((e) => { h.starting = false; h.error = e; onLog(`pipeline: local "${eng.name}" spawn failed: ${e?.message ?? e}`); });
       return null;                                               // warming → fall through (cli covers the gap)
@@ -192,7 +192,7 @@ export function buildTranscriptionPipeline({
       if (!url) { failReason.set(eng.name, why); return null; }
       if (g.url !== url) {
         g.url = url;
-        g.transcribe = makeWhisperServerTranscriber({ url, ffmpeg: eng.ffmpeg_command, language: eng.language, timeoutMs: eng.timeout_ms });
+        g.transcribe = makeWhisperServerTranscriber({ url, ffmpeg: eng.ffmpeg_command, language: eng.language, audio_ctx: eng.audio_ctx, timeoutMs: eng.timeout_ms });
       }
       return await decodeOn(eng, g, `gpu "${eng.name}"`, audioPath, eng.language != null ? { ...cfg, language: eng.language } : cfg, log, meta, decodingHere);
     } finally {

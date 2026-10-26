@@ -15,7 +15,7 @@
 // reason to hold a resident model there).
 import { spawn, execFile } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
-import { convertToWav16k, wavDurationSec } from './transcribe.mjs';
+import { convertToWav16k, wavDurationSec, audioCtxFor } from './transcribe.mjs';
 import { lowerChild } from '../process-priority.mjs';
 import { reapPort, portHolders, processService } from './reap-port.mjs';
 
@@ -254,18 +254,21 @@ export async function startWhisperServer({
 // Converts to 16kHz WAV first (whisper's required input), POSTs multipart,
 // returns the transcript text (or null on empty). Throws on transport/HTTP
 // error so the caller can fall back.
-export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffmpeg', language, timeoutMs = 120_000, convert = convertToWav16k }, log = () => {}, meta = null) {
+export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffmpeg', language, audio_ctx, timeoutMs = 120_000, convert = convertToWav16k }, log = () => {}, meta = null) {
   const t0 = Date.now();
   let wav;
   try {
     wav = await convert(audioPath, ffmpeg);
     const bytes = await readFile(wav);
-    if (meta) meta.durationSec = wavDurationSec(bytes.length);   // duration from the WAV we just made (#3)
+    const durationSec = wavDurationSec(bytes.length);   // duration from the WAV we just made (#3)
+    if (meta) meta.durationSec = durationSec;
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: 'audio/wav' }), 'audio.wav');
     form.append('response_format', 'json');
     form.append('temperature', '0');
     if (language) form.append('language', String(language));
+    const ac = audio_ctx === 'auto' ? audioCtxFor(durationSec) : null;
+    if (ac != null) form.append('audio_ctx', String(ac));
     const res = await fetch(`${url.replace(/\/+$/, '')}/inference`, {
       method: 'POST',
       body: form,
@@ -285,13 +288,14 @@ export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffm
 // startTranscriptorServer's `transcribe` option expects — bound to a
 // running server. Errors return null so the worker reports a 422 (and the
 // main spine falls back to its local whisper), never a 500 storm.
-export function makeWhisperServerTranscriber({ url, ffmpeg, language, timeoutMs, convert }) {
+export function makeWhisperServerTranscriber({ url, ffmpeg, language, audio_ctx, timeoutMs, convert }) {
   return async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null) {
     try {
       return await transcribeViaWhisperServer(audioPath, {
         url,
         ffmpeg: cfg.ffmpeg_command || ffmpeg || 'ffmpeg',
         language: cfg.language ?? language,
+        audio_ctx: cfg.audio_ctx ?? audio_ctx,
         timeoutMs,
         convert,
       }, log, meta);

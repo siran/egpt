@@ -115,6 +115,16 @@ describe('transcription pipeline (declarative fallback chain)', () => {
     expect(seenTimeout).toBe(300000);
   });
 
+  it('threads the local engine audio_ctx into the server transcriber', async () => {
+    let seen;
+    const { pipe } = mk({
+      profile: { ...LOCAL_CLI, local: { ...LOCAL_CLI.local, audio_ctx: 'auto' } },
+      makeWhisperServerTranscriber: ({ audio_ctx }) => { seen = audio_ctx; return async () => 'LOCAL'; },
+    });
+    await pipe.transcribe('warm'); await tick();
+    expect(seen).toBe('auto');
+  });
+
   it('serializes concurrent notes to the single-threaded local server (no overlapping decodes)', async () => {
     let active = 0, maxActive = 0;
     const { pipe } = mk({
