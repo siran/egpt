@@ -1,7 +1,7 @@
 // 0050 — an existing node keeps answering as before the owner default (operator 2026-10-26): every
 // agent that states no allowed_users gets conversation_defaults.allowed_users: ['*']; explicit lists,
 // chat-level lists and a profile seeded from the new skeleton are left alone; an 'all' being with no
-// list stays refused rather than opened.
+// list is left owners-only rather than opened.
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -67,7 +67,7 @@ describe('0050 — beings without a list stay open', () => {
       expect(after.agents.carol).toEqual({ relay_channel: 'rodz1', to: 'don.do', conversation_defaults: { allowed_users: ['*'] } });
       expect(after.agents.boss.conversation_defaults).toEqual({ allowed_users: ['+1555'] });
       expect(after.agents.wren.conversation_defaults).toEqual({ access_level: 'all', allowed_users: ['+1555'] });
-      expect(after.agents.dren.conversation_defaults).toEqual({ access_level: 'all' });   // stays refused, not opened
+      expect(after.agents.dren.conversation_defaults).toEqual({ access_level: 'all' });   // owners only, not opened
       expect(after.networks).toEqual({ whatsapp: { allowed_users: ['+1555'] } });
       const text = readFileSync(cfgFile(), 'utf8');
       for (const l of KG) expect(text).toContain(l.startsWith('  carol') ? '# relay' : l);   // every line, comments included

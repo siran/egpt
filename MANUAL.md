@@ -20,8 +20,8 @@ not answered by the persona. Authorization = the surface's own `chat_id`
 
 The same owners are whom a being answers by default: a being with no
 `allowed_users` (in the chat's entry or its `agents.<name>.conversation_defaults`)
-wakes only for them. `[owner]` in a list means them, `[owner, "<id>"]` adds one,
-`['*']` is anyone, `[]` is nobody; the nearest list wins (2026-10-26).
+wakes only for them. A list holds ids or `'*'`: `['*']` is anyone, `[]` is
+nobody, ids are exactly those senders; the nearest list wins (2026-10-26).
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
 e.g. `/e restart`, `/don agents`, `/e split viaje`. The node that hosts that being

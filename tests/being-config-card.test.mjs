@@ -92,6 +92,7 @@ describe('renderConfigBlock — what a being is shown', () => {
     expect(text).toMatch(/model: opus\s+# type file config\/agents\/opus-default\.yaml/);
     expect(text).toMatch(/sandboxed: true\s+# access_level sandbox forces it/);
     expect(text).toMatch(/mode: mention\s+# node default \(config\.yaml\)/);
+    expect(text).toMatch(/allowed_users: \(owners only\)\s+# built-in default/);
   });
 
   it('never carries a node-level key, however much the config holds', () => {

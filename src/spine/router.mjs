@@ -46,20 +46,17 @@ function localAgentKey(agents, name) {
   return hit ? hit[0] : null;
 }
 
-// Is this sender on ANY allowed_users list (conversation_defaults, networks.*, agents.*.conversation_defaults)? "*" and `owner` name nobody.
+// Is this sender on ANY allowed_users list (conversation_defaults, networks.*, agents.*.conversation_defaults)? "*" names nobody.
 export function isKnownSender(senderId, config = {}) {
   const lists = [
     config.conversation_defaults?.allowed_users,
     ...Object.values(config.networks ?? {}).map((n) => n?.allowed_users),
     ...Object.values(config.agents ?? {}).map((a) => a?.conversation_defaults?.allowed_users),
-  ].filter(Array.isArray).flat().filter((u) => u !== '*' && u !== OWNER);
+  ].filter(Array.isArray).flat().filter((u) => u !== '*');
   return allowedUsersPermits(lists, senderId);
 }
 
 // ── WHO MAY WAKE A BEING (operator 2026-10-26: "E must only listen to its owner by default") ──
-// The `owner` token in an allowed_users list, and what an unset list means.
-export const OWNER = 'owner';
-
 // This node's owners on a surface — who may command it (boot's isAllowedUser) and whom a being with
 // no list of its own answers: networks.<surface>.allowed_users (else a legacy top-level <surface>:
 // block's) when set, else the node's conversation_defaults.allowed_users, else nobody.
@@ -68,7 +65,7 @@ export function ownersOf(config = {}, surface) {
   const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const block = isMap(config?.networks?.[s]) ? config.networks[s] : isMap(config?.[s]) ? config[s] : {};
   const list = Array.isArray(block.allowed_users) ? block.allowed_users : config?.conversation_defaults?.allowed_users;
-  return (Array.isArray(list) ? list : []).filter((u) => u !== '*' && u !== OWNER);
+  return (Array.isArray(list) ? list : []).filter((u) => u !== '*');
 }
 
 // Is this sender an owner where the line ARRIVED? Authorized by its bridge (the account owner, an id
@@ -79,14 +76,14 @@ export function isOwner(ev, config = {}) {
 }
 
 // THE reachability test, for router.resolve, mesh's responder and /agents. Nearest list wins: the
-// conversation's, else the agent's conversation_defaults, else [owner]. ['*'] anyone, [] nobody.
+// conversation's, else the agent's conversation_defaults, else the owners (isOwner). A list holds
+// ids or '*' only: ['*'] anyone, [] nobody.
 export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId } = {}) {
   let conv = null;
   if (state) { try { conv = getBeing(state, surface, chatId, being)?.allowedUsers; } catch { conv = null; } }
   const own = agent?.conversation_defaults?.allowed_users;
-  const list = Array.isArray(conv) ? conv : Array.isArray(own) ? own : [OWNER];
-  if (list.includes(OWNER) && isOwner(ev, config)) return true;
-  return allowedUsersPermits(list.filter((u) => u !== OWNER), ev?.senderId);
+  const list = Array.isArray(conv) ? conv : Array.isArray(own) ? own : null;
+  return list ? allowedUsersPermits(list, ev?.senderId) : isOwner(ev, config);
 }
 
 // THE STRANGER RULE (operator 2026-10-15): dispatch.stranger_agent maps a CONNECTION to the agent
@@ -428,7 +425,7 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // conversations-state IO gating.mjs's createGating takes, injected the same way (mirrored, not
 // duplicated). Absent (tests, a caller that doesn't need per-conversation overrides) → resolve()
 // simply never reads any per-conversation allowed_users, and every being's reachability falls
-// straight to its global `agents:` default (or [owner], when neither is set).
+// straight to its global `agents:` default (or the owners, when neither is set).
 // `isPresent` (operator 2026-08-31, fallback_handle) — async (identity, ev) => true | false | null
 // ("unknown"), THE membership question, injected exactly the way loadState is: the router never
 // opens a socket of its own, it ASKS. boot binds it to the node's own Beeper bridge, which answers
@@ -522,7 +519,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       const targets = [];
       // ONE conv-state read for the whole call (never per-hit) — mirrors gating.mjs's own
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
-      // every hit below falls straight to its GLOBAL allowed_users (or [owner]).
+      // every hit below falls straight to its GLOBAL allowed_users (or the owners).
       const state = loadState ? await loadState().catch(() => null) : null;
       // WHERE THIS MESSAGE ARRIVED (operator 2026-08-31), which is not always where it is being
       // dispatched. Since 8227b99 a wa-group's message re-enters the room it was invited to as a
@@ -617,13 +614,13 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // the allowlist of which agent fields get this two-tier treatment (a registry/
         // structural field like handles/configuration/relay_channel, sitting as a direct
         // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
-        // tiers = [owner] (operator 2026-10-26): only this node's owners (isOwner). mayWake (top
+        // tiers = only this node's owners (isOwner, operator 2026-10-26). mayWake (top
         // of file) is the one test — a literal "*" entry permits any sender (operator
-        // 2026-08-16), `owner` expands to isOwner, otherwise shortChatId normalizes both sides
+        // 2026-08-16), otherwise shortChatId normalizes both sides
         // (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
         // allowed_users check uses — so a short OR legacy full-form entry matches either way.
-        // Only `owner` reads ev.authorized/ev.isSender (the NETWORK-level concept); an explicit
-        // id list never does. A hit failing it is dropped SILENTLY, same
+        // Only an unset list reads ev.authorized/ev.isSender (the NETWORK-level concept); an
+        // explicit id list never does. A hit failing it is dropped SILENTLY, same
         // convention as the surface-pin mismatch above: it falls through exactly as if the
         // @token had never matched.
         if (!permits(name, agent)) return false;

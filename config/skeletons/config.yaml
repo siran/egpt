@@ -189,9 +189,8 @@ agents:
     # conversation_defaults:      # THIS AGENT'S global defaults for fields conversations.yaml can
     #                             # override per-conversation - the nesting IS the allowlist (only
     #                             # fields living here get a per-conversation override at all).
-    #   allowed_users: ['*']      # who may wake it. Unset = [owner]: only this node's owners (the
-    #                             # top-level conversation_defaults.allowed_users below). ['*'] = anyone,
-    #                             # [] = nobody, [owner, "<id>"] = the owners plus that id.
+    #   allowed_users: ['*']      # who may wake it: ids, or ['*'] = anyone; [] = nobody. Unset = only this
+    #                             # node's owners (the top-level conversation_defaults.allowed_users below).
     #                             # Overridable per-conversation (conversations.yaml
     #                             # agents.<name>.allowed_users) - the override REPLACES this list
     #                             # there, it does not merge with it.
@@ -244,7 +243,6 @@ agents:
     conversation_defaults:
       access_level: all         # the ONE unsandboxed being - it runs as you, because its job is to change the machine
       sandboxed: false
-      allowed_users: [owner]    # an 'all' being must state who may wake it: this node's owners
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.

@@ -1303,12 +1303,11 @@ export function defaultBeingOf(entry) {
 // THREE STATES, NOT TWO (operator 2026-09-05):
 //
 //   absent   permits HERE. A being's reachability never hands it absent any more: router.mjs's
-//            mayWake resolves no list at either tier to [owner] (operator 2026-10-26).
+//            mayWake answers no list at either tier with the owners (operator 2026-10-26).
 //   []       DENY EVERYONE. Somebody wrote a list and put nobody on it; that is an answer,
 //            not a silence.
-//   ["*"]    permit everyone. The explicit wildcard, and the escape hatch an access_level:'all'
-//            being needs (see brainpool.mjs's ACCESS-LEVEL/ALLOWED-USERS gate) — without it,
-//            "*" would just be an entry no real sender id ever equals, denying everyone.
+//   ["*"]    permit everyone. The explicit wildcard — without it, "*" would just be an entry
+//            no real sender id ever equals, denying everyone.
 //
 // This used to be two states: `|| !allowedUsers.length` folded [] in with absent and permitted
 // both, so `allowed_users: []` — the exact syntax README.md:63 and MANUAL.md:155 teach as deny —

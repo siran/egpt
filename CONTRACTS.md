@@ -115,9 +115,10 @@ untested id not in `contracts-gaps.json`.
 
    7.5 A being wakes only for its owners unless its `allowed_users` says
    otherwise. The nearest list wins: the chat's, then
-   `agents.<name>.conversation_defaults`, then `[owner]` = the surface's own
+   `agents.<name>.conversation_defaults`, then the owners = the surface's own
    `allowed_users` where set, else the node's `conversation_defaults.allowed_users`,
-   else nobody (the account owner always passes). `['*']` = anyone, `[]` = nobody.
+   else nobody (the account owner always passes). A list holds ids or `'*'`:
+   `['*']` = anyone, `[]` = nobody.
 
 8. Media is saved, per conversation.
 

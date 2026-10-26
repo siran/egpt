@@ -102,7 +102,7 @@ export function createMeshService({
   // the same way (mirrored, not duplicated). Absent (tests, a caller that doesn't need per-
   // conversation overrides) → relayDispatch's allowed_users gate simply never reads a per-
   // conversation override, and a being's reachability falls straight to its global
-  // agents.<handle>.conversation_defaults.allowed_users default (or [owner], when neither
+  // agents.<handle>.conversation_defaults.allowed_users default (or the owners, when neither
   // tier is set).
   loadState = null,
   // THE SPINE'S OWN TURN MACHINERY (src/spine/turns.mjs, operator 2026-08-31), THE SAME INSTANCE
@@ -189,7 +189,7 @@ export function createMeshService({
   // ORIGIN before a mesh envelope is ever sent: a per-conversation override (conversations.yaml
   // agents.<being>.allowed_users, read via getBeing off ONE state read) REPLACES — never merges
   // with — the node's global default (config.yaml's NESTED
-  // agents.<handle>.conversation_defaults.allowed_users). UNSET at both tiers = [owner] (operator
+  // agents.<handle>.conversation_defaults.allowed_users). UNSET at both tiers = the owners (operator
   // 2026-10-26), judged on route.ev. Returns the denial string to surface, or null when the turn
   // may proceed. Checked in relayDispatch BEFORE brain.turn ever runs for a local being — never
   // for a relay hop (those don't reach here).

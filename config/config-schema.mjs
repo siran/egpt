@@ -1213,9 +1213,8 @@ export const CONFIG_SCHEMA = {
         the conversation and at agents.<name>.conversation_defaults) answers
         only them. networks.<surface>.allowed_users, when set, replaces this
         list on that surface. Unset or [] = nobody (the account owner, and the
-        authenticated console, always pass). "*" names nobody here.
-        The token \`owner\` in any being's allowed_users expands to this
-        resolved list (src/spine/router.mjs ownersOf / mayWake).
+        authenticated console, always pass). "*" names nobody here
+        (src/spine/router.mjs ownersOf / mayWake).
   `,
 
   networks: `
@@ -1885,12 +1884,11 @@ export const CONFIG_SCHEMA = {
           allowed_users
             A list of sender ids (same shape/normalization as
             networks.*.allowed_users - matched via shortChatId, so a short or
-            legacy full-form id both work). UNSET = [owner] (operator
-            2026-10-26): only the node's owners (top-level
-            conversation_defaults.allowed_users, or networks.<surface>.allowed_users
-            where set). \`owner\` inside a list expands to them; ["*"] = anyone;
-            [] = nobody. Set = ONLY a sender whose id is in the list can
-            reach it; every other sender's @mention falls through exactly as
+            legacy full-form id both work). UNSET = only the node's owners
+            (operator 2026-10-26: top-level conversation_defaults.allowed_users,
+            or networks.<surface>.allowed_users where set). A list holds ids or
+            "*" only: ["*"] = anyone; [] = nobody. Set = ONLY a sender whose id
+            is in the list can reach it; every other sender's @mention falls through exactly as
             if it never matched (silent, same convention as the surface pin).
             No mode is above it (operator 2026-10-16): such a sender never
             wakes this agent, not by handle, quote-reply, the persona
@@ -1903,7 +1901,7 @@ export const CONFIG_SCHEMA = {
             below - it is just no longer a reachability gate; who may trigger an agent is
             controlled here and by access_level instead. An explicit id list is
             independent of ev.authorized/isSender (the per-NETWORK owner
-            concept); only \`owner\`, and an unset list, read the node's owners.
+            concept); only an unset list reads the node's owners.
           access_level
             ENUM: regular | all | sandbox. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
@@ -1938,11 +1936,9 @@ export const CONFIG_SCHEMA = {
             all
               Unconfined at the CLI level - dangerously_skip_permissions plus
               bare Bash/Agent and no path confinement, exactly like an
-              interactive claude session. STRUCTURALLY REFUSED when no
-              allowed_users is set at either tier (brainpool.mjs's gate): it is
-              unconfined capability AND reachable-by-anyone TOGETHER that is
-              dangerous, so an 'all' being must name who may reach it (['*'] is
-              the explicit "anyone").
+              interactive claude session. With no allowed_users at either tier
+              it answers only the node's owners (2026-10-26); ['*'] opens it to
+              anyone.
 
             sandbox
               (operator 2026-09-05) all's CAPABILITY, but only ever inside the
@@ -1954,12 +1950,6 @@ export const CONFIG_SCHEMA = {
               boundary instead of two overlapping ones: the kernel-enforced box
               REPLACES the CLI-enforced confinement rather than layering over
               it, so the CLI-level one is dropped on purpose.
-
-              EXEMPT from the allowed_users requirement 'all' carries, also on
-              purpose: the blast radius of a 'sandbox' turn is one ACL'd folder,
-              so such a being needs no list (unset = the owners; ['*'] = anyone).
-              brainpool.mjs's gate therefore tests === 'all' and must keep
-              testing exactly that.
 
           sandboxed
             boolean (operator 2026-08-20). UNSET is PLATFORM-AWARE (operator

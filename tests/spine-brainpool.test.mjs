@@ -1580,20 +1580,15 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
   });
 });
 
-// ── STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Checked at the very top
-//    of turn() — BEFORE any being-def resolution, so a refusal grants NOTHING, not even the
-//    type file's own baseline allowed_tools:
-//      accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
-//      (unrestricted reachability) — the escape hatch is the literal "*" wildcard entry
-//      (allowedUsersPermits' twin in conversations-state.mjs recognizes the same literal for
-//      router.mjs/mesh.mjs's sender-match).
+// ── ACCESS LEVEL vs allowed_users. The 'all'-with-no-list refusal (2026-08-16) is GONE
+//    (operator 2026-10-26): no list now means the owners only (router.mjs mayWake), not anyone.
 //    The former rule 1 here ("accessLevel must resolve to 'all' or 'regular' at either tier, or
 //    the being does not run at all") is GONE (operator 2026-08-20): resolveConv's own fallback
 //    now resolves an unset accessLevel to the explicit 'regular' instead of null, so an unset
 //    being now runs CONFINED rather than refusing — see the REPRODUCE-FIRST test just below,
 //    which proves this on CURRENT code (it used to throw; the 2026-08-16 gate test asserted
 //    exactly that — see git history / this file's diff for the before/after). ──
-describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refined 2026-08-20)', () => {
+describe('brainpool.turn — access_level vs allowed_users', () => {
   it("REPRODUCE-FIRST (before/after, operator 2026-08-20): accessLevel null at BOTH tiers used to refuse the turn (2026-08-16 gate) — now resolves to 'regular' and runs CONFINED, before any allowed_users concern even applies", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
@@ -1606,13 +1601,15 @@ describe('brainpool.turn — STRUCTURAL SAFETY GATE (operator 2026-08-16, refine
     expectConfined(pool.calls[0].brainOptions);
   });
 
-  it("accessLevel 'all' with NO allowed_users at either tier → refuses", async () => {
+  it("accessLevel 'all' with NO allowed_users at either tier → runs (who wakes it is mayWake's: the owners)", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'all' } },
+      loadPermission: (level) => (level === 'all' ? { dangerouslySkipPermissions: true, allowedTools: ['Bash'] } : null),
     });
-    await expect(brain.turn('e', ev)).rejects.toThrow(/allowed_users/);
-    expect(pool.calls).toHaveLength(0);
+    expect((await brain.turn('e', ev)).text).toBe('ok');
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(true);
   });
 
   it("accessLevel 'all' with allowed_users: ['*'] → the explicit wildcard escape hatch, proceeds normally", async () => {
@@ -1929,14 +1926,6 @@ describe("brainpool.turn — access_level 'sandbox' (operator 2026-09-05)", () =
   });
 
   // ── REGRESSION LOCKS. The third tier is additive: neither existing tier moves. ──
-  it("REGRESSION: 'all' with no allowed_users STILL throws — the sandbox exemption must never widen to 'all'", async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
-      brains, skipAccessLevelDefault: true, seedAgents: { e: { access_level: 'all' } },
-    });
-    await expect(brain.turn('e', ev)).rejects.toThrow(/allowed_users/);
-    expect(pool.calls).toHaveLength(0);
-  });
-
   it("REGRESSION: 'regular' still resolves its OWN confined tool list, never the sandbox grant", async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'win32',

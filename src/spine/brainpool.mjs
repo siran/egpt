@@ -949,15 +949,10 @@ export function createBrainPool({
       // `all` applies to a turn the group triggers — the group does not keep the 'regular' it
       // would otherwise inherit from the global default. This is safe only because it is
       // `allowed_users` that gates WHO may wake the being (router.mjs/mesh.mjs's reachability
-      // check, and the structural gate in turn() below which REFUSES an 'all' being with no
-      // allowed_users at either tier) — and room/acim already carries one, as any 'all' being
-      // structurally must.
+      // check; no list at either tier = only the node's owners) — and room/acim already carries one.
       accessLevel,
-      // ALLOWED_USERS, same two-tier resolution as accessLevel just above (operator 2026-08-16) —
-      // needed here (not just at router.mjs/mesh.mjs's reachability gates) so turn() can refuse to
-      // run an accessLevel:'all' being that has no allowed_users set at either tier: unconfined
-      // capability + unrestricted reachability is an unsafe combination the operator wants caught
-      // structurally (see the STRUCTURAL SAFETY GATES block below).
+      // ALLOWED_USERS, same two-tier resolution as accessLevel just above — for the room's config
+      // card (being-config-card.mjs). null = no list: only the owners (router.mjs mayWake).
       allowedUsers: b?.allowedUsers ?? getConfig()?.agents?.[being]?.conversation_defaults?.allowed_users ?? null,
       // SANDBOXED — the whole precedence is resolveSandboxed (above), which is the ONE thing that
       // answers this field for every caller. Rungs 2 and 3 are the same two-tier read
@@ -1053,32 +1048,8 @@ export function createBrainPool({
       meter.scope = scope;
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
-      // STRUCTURAL SAFETY GATE (operator 2026-08-16; refined 2026-08-20). Refuses the ENTIRE
-      // turn — no engine/LLM invocation, no tool grant of any kind, not even the type file's
-      // own baseline allowed_tools — before any being-def resolution below.
-      //
-      // accessLevel:'all' (unconfined) must never be paired with an empty/unset allowed_users
-      // (unrestricted reachability) — that combination is caught here, structurally, rather
-      // than left to "unrestricted by default". The escape hatch is the SAME literal "*"
-      // wildcard router.mjs/mesh.mjs's allowedUsersPermits recognizes: an explicit ['*'] is a
-      // non-empty array, so it already satisfies this check. Unset reaches only the owners since
-      // 2026-10-26, and an 'all' being must STILL state its list; `[owner]` is one.
-      //
-      // The former gate #1 here ("accessLevel must be structurally 'all' or 'regular', or the
-      // turn refuses") is REMOVED, not left as unreachable dead code: resolveConv's own
-      // accessLevel fallback now resolves an unset value to the explicit 'regular' (operator
-      // 2026-08-20) rather than null, so accessLevel is always a real level ('all' | 'regular' |
-      // 'sandbox') by the time turn() reads it — that throw could no longer fire.
-      // 'sandbox' IS EXEMPT, AND MUST STAY EXEMPT (operator 2026-09-05). This condition tests
-      // `=== 'all'` deliberately — it is not a stand-in for "is unconfined". The pair this gate
-      // catches is unconfined capability AND unrestricted reachability TOGETHER; under 'sandbox'
-      // the turn runs in a Windows logon session whose only ACE is this conversation's own
-      // folder, so the blast radius of a stranger reaching it is that folder. The operator ruled
-      // a 'sandbox' being may therefore be reachable by anyone with no allowed_users set. Do NOT
-      // "fix" this later by adding 'sandbox' to the condition: that deletes the tier's point.
-      if (accessLevel === 'all' && !(Array.isArray(allowedUsers) && allowedUsers.length)) {
-        throw new Error(`brainpool: ${being} has access_level 'all' but no allowed_users set — refusing to run (set allowed_users: [owner] for this node's owners, ids, or ['*'] for anyone)`);
-      }
+      // Who may wake it is router.mjs mayWake's; an 'all' being with no list answers only the owners (2026-10-26).
+
       // A HEARTBEAT A BEING WROTE NEVER WAKES AN 'all' BEING (2026-09-25). `ev.beingWritten` marks a
       // turn scheduled from <entity>/heartbeats/ (heartbeat-loader.mjs) — a folder a sandboxed being
       // can write — and a scheduled turn has no sender, so the allowed_users gate that makes an
@@ -1308,8 +1279,7 @@ export function createBrainPool({
         // proxy) — by this point def.dangerously_skip_permissions is EITHER the type file's own
         // trusted base-layer grant (brains.mjs resolve(): conv-local layers can never set or
         // clear it) OR the ACCESS-LEVEL OVERRIDE above (config/permissions/<level>.md, itself
-        // only reachable via the STRUCTURAL SAFETY GATES: accessLevel structurally set +
-        // allowed_users non-empty + sender matched before this turn ever ran) — never
+        // only reachable once mayWake matched the sender before this turn ever ran) — never
         // attacker-writable.
         dangerouslySkipPermissions: def.dangerously_skip_permissions === true,
         // verbose_thinking (operator 2026-08-29 ruling; MOVED to config.yaml 2026-08-30 —
@@ -1331,9 +1301,7 @@ export function createBrainPool({
         // (`verbose_thinking: "yes"`) from reaching warm-cli-session as anything but a boolean.
         verboseThinking: verbose,
         // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
-        // createSandboxCliSession over createBrainSession. No structural gating beyond this:
-        // the STRUCTURAL SAFETY GATES above already refuse the whole turn when accessLevel
-        // isn't set, so a sandboxed being still needs its own access_level/allowed_users.
+        // createSandboxCliSession over createBrainSession.
         sandboxed: sandboxed === true,
         // ...and the credential THAT turn runs on, spread in ONLY when there is one (resolved
         // above, sandboxed-only). With the key unset this contributes nothing at all, which is

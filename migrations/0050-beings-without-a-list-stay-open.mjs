@@ -8,7 +8,7 @@
 // Satisfied: no config.yaml or no `agents:` map; a top-level `conversation_defaults:` (a profile
 // seeded from the new skeleton, born under the owner default); every agent states a list.
 // Left as is, with a note — the agent then answers only the owners, never wider than before:
-//   - `access_level: all` at its conversation_defaults: brainpool refuses it with no list, ['*'] would open it;
+//   - `access_level: all` at its conversation_defaults: it was refused with no list, ['*'] would open it;
 //   - a conversation (conversations.yaml / rooms.yaml) runs it `all` without a list of its own: same;
 //   - a block this cannot write: not a mapping, a `conversation_defaults:` that is not one.
 // Refuses: config.yaml not UTF-8 or not parsing; conversations.yaml / rooms.yaml not parsing; the
@@ -110,11 +110,11 @@ export async function plan(ctx) {
     if (cd !== undefined && !isMap(cd)) { notes.push(`${at}.${CD} is not a mapping - left; it answers only the owners now`); continue; }
     if (Array.isArray(cd?.[AU])) continue;
     if (cd?.access_level === 'all') {
-      notes.push(`${at} runs 'all' by default with no list - left: brainpool refuses it, and ${ANYONE} would open it to anyone`);
+      notes.push(`${at} runs 'all' by default with no list - left: it was refused before, now it answers only the owners; ${ANYONE} would open it to anyone`);
       continue;
     }
     if (runsAll.has(name)) {
-      notes.push(`${at} runs 'all' in a conversation with no list - left: brainpool refuses it there, and ${ANYONE} would open it to anyone; elsewhere it answers only the owners now`);
+      notes.push(`${at} runs 'all' in a conversation with no list - left: it was refused there before, now it answers only the owners; ${ANYONE} would open it to anyone`);
       continue;
     }
     try { text = addAnyone(text, name); } catch (e) { notes.push(`${at}: ${e.message} - left; it answers only the owners now`); continue; }

@@ -364,7 +364,7 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
 //    hit.agent — no extra wiring); a PER-CONVERSATION override lives FLAT under conversations.yaml
 //    agents.<being>.allowed_users (read via getBeing off an injected `loadState`, mirroring
 //    gating.mjs) and REPLACES — never merges with — the global default when set. UNSET at both
-//    tiers = [owner] (operator 2026-10-26): only the node's owners. Only `owner` reads
+//    tiers = only the node's owners (operator 2026-10-26). Only an unset list reads
 //    ev.authorized (the network-level allowed_users/isSender concept). No
 //    refusal text on a failed match — same silent-fallthrough convention the surface pin uses. ──
 describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
