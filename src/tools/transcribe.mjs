@@ -24,6 +24,17 @@ export function wavDurationSec(byteLength) {
   return Math.max(0, (Number(byteLength) - WAV_HEADER_BYTES) / WAV16K_BYTES_PER_SEC);
 }
 
+// audio_ctx: 'auto' — the encoder window sized to the note (cli -ac, server audio_ctx).
+// whisper.cpp always encodes a full 30 s (1500 frames, 50/s), however short the note.
+// N = duration + 2 s, rounded up to a multiple of 64, never under 512: at 320 a 3 s
+// note looped (EDW 2026-10-24), 384+ did not. null at 1500+ (never truncate) or
+// without a usable duration.
+export function audioCtxFor(durationSec) {
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return null;
+  const n = Math.max(512, Math.ceil((durationSec + 2) * 50 / 64) * 64);
+  return n < 1500 ? n : null;
+}
+
 // Build the whisper-cli argv. Pure + exported so the anti-repetition defaults are
 // test-locked. Anti-repetition is owned by whisper itself (operator 2026-06-16):
 //   -mc 0  don't carry text-context across segments — the lever against the
@@ -34,19 +45,12 @@ export function wavDurationSec(byteLength) {
 // --suppress-nst). Defaults FIRST so cfg.extra_args can override; anti_repetition:
 // false opts out. The transcript-repeat-guard post-pass is the backend-agnostic
 // net for whatever still slips through (C3.5).
-// audio_ctx: 'auto' sizes the encoder window (-ac) to the note: whisper.cpp always
-// encodes a full 30 s (1500 frames, 50/s), which on a slow box costs ~52 s per pass
-// even for a 5 s note. N = duration + 2 s margin, rounded up to a multiple of 64,
-// never under 512: at 320 a 3 s note looped ("Leo, si, arde la lo." x3; EDW
-// 2026-10-24), 384+ did not. At 1500+ it is omitted so long audio is never truncated.
 export function buildWhisperArgs({ model, wav, language, extra_args, anti_repetition, audio_ctx, durationSec } = {}) {
   const args = ['-m', model, '-nt', '-f', wav];
   if (language) args.push('-l', String(language));
   if (anti_repetition !== false) args.push('-mc', '0', '-sns');
-  if (audio_ctx === 'auto' && Number.isFinite(durationSec) && durationSec > 0) {
-    const n = Math.max(512, Math.ceil((durationSec + 2) * 50 / 64) * 64);
-    if (n < 1500) args.push('-ac', String(n));
-  }
+  const ac = audio_ctx === 'auto' ? audioCtxFor(durationSec) : null;
+  if (ac != null) args.push('-ac', String(ac));
   if (Array.isArray(extra_args)) args.push(...extra_args.map(String));
   return args;
 }

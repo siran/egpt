@@ -13,16 +13,16 @@ import {
 } from '../src/tools/whisper-server.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
-let server, url, dir, audio, inferenceCalls;
+let server, url, dir, audio, inferenceCalls, inferenceBodies;
 const NOOP_CONVERT = async (p) => p;   // skip ffmpeg; POST the file as-is
 
 async function startFakeInference(handler) {
-  inferenceCalls = [];
+  inferenceCalls = []; inferenceBodies = [];
   const s = createServer((req, res) => {
     if (req.url === '/inference' && req.method === 'POST') {
       const chunks = [];
       req.on('data', (c) => chunks.push(c));
-      req.on('end', () => { inferenceCalls.push(Buffer.concat(chunks).length); handler(res); });
+      req.on('end', () => { const b = Buffer.concat(chunks); inferenceCalls.push(b.length); inferenceBodies.push(b.toString('latin1')); handler(res); });
       return;
     }
     res.writeHead(200); res.end('whisper.cpp server');   // root readiness page
@@ -80,6 +80,42 @@ describe('transcribeViaWhisperServer', () => {
       res.writeHead(500); res.end('model exploded');
     }));
     await expect(transcribeViaWhisperServer(audio, { url, convert: NOOP_CONVERT })).rejects.toThrow(/500/);
+  });
+});
+
+describe('audio_ctx: auto — the encoder window sized to the note, per request', () => {
+  const ok = (res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ text: 'hola' })); };
+  const wavOf = (sec) => async () => { const p = join(dir, `${sec}s.wav`); writeFileSync(p, Buffer.alloc(44 + 32000 * sec)); return p; };
+  const ctxOf = (body) => /name="audio_ctx"\r\n\r\n(\d+)\r\n/.exec(body)?.[1] ?? null;
+  const send = (sec, opts = {}) => transcribeViaWhisperServer(audio, { url, convert: wavOf(sec), ...opts });
+
+  it('4.5 s → 512, 22.5 s → 1280', async () => {
+    ({ s: server, url } = await startFakeInference(ok));
+    await send(4.5, { audio_ctx: 'auto' });
+    await send(22.5, { audio_ctx: 'auto' });
+    expect(inferenceBodies.map(ctxOf)).toEqual(['512', '1280']);
+  });
+
+  it('28 s and longer → no audio_ctx (the full window)', async () => {
+    ({ s: server, url } = await startFakeInference(ok));
+    await send(28, { audio_ctx: 'auto' });
+    await send(60, { audio_ctx: 'auto' });
+    expect(inferenceBodies.map(ctxOf)).toEqual([null, null]);
+  });
+
+  it('without auto → no audio_ctx', async () => {
+    ({ s: server, url } = await startFakeInference(ok));
+    await send(4.5);
+    expect(inferenceBodies).toHaveLength(1);
+    expect(ctxOf(inferenceBodies[0])).toBeNull();
+  });
+
+  it('makeWhisperServerTranscriber takes cfg.audio_ctx first, then its own (like language)', async () => {
+    ({ s: server, url } = await startFakeInference(ok));
+    await makeWhisperServerTranscriber({ url, convert: wavOf(4.5) })(audio, { audio_ctx: 'auto' });
+    await makeWhisperServerTranscriber({ url, audio_ctx: 'auto', convert: wavOf(4.5) })(audio, {});
+    await makeWhisperServerTranscriber({ url, convert: wavOf(4.5) })(audio, {});
+    expect(inferenceBodies.map(ctxOf)).toEqual(['512', '512', null]);
   });
 });
 

@@ -1448,6 +1448,9 @@ export const CONFIG_SCHEMA = {
             Resident whisper.cpp server: command, model, host, port, language,
             extra_args, anti_repetition. LAZY-spawned the first time it is
             reached; cli covers the warm-up.
+              audio_ctx  "auto" | absent — as on whisper-cli, sent per request
+                         (4.5 s note on large-v3: 23.9 s → 8.6 s, same text).
+                         The cli's audio_ctx, when set, wins (like language).
           type: "whisper-server-ecs"
             whisper-server in an ECS service that sleeps at desired count 0.
               cluster, service, region, port (DEFAULT 8089)
@@ -1463,6 +1466,7 @@ export const CONFIG_SCHEMA = {
               connect_timeout_ms  GET / readiness probe. DEFAULT: 3000
               timeout_ms          DECODE budget. DEFAULT: 120000
               language            wins over the cli's language on this rung
+              audio_ctx           as on whisper-server-local
           type: "whisper-cli"
             command, model_path, language, ffmpeg_command, threads — the
             always-available floor.
@@ -1477,8 +1481,7 @@ export const CONFIG_SCHEMA = {
                          and omits it once that reaches 1500 (~28 s+), so long
                          audio is never truncated. 10.5 s note → -ac 640, ~61 s
                          → ~30 s, same transcript. extra_args still override.
-                         whisper-cli engine ONLY — the whisper-server engines
-                         are unaffected.
+                         Also reaches the whisper-server rungs (see above).
 
     A change of WINNING engine posts one ⚠️/✅ to the operator Self DM
     (transition-only, never per note).
