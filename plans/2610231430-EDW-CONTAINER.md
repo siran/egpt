@@ -673,3 +673,10 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Fix 8f6bc5a1: the sidecar loops forever. Deploy as edw:3 tonight (a ~20 s task restart).
 - **EDW transcription:** fallback_order [oficina] (whisper-server-local 127.0.0.1:18089, language auto, timeout 600 s); cli.language auto (the caller cfg = profile.cli, whose language overrides the engine's); never small. Drained /restart; backup config.yaml.pre-oficina-20261026T162153.
 - /browser refresh command dispatched (feat/browser-refresh).
+
+## 10-26 12:45 Caracas — /browser refresh shipped (spine side)
+- **d7b6918b (7d0e2395) `/<handle> browser refresh [url]`** (owners only; public_commands doesn't list it): closes the chat's group Chrome via chromeHost.kill (the eviction path), opens a plain Chrome on the same profile through the daemon (launch{plain:true}: no pipe, no --remote-debugging switch, same profiles-root fence), holds the group until it exits (beings asking get "held for sign-in"), then "browser <group> is back". setup/chrome-signin.ps1/.cmd replaces ~/.egpt/disposable/chrome-signin.* (removed). Suite 7676/7676.
+- Deployed to kg/do via upgrade.ps1 -Peer (drained): heads d7b6918b, trees clean, alive fresh. Also ships ingest `/to` to kg/do.
+- **Pending: a daemon restart on kg/do** (chrome-host reloads only with the daemon). Until then the old daemon refuses the plain launch ("not a pipe Chrome") after eGPT's Chrome has closed; harmless, it relaunches on need. The restart ends sessions, background agents and Chromes: pick a quiet moment.
+- Known gap: a spine restart while a sign-in window is open keeps the hold (re-read from the daemon's list) but loses the chat for the "back" line.
+- Flake: tests/transcriptor.test.mjs "rejects … signatures" fails ~1 in 3 with fetch "bad port"; fix dispatched (fix/transcriptor-flake).
