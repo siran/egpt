@@ -687,3 +687,19 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - telegram-topics' move test now waits for the reply's transcript line.
   - Full suite 2×7676/7676.
   - Optional machine fix (operator, admin): `netsh int ipv4 set dynamicport tcp start=49152 num=16384`.
+
+## 10-26 ~17:00 Caracas — ingest show/ask; voice: Spanish default, server with sized window
+- **404a0ccf (d1c65f97) ingest show/ask** (operator: the /to line must be seen in the chat; "received message, dispatch?"):
+  - `ingest.show` (default true) posts "📥 <user> (ingest): …" plus `/file <path>` attachments (saved to media/, announced as inbound media).
+  - `ingest.auto` (default false) holds the line until an owner replies yes/sí/👍 or no/👎 to the post (or reacts on it). The answer is consumed.
+  - `ingest.ask` is the question text. Open questions are kept in state/ingest-asks.json (no expiry). The intercept sits in spine.mjs classify.
+  - Suite 7728/7728. Deployed: kg/do 404a0ccf; EDW /upgrade waiting on ED's turn.
+- **Also shipped:** 42592c43 (browser-tools: human-like click/type with jitter, operator-asked in another session; migration 0051) and 77feb8d8 (leo's /group action, gated per being). Note that leo pushed straight to main, not via a PR.
+- **main's node_modules was emptied** by `git worktree remove` following a worktree's node_modules junction; fixed with npm ci. Prod untouched. Delete the junction before removing a worktree.
+- **Voice:**
+  - Operator: no small model; "it is all Spanish"; default language in config.yaml. EDW transcription_service.edw.oficina.language and .cli.language = es (backup config.yaml.pre-es-20261026T205341); drained /restart 20:53 UTC. An English note now comes back translated into Spanish.
+  - Operator: "adjust the window, keep server". Measured on oficina with a throwaway stock whisper-server 1.9.5 (large-v3, 4 threads, es):
+    - 4.5 s note: full window 23.9 s → audio_ctx=512 8.6 s, same text (the CLI wrapper: 10–13 s).
+    - A looped 22 s clip at 1280 hallucinated "Lark", so ED must recheck real long notes.
+    - Detection with auto costs ~23 s and ignores -ac (measured), which is moot with es.
+  - egpt's whisper-server engine doesn't send audio_ctx yet: dispatched (feat/server-audio-ctx). Then ED switches oficina from the CLI wrapper to a resident whisper-server (-mc 0 -sns, 127.0.0.1:8089).
