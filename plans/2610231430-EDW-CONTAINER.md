@@ -624,3 +624,10 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Fix dispatched (feat/owner-only-default): an `owner` token in allowed_users expands to networks.<surface>.allowed_users; the skeleton ships `[owner]` on every being. Existing nodes unchanged (absent still = anyone). Adopting it on kg/do would need a chat-by-chat review: operator's call.
 - **edc5:** stays connected to Aurora (operator: "connected if it makes sense, like before the change"); ED to verify that the bertrand user/password work and the API returns real data.
 - **Turns cut:** turn_timeout_ms 600000 (10 min) on EDW, the per-turn backstop. ED's long ops (tracing keys across servers, the benchmark set-up) run past it inside one turn, and the reply dies with the turn. Proposal: raise EDW's to 30 min (live key) and keep jobs over 30 min in background agents.
+
+## 10-26 ~09:45 Caracas — "ED not answering" = the operator's Telegram Desktop; fork resume bug
+- Messages from 09:26 sat in the operator's Telegram Desktop outbox (🕓 clocks); Telegram had 0 pending for the bot. Reopening the app sent them. Address detection is fine ("e estas?", "E estas?", "e, estas?", "@e estas?" → ed).
+- turn_timeout_ms → 0 on kg and do (they were already -1) and on EDW (was 600000, the skeleton default; it cut ED's long turns). Drained /restart on all three (backups config.yaml.pre-noturnlimit-20261026T1332*).
+- **Bug:** a /split fork of a SANDBOXED being can't resume its copied thread (EDW keeps boxed sessions per thread and cwd, ~/.egpt-jsonl/<thread>/projects/<cwd-slug>/). "the --resume target is gone, so no turn ran", and the user's message was dropped.
+  - Hand fix: ED's threadIds cleared in EduWeb's topic entries /55, /42, /66 (backups conversations.yaml.pre-forkreset-*); the next message starts fresh.
+  - Code fix added to the /split agent (feat/no-turn-limits): a fork copies the session where the fork's turn looks, and a missing resume target starts a fresh session instead of dropping the turn.
