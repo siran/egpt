@@ -274,6 +274,27 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
       .toEqual([{ surface: 'room', chatId: 'tunnel', body: 'equipo, status?' }]);
   });
 
+  // fanOutReply sends a being's reply only to a member seated with `replies: true` (a chatbox's team
+  // topic, 2026-10-26). `/members add group` never seats one, so a room's invited groups get the
+  // received lines and never the room agent's answers — unchanged.
+  it("the ROOM's agent answers in the room only: an invited group (seated by /members add group) never gets its reply", async () => {
+    const { cmds } = commandsFor(rooms);
+    await tunnelWith(cmds);
+    expect((await (await rooms('room', 'tunnel')).members()).every((m) => m.replies === undefined)).toBe(true);
+    const roomOn = {
+      async decide(_being, ev) {
+        return ev.surface === 'room'
+          ? { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }
+          : { mode: 'mention', receives: true, mayReply: false, sendToEgpt: 'mode' };
+      },
+      surfaces: () => true,
+    };
+    const { spine, brain, posts } = spineFor(rooms, createMemberResolver({ resolveConvRoom: rooms }), roomOn);
+    await spine.handleInbound(human('equipo, status?', { chatId: '!grp-A' }));
+    expect(brain.calls).toHaveLength(1);
+    expect(posts.map((p) => ({ chatId: p.chatId, final: p.final }))).toEqual([{ chatId: '!grp-B', final: 'equipo, status?' }]);
+  });
+
   it('THE OPEN UMBRELLA: a chatgpt tab joined to the same room is driven by the group message too', async () => {
     const { cmds } = commandsFor(rooms);
     await tunnelWith(cmds, ['/members add tab 1']);
@@ -319,7 +340,7 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     expect((await resolveMembers('room', 'tunnel')).map((m) => m.id)).toEqual(['!grp-A', '!grp-B']);
   });
 
-  // room-relay.mjs reads the room NAME(s) a wa-group chat tunnels into off `roster.tunnelRooms`,
+  // room-relay.mjs reads the room(s) a wa-group chat tunnels into (address + member) off `roster.tunnelRooms`,
   // so it never re-derives this reverse lookup. Locking the REAL shape here, against the real
   // reverse lookup, not a fake of it.
   it("resolveMembers hands back which room(s) a wa-group chat tunnels into, on `.tunnelRooms`", async () => {
@@ -327,8 +348,8 @@ describe('wa-group membership — many groups joined to ONE room, which tunnels 
     await tunnelWith(cmds);
 
     const resolveMembers = createMemberResolver({ resolveConvRoom: rooms });
-    expect((await resolveMembers('whatsapp', '!grp-A')).tunnelRooms).toEqual(['tunnel']);
-    expect((await resolveMembers('whatsapp', '!grp-B')).tunnelRooms).toEqual(['tunnel']);
+    expect((await resolveMembers('whatsapp', '!grp-A')).tunnelRooms).toEqual([{ surface: 'room', chatId: 'tunnel', chatName: 'tunnel', member: { kind: 'wa-group', id: '!grp-A', state: 'active' } }]);
+    expect((await resolveMembers('whatsapp', '!grp-B')).tunnelRooms).toEqual([{ surface: 'room', chatId: 'tunnel', chatName: 'tunnel', member: { kind: 'wa-group', id: '!grp-B', state: 'active' } }]);
     expect((await resolveMembers('whatsapp', '!unrelated')).tunnelRooms).toEqual([]);
   });
 

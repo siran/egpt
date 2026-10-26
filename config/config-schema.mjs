@@ -812,6 +812,17 @@ export const CONFIG_SCHEMA = {
             rate              { messages: 30, minutes: 10 } per session (429 over it)
             new_sessions      { count: 30, minutes: 60 } new sessions per visitor
                               address (429 over it; see trust_proxy)
+            team_group        a Telegram forum supergroup's chat id (the bot an admin
+                              with "Manage topics"; needs limbs.telegram). Each new
+                              session opens a topic there, "<title> · <6 hex of sid>",
+                              seated as a tg-group member of the conversation with
+                              replies: true (room-relay.mjs): the visitor's lines and
+                              the being's replies reach it; a team
+                              line there reaches the widget and the transcript and
+                              wakes the being only when it names it (the session's
+                              being is mode: mention; every visitor line addresses
+                              it). The topic's own conversation holds the being mute
+            team_name         the team's name in the widget, default the title
   `,
 
   beeper: `

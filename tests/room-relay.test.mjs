@@ -28,6 +28,10 @@ function human(body, { chatId = 'room-1', msgId = 'm1' } = {}) {
   return { body, from: { network: 'whatsapp', chatId, chatName: 'devroom', userId: 'u-an', senderName: 'An', authorized: true, msgKey: msgId } };
 }
 
+// One reverse-lookup entry, as boot.mjs createMemberResolver returns it: the room's address and
+// the member record that names the invited group there.
+const roomAt = (name) => ({ surface: 'room', chatId: name, chatName: name, member: { kind: 'wa-group' } });
+
 function harness({ members = [], eGating, turns = 6, tunnelRooms = null, tunnelEverySurface = false } = {}) {
   const relayCalls = [];
   const activateCalls = [];
@@ -309,7 +313,7 @@ describe("room relay — an invited group's message RE-ENTERS the room it joined
   ];
 
   it('the room gets ONE record of its own, addressed room/<name> — and the other group is delivered to from THERE, once', async () => {
-    const { spine, transcript, posts } = harness({ members: groupPair(), tunnelRooms: [R] });
+    const { spine, transcript, posts } = harness({ members: groupPair(), tunnelRooms: [roomAt(R)] });
 
     await spine.handleInbound(human('hola equipo'));
 
@@ -336,7 +340,7 @@ describe("room relay — an invited group's message RE-ENTERS the room it joined
       },
       surfaces: () => true,
     };
-    const { spine, brain } = harness({ members: groupPair(), tunnelRooms: [R], eGating: onlyRoomReplies });
+    const { spine, brain } = harness({ members: groupPair(), tunnelRooms: [roomAt(R)], eGating: onlyRoomReplies });
 
     await spine.handleInbound(human('equipo, status?'));
 
@@ -349,7 +353,7 @@ describe("room relay — an invited group's message RE-ENTERS the room it joined
       async decide() { return { mode: 'muted', receives: true, mayReply: false, sendToEgpt: 'mode' }; },
       surfaces: () => false,
     };
-    const { spine, brain, transcript } = harness({ members: groupPair(), tunnelRooms: [R], eGating: mutedEverywhere });
+    const { spine, brain, transcript } = harness({ members: groupPair(), tunnelRooms: [roomAt(R)], eGating: mutedEverywhere });
 
     await spine.handleInbound(human('hola'));
 
@@ -359,7 +363,7 @@ describe("room relay — an invited group's message RE-ENTERS the room it joined
 
   it("the room's own brain tab is driven from the ROOM turn, and its reply reaches BOTH groups", async () => {
     const members = [...groupPair(), { id: 'chatgpt', kind: 'brain', state: 'active', adapter: 'chatgpt-cdp', targetId: 'T1' }];
-    const { spine, posts, relayCalls } = harness({ members, tunnelRooms: [R] });
+    const { spine, posts, relayCalls } = harness({ members, tunnelRooms: [roomAt(R)] });
 
     await spine.handleInbound(human('team, status?'));
 
@@ -399,7 +403,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
   it('1 — SELF-ECHO: A never receives its own line back, from either end of the tunnel', async () => {
     // From the ROOM turn, where ev.chatId is the room and A is just another member: the stop is
     // `ev.fromMember.id === m.id` — the provenance the tunnel synthetic carries.
-    const tunnelled = harness({ members: pairOf(), tunnelRooms: [R] });
+    const tunnelled = harness({ members: pairOf(), tunnelRooms: [roomAt(R)] });
     await tunnelled.spine.handleInbound(human('hola'));
     expect(tunnelled.posts.some((p) => p.chatId === A)).toBe(false);
 
@@ -426,7 +430,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // bookkeeping, not an utterance — "🌴FAMILIA PALMA🌴" was paused for eight hours by six of
     // them in five seconds. A PEER node's line is a different fact: that is real chatter and it
     // still counts, which is what keeps this cycle bounded.
-    const { spine, guard } = harness({ members: pairOf(), tunnelRooms: [R], turns: 4 });
+    const { spine, guard } = harness({ members: pairOf(), tunnelRooms: [roomAt(R)], turns: 4 });
     const SIG = encodeNodeSignature('kg');    // OURS
     const PEER = encodeNodeSignature('do');   // another node's spine
 
@@ -447,7 +451,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // `tunnelEverySurface` breaks the resolver deliberately: the room turn is handed the SAME
     // tunnel it came from. `!ev.fromMember` is what makes the chain finite — without it this test
     // recurses until the heap dies, which is exactly how the lock was found.
-    const { spine, transcript, posts } = harness({ members: pairOf(), tunnelRooms: [R], tunnelEverySurface: true });
+    const { spine, transcript, posts } = harness({ members: pairOf(), tunnelRooms: [roomAt(R)], tunnelEverySurface: true });
 
     await spine.handleInbound(human('hola'));
 
@@ -483,7 +487,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // The spine keeps the belt: `bridge.wasSentByUs(chatId, msgId)`, read by turnKind. Wire it
     // true and the echo is NEITHER counted NOR a reset (operator 2026-09-20) — our own output is
     // not an utterance. It used to be counted, and that is what filled PALMA's cap.
-    const h = harness({ members: pairOf(), tunnelRooms: [R] });
+    const h = harness({ members: pairOf(), tunnelRooms: [roomAt(R)] });
     h.bridge.wasSentByUs = (chatId, msgId) => msgId === 'ours-1';
     const PEER = encodeNodeSignature('do');
 
@@ -505,7 +509,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
 describe('the tunnel carries which connection delivered the message', () => {
   const tunnelTo = (room) => {
     const roster = [];
-    Object.defineProperty(roster, 'tunnelRooms', { value: [room], enumerable: false });
+    Object.defineProperty(roster, 'tunnelRooms', { value: [roomAt(room)], enumerable: false });
     return createRoomRelay({
       resolveMembers: async () => roster,
       adapterOf: async () => null, streamFromTab: async () => '', openStream: () => ({ update() {}, finish() {}, fail() {} }),
@@ -526,5 +530,38 @@ describe('the tunnel carries which connection delivered the message', () => {
     const seen = [];
     await tunnelTo('dj-son').fanOut(identity.build(human('hola equipo')), { reenter: async (m) => { seen.push(m); } });
     expect(seen[0].from.connection).toBeNull();
+  });
+});
+
+// ── A BEING'S REPLY, TO THE MEMBERS SEATED FOR IT (2026-10-26, a chatbox's team topic) ─────────
+// fanOutReply: a being's finished reply goes, in its own voice, to every chat member with
+// `replies: true` whose mode admits it. A member without the field (every room's invited group
+// today) gets the received lines only, exactly as before.
+describe("room relay — a being's reply reaches only the chat members seated with replies: true", () => {
+  const replyingE = { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+
+  it('the seated member gets the reply as the being; an unseated one and a mention-mode one do not', async () => {
+    const members = [
+      { id: 'group-A', kind: 'wa-group', state: 'active' },
+      { id: 'topic-T', kind: 'tg-group', state: 'active', replies: true },
+      { id: 'group-M', kind: 'wa-group', state: 'mention', replies: true },
+    ];
+    const { spine, posts, bridge } = harness({ members, eGating: replyingE });
+    await spine.handleInbound(human('hola equipo'));
+    expect(bridge.sent.map((s) => s.text)).toEqual(['E:hola equipo']);               // E answered in its own chat
+    const sent = posts.map((p) => ({ to: p.chatId, as: p.memberId, asBeing: !!p.opts?.asBeing, final: p.final }));
+    expect(sent).toHaveLength(3);
+    expect(sent).toEqual(expect.arrayContaining([
+      { to: 'group-A', as: 'An', asBeing: false, final: 'hola equipo' },            // the received line, as before
+      { to: 'topic-T', as: 'An', asBeing: false, final: 'hola equipo' },
+      { to: 'topic-T', as: 'e', asBeing: true, final: 'E:hola equipo' },            // the reply, in E's own voice
+    ]));
+  });
+
+  it("no member seated for replies (an existing room's groups): E's reply goes nowhere but its own chat", async () => {
+    const members = [{ id: 'group-A', kind: 'wa-group', state: 'active' }, { id: 'group-B', kind: 'wa-group', state: 'active' }];
+    const { spine, posts } = harness({ members, eGating: replyingE });
+    await spine.handleInbound(human('hola equipo'));
+    expect(posts.map((p) => p.final)).toEqual(['hola equipo', 'hola equipo']);
   });
 });

@@ -1647,6 +1647,8 @@ export function createSpine({
         // "processing (/react)" record; OFF (the system default) → the quiet reaction-only resolution.
         verbose: reply?.verbose === true,
       });
+      // …and to the conversation's chat members seated for its replies (room-relay.mjs fanOutReply).
+      if (deliverable && !isDeliberateSilence(proseText)) await roomRelay?.fanOutReply?.(ev, to, proseText);
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
       // original delete-the-text-and-post-audio-only shape looked broken: a live-streamed
       // answer would appear, then vanish, replaced by audio alone). Text is now ALWAYS the

@@ -65,7 +65,7 @@ const inGroup = (body = '@e traducime esto') => identity.build({
 async function tunnelled(ev) {
   const seen = [];
   const roster = [];
-  Object.defineProperty(roster, 'tunnelRooms', { value: [ROOM], enumerable: false });
+  Object.defineProperty(roster, 'tunnelRooms', { value: [{ surface: 'room', chatId: ROOM, chatName: ROOM, member: { kind: 'wa-group' } }], enumerable: false });
   const relay = createRoomRelay({
     resolveMembers: async () => roster,
     adapterOf: async () => null,

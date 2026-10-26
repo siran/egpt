@@ -84,6 +84,8 @@ limbs:
   #       # max_chars: 4000
   #       # rate: { messages: 30, minutes: 10 }   # per session
   #       # new_sessions: { count: 30, minutes: 60 }   # per visitor address
+  #       # team_group: -1001234567890  # a Telegram forum group: a topic per session, the team replies there
+  #       # team_name: "Equipo"         # the team's name in the widget
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the
