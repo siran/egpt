@@ -157,6 +157,12 @@ export function chromePipeArgs({ userDataDir, extensionDir, url = 'about:blank',
   return args;
 }
 
+// A plain Chrome on a group's profile: no pipe, no automation flags. A human signs in or passes a
+// check there (/browser refresh); the group's pipe Chrome reuses that session afterwards.
+export function chromePlainArgs({ userDataDir, url = 'about:blank' }) {
+  return [`--user-data-dir=${userDataDir}`, '--no-first-run', url];
+}
+
 // A group's color: browsers.yaml `colors.<group>` when it is "#RRGGBB", else a fixed pick by name hash.
 export const GROUP_PALETTE = ['#1a73e8', '#d93025', '#188038', '#e8710a', '#9334e6', '#12b5cb', '#e52592', '#795548'];
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;

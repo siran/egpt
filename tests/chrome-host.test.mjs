@@ -9,7 +9,7 @@ import { join, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createChromeHost, connectChromeHost, CHROME_HOST_ENV } from '../src/chrome-host.mjs';
 import { createChannelTransport } from '../src/tools/cdp.mjs';
-import { chromePipeArgs } from '../src/tools/chrome-launcher.mjs';
+import { chromePipeArgs, chromePlainArgs } from '../src/tools/chrome-launcher.mjs';
 import { createCommands, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
 import { fakeChromeChild } from './fake-pipe-chrome.mjs';
 
@@ -39,7 +39,7 @@ function world(browser = { listTabs: async () => TABS }) {
     profilesRoot: ROOT,
     log: (m) => logs.push(m),
     setPriority: () => {},
-    spawn: (bin, argv) => { const child = fakeChromeChild(browser, 4000 + spawns.length); spawns.push({ bin, argv, child }); return child; },
+    spawn: (bin, argv, opts) => { const child = fakeChromeChild(browser, 4000 + spawns.length); spawns.push({ bin, argv, opts, child }); return child; },
   });
   // One spine: a fresh IPC pair to the SAME host, and the spine's end of it.
   const connect = () => {
@@ -299,5 +299,93 @@ describe('the daemon refuses a launch that is not a pipe Chrome on our profile',
     expect(w.spawns[0].argv).toContain('--window-name=with space');
     expect(w.logs.filter((l) => /refused/.test(l))).toEqual([]);
     await refused([...chromePipeArgs({ userDataDir: dir, windowName: 'g' }), '--remote-debugging-port=9222'], dir, /remote-debugging-port/);
+  });
+});
+
+// /browser refresh's sign-in window: a PLAIN Chrome the daemon runs and holds like a pipe one, minus the pipe.
+describe('the daemon\'s plain Chrome (a human\'s sign-in window)', () => {
+  const dir = join(ROOT, 'g');
+  const G = { key: 'g', name: 'g', group: 'g' };
+  const plainOf = (argv = chromePlainArgs({ userDataDir: dir })) => ({ group: 'g', profileDir: dir, bin: 'chrome', argv });
+
+  it('runs with no pipe fds, is listed as plain with no channel, blocks a pipe launch on its group, and its exit comes back', async () => {
+    const w = world();
+    const { pair, chromeHost } = w.connect();
+    const exits = [];
+    chromeHost.onExit((e) => exits.push(e));
+    const url = 'https://accounts.google.com/';
+    expect(await chromeHost.launchPlain(plainOf(chromePlainArgs({ userDataDir: dir, url })))).toEqual({ pid: 4000 });
+    expect(w.spawns[0].argv).toEqual([`--user-data-dir=${dir}`, '--no-first-run', url]);
+    expect(w.spawns[0].opts.stdio).toBe('inherit');
+    expect(await chromeHost.list()).toEqual([{ group: 'g', profileDir: dir, pid: 4000, plain: true }]);
+    await expect(chromeHost.launch(launchOf('g'))).rejects.toThrow(/already up/);
+    pair.spineSide.send({ t: 'msg', group: 'g', msg: { id: 1, method: 'Target.getTargets' } });   // no pipe: dropped
+    await new Promise((r) => setTimeout(r, 10));
+    expect(w.spawns[0].child.received).toEqual([]);
+    w.spawns[0].child.kill();                                                                     // the human closed it
+    await until(() => exits.length === 1);
+    expect(exits[0]).toMatchObject({ group: 'g', pid: 4000 });
+    expect(await chromeHost.list()).toEqual([]);
+  });
+
+  it('refuses a plain launch with a debugging switch or a profile outside our root', async () => {
+    const refused = async (o, why) => {
+      const w = world();
+      await expect(w.connect().chromeHost.launchPlain(o)).rejects.toThrow(why);
+      expect(w.spawns).toHaveLength(0);
+    };
+    await refused(plainOf([...chromePlainArgs({ userDataDir: dir }), '--remote-debugging-pipe']), /no --remote-debugging switch/);
+    await refused(plainOf(['/remote-debugging-pipe', ...chromePlainArgs({ userDataDir: dir })]), /no --remote-debugging switch/);
+    await refused(plainOf(['--remote-debugging-port=9222', ...chromePlainArgs({ userDataDir: dir })]), /opens a debugging port/);
+    const out = join(tmpdir(), 'egpt-elsewhere', 'g');
+    await refused({ ...plainOf(chromePlainArgs({ userDataDir: out })), profileDir: out }, /under/);
+  });
+
+  it('end to end: /browser refresh kills the pipe Chrome in the daemon, then the daemon runs the plain one', async () => {
+    const w = world();
+    const { cmds } = w.spine();
+    await cmds.startBrowser(null);                                   // brain (no registry): the conversation-less path
+    const brain = CHROME_BRAIN_PROFILE;
+    await cmds.run({ chatId: '!x', surface: 'whatsapp', authorized: true, body: '/browser refresh https://accounts.google.com' });
+    expect(w.spawns[0].child.killed).toBe(true);
+    expect(w.spawns[1].argv).toEqual(chromePlainArgs({ userDataDir: brain, url: 'https://accounts.google.com/' }));
+    expect(w.logs.filter((l) => /refused|already up/.test(l))).toEqual([]);
+  });
+
+  it('a restarted spine re-holds the group for sign-in; the window\'s exit hands it back', async () => {
+    const w = world();
+    const a = w.connect();
+    await a.chromeHost.launchPlain(plainOf());
+    a.pair.drop();
+    const two = w.spine();
+    const held = await two.cmds.startBrowser(G);
+    expect(held).toMatchObject({ ok: false, reason: 'no-browser' });
+    expect(held.detail).toMatch(/"g" browser is held for sign-in/);
+    expect(two.logs).toContain('"g" held for sign-in: plain Chrome pid 4000, held by the daemon');
+    w.spawns[0].child.kill();
+    await until(() => two.logs.some((l) => /sign-in window \(pid 4000\) closed/.test(l)));
+    expect(await two.cmds.startBrowser(G)).toMatchObject({ ok: true, launched: true });
+    expect(w.spawns[1].argv).toEqual(launchOf('g').argv);
+  });
+});
+
+describe('a refresh while the daemon still holds an earlier sign-in window', () => {
+  it('a restarted spine sees the hold before it acts: "already held", nothing killed or launched', async () => {
+    const w = world();
+    const a = w.connect();
+    const dir = CHROME_BRAIN_PROFILE;
+    await a.chromeHost.launchPlain({ group: 'brain', profileDir: dir, bin: 'chrome', argv: chromePlainArgs({ userDataDir: dir }) });
+    a.pair.drop();
+    const sent = [];
+    const { pair, chromeHost } = w.connect();
+    const cmds = createCommands({
+      getConfig: () => ({}), chromeHost, profileHolder: () => null, onChromeLog: () => {},
+      send: async (chatId, text) => sent.push(text), brains: { resolve: (name) => ({ name }) },
+    });
+    await cmds.run({ chatId: '!x', surface: 'whatsapp', authorized: true, body: '/browser refresh' });
+    expect(sent.at(-1)).toMatch(/"brain" browser is already held for sign-in/);
+    expect(w.spawns).toHaveLength(1);
+    expect(w.spawns[0].child.killed).toBe(false);
+    pair.drop();
   });
 });
