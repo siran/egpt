@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit, lifecycleForce } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, patchContact, deleteBeing, getContact, getBeing, ensureContact, recordThread, findThreadJsonl, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, allowedUsersPermits, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, ensureContact, recordThread, findThreadJsonl, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -23,7 +23,7 @@ import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-
 // over a single already-extracted token is the house single-token lookup (src/spine/mesh.mjs's
 // findAgentByToken, src/spine/heartbeat-loader.mjs's `agent:`); `addressableTokens` LISTS the
 // valid handles in the not-hosted log line. See agentsCmd's HANDLE → KEY block.
-import { addressed, addressableTokens, agentsInChat, fallbackWake, isKnownSender, wakeTokens, voiceWakeTokens } from './router.mjs';
+import { addressed, addressableTokens, agentsInChat, fallbackWake, isKnownSender, mayWake, wakeTokens, voiceWakeTokens } from './router.mjs';
 import { superChannelAlive, resolveMode } from './gating.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -3302,14 +3302,12 @@ export function createCommands({
   }
 
   // Whom a being would wake for this sender here, by router.resolve's allowed_users test (the
-  // conversation's block, else the agent's conversation_defaults; a stranger reaches only the
+  // conversation's block, else the agent's conversation_defaults, else its owners; a stranger reaches only the
   // conversation's own agent). Bare /agents' public list reads it.
   const senderMayWake = (state, surface, chatId, ev, being) => {
     const owner = defaultBeingOf(getContact(state, surface, chatId)?.entry);
     if (owner && being !== owner && !isKnownSender(ev?.senderId, cfg())) return false;
-    const conv = getBeing(state, surface, chatId, being)?.allowedUsers;
-    const global = cfg().agents?.[being]?.conversation_defaults?.allowed_users;
-    return allowedUsersPermits(Array.isArray(conv) ? conv : (Array.isArray(global) ? global : null), ev?.senderId);
+    return mayWake(being, cfg().agents?.[being], ev, { state, config: cfg(), surface, chatId });
   };
   // Who besides the operator may /split (operator 2026-10-18): anyone in a GROUP this node
   // hears. Refused here → a log line and the audit outcome, nothing in the chat.

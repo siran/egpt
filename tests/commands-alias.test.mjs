@@ -23,7 +23,8 @@ const GROUP = 'grpC';
 const SIDE = shortChatId('!side1:beeper.local');
 const RODZ_ID = '@whatsapp_lid-69433129173200:beeper.local';
 const LULU = '@whatsapp_lid-lulu42:beeper.local';
-const AGENTS = { e: { handles: ['e'], mode: 'on' }, don: { handles: ['d', 'don'] } };
+const ANYONE = { allowed_users: ['*'] };   // members reach both
+const AGENTS = { e: { handles: ['e'], mode: 'on', conversation_defaults: ANYONE }, don: { handles: ['d', 'don'], conversation_defaults: ANYONE } };
 const CONFIG = {
   networks: { whatsapp: { chat_ids: ['!self'] } }, agents: AGENTS,
   beeper: { primary: { phone: '+16468217865' }, secondary: { phone: '+13472576794' } },

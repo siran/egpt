@@ -12,8 +12,9 @@ import { createRouter, addressed, voiceWakeTokens, fallbackWake, wakeTokens } fr
 // gating.decide runs over the ROUTED mention to decide whether the reply is emitted at all.
 import { mentionStatus, replyAllowed } from '../src/auto-mode.mjs';
 
+// Every line here is the operator's own (authorized): an owner, whom a being with no list answers.
 const ev = (body, mention) => ({
-  body,
+  body, authorized: true,
   mention: mention ?? { atEStart: false, atEAnywhere: false, replyToBot: false },
 });
 
@@ -363,8 +364,8 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
 //    hit.agent — no extra wiring); a PER-CONVERSATION override lives FLAT under conversations.yaml
 //    agents.<being>.allowed_users (read via getBeing off an injected `loadState`, mirroring
 //    gating.mjs) and REPLACES — never merges with — the global default when set. UNSET at both
-//    tiers = no restriction (today's default, an ordinary agent reachable by anyone). Independent
-//    of ev.authorized (the existing, different, network-level allowed_users/isSender concept). No
+//    tiers = [owner] (operator 2026-10-26): only the node's owners. Only `owner` reads
+//    ev.authorized (the network-level allowed_users/isSender concept). No
 //    refusal text on a failed match — same silent-fallthrough convention the surface pin uses. ──
 describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
   const agents = {
@@ -414,10 +415,11 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
     expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'someone-else' })).being).toBeNull();
   });
 
-  it('REGRESSION: a being with NEITHER tier set is reachable by anyone — today\'s ordinary default', async () => {
+  it('a being with NEITHER tier set answers only its owners (operator 2026-10-26)', async () => {
     const arouter = createRouter({ getAgents: () => agents });
-    expect((await arouter.resolve({ ...ev('@don hi'), senderId: 'nobody-in-particular' })).being).toBe('don');
-    expect((await arouter.resolve({ ...ev('@don hi'), senderId: null })).being).toBe('don');
+    expect((await arouter.resolve({ ...ev('@don hi'), senderId: 'op' })).being).toBe('don');
+    expect((await arouter.resolve({ ...ev('@don hi'), authorized: false, senderId: 'nobody-in-particular' })).being).toBeNull();
+    expect((await arouter.resolve({ ...ev('@don hi'), authorized: false, senderId: null })).being).toBeNull();
   });
 
   it('a PER-CONVERSATION allowed_users override REPLACES (never merges with) the global default and wins', async () => {
@@ -546,9 +548,9 @@ describe('addressed({ isVoice }) — a spoken alias wakes only at the START (ope
 
   it('the router itself: a spoken alias at the start routes to the being, mid-sentence reaches nobody', async () => {
     const router = createRouter({ getAgents: () => agents });
-    expect((await router.resolve({ body: mark('rey, hola'), isVoice: true })).being).toBe('ken');
-    expect((await router.resolve({ body: mark('ren revisá esto'), isVoice: true })).being).toBe('wren');
-    expect((await router.resolve({ body: mark('el rey de españa fue famoso'), isVoice: true })).targets).toEqual([]);
+    expect((await router.resolve({ body: mark('rey, hola'), isVoice: true, authorized: true })).being).toBe('ken');
+    expect((await router.resolve({ body: mark('ren revisá esto'), isVoice: true, authorized: true })).being).toBe('wren');
+    expect((await router.resolve({ body: mark('el rey de españa fue famoso'), isVoice: true, authorized: true })).targets).toEqual([]);
   });
 });
 
@@ -575,7 +577,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
     assistant: { configuration: 'sonnet-high', handles: ['a'] },
     egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
   };
-  const chat = (body, extra = {}) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', ...extra });
+  const chat = (body, extra = {}) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', authorized: true, ...extra });
   // A spy for the injected membership seam: records what was asked, answers what the test says.
   const seam = (answer) => {
     const asked = [];
@@ -600,7 +602,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   it('A ROOM has no participants, so the peer is DEFINITELY absent: @e works there with NO membership call', async () => {
     const s = seam(() => { throw new Error('a room must never reach the membership seam'); });
     const r = await createRouter({ getAgents: () => AGENTS, isPresent: s.fn })
-      .resolve({ body: '@e can you please execute translation script?', surface: SHELL_SURFACE, chatId: 'acim', senderId: 'op' });
+      .resolve({ body: '@e can you please execute translation script?', surface: SHELL_SURFACE, chatId: 'acim', senderId: 'op', authorized: true });
     expect(r.being).toBe('egpt');
     expect(s.asked).toEqual([]);   // decided locally — a room is not a Beeper chat, there is nothing to query
   });
@@ -750,7 +752,7 @@ describe('fallback_handle — `handle:` accepts a LIST of tokens (operator 2026-
     // conditional ones, which is the shape a borrowed handle set has (nothing is unconditional).
     don: { configuration: 'relay', relay_channel: 'Rodz', handles: [], fallback_handle: { handle: ['d', 'don'], unless_present: PEER } },
   };
-  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op' });
+  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', authorized: true });
   const seam = (answer) => { const asked = []; return { asked, fn: async (identity) => { asked.push(identity); return answer; } }; };
   const route = async (body, answer = false, agents = AGENTS) => {
     const s = seam(answer);
@@ -852,7 +854,7 @@ describe('fallback_handle on the PERSONA — from the bridge\'s atE to the reply
   // means these break if any rung of it changes shape, instead of silently testing a fiction.
   const inbound = (body, { chatId = '!dm', surface = 'whatsapp', replyToBot = false } = {}) => {
     const st = mentionStatus(body, wakeTokens('egpt', KG.egpt));
-    return { body, surface, chatId, senderId: 'op', mention: { atEStart: st.atEStart, atEAnywhere: st.atEAnywhere, replyToBot } };
+    return { body, surface, chatId, senderId: 'op', authorized: true, mention: { atEStart: st.atEStart, atEAnywhere: st.atEAnywhere, replyToBot } };
   };
   // Route it, then ask the REAL gate whether a reply is emitted, in the node's default mode.
   const ask = async (body, { present = false, agents = KG, mode = 'mention', ...evOpts } = {}) => {
@@ -935,7 +937,7 @@ describe('fallback_handle — unless_peer_alive (operator 2026-09-02)', () => {
     assistant: { handles: ['a'] },
     egpt: { handles: ['ekg'], fallback_handle: { handle: ['e', 'egpt'], unless_peer_alive: 23376 } },
   };
-  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op' });
+  const chat = (body) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', authorized: true });
   // alive: true | false | null(unknown)
   const liveness = (alive) => { const asked = []; return { asked, fn: (port) => { asked.push(port); return alive; } }; };
 
@@ -1042,7 +1044,7 @@ describe('router.resolve — a quote-reply to a being\'s own post addresses that
   };
   const router = (over = {}, reg = agents) => createRouter({ getAgents: () => reg, ...over });
   const quoting = (being, body = 'qué opinas?', over = {}) => ({
-    body, surface: 'whatsapp', chatId: '!g', senderId: 'op', replyToBeing: being,
+    body, surface: 'whatsapp', chatId: '!g', senderId: 'op', authorized: true, replyToBeing: being,
     mention: { atEStart: false, atEAnywhere: false, replyToBot: being != null }, ...over,
   });
   const beings = (r) => r.targets.map((t) => t.being);
@@ -1092,7 +1094,7 @@ describe('router.resolve — beings taken by their on/auto mode (operator 2026-1
     getAgents: () => agents,
     loadState: async () => ({ contacts: { whatsapp: { '!g': { slug: 'g', agents: Object.fromEntries(Object.entries(modes).map(([b, mode]) => [b, { mode }])) } } } }),
   });
-  const line = (body) => ({ ...ev(body), surface: 'whatsapp', chatId: '!g', senderId: 'op' });
+  const line = (body) => ({ ...ev(body), surface: 'whatsapp', chatId: '!g', senderId: 'op', authorized: true });
 
   it('an on being is appended after the named hits, taken by its mode', async () => {
     const r = await routerIn({ wren: 'on' }).resolve(line('@e and @don, hola'));

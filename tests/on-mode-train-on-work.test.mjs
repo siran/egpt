@@ -41,7 +41,7 @@ function streamingBridge() {
 // `work(onPartial)` is the brain's turn body; `steers` turns on allow_new_input 'any'.
 function build({ mode = 'on', work, steers = false } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { agents };
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents };   // An (u-1) owns the node
   const bridge = streamingBridge();
   const brain = {
     calls: [], steered: [],

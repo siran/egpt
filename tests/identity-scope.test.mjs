@@ -515,7 +515,7 @@ describe('the mesh is TRANSPORT, not identity — a relayed group turn lands on 
     const bridge = meshBridge({ chatIds: { [GROUP_NAME]: GROUP } });
     const mesh = meshOver(brain, bridge);
 
-    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope(GROUP_NAME, '@e traduce esto') });
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope(GROUP_NAME, '@e traduce esto'), isSender: true });
     await meshFlush();
 
     expect(pool.calls).toHaveLength(1);
@@ -541,7 +541,7 @@ describe('the mesh is TRANSPORT, not identity — a relayed group turn lands on 
     const bridge = meshBridge({});                       // resolves nothing
     const mesh = meshOver(brain, bridge);
 
-    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope('Radio WnL', '@e pon musica') });
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope('Radio WnL', '@e pon musica'), isSender: true });
     await meshFlush();
 
     expect(pool.calls).toHaveLength(1);

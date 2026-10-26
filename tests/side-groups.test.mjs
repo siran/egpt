@@ -368,7 +368,7 @@ describe('/send and /end work for whoever is in the side group', () => {
 // ── 3. reply_in_side_group ───────────────────────────────────────────────────────────────────────
 // The real spine, the real gating (its side-group seam wired to the real commands), the real sender
 // over a fake streaming bridge.
-const AGENTS = { e: { handles: ['e'] } };
+const AGENTS = { e: { handles: ['e'], conversation_defaults: { allowed_users: ['*'] } } };   // E answers the group's members
 const SIG = encodeNodeSignature('kg', 'e');
 function streamingBridge() {
   const streams = [], sent = [];

@@ -37,7 +37,7 @@ function build(agents, { state = null } = {}) {
   const transcript = { entries: [], async log(ev, reply) { this.entries.push({ ev, reply }); } };
   const sender = { open() { return { update() {}, fail() {}, async finish() {} }; } };
   const loadState = state ? async () => state : null;
-  const config = { agents };
+  const config = { conversation_defaults: { allowed_users: [Y] }, agents };   // Y (An) owns the node
   const router = createRouter({ getAgents: () => agents, getConfig: () => config, loadState });
   const gating = createGating({ getConfig: () => config, loadState });
   const spine = createSpine({
@@ -115,16 +115,19 @@ describe('allowed_users holds on every wake — the persona fall-through (dg, Qu
   });
 });
 
-describe('allowed_users — unchanged where nobody set a list', () => {
-  it('a persona with NO allowed_users still wakes for anyone, addressed or (mode on) not', async () => {
-    const { bridge, brain } = build(open('on'));
+describe('allowed_users — where nobody set a list, the node owners only (operator 2026-10-26)', () => {
+  it('a persona with NO allowed_users wakes for an owner, addressed or (mode on) not, and never for anyone else', async () => {
+    const { bridge, brain, inbound } = build(open('on'));
     await bridge.emit(msg(Y, 'e hola', { wake: ['e', 'egpt'] }));
+    await bridge.emit(msg(Y, 'buenas', { wake: ['e', 'egpt'] }));
+    await bridge.emit(msg('+1555', 'e hola', { wake: ['e', 'egpt'] }));
     await bridge.emit(msg('+1555', 'buenas', { wake: ['e', 'egpt'] }));
     expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
+    expect(inbound()).toEqual(['e hola', 'buenas', 'e hola', 'buenas']);
   });
 
   it('the stranger agent still answers a stranger\'s new 1:1 (ownerOnly), the persona\'s list notwithstanding', async () => {
-    const agents = queen('mention', { marketer: { configuration: 'egpt', handles: ['mk'], mode: 'on' } });
+    const agents = queen('mention', { marketer: { configuration: 'egpt', handles: ['mk'], mode: 'on', conversation_defaults: { allowed_users: ['*'] } } });
     const config = { agents, dispatch: { stranger_agent: { secondary: 'marketer' } } };
     const router = createRouter({ getAgents: () => agents, getConfig: () => config, loadState: async () => ({ contacts: {} }) });
     const dm = { ...msg('+58414', 'hola'), chatId: '!dm', connection: 'secondary', raw: { chatType: 'private' } };

@@ -189,8 +189,9 @@ agents:
     # conversation_defaults:      # THIS AGENT'S global defaults for fields conversations.yaml can
     #                             # override per-conversation - the nesting IS the allowlist (only
     #                             # fields living here get a per-conversation override at all).
-    #   allowed_users: []         # reachability default (id list, same shape as networks.*.allowed_users
-    #                             # below) - unset = reachable by anyone who could normally address it.
+    #   allowed_users: ['*']      # who may wake it. Unset = [owner]: only this node's owners (the
+    #                             # top-level conversation_defaults.allowed_users below). ['*'] = anyone,
+    #                             # [] = nobody, [owner, "<id>"] = the owners plus that id.
     #                             # Overridable per-conversation (conversations.yaml
     #                             # agents.<name>.allowed_users) - the override REPLACES this list
     #                             # there, it does not merge with it.
@@ -243,21 +244,28 @@ agents:
     conversation_defaults:
       access_level: all         # the ONE unsandboxed being - it runs as you, because its job is to change the machine
       sandboxed: false
+      allowed_users: [owner]    # an 'all' being must state who may wake it: this node's owners
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
 # carol: { relay_channel: rodz1, to: don.do }
 
-# --- Surfaces (who may command this node) ------------------------------------
-# Per-surface, because ids are per-network namespaces. allowed_users = STABLE ids
-# (jids / room ids, never display names); [] = deny (the account owner is always
-# allowed). chat_id = your Self-DM command channel, auto-captured on first contact.
+# --- Owners (who may command this node, and whom its beings answer) ---------
+# Your STABLE ids (jids / phone numbers / Telegram numeric ids, never display
+# names); ids of every network may be mixed here. [] = nobody (the account owner
+# is always allowed).
+conversation_defaults:
+  allowed_users: [] # your ids: beings answer only them by default, and they may run commands; networks.<surface>.allowed_users overrides per network
+
+# --- Surfaces ----------------------------------------------------------------
+# Per-surface, because ids are per-network namespaces. chat_id = your Self-DM
+# command channel, auto-captured on first contact.
 networks:
   whatsapp:
     chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
-    allowed_users: [] # id of user allowed to issue commands in the chat_ids
-  telegram: { chat_ids: [], allowed_users: [] } # Telegram numeric user ids (limbs.telegram bot)
-  signal:   { chat_ids: [], allowed_users: [] }
+    # allowed_users: [] # this network's owners, REPLACING conversation_defaults.allowed_users here
+  telegram: { chat_ids: [] } # limbs.telegram bot; its owners are Telegram numeric ids
+  signal:   { chat_ids: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [split, send, end]
 

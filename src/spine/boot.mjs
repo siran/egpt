@@ -64,7 +64,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
@@ -1565,7 +1565,7 @@ export async function boot({
               : (cfg[surface] && typeof cfg[surface] === 'object') ? cfg[surface]
               : {};
     const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
-    const allowed_users = Array.isArray(raw.allowed_users) ? raw.allowed_users : [];
+    const allowed_users = ownersOf(cfg, surface);   // networks.<surface> ?? conversation_defaults
     return { ...raw, chat_ids, allowed_users };
   };
   // === THE SELF CHAT — ONE definition, three readers ===================================

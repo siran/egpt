@@ -49,7 +49,7 @@ function fakeTimers() {
 
 function build({ mode = 'on', reply = 'ok', partials = [], tasks = [] } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { agents };
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents };   // An (u-1) owns the node
   const bridge = streamingBridge();
   const brain = {
     calls: [], tasks,

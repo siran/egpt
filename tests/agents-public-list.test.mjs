@@ -21,7 +21,7 @@ const DM = '!dmStranger';
 const MEMBER = '@whatsapp_lid-777000:beeper.local';
 const OPERATOR = '@an:beeper.com';
 const AGENTS = {
-  e: { name: 'E', body_emoji: '🐶', handles: ['e', 'egpt'], voice_handles: ['perro'], default: true, configuration: 'egpt' },
+  e: { name: 'E', body_emoji: '🐶', handles: ['e', 'egpt'], voice_handles: ['perro'], default: true, configuration: 'egpt', conversation_defaults: { allowed_users: ['*'] } },
   wren: { name: 'Wren', body_emoji: '🐦', handles: ['wren'], mode: 'mention-direct', conversation_defaults: { allowed_users: [OPERATOR] } },
   don: { relay_channel: 'mesh-room', handles: ['don'] },
   mk: { name: 'Mark', body_emoji: '📣', public: true, handles: ['mk'] },

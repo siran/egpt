@@ -27,7 +27,7 @@ const BASE = {
   networks: { whatsapp: { chat_ids: ['!self'] } },
   beeper: { primary: { phone: '+16468217865' }, secondary: { phone: '+13472576794' } },
   group_title: '{group}-{name}',
-  agents: { egpt: { handles: ['e', 'egpt'], default: true } },
+  agents: { egpt: { handles: ['e', 'egpt'], default: true, conversation_defaults: { allowed_users: ['*'] } } },   // members reach E
 };
 
 let seq = 0;

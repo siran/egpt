@@ -1297,8 +1297,8 @@ export function defaultBeingOf(entry) {
 //
 // THREE STATES, NOT TWO (operator 2026-09-05):
 //
-//   absent   inherit. Nothing at either tier is nothing to enforce, so it permits — this is
-//            what nearly every being in the profile relies on, and it does not change.
+//   absent   permits HERE. A being's reachability never hands it absent any more: router.mjs's
+//            mayWake resolves no list at either tier to [owner] (operator 2026-10-26).
 //   []       DENY EVERYONE. Somebody wrote a list and put nobody on it; that is an answer,
 //            not a silence.
 //   ["*"]    permit everyone. The explicit wildcard, and the escape hatch an access_level:'all'

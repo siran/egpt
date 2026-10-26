@@ -99,7 +99,8 @@ untested id not in `contracts-gaps.json`.
 
    7.1 Each surface owns its own `{chat_id, allowed_users}`; an id is a
    per-surface namespace (a WhatsApp jid authorizes nothing on Signal); empty
-   `allowed_users` = deny.
+   `allowed_users` = deny. A surface with no list of its own uses the node's
+   `conversation_defaults.allowed_users`.
 
    7.2 The operator is a STABLE id, never a display name (a chat title is
    attacker-controllable); the account owner always passes.
@@ -111,6 +112,12 @@ untested id not in `contracts-gaps.json`.
    7.4 An unauthorized slash command is dropped before it runs; commands are
    engine-first, never fanned to rooms or mirrored to another surface to
    re-interpret.
+
+   7.5 A being wakes only for its owners unless its `allowed_users` says
+   otherwise. The nearest list wins: the chat's, then
+   `agents.<name>.conversation_defaults`, then `[owner]` = the surface's own
+   `allowed_users` where set, else the node's `conversation_defaults.allowed_users`,
+   else nobody (the account owner always passes). `['*']` = anyone, `[]` = nobody.
 
 8. Media is saved, per conversation.
 
