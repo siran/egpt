@@ -17,6 +17,21 @@ SRV=/srv/egpt
 ATTR=edw-data                # instance attribute, set once $SRV is mounted; the task requires it
 MEM_MIB=1024                 # memoryReservation (soft); t3a.small registers ~1.9 GiB
 
+# oficina-tunnel sidecar: 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
+# Waits while a secrets file is missing. Each run lasts >= 65 s: ECS never restarts a container
+# that exits before restartAttemptPeriod (60 s).
+TUNNEL_SH='s=/home/egpt/.egpt/secrets
+for f in oficina-tunnel.key oficina.known_hosts oficina-tunnel.target; do
+  [ -s $s/$f ] || { echo "oficina-tunnel: no secrets/$f yet; waiting 5 min"; sleep 300; exit 0; }
+done
+t=$(date +%s)
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$s/oficina.known_hosts -i $s/oficina-tunnel.key -L 127.0.0.1:18089:127.0.0.1:8089 -p 35547 "$(tr -d "[:space:]" <$s/oficina-tunnel.target)"
+rc=$?
+echo "oficina-tunnel: ssh exited $rc"
+n=$((t + 65 - $(date +%s)))
+[ $n -le 0 ] || sleep $n
+exit $rc'
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -49,7 +64,8 @@ asg_instances() {
 
 # The task definition for IMAGE (no tags).
 taskdef_json() {
-  jq -n --arg image "$1" --arg family $FAMILY --arg srv $SRV --arg attr $ATTR --argjson mem $MEM_MIB '
+  jq -n --arg image "$1" --arg family $FAMILY --arg srv $SRV --arg attr $ATTR --argjson mem $MEM_MIB \
+    --arg tunnel "$TUNNEL_SH" '
     [["egpt-home", "/home/egpt/.egpt"], ["egpt-claude", "/home/egpt/.claude"],
      ["egpt-src", "/home/egpt/src/egpt"], ["egpt-jsonl", "/home/egpt/.egpt-jsonl"]] as $vols
     | {
@@ -67,6 +83,17 @@ taskdef_json() {
         linuxParameters: {sharedMemorySize: 1024},
         environment: [{name: "EGPT_BRANCH", value: "main"}, {name: "EGPT_BEEPER", value: "off"}],
         mountPoints: [$vols[] | {sourceVolume: .[0], containerPath: .[1]}],
+        logConfiguration: {logDriver: "json-file", options: {"max-size": "50m", "max-file": "3"}}
+      }, {
+        name: "oficina-tunnel",
+        image: $image,
+        essential: false,
+        memoryReservation: 32,
+        memory: 128,
+        entryPoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"],
+        command: [$tunnel],
+        mountPoints: [{sourceVolume: "egpt-home", containerPath: "/home/egpt/.egpt", readOnly: true}],
+        restartPolicy: {enabled: true, restartAttemptPeriod: 60},
         logConfiguration: {logDriver: "json-file", options: {"max-size": "50m", "max-file": "3"}}
       }]
     }'

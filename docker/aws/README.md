@@ -116,6 +116,10 @@ ECS task definitions accept no seccomp or systempaths options: `dockerSecurityOp
 
 With host networking, the container's hostname is the instance's (ip-10-88-1-x). eGPT uses the hostname only as a display label.
 
+### oficina tunnel
+
+The task's second container, `oficina-tunnel` (same image, not essential, egpt-home mounted read-only), forwards 127.0.0.1:18089 on the instance to oficina's whisper-server (127.0.0.1:8089 there) over SSH to oficina.eserviciosat.net:35547. It reads three files in `egpt-home/secrets/`: `oficina-tunnel.key` (the private key), `oficina.known_hosts` (oficina's pinned host keys, entries for `[oficina.eserviciosat.net]:35547`) and `oficina-tunnel.target` (`user@oficina.eserviciosat.net`). While one is missing it logs a line every 5 minutes. When ssh exits, ECS restarts the container (restart policy). A run lasts at least 65 s, because ECS never restarts a container that exits sooner, so a failing ssh retries about once a minute. Its log: `docker logs -f $(docker ps -lq --filter label=com.amazonaws.ecs.container-name=oficina-tunnel)`.
+
 ### Getting in (ECS)
 
 - **The instance:** `aws ec2 describe-instances --filters Name=tag:Name,Values=edw-ecs-node Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId' --output text`, then SSM as above.
