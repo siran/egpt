@@ -3277,8 +3277,15 @@ export const CONFIG_SCHEMA = {
       {group}  the parent chat's title
       {name}   the command's optional <name> arg ("/e split spoiler" → {name}=spoiler; absent → 5
                random lowercase letters/digits, e.g. "k7f2q")
-    Every side group's title starts with "SI+" (fixed, not part of the template; 2026-10-18).
+    Every side group's title starts with group_title_prefix (below). A suffix goes in the template.
     Unset → "{group}-{name}", so "SI+<group>-<name>". Replaces the old fork.title.
+  `,
+
+  group_title_prefix: `
+    What every side group's title starts with: a /split group or topic, and the automatic side group
+    (2026-10-26; was a fixed "SI+"). Not added twice: a title already starting with it keeps its own.
+    Unset → "SI+". "" → no prefix: with group_title "{name}", "/e split an" makes a topic named "an"
+    (and the automatic side group would take the chat's own title).
   `,
 
   join: `

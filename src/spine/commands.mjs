@@ -397,7 +397,7 @@ export const SPLIT_PLACEHOLDER_DEFAULT = '🍴🤖 ...';
 export const SPLIT_LINK_DEFAULT = '🍴 the fork is here: {link}';
 export const GROUP_TITLE_DEFAULT = '{group}-{name}';
 // Every side group's title starts with it: "SI+<group>-<name>" (/split), "SI+<group>" (automatic,
-// unless reply_in_side_group names the title).
+// unless reply_in_side_group names the title). config.group_title_prefix replaces it; "" = none.
 export const SIDE_GROUP_PREFIX = 'SI+';
 // /send's posting account when config.send.post_back_from is unset or invalid: the operator's OWN
 // account (primary) — /send relays as the operator, who typed it (operator 2026-10-04). The config
@@ -3162,10 +3162,11 @@ export function createCommands({
 
   // config.split.placeholder, with the built-in fallback so a command never edits to an empty string.
   const placeholderOf = (block, dflt) => (block && typeof block.placeholder === 'string' && block.placeholder.trim()) ? block.placeholder : dflt;
-  // SIDE_GROUP_PREFIX + config.group_title ({group}=parent chat name, {name}=the <name> arg).
+  // config.group_title_prefix (unset → SIDE_GROUP_PREFIX) + config.group_title ({group}=parent chat name, {name}=the <name> arg).
   const groupTitleTpl = () => ((typeof cfg().group_title === 'string' && cfg().group_title.trim()) ? cfg().group_title : GROUP_TITLE_DEFAULT);
+  const sidePrefix = () => (typeof cfg().group_title_prefix === 'string' ? cfg().group_title_prefix : SIDE_GROUP_PREFIX);
   // The prefix once: a title already starting with it (any case, e.g. a /join inside "SI+EduWeb") keeps its own.
-  const sidePrefixed = (title) => (String(title).toLowerCase().startsWith(SIDE_GROUP_PREFIX.toLowerCase()) ? String(title) : SIDE_GROUP_PREFIX + title);
+  const sidePrefixed = (title) => (String(title).toLowerCase().startsWith(sidePrefix().toLowerCase()) ? String(title) : sidePrefix() + title);
   const groupTitleOf = (groupName, name) =>
     sidePrefixed(fill(groupTitleTpl(), { group: groupName, name }));
   // A discreet side group from the retired phrase triggers, made before the `discreet` flag: its title's
@@ -3175,7 +3176,7 @@ export function createCommands({
     const tpl = groupTitleTpl();
     if (!title || !tpl.includes('{name}')) return false;
     const body = tpl.split('{name}').map((p) => p.split('{group}').map(esc).join('.*')).join('[0-9a-f]{5}');
-    return new RegExp(`^(?:${esc(SIDE_GROUP_PREFIX)})?${body}( \\d{4}-\\d{8})?$`).test(String(title));
+    return new RegExp(`^(?:${esc(sidePrefix())})?${body}( \\d{4}-\\d{8})?$`).test(String(title));
   };
   // config.join.opener / config.split.opener ({group}=parent chat title, {handle}=the being's), with the
   // built-in fallback — the message posted into the new side-group so it surfaces in Beeper (postOpener).

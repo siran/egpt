@@ -264,7 +264,8 @@ networks:
 # --- Side-group texts (/split, /send) ----------------------------------------
 # All optional; unset = the text shown. Each {word} listed is filled in; any other
 # {word} stays as written. Every template key: MANUAL.md "Templates".
-# group_title: "{group}-{name}"   # after "SI+". {group} the original chat's name, {name} the name typed after split (none: 5 random letters)
+# group_title_prefix: "SI+"   # what every side group's title starts with; "" = none
+# group_title: "{group}-{name}"   # after the prefix. {group} the original chat's name, {name} the name typed after split (none: 5 random letters)
 # split:
 #   placeholder: "🍴🤖 ..."   # {link} the topic's link (Telegram; unset there: "🍴 the fork is here: {link}")
 #   # the first message in the new group. {group} the original chat's name, {handle} the handle the command was typed to

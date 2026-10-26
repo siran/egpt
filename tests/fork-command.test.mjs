@@ -240,6 +240,18 @@ describe('/split — the group create: type, title, who is invited', () => {
     expect(calls.create[0].title).toBe('SI+egpt spoiler de Proyecto X');
   });
 
+  it('group_title_prefix replaces "SI+": "" + group_title "{name}" → "/split an" makes "an"', async () => {
+    const { cmds, calls } = harness({ config: { ...cfg(), group_title_prefix: '', group_title: '{name}' } });
+    await cmds.run({ ...EV, body: '/split an' });
+    expect(calls.create[0].title).toBe('an');
+  });
+
+  it('group_title_prefix set → that prefix; a suffix is part of group_title', async () => {
+    const { cmds, calls } = harness({ config: { ...cfg(), group_title_prefix: 'EW·', group_title: '{name} ({group})' } });
+    await cmds.run({ ...EV, body: '/split viaje' });
+    expect(calls.create[0].title).toBe('EW·viaje (Proyecto X)');
+  });
+
   it('placeholder + title fall back to the built-in defaults when the texts are unset', async () => {
     const { cmds, calls } = harness({ config: cfg({ texts: false }) });
     await cmds.run({ ...EV });
