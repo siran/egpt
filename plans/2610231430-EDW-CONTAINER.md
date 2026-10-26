@@ -571,3 +571,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - ED proposes whisper.cpp large-v3 q5_0, 4 threads (no egpt change); faster-whisper halves long notes but needs 4.3 GB and an /inference shim.
 - The brief folders were 755 (ED couldn't write; ED used desktop/transcripcion-ed/); fixed to g+rwx.
 - **GitHub:** gh isn't installed on reve, so no repo admin from here. Branch protection and the leo token are the operator's (steps given). Token delivery: a file in the secrets folder, not Trello.
+
+## 10-26 ~00:00 — second SP; edw-node deleted; oficina step 2 prepared
+- **Bought** (operator yes ×3): EC2 Instance SP 479601cc-be9b-4835-89f7-7af94569eae8, t3a, 1 yr, No Upfront, $0.0118/h ($8.61/mo, $103.37/yr). Covers EDW's on-demand t3a.small.
+- **edw-node i-02476c2d8b9173596 terminated** (operator: "yes, delete"); its root volume went with it. edw-data stays on the ECS instance.
+- **STT accuracy (operator):** "ensure good accuracy; off small models; bigger/biggest yet not expensive". → **large-v3 f16** (unquantized) at 4 threads on oficina: same speed as q5_0 in ED's bench (9.4 vs 9.8 s), 3.8 GB of oficina's 12 GB free. `-l auto` (English notes exist).
+- **Caveat sent to ED:** whisper-server encodes full 30 s windows (no per-request -ac). Measure the installed service through /inference; if a short note is over ~15 s, the options are faster-whisper behind an /inference shim or a per-note whisper-cli wrapper.
+- **Tunnel key:** generated ON EDW (private half never leaves): secrets/oficina-tunnel.key (+ .pub), oficina's host keys pinned in secrets/oficina.known_hosts (they match reve's: ED25519 SHA256:dSZ5/mtJsFc0…). ED's PASO2.md has the authorized_keys line: restrict, port-forwarding, permitopen="127.0.0.1:8089", command="/bin/false".
+- **EDW side** (agent, worktree egpt-wt-tunnel, dry run): sidecar container `oficina-tunnel` in the edw task (same image, ssh -N -L 127.0.0.1:18089 → oficina 127.0.0.1:8089, ECS restart policy). Then EDW's config: fallback_order [oficina] (whisper-server-local on 18089, adopt-only), no small.
+- **BotFather** (screenshot): Allow Groups on, Group Privacy off (the bot sees every group message, which ED needs), admin rights 7/13. No change.
+- **Repos:** egpt on GitHub (leo's PRs there); EduWeb's code on GitLab (ED's). ED manages Trello; tokens still travel as files, not cards.
+- **Portales → ECS:** part of ED's EB → ECS brief (one app at a time onto the reserved t3a host).
