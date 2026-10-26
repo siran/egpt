@@ -69,7 +69,7 @@ export async function superChannelAlive(chatId, { chatRaw, config = {} }) {
 // sideGroupFor(ev, { create }) → the chat a reply here goes to instead (a chat id, or a function that
 // makes it, for sender.open to call), false = withhold it, null = in place (commands.autoSideGroup:
 // reply_in_side_group, operator 2026-10-18). Absent → always in place.
-// seedOf(ev) → { <being>: block } a brand-new conversation is seeded with (boot: the stranger rule), or null.
+// seedOf(ev) → { agents: { <being>: block }, … } a brand-new conversation is seeded with (boot: the stranger rule), or null.
 export function createGating({ getConfig = () => ({}), loadState = null, seedOf = null, sideGroupFor = null } = {}) {
   const cfg = () => getConfig() ?? {};
 
@@ -84,7 +84,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     if (loadState) { try { state = await loadState(); } catch { state = null; } }
     let bv = null;
     if (state) { try { bv = getBeing(state, ev.surface, ev.chatId, being); } catch { bv = null; } }
-    if (!bv) bv = seedOf?.(ev)?.[being] ?? null;   // no entry yet: the block its seed will write
+    if (!bv) bv = seedOf?.(ev)?.agents?.[being] ?? null;   // no entry yet: the block its seed will write
     const { mode } = resolveMode(bv, being, c);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});

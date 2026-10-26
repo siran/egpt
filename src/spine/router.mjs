@@ -77,10 +77,12 @@ export function isOwner(ev, config = {}) {
 
 // THE reachability test, for router.resolve, mesh's responder and /agents. Nearest list wins: the
 // conversation's, else the agent's conversation_defaults, else the owners (isOwner). A list holds
-// ids or '*' only: ['*'] anyone, [] nobody.
-export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId } = {}) {
+// ids or '*' only: ['*'] anyone, [] nobody. `seed`: the block a conversation with no entry yet will
+// be created with — its list is the conversation's.
+export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId, seed = null } = {}) {
   let conv = null;
   if (state) { try { conv = getBeing(state, surface, chatId, being)?.allowedUsers; } catch { conv = null; } }
+  conv ??= seed?.allowed_users;
   const own = agent?.conversation_defaults?.allowed_users;
   const list = Array.isArray(conv) ? conv : Array.isArray(own) ? own : null;
   return list ? allowedUsersPermits(list, ev?.senderId) : isOwner(ev, config);
@@ -436,7 +438,10 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // `onLog` — the router's diagnostic sink; the ONLY thing it says is the fallback membership
 // failure below, which must never be silent.
 // `getConfig` — the node config, read for dispatch.stranger_agent and the allowed_users lists.
-export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, onLog = () => {} } = {}) {
+// `seedOf(ev, cfg)` — what a chat with no entry yet will be created with, { agents: { <being>: block }, … }
+// (boot: the ONE seed the transcript writes and the gate reads); absent → the stranger rule.
+const strangerSeed = (ev, cfg) => { const b = strangerAgentFor(ev, cfg); return b ? { agents: { [b]: { ...STRANGER_SEED } } } : null; };
+export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), addressWithoutAt = true, loadState = null, isPresent = null, isPeerAlive = null, inboundOf = null, seedOf = strangerSeed, onLog = () => {} } = {}) {
   // ONE addressed agent → the routing target it resolves to. Per-kind semantics are
   // UNCHANGED; only the caller changed (every hit, not just the first).
   function targetFor({ name, agent, token, atStart, reply }) {
@@ -542,17 +547,18 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       // wake a being. Same line f70edce drew for the mesh responder's own allowed_users.
       const org = ev?.origin ?? ev;
       // THE CONVERSATION'S OWN AGENT (operator 2026-10-15): the entry's `agents.<being>.default: true`,
-      // else, for a chat with no entry yet, the stranger rule. A stranger in its conversation reaches it
-      // and nobody else. No state read → none (unchanged).
+      // else, for a chat with no entry yet, its seed's (the stranger rule, a chatbox client's being). A
+      // stranger in its conversation reaches it and nobody else. No state read → none (unchanged).
       const cfg = { ...(getConfig() ?? {}), agents };
       const contact = state ? getContact(state, ev?.surface, ev?.chatId) : null;
-      const owner = !state ? null
-        : (localAgentKey(agents, defaultBeingOf(contact?.entry)) ?? (contact ? null : strangerAgentFor(ev, cfg)));
+      const seed = (!state || contact) ? null : seedOf(ev, cfg);
+      const seedFor = (name) => Object.entries(seed?.agents ?? {}).find(([k]) => k.toLowerCase() === String(name).toLowerCase())?.[1] ?? null;
+      const owner = !state ? null : localAgentKey(agents, defaultBeingOf(contact?.entry ?? seed));
       const ownerOnly = !!owner && !ev?.isSender && !isKnownSender(ev?.senderId, cfg);
       // THE allowed_users test for one being here (see the ALLOWED_USERS GATE below). Every target
       // that can wake a being passes it, one taken by its mode included (operator 2026-10-16: "no
       // mode is above allowed_users").
-      const permits = (name, agent) => mayWake(name, agent, ev, { state, config: cfg });
+      const permits = (name, agent) => mayWake(name, agent, ev, { state, config: cfg, seed: seedFor(name) });
       // ONE membership answer per identity per resolve() call (never per hit) — same discipline as
       // the conv-state read above. Only ever consulted for a hit that actually carries a guard, so
       // a message addressing nobody, or addressing an ordinary handle, costs nothing.
@@ -759,8 +765,8 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       // not addressed: the spine's signed-line gate never wakes it on a being's own output.
       // `address: null`: nothing addressed it, so there is no handle to take off the prompt.
       // A reply to another node's signed post is addressed to its signer (operator 2026-10-18):
-      // recorded, and no being takes it by mode here. A stranger's chat with no entry yet runs its
-      // owner on the mode its seed will write (STRANGER_SEED).
+      // recorded, and no being takes it by mode here. A chat with no entry yet runs each being on the
+      // mode its seed will write.
       // `receives`: does any being here receive the line at all — every one 'off' → not recorded (C4).
       const elsewhere = fromOtherNode(cfg, { fromNode: ev?.replyToNode ?? null });
       if (elsewhere) onLog(`reply: ${ev?.surface}/${ev?.chatId} quotes node <${ev.replyToNode}>'s post — addressed there; recorded, prompts nobody by mode`);
@@ -769,7 +775,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       for (const [key, agent] of local) {
         const name = key.toLowerCase();
         const bv = state ? (() => { try { return getBeing(state, ev.surface, ev.chatId, key); } catch { return null; } })() : null;
-        const mode = (!contact && owner === key) ? STRANGER_SEED.mode : resolveMode(bv, key, cfg).mode;
+        const mode = resolveMode(bv ?? seedFor(key), key, cfg).mode;
         if (mode !== 'off') receives = true;
         if (elsewhere || (mode !== 'on' && mode !== 'auto')) continue;
         if (targets.some((t) => t.being === name) || !admits(key, agent, true)) continue;

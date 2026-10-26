@@ -1522,6 +1522,8 @@ export function fixedSlugFor(surface, jid) {
   // to. It also gives chatIdForEntity (boot.mjs) the reverse lookup for free: that function
   // already resolves any fixed-slug surface generically through this one.
   if (surface === 'room' || surface === 'agent') return sanitizeName(jid) || null;
+  // A chatbox session `http:<client>-<sid>` lives in conversations/http/<client>-<sid>/ (limbs.http).
+  if (surface === 'http') return /^http:./.test(String(jid)) ? sanitizeName(String(jid).slice(5)) : null;
   return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;
 }
 
@@ -1666,8 +1668,8 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     conversation_path: conversationPathOf(surface, candidateSlug),
     home_dir: homeDirMsys(),
     pushedName: ctx.pushedName ?? '',
-    // seed blocks for a brand-new conversation only (the stranger rule's `{ <being>: { default: true } }`)
-    ...(_obj(ctx.agents) ? { agents: ctx.agents } : {}),
+    // a brand-new conversation's seed only (the stranger rule's `{ agents: { <being>: { default: true } } }`)
+    ...(_obj(ctx.seed) ? ctx.seed : {}),
   };
   nextBucket[jid] = entry;
   return { state: next, surface, jid, slug: candidateSlug, entry, isNew: true, changed: true };

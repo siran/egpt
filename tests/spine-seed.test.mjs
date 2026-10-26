@@ -245,3 +245,27 @@ const GRANTABLE = [
 ];
 
 
+
+// copyTreeIfMissing — a folder's files and subfolders, as bytes, into another; an existing file kept.
+describe('copyTreeIfMissing', () => {
+  it('copies files, subfolders (empty ones too) and binary bytes; never touches a file already there', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { copyTreeIfMissing } = await import('../src/spine/seed.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'egpt-copytree-'));
+    try {
+      const src = join(root, 'src'), dest = join(root, 'dest');
+      mkdirSync(join(src, 'drawer', 'deep'), { recursive: true });
+      mkdirSync(join(src, 'empty'), { recursive: true });
+      writeFileSync(join(src, 'notes.md'), 'hola');
+      writeFileSync(join(src, 'drawer', 'deep', 'blob.bin'), Buffer.from([0, 255, 128, 10, 13]));
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(join(dest, 'notes.md'), 'mine');
+      expect(copyTreeIfMissing(src, dest)).toBe(1);
+      expect(readFileSync(join(dest, 'notes.md'), 'utf8')).toBe('mine');
+      expect([...readFileSync(join(dest, 'drawer', 'deep', 'blob.bin'))]).toEqual([0, 255, 128, 10, 13]);
+      expect(existsSync(join(dest, 'empty'))).toBe(true);
+      expect(() => copyTreeIfMissing(join(root, 'nope'), dest)).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

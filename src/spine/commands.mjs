@@ -477,6 +477,7 @@ export function createCommands({
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
+  seedOf = () => null,                   // (ev) → what a chat with no entry yet will be created with (boot: the one seed)
   loadState = null, writeState = null,   // conv-state IO — lets /agents mode persist a mode
   brains = null,                         // the brain registry (createBrains) — /agents' status + access_level, and /status's own preview, resolve a being's live def through it (brainpool.mjs's resolveBeingDef / resolveDefaultBrainDef)
   // ── THE BRAIN'S OWN TWO SEAMS (brainpool.mjs `scopeOf` / `evict`) ─────────────────────────
@@ -818,9 +819,11 @@ export function createCommands({
     // A public agents is its bare list (agentsPublic); every /agents verb stays the allowed users'.
     return (await publicCommandsOf(ev)).includes(word) && (word !== 'agents' || AGENTS_BARE_CMD.test(body));
   }
-  // The chat's own conversations.yaml list, else config.yaml's, else the default; words without '/'.
+  // The chat's own conversations.yaml list (a chat with no entry yet: its seed's), else config.yaml's,
+  // else the default; words without '/'.
   async function publicCommandsOf(ev) {
-    const own = loadState ? (await loadState()).contacts?.[surfaceOf(ev)]?.[ev.chatId]?.public_commands : undefined;
+    const entry = loadState ? (await loadState()).contacts?.[surfaceOf(ev)]?.[ev.chatId] : undefined;
+    const own = entry ? entry.public_commands : seedOf(ev)?.public_commands;
     const global = cfg().public_commands;
     const list = Array.isArray(own) ? own : Array.isArray(global) ? global : PUBLIC_COMMANDS_DEFAULT;
     return list.map((w) => String(w).trim().replace(/^\//, '').toLowerCase());

@@ -1182,7 +1182,7 @@ describe('the retired super_chats block reroutes nothing and places no SI-state 
   const SI = (shape = KG, block) => { const c = shape(); if (block) c.super_chats = block; return c; };
   const SI_CHAN = '!both-super';
   const seed = (base = BOTH_AS_PRIMARY) => {
-    const st = ensureContact(emptyState(), 'whatsapp', base, { pushedName: 'base', agents: { egpt: { mode: 'on' } } }).state;
+    const st = ensureContact(emptyState(), 'whatsapp', base, { pushedName: 'base', seed: { agents: { egpt: { mode: 'on' } } } }).state;
     return aliasContact(st, 'whatsapp', SI_CHAN, getContact(st, 'whatsapp', base).jid, { transcript: 'x', super: true });
   };
   const hola = (spy) => spy.onIncoming('hola', {

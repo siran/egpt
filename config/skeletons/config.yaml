@@ -57,7 +57,7 @@
 #                      without a port list; a list repeating one token across
 #                      several ports collapses to plain account + token.
 limbs:
-  # the node's I/O transports (beeper, telegram; an http limb later); a new install needs no top-level beeper: copy
+  # the node's I/O transports (beeper, telegram, http); a new install needs no top-level beeper: copy
   beeper:
     main:
       account: "you@example.com"    # the account this token belongs to (label)
@@ -71,6 +71,19 @@ limbs:
   # telegram:                       # a Telegram BOT, no Beeper needed. Its token is NOT here: it is the file
   #   main:                         # <EGPT_HOME>/secrets/telegram-main.token (node setup/telegram-token.mjs main)
   #     account: "my_egpt_bot"      # the bot's username (label); who may command: networks.telegram.allowed_users
+  # http:                           # a website chatbox: each visitor session is a conversation (conversations/http/)
+  #   port: 23480                   # REQUIRED; bind defaults to 127.0.0.1 (the website's server proxies the path)
+  #   # path: /chat                 # endpoints and widget.js under <path>/<client>/
+  #   # trust_proxy: false          # true: the visitor's address is the last X-Forwarded-For entry
+  #   clients:
+  #     mysite:
+  #       being: e                  # the agent that answers; any visitor wakes it in its own session
+  #       # seed: desks/mysite      # copied once into each new session's folder (relative: under EGPT_HOME)
+  #       # allowed_origins: []     # CORS; empty = same-origin only
+  #       # title: "Chat"           # strings: { placeholder, send, ... } override the Spanish defaults
+  #       # max_chars: 4000
+  #       # rate: { messages: 30, minutes: 10 }   # per session
+  #       # new_sessions: { count: 30, minutes: 60 }   # per visitor address
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the
