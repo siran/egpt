@@ -87,6 +87,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {{id: string, kind: string}|null} fromMember  the ROSTER MEMBER this turn was re-entered from by the room relay — a brain member whose reply this is, or the invited group whose message this is, tunnelled into the room it joined; null on every genuine inbound
  * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Read by the guard (isHumanTurn: OUR OWN output is not a human turn) and by the room relay. A signed line wakes only a being it explicitly addresses (@mention or a quote of its post), never by fall-through or mode (handleFast, operator 2026-10-18)
  * @property {{surface: string, chatId: string, chatName?: string}|null} origin  WHERE this message ACTUALLY ARRIVED, when a synthetic re-addressed it elsewhere (the room relay's wa-group tunnel). The address above is its IDENTITY (thread/warm process/queue/access_level); this is its PROVENANCE, read ONLY by the gates that ask "where did this arrive" (router.mjs's surface pin + fallback_handle roster question). null on every genuine inbound ⇒ those gates read ev itself
+ * @property {string|null} via   'ingest' when the ingest box's `/to` typed it (the line's entry point renders as `.ingest`); null on every limb's inbound
  * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
  * @property {any}    raw       the bridge's original `from` payload
  */

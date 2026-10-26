@@ -184,6 +184,8 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // inert. Carried exactly as fromNode/origin are: a fact about the arrival that cannot be
         // re-read from the payload once the callback has it.
         connection: f.connection ?? null,
+        // the ingest box's `/to` (src/spine/ingest.mjs): 'ingest'; null on every limb's own inbound
+        via: f.via ?? null,
         raw: from,
       };
       // The one dispatch line, built once (C7.6e). A reaction/edit is a
@@ -191,7 +193,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       // A voice note's outcome line answers its arrival: `[re #<id>]`, never the id again.
       const outcome = ev.voiceLine === 'outcome' && ev.msgId != null;
       ev.line = formatLine({
-        senderName, chatName: f.chatName, node, body, ts, msgId: outcome ? null : ev.msgId,
+        senderName, chatName: f.chatName, node: ev.via ?? node, body, ts, msgId: outcome ? null : ev.msgId,   // the line's entry point: the box when it carried the line
         // a reply reference rides only a real message line (a reaction/edit stage-
         // direction references its own target in the body, no `↩#` tag)
         replyToId: kind !== 'text' ? null : outcome ? ev.msgId : ev.replyToId,

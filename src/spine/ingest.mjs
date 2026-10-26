@@ -17,6 +17,14 @@
 // The file CONTENT is the command line ("/restart", "/rewind abc123"). Writers
 // should temp->rename for atomicity; the sweep skips dotfiles and *.tmp so a
 // half-written file is never read.
+//
+// `/to <chatId>` (2026-10-26): the lines below it are typed into that chat as the node's owner
+// (boot → spine.handleInbound, the limbs' own entry):
+//
+//   /to tg:-1004408163350/55
+//   ed, resume the thread above
+//
+// The chat must already have a conversations.yaml entry; an unknown id or empty text is ignored.
 import { readdir as fsReaddir, readFile as fsReadFile, unlink as fsUnlink, mkdir as fsMkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -69,6 +77,13 @@ export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = 
 // the check is unit-testable in isolation, same as lifecycleExit below.
 export const SHELL_CONNECT_MARKER = '/shell-connect';
 export function isShellConnectMarker(line) { return String(line ?? '').trim() === SHELL_CONNECT_MARKER; }
+
+// `/to <chatId>` + message lines → { chatId, text }; null = not a /to file.
+export function toLine(content) {
+  const [head, ...rest] = String(content ?? '').split(/\r?\n/);
+  const m = /^\/to\s+(\S+)$/.exec(head.trim());
+  return m ? { chatId: m[1], text: rest.join('\n').trim() } : null;
+}
 
 // Map a command line to the daemon exit code (+ side effect). Returns the exit
 // code to call, or null for an unknown command. Pure + exported so the mapping is
