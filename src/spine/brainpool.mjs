@@ -1274,7 +1274,8 @@ export function createBrainPool({
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
         ...(toolsOnly ? { tools: [...new Set(toolsOnly.map(toolBase))] } : {}),
-        ...(desk ? { strictMcpConfig: true } : {}),
+        // MCP off for every being (2026-10-26). Stated, so a live session spawned without it reopens by resume.
+        strictMcpConfig: true,
         ...(runModel ? { model: runModel } : {}),
         ...(runEffort ? { effort: runEffort } : {}),
         ...(appendSystemPrompt ? { appendSystemPrompt } : {}),

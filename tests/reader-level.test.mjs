@@ -164,8 +164,9 @@ describe('the reader feed: its identity plus only the layers that name nothing i
 });
 
 // Captured from the code BEFORE `reader` existed (origin/main 47adf391), same fixture: the lock is
-// that regular/all/sandbox never move.
+// that regular/all/sandbox never move — except --strict-mcp-config, on every level since 2026-10-26.
 const HEAD = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+const NO_MCP = ['--strict-mcp-config'];
 const BYPASS = ['--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'];
 const TAIL = ['--model', 'haiku', '--effort', 'high'];
 const SETTINGS = ['--settings', '{"cleanupPeriodDays":3650000}'];
@@ -173,20 +174,20 @@ const ALL_TOOLS = ['--allowedTools', 'Read Write Edit Glob Grep Bash Agent WebSe
 const RO = ['C:/Users/an/src/egpt', 'C:/Users/an/src', 'C:/Users/an/.egpt/conversations/whatsapp/other'];
 const deny = (d) => ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].map((t) => `${t}(${d}/**)`);
 const SNAP = {
-  'regular/win32': { argv: [...HEAD, ...BYPASS, ...TAIL, ...SETTINGS], boxed: true },
+  'regular/win32': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...TAIL, ...SETTINGS], boxed: true },
   'regular/linux': {
-    argv: [...HEAD, '--setting-sources', '', '--permission-mode', 'default', '--allowedTools', 'WebSearch WebFetch Task', ...TAIL,
+    argv: [...HEAD, ...NO_MCP, '--setting-sources', '', '--permission-mode', 'default', '--allowedTools', 'WebSearch WebFetch Task', ...TAIL,
       '--add-dir', '<cwd>', ...RO.flatMap((d) => ['--add-dir', d]),
       '--settings', JSON.stringify({ cleanupPeriodDays: 3650000, permissions: { deny: RO.flatMap(deny) } })],
     boxed: false,
   },
-  'all/win32': { argv: [...HEAD, ...BYPASS, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
-  'all/linux': { argv: [...HEAD, ...BYPASS, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: false },
-  'sandbox/win32': { argv: [...HEAD, ...BYPASS, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
-  'sandbox/linux': { argv: [...HEAD, ...BYPASS, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
+  'all/win32': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
+  'all/linux': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: false },
+  'sandbox/win32': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
+  'sandbox/linux': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...ALL_TOOLS, ...TAIL, ...SETTINGS], boxed: true },
 };
 
-describe('regression lock — regular, all and sandbox run exactly as before', () => {
+describe('regression lock — regular, all and sandbox run exactly as before, plus --strict-mcp-config', () => {
   for (const [key, snap] of Object.entries(SNAP)) {
     const [level, platform] = key.split('/');
     it(`${key}: argv, box, grants, browser link, card and full feed unchanged`, async () => {
