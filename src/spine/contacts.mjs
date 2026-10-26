@@ -9,7 +9,7 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, patchContact, getContact, conversationPathOf } from '../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, patchContact, getContact, conversationPathOf } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
@@ -110,9 +110,9 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
     const room = Room.forChat(surface, slug);
     const state = await loadState();
     // aliasTargetOf non-null ⇒ a side-room ⇒ transcript-<key>.md, key = its stored title (else the
-    // short chatId); a primary/standalone chat ⇒ null ⇒ transcript.md.
+    // short chatId); a /split fork ⇒ its own key; a primary/standalone chat ⇒ null ⇒ transcript.md.
     const aliased = aliasTargetOf(state, surface, chatId);
-    const key = aliased ? (aliasTranscriptKeyOf(state, surface, chatId) ?? shortChatId(chatId)) : null;
+    const key = aliased ? (aliasTranscriptKeyOf(state, surface, chatId) ?? shortChatId(chatId)) : forkKeyOf(state, surface, chatId);
     return { slug, room, path: room.transcriptPathFor(key) };
   }
 

@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit, lifecycleForce } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, patchContact, deleteBeing, getContact, getBeing, ensureContact, recordThread, findThreadJsonl, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, recordThread, forkContact, forkKeyOf, stampThreadId, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -29,7 +29,7 @@ import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID, randomInt } from 'node:crypto';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, sep } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -45,7 +45,7 @@ import { SHELL_SURFACE, surfaceOf as surfaceOfNetwork } from './identity.mjs';
 import { sanitizeName, sanitizeSlug } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
-import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf } from '../tools/compact-being.mjs';
+import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf, findSessionFile } from '../tools/compact-being.mjs';
 import { fill } from '../tools/template.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
@@ -380,8 +380,8 @@ export const PLURAL_OF = { agent: 'agents', room: 'rooms', member: 'members' };
 export const SINGULAR_CMD = /^\/(agent|room|member)(?:=\S+)?(?:\s+[\s\S]*)?$/i;
 
 // ── /split + /send + /end (operator 2026-10-03) ─────────────────────────────────────────────────
-//   /split — REAL FORK. Spin a side-group backed by a NEW conversation (its own folder/entry, NOT an
-//            alias) whose resident beings' threads are COPIED from the original so it DIVERGES.
+//   /split — REAL FORK. Spin a side-group with its own entry and thread in the ORIGINAL's folder (its
+//            own transcript-<key>.md); each resident being's thread is COPIED so it DIVERGES.
 //   /send  — relay a chosen (replied-to) message back to the ORIGINAL chat. Repeatable; works in a
 //            /split group (its recorded parent_chat) and in an alias side room (the automatic group,
 //            a /join room made before 2026-10-25).
@@ -416,29 +416,24 @@ export const AUTO_OPENER = '🔗 Side-room of {group} — same agents, same conv
 // How long Rodz's copy of the opener may take to arrive: the new group reaches its account asynchronously.
 const OPENER_COPY_MS = 5000;
 
-// claude's projects/<dir> naming rule — the FORWARD of conversations-state.reverseSanitizeCwd: a cwd
-// becomes a project-dir by replacing \ / : . _ with '-'. /split copies the forked jsonl into the dir
-// matching the SPLIT conversation's cwd so a cwd-scoped `--resume` finds it under the split's box store.
-const sanitizeCwdDir = (p) => String(p).replace(/[\\/:._]/g, '-');
-
 // THE SPLIT COPY IS A TRANSFORM, not a byte copy (coordinator 2026-10-01, verified against a real
 // boxed session file; resurrected from the pre-alias fork, commit 86daf94). Every claude-code jsonl
 // record carries `sessionId: "<the filename id>"`, and user records carry `cwd: "<that conversation's
 // folder>"`. A raw copy to `<newThreadId>.jsonl` would leave every record disclaiming its own id and
 // pointing at the ORIGINAL folder, so `--resume <newThreadId>` loads a session that denies it is that
-// session — the "silently blank fork". So rewrite, per line, `sessionId` → the new thread id and `cwd`
-// → the SPLIT conversation's own folder, on every record that has each field; leave every other field
+// session — the "silently blank fork". So rewrite, per line, `sessionId` → the new thread id and, when
+// given, `cwd` (a fork in its parent's folder keeps it), on every record that has each field; leave every other field
 // (uuid/parentUuid/message/timestamp/type) untouched. A line that does not parse as JSON passes through
 // VERBATIM (never dropped). Exported so the rewrite is unit-testable with no fs; the caller does the
 // read/write through the injectable io seam.
-export function rewriteForkSessionJsonl(raw, { sessionId, cwd }) {
+export function rewriteForkSessionJsonl(raw, { sessionId, cwd = null }) {
   return String(raw).split('\n').map((line) => {
     if (!line) return line;                 // blank line (incl. the trailing one) stays blank
     let rec;
     try { rec = JSON.parse(line); } catch { return line; }   // non-JSON → verbatim
     if (rec && typeof rec === 'object' && !Array.isArray(rec)) {
       if ('sessionId' in rec) rec.sessionId = sessionId;
-      if ('cwd' in rec) rec.cwd = cwd;
+      if (cwd != null && 'cwd' in rec) rec.cwd = cwd;   // a fork in its parent's folder keeps the cwd
     }
     return JSON.stringify(rec);
   }).join('\n');
@@ -547,6 +542,7 @@ export function createCommands({
   // side, so the mover and the writer can never disagree about the path. Nothing in production
   // overrides it. Only /agents rethread + /agents reset read it, through moveCliStore.
   jsonlStoreRoot = null,
+  claudeProjectsRoot = null,   // ~/.claude/projects, injectable for tests (/split's copy of an unboxed thread)
   // Clock seam — real timers by default; tests inject a fake clock.
   now = () => Date.now(),
   // Group-Chrome pool seams — a FAKE host + injected memory in tests, never a real spawn or a real
@@ -1690,6 +1686,7 @@ export function createCommands({
   async function agentsReset(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
     const sc = await oneScope(handles, ev, surface, jid);
     if (sc.error) { await send?.(ev.chatId, `/agents: reset — ${sc.error}`); return; }
+    if (forkKeyOf(state, sc.surface, sc.chatId)) { await send?.(ev.chatId, '/agents: reset — this /split fork shares its parent\'s folder; use rethread for a new thread here, or reset in the main chat'); return; }
     const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
       : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
     if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
@@ -1893,7 +1890,7 @@ export function createCommands({
       for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { threadId: null });
       await writeState(next);
       // THE ROLL, through the shared mover. Reported by its result, never assumed.
-      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir, readdir } });
+      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir, readdir }, key: forkKeyOf(state, sc.surface, sc.chatId) });
       // …AND THE CLI STORE GOES BESIDE IT (operator 2026-09-11) — <threadId>.cli/ next to the
       // <threadId>.md the roll just filed. AFTER the roll, so the transcript half is already done
       // and transcripts/ already exists (rollTranscript's ensureTree made it), and so a store that
@@ -3138,9 +3135,9 @@ export function createCommands({
   }
 
   // ── /split + /send + /end (operator 2026-10-03) ──────────────────────────────────────────────
-  //   /split — REAL FORK. Create a side-group backed by a NEW conversation (its own slug/folder/entry,
-  //            NOT an alias) whose resident beings' threads are COPIED so it DIVERGES. The parent
-  //            chatId is recorded on the new entry (parent_chat) so /send+/end find the original.
+  //   /split — REAL FORK. Create a side-group with its own entry in the parent's folder (2026-10-26),
+  //            whose resident beings' threads are COPIED so it DIVERGES. The parent chatId is
+  //            recorded on the new entry (parent_chat) so /send+/end find the original.
   //   /send  — relay a replied-to message back to the original chat (the recorded parent_chat, or the
   //            alias target of an alias side room). Repeatable; honours config.send.post_back_from.
   //   /end   — archive the group and drop its mapping. Posts nothing.
@@ -3422,56 +3419,69 @@ export function createCommands({
     //     found only by it: anyone else gets it as a reply.
     if (ev.isSender) await forkBridge.editMessage(ev.chatId, ev.msgId, placeholder);
     else if (link) await send?.(ev.chatId, placeholder);
-    onLog(`/split: ${cTitle} -> NEW conv ${splitChatId} (${split.slug}, invited ${plan.participantIDs.join(', ')}); copied threads for ${split.copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
+    onLog(`/split: ${cTitle} -> fork ${splitChatId} in ${split.slug} (transcript-${split.transcript}.md, invited ${plan.participantIDs.join(', ')}); copied threads for ${split.copied.join(', ') || '(none)'} (parent ${ev.chatId})`);
     // (e) POST THE OPENER so the new group surfaces in Beeper — added step AFTER the copy + placeholder;
     //     a failure here never undoes the conversation/threads already written.
     await postOpener({ verb: '/split', newChatId: splitChatId, openerText: openerOf(cfg().split, SPLIT_OPENER_DEFAULT, cTitle, ev), origin: ev.chatId, kind: 'split' });
   }
 
-  // A /split group's own conversation, on the creator (/split) and on the other node (linkSideGroup):
-  // → { state, slug, copied }; the caller writes the state.
+  // A being block's thread/session bookkeeping: a fork gets its own, never the parent's.
+  const THREAD_FIELDS = new Set(['threadId', 'threadCreatedAt', 'identityInjectedAt', 'compactionWelcome']);
+  // A /split group's fork, on the creator (/split) and on the other node (linkSideGroup):
+  // → { state, slug, transcript, copied }; the caller writes the state.
   async function registerSplit(state, surface, splitChatId, parentChatId, { title, verb }) {
-    // (b) REGISTER the new group as its OWN conversation (ensureContact FIRST — recordThread/patch
-    //     below no-op on an unknown contact), and record the parent chat so /send+/end find the
-    //     original (a split group is NOT an alias).
-    const cSlug = getContact(state, surface, parentChatId)?.slug ?? 'conv';
-    const ensured = ensureContact(state, surface, splitChatId, { pushedName: title, slugHint: `egpt-split-${cSlug}` });
-    state = ensured.state;
-    const splitConvDir = slugDir(surface, ensured.slug);
-    state = patchContact(state, surface, splitChatId, { parent_chat: parentChatId });
-    // (c) COPY each resident being's thread into the split conversation as a NEW, DIVERGING thread.
-    //     The residents + their source thread ids come off the ORIGINAL entry (read fresh). For each:
-    //     mint a newThreadId, TRANSFORM-copy the source jsonl into the new thread's store at the
-    //     project dir matching the SPLIT conversation's cwd (sessionId→newThreadId, cwd→splitConvDir),
-    //     and record the new thread on the split entry's agents.<being> block. `flag:'wx'` never
-    //     clobbers an existing dest (EEXIST → refuse that one copy, log, still record the thread id).
+    // (b) REGISTER the group as a FORK (operator 2026-10-26: "/split gives the context and folder with
+    //     all previous files"): the parent's folder, its own transcript-<key>.md, parent_chat for /send+/end.
+    const base = sanitizeSlug(title) || 'fork';
+    const keys = new Set(Object.values(state.contacts?.[surface] ?? {}).map((e) => e?.transcript).filter(Boolean));
+    let transcript = base;
+    for (let n = 2; keys.has(transcript); n++) transcript = `${base}-${n}`;
+    state = forkContact(state, surface, splitChatId, parentChatId, { pushedName: title, transcript });
+    const slug = getContact(state, surface, splitChatId)?.slug ?? null;
+    // (c) COPY each resident being's thread into the fork as a NEW, DIVERGING thread. The residents +
+    //     their source thread ids come off the ORIGINAL entry. Same folder, so the same cwd: the session
+    //     file is copied beside its source (the boxed store of the new id, or the same ~/.claude project
+    //     dir), sessionId → the new id. `flag:'wx'` never clobbers an existing dest (EEXIST → refuse that
+    //     one copy, log, still record the thread id).
     const origEntry = getContact(state, surface, parentChatId)?.entry;
+    // Each being's chat settings (allowed_users, mode, access_level, …) come with the fork (operator 2026-10-26).
+    for (const [being, block] of Object.entries(origEntry?.agents ?? {})) {
+      const settings = Object.fromEntries(Object.entries(block ?? {}).filter(([k]) => !THREAD_FIELDS.has(k)));
+      if (Object.keys(settings).length) state = patchBeing(state, surface, splitChatId, being, settings);
+    }
     const residents = residentsOf(origEntry)
       .map((being) => [being, getBeing(state, surface, parentChatId, being)?.threadId ?? null])
       .filter(([, threadId]) => threadId);
     const copied = [];
+    let lastThread = null;
     for (const [being, srcThreadId] of residents) {
       const newThreadId = randomUUID();
-      const srcStore = jsonlStoreDirOf(srcThreadId, { jsonlStoreRoot });
-      const srcFound = (srcStore ? findThreadJsonl(srcThreadId, [], { projectsRoot: join(srcStore, 'projects') }) : null)
-        ?? findThreadJsonl(srcThreadId, []);
-      if (srcFound) {
-        const projDir = join(jsonlStoreDirOf(newThreadId, { jsonlStoreRoot }), 'projects', sanitizeCwdDir(splitConvDir));
+      const src = findSessionFile(srcThreadId, { storeRoot: jsonlStoreRoot, ...(claudeProjectsRoot ? { claudeProjects: claudeProjectsRoot } : {}) });
+      if (src) {
+        const srcStore = jsonlStoreDirOf(srcThreadId, { jsonlStoreRoot });
+        const boxed = !!srcStore && src.startsWith(srcStore + sep);
+        const projDir = boxed ? join(jsonlStoreDirOf(newThreadId, { jsonlStoreRoot }), 'projects', basename(dirname(src))) : dirname(src);
         const destJsonl = join(projDir, `${newThreadId}.jsonl`);
         try {
           await mkdir(projDir, { recursive: true });
-          const srcRaw = await readFile(srcFound.jsonlPath, 'utf8');
-          await writeFile(destJsonl, rewriteForkSessionJsonl(srcRaw, { sessionId: newThreadId, cwd: splitConvDir }), { flag: 'wx' });
+          const srcRaw = await readFile(src, 'utf8');
+          await writeFile(destJsonl, rewriteForkSessionJsonl(srcRaw, { sessionId: newThreadId }), { flag: 'wx' });
           copied.push(being);
         } catch (e) {
-          onLog(`${verb}: thread copy for ${being} ${srcFound.jsonlPath} -> ${destJsonl} failed — ${e?.message ?? e}`);
+          onLog(`${verb}: thread copy for ${being} ${src} -> ${destJsonl} failed — ${e?.message ?? e}`);
         }
       } else {
-        onLog(`${verb}: can't find ${being}'s thread store for #${srcThreadId} — recording the new thread id without a copy`);
+        onLog(`${verb}: can't find ${being}'s session for #${srcThreadId} — recording the new thread id without a copy`);
       }
       state = recordThread(state, surface, splitChatId, newThreadId, undefined, being);
+      lastThread = newThreadId;
     }
-    return { state, slug: ensured.slug, copied };
+    // The fork's log names its thread, so the parent's next roll leaves it alone.
+    if (slug && lastThread) {
+      try { await mkdir(slugDir(surface, slug), { recursive: true }); } catch { /* the stamp says why */ }
+      await stampThreadId(surface, slug, lastThread, { key: transcript });
+    }
+    return { state, slug, transcript, copied };
   }
 
   // /send (anyone in a join/split group REPLIES /send to a message M there): relay M's text into the
@@ -3636,7 +3646,7 @@ export function createCommands({
       if (c.kind === 'split') {
         const split = await registerSplit(state, surface, chatId, c.origin, { title: ev.chatName || chatId, verb: 'split' });
         state = split.state;
-        as = `its own conversation (parent ${c.origin}; copied threads for ${split.copied.join(', ') || '(none)'})`;
+        as = `a fork in ${split.slug} (parent ${c.origin}; copied threads for ${split.copied.join(', ') || '(none)'})`;
       } else {
         const { jid } = getContact(state, surface, c.origin);
         state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : {}) });

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { startTelegramBridge, TOPICS_NEEDED } from '../src/bridges/telegram.mjs';
 import { boot, chatIdForEntity } from '../src/spine/boot.mjs';
 import { emptyState, ensureContact, recordThread, aliasContact, patchContact, patchBeing, moveChatId, conversationPathOf } from '../src/conversations-state.mjs';
+import { Room } from '../src/room-core.mjs';
 
 afterAll(async () => { try { await fs.rm(HOME, { recursive: true, force: true }); } catch {} });
 
@@ -264,13 +265,14 @@ const splitInto = async (n, name = 'mygroup') => {
 };
 
 describe('a Telegram node: /split makes a topic through the shared side-group path', () => {
-  it('/e split mygroup: a topic forked from the chat (its own conversation and thread); the answer is its link; the opener goes into it', async () => {
+  it('/e split mygroup: a topic forked from the chat (its own entry and thread, the chat\'s folder); the answer is its link; the opener goes into it', async () => {
     const n = await bootNode();
     await splitInto(n);
     expect(n.api.of('createForumTopic')[0].body).toEqual({ chat_id: String(GROUP), name: 'SI+EduWeb-mygroup' });
     const topic = n.state().contacts.telegram[TOPIC];
     expect(topic.aliasOf).toBeUndefined();
-    expect(topic.slug).not.toBe(n.state().contacts.telegram[MAIN].slug);
+    expect(topic.slug).toBe(n.state().contacts.telegram[MAIN].slug);
+    expect(topic.transcript).toBe('SI+EduWeb-mygroup');
     expect(topic.agents.egpt.threadId).toBeTruthy();
     expect(topic.agents.egpt.threadId).not.toBe('eduweb-thread');
     await vi.waitFor(() => expect(sends(n.api).some((b) => inGeneral(b) && b.text.includes(LINK))).toBe(true));
@@ -282,13 +284,30 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
     const n = await bootNode();
     await splitInto(n);
     const forkThread = n.state().contacts.telegram[TOPIC].agents.egpt.threadId;
-    n.api.updates(inTopic(77, '@e hola desde el tema'));   // a fork answers by the default mode: addressed
+    n.api.updates(inTopic(77, '@e hola desde el tema'));
     await answered(n.api, 'hola desde el tema');
     const edit = n.api.of('editMessageText').find((c) => c.body.text.includes('hola desde el tema'));
     const placeholder = n.api.of('sendMessage').find((c) => c.out?.result?.message_id === edit.body.message_id);
     expect(placeholder.body).toMatchObject({ chat_id: String(GROUP), message_thread_id: 77 });
     expect(Object.keys(n.state().contacts.telegram).sort()).toEqual([MAIN, TOPIC]);
     expect(n.state().contacts.telegram[MAIN].agents.egpt.threadId).not.toBe(forkThread);
+    n.app.stop();
+  });
+
+  // Live 2026-10-26 (EduWeb): the chat's allowed_users ['*'] did not reach its topics, so only the operator reached the being there.
+  it('the topic inherits the chat\'s being settings (allowed_users, mode): a team member is answered there too', async () => {
+    const state = seeded();
+    state.contacts.telegram[MAIN].agents.egpt.allowed_users = ['*'];
+    const n = await bootNode(TELEGRAM_ONLY(), { state });
+    await splitInto(n);
+    const egpt = n.state().contacts.telegram[TOPIC].agents.egpt;
+    expect(egpt).toMatchObject({ mode: 'on', allowed_users: ['*'] });
+    expect(egpt.threadId).not.toBe('eduweb-thread');
+    n.api.updates(inTopic(77, '@e hola soy Diego', { from: DIEGO }));
+    await answered(n.api, 'hola soy Diego');
+    const room = Room.forChat('telegram', n.state().contacts.telegram[TOPIC].slug);
+    await vi.waitFor(async () => expect(await fs.readFile(room.transcriptPathFor('SI+EduWeb-mygroup'), 'utf8')).toContain('hola soy Diego'));
+    expect(await fs.readFile(room.transcriptPath, 'utf8').catch(() => '')).not.toContain('hola soy Diego');
     n.app.stop();
   });
 

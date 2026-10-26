@@ -40,7 +40,10 @@ opens only the bare list; its verbs stay authorized-only.
 
 `/join` is retired (2026-10-25): `/<handle> join` answers with `/<handle> split`,
 which makes a fork (same agents and files, its own thread; the main chat can read
-its transcript). Side rooms `/join` made before keep working with `/send` and
+its transcript). The fork lives in the chat's own folder, logs to its own
+`transcript-<title>.md` there, and keeps each being's chat settings
+(`allowed_users`, `mode`, `access_level`, …); `/agents reset` is refused in a
+fork (use `rethread`). Side rooms `/join` made before keep working with `/send` and
 `/end`; a `join:` block in config.yaml is ignored.
 
 On Telegram, `/split` makes a **topic** in the group instead of a new group (a
@@ -97,8 +100,10 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                tier: this node's regular
                                                default, the unconfined one, or
                                                the OS-sandboxed one (see below)
-/<handle> restart                              bounce the node (daemon respawns
-                                               the current checkout)
+/<handle> restart [force]                      bounce the node (daemon respawns
+                                               the current checkout); waits for
+                                               turns and background work in
+                                               flight, no cap; `force` skips it
 /<handle> upgrade                              git pull + npm install + rebuild,
                                                then respawn
 /<handle> rewind <ref>                         git checkout <ref>, reinstall,
@@ -258,6 +263,7 @@ default; commented blocks are optional overrides.
 | `loop_guard` | Both loop limits. `inbound: { turns, window }`: `turns` (6) non-human turns within `window` (2) minutes, or the same line repeated, pauses that chat until `resume`; -1 = off. `outbound`: over `messages` per `window_ms` node-wide STOPS the node. Per chat, any of three rules pauses THAT chat until `resume`: `chat_similar_count` (5) near-identical sends in `chat_similar_window_ms` (2 s); `chat_burst_count` (10) sends in `chat_burst_window_ms` (2 s); `chat_messages` (5) in each of two consecutive `chat_window_ms` (3 s). ≤0 = that rule off. |
 | `closed_chats` | `<surface>: { <chat id>: { message? } }`, ids as in conversations.yaml: no being answers there (mode `off`, applies live). `message` is posted there once (again when it changes) and to a line that names a being, at most once a day. Remove the chat to reopen it. |
 | `stop_phrase` | Kill phrase (default `EGPT STOP`): the whole message, from an allowed user, in any chat → the node writes `EGPT_HOME/STOP` and stops. `""` = off. |
+| `turn_timeout_ms` | Opt-in per-turn timeout (ms): a turn running longer fails and its session is evicted. 0/absent = no limit (default). |
 | `compaction` | After a quiet `cooling_ms`, if the warm session grew past `ratio` of the context window, native-`/compact` it in place (transcript.md keeps the full record). A compact that SUCCEEDS then arms the identity re-feed, exactly as `/agents refresh` does, so the being gets its identity back on its next turn — `/compact` rewrites the context, and the kickoff feed can be summarised out of it. A compact that fails arms nothing. |
 | `heartbeats` | Declarative timers — see §3. |
 | `transcription_service` | Voice-note transcription — see §4. |

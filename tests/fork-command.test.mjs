@@ -27,7 +27,8 @@ const TEST_HOME = vi.hoisted(() => {
 });
 import { createCommands, resolveSecondaryParticipantId, rewriteForkSessionJsonl, SPLIT_PLACEHOLDER_DEFAULT, GROUP_TITLE_DEFAULT, SPLIT_OPENER_DEFAULT, SEND_POST_BACK_FROM_DEFAULT, SIDE_GROUP_PREFIX } from '../src/spine/commands.mjs';
 import { resolveBeingDef, sandboxSharePathsFor } from '../src/spine/brainpool.mjs';
-import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContact, aliasTargetOf, patchContact, patchBeing, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
+import { ensureContact, recordThread, getContact, getBeing, slugDir, aliasContact, aliasTargetOf, patchContact, patchBeing, forkKeyOf, isForkEntry, readState as readConvState, writeState as writeConvState } from '../src/conversations-state.mjs';
+import { parseFrontMatter } from '../src/transcript-meta.mjs';
 import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { encodeNodeSignature, encodeChatCanary } from '../src/node-signature.mjs';
 import { Room } from '../src/room-core.mjs';
@@ -136,7 +137,7 @@ function cfg({ node_name = 'kg', node_role = 'primary', texts = true, send, peer
   };
 }
 
-function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, copyArrives = true, throwOnPost = false, messages = null, chatRaw = null, createChatId = null } = {}) {
+function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, copyArrives = true, throwOnPost = false, messages = null, chatRaw = null, createChatId = null, claudeProjectsRoot = join(base, 'claude-projects') } = {}) {
   let st = state ?? seedState();
   const sent = [];
   const logs = [];
@@ -179,6 +180,7 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     writeState: async (s) => { st = s; },
     resolveConvRoom: async (_surface, chatId) => rooms.get(chatId) ?? null,
     jsonlStoreRoot: STORE,
+    claudeProjectsRoot,
     forkBridge,
     onLog: (m) => logs.push(m),
   });
@@ -283,40 +285,66 @@ describe('/split — the group create: type, title, who is invited', () => {
 describe('/split — new conversation with each resident being\'s thread COPIED to a new, diverging id', () => {
   const EV = { chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Proyecto X', isSender: true, body: '/split' };
 
-  it('creates a NEW conversation (own slug, NOT an alias), records parent_chat, edits placeholder from config.split', async () => {
+  // Operator 2026-10-26: "/split groups are not using the same folder as main conversation".
+  it('creates a FORK: its own entry (not an alias) in the parent\'s folder, its own transcript key, parent_chat; edits the placeholder', async () => {
     seedSourceThreads('e');
     const { cmds, calls, getState } = harness({ config: cfg() });
     await cmds.run({ ...EV });
     const st = getState();
     expect(nameIn(calls.create[0].title, 'SI+egpt ', ' de Proyecto X')).toMatch(RANDOM_NAME);
-    // NOT an alias: SPLIT_CHAT is its own primary entry with its own slug
     expect(aliasTargetOf(st, 'whatsapp', SPLIT_CHAT)).toBe(null);
-    const splitSlug = getContact(st, 'whatsapp', SPLIT_CHAT).slug;
-    expect(splitSlug).not.toBe(getContact(st, 'whatsapp', C_CHAT).slug);
-    expect(getContact(st, 'whatsapp', SPLIT_CHAT).entry.parent_chat).toBe(C_CHAT);
+    const fork = getContact(st, 'whatsapp', SPLIT_CHAT);
+    const parent = getContact(st, 'whatsapp', C_CHAT);
+    expect(fork.jid).toBe(SPLIT_CHAT);                                       // its own entry…
+    expect(fork.slug).toBe(parent.slug);                                     // …in the parent's folder
+    expect(fork.entry.conversation_path).toBe(parent.entry.conversation_path);
+    expect(isForkEntry(fork.entry)).toBe(true);
+    expect(forkKeyOf(st, 'whatsapp', SPLIT_CHAT)).toBe(calls.create[0].title);
+    expect(fork.entry.parent_chat).toBe(C_CHAT);
+    expect(getBeing(st, 'whatsapp', C_CHAT, 'e').threadId).toBe(SRC_E);      // the parent keeps its thread
     expect(calls.edit).toEqual([{ chatId: C_CHAT, msgId: 'cmd1', text: PLACEHOLDER_SPLIT }]);
   });
 
-  it('copies EACH resident being\'s thread to a NEW threadId (sessionId + cwd rewritten); the ORIGINALS are byte-unchanged', async () => {
+  it('two forks with the same title get two transcript keys', async () => {
+    seedSourceThreads('e');
+    const ids = ['!f1:beeper.local', '!f2:beeper.local'];
+    const { cmds, getState } = harness({ config: cfg(), createChatId: () => ids.shift() });
+    await cmds.run({ ...EV, body: '/split viaje' });
+    await cmds.run({ ...EV, body: '/split viaje' });
+    const st = getState();
+    const keys = ['!f1', '!f2'].map((id) => forkKeyOf(st, 'whatsapp', shortChatId(`${id}:beeper.local`)));
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(`${keys[0]}-2`);
+  });
+
+  it('the fork\'s log names its own thread, so the parent\'s fresh-thread roll leaves it alone', async () => {
+    seedSourceThreads('e');
+    const { cmds, getState } = harness({ config: cfg() });
+    await cmds.run({ ...EV });
+    const st = getState();
+    const room = slugDir('whatsapp', getContact(st, 'whatsapp', SPLIT_CHAT).slug);
+    const forkLog = join(room, `transcript-${forkKeyOf(st, 'whatsapp', SPLIT_CHAT)}.md`);
+    expect(parseFrontMatter(readFileSync(forkLog, 'utf8')).thread_id).toBe(getBeing(st, 'whatsapp', SPLIT_CHAT, 'e').threadId);
+  });
+
+  it('BOXED: copies EACH resident being\'s thread to a NEW threadId in its own store, the source\'s project dir (same cwd); the ORIGINALS are byte-unchanged', async () => {
     seedSourceThreads('e', 'wren');
     const { cmds, getState } = harness({ config: cfg(), state: seedStateBeing('e', 'wren') });
     await cmds.run({ ...EV });
     const st = getState();
-    const splitFolder = slugDir('whatsapp', getContact(st, 'whatsapp', SPLIT_CHAT).slug);
 
     for (const being of ['e', 'wren']) {
       const newId = getBeing(st, 'whatsapp', SPLIT_CHAT, being)?.threadId;
       expect(newId, `${being} has a new split thread`).toBeTruthy();
       expect(newId).not.toBe(SRC_BY_BEING[being]);   // diverged — a new id
 
-      // the copy lives under the NEW thread's store (projects/<split cwd dir>/<newId>.jsonl)
-      const projects = join(STORE, newId, 'projects');
-      const copy = readdirSync(projects).map((d) => join(projects, d, `${newId}.jsonl`)).find((p) => existsSync(p));
-      expect(copy, `a <newId>.jsonl copy for ${being}`).toBeTruthy();
+      // where the fork's boxed turn looks: CLAUDE_CONFIG_DIR = the new id's store, the parent's cwd
+      const copy = join(STORE, newId, 'projects', 'C--orig', `${newId}.jsonl`);
+      expect(existsSync(copy), `a <newId>.jsonl copy for ${being}`).toBe(true);
       const out = readFileSync(copy, 'utf8').split('\n');
       const r0 = JSON.parse(out[0]);
       expect(r0.sessionId).toBe(newId);          // the copy IS the new session
-      expect(r0.cwd).toBe(splitFolder);          // and points at the split's own folder
+      expect(r0.cwd).toBe('C:/orig');            // the same folder, so the same cwd
       expect(r0.uuid).toBe('u1');
       expect(out[1]).toBe('not-json: a stray line claude sometimes writes');   // non-JSON verbatim
       const r2 = JSON.parse(out[2]);
@@ -328,6 +356,18 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
       expect(readFileSync(srcPath, 'utf8')).toBe(srcLines(SRC_BY_BEING[being]));
       expect(getBeing(st, 'whatsapp', C_CHAT, being)?.threadId).toBe(SRC_BY_BEING[being]);
     }
+  });
+
+  it('UNBOXED: the copy goes beside the source in ~/.claude/projects, where the fork\'s unboxed turn resumes it', async () => {
+    const claude = join(base, 'claude-projects');
+    mkdirSync(join(claude, 'C--home'), { recursive: true });
+    writeFileSync(join(claude, 'C--home', `${SRC_E}.jsonl`), srcLines(SRC_E), 'utf8');
+    const { cmds, getState } = harness({ config: cfg(), claudeProjectsRoot: claude });
+    await cmds.run({ ...EV });
+    const newId = getBeing(getState(), 'whatsapp', SPLIT_CHAT, 'e').threadId;
+    const r0 = JSON.parse(readFileSync(join(claude, 'C--home', `${newId}.jsonl`), 'utf8').split('\n')[0]);
+    expect([r0.sessionId, r0.cwd]).toEqual([newId, 'C:/orig']);
+    expect(existsSync(join(STORE, newId))).toBe(false);   // no boxed store for an unboxed thread
   });
 
   it('an existing dest is refused (EEXIST from flag:wx) — the group + conversation still register, nothing clobbered', async () => {
@@ -345,12 +385,38 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     const cmds = createCommands({
       getConfig: () => cfg(), send: async () => {},
       loadState: async () => st, writeState: async (s) => { st = s; },
-      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, forkBridge, io, onLog: (m) => logs.push(m),
+      resolveConvRoom: async () => null, jsonlStoreRoot: STORE, claudeProjectsRoot: join(base, 'claude-projects'), forkBridge, io, onLog: (m) => logs.push(m),
     });
     await cmds.run({ ...EV });
     expect(logs.some((l) => /thread copy for e.*failed/i.test(l))).toBe(true);
     expect(getBeing(st, 'whatsapp', SPLIT_CHAT, 'e')?.threadId).toBeTruthy();   // thread id recorded anyway
     expect(getContact(st, 'whatsapp', SPLIT_CHAT).entry.parent_chat).toBe(C_CHAT);
+  });
+
+  // Live 2026-10-26: EduWeb's ed.allowed_users ['*'] did not reach its forks, so the team could not talk to ED there.
+  it('the fork inherits each being\'s chat settings from the parent; thread bookkeeping stays its own', async () => {
+    seedSourceThreads('e');
+    let state = seedState();
+    state = patchBeing(state, 'whatsapp', C_CHAT, 'e', { allowed_users: ['*'], mode: 'accum', access_level: 'all', configuration: 'egpt-xhigh', default: true, compactionWelcome: 'hi again' });
+    state = patchBeing(state, 'whatsapp', C_CHAT, 'wren', { mode: 'mute' });   // settings, no thread
+    const { cmds, getState } = harness({ config: cfg(), state });
+    await cmds.run({ ...EV });
+    const agents = getContact(getState(), 'whatsapp', SPLIT_CHAT).entry.agents;
+    const { threadId, threadCreatedAt, identityInjectedAt, ...settings } = agents.e;
+    expect(settings).toEqual({ allowed_users: ['*'], mode: 'accum', access_level: 'all', configuration: 'egpt-xhigh', default: true });
+    expect(threadId).toBeTruthy();
+    expect(threadId).not.toBe(SRC_E);
+    expect(threadCreatedAt).not.toBe('2026-10-01T00:00:00Z');
+    expect(agents.wren).toEqual({ mode: 'mute' });
+    expect(getContact(getState(), 'whatsapp', C_CHAT).entry.agents.e).toMatchObject({ threadId: SRC_E, allowed_users: ['*'], compactionWelcome: 'hi again' });
+  });
+
+  it('a parent without settings → a fork without settings: only its own thread', async () => {
+    seedSourceThreads('e');
+    const { cmds, getState } = harness({ config: cfg() });
+    await cmds.run({ ...EV });
+    expect(Object.keys(getContact(getState(), 'whatsapp', SPLIT_CHAT).entry.agents)).toEqual(['e']);
+    expect(Object.keys(getContact(getState(), 'whatsapp', SPLIT_CHAT).entry.agents.e).sort()).toEqual(['identityInjectedAt', 'threadCreatedAt', 'threadId']);
   });
 
   it('node_role picks nothing (2026-10-19): a node_role secondary runs /split, `/split do` included (a node name is no override)', async () => {
@@ -365,7 +431,7 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
 
 // ── the other node links a /split from its opener (2026-10-19): /split's own copy, its own residents ──
 describe('linkSideGroup — a /split opener on the other node forks THIS node\'s residents through /split\'s copy', () => {
-  it('REPRODUCE: its own conversation with parent_chat; each resident\'s thread copied to a new id (sessionId + cwd rewritten); nothing created', async () => {
+  it('REPRODUCE: a fork in THIS node\'s parent folder with parent_chat; each resident\'s thread copied to a new id (sessionId rewritten, cwd kept); nothing created', async () => {
     seedSourceThreads('e', 'wren');
     const { cmds, calls, getState } = harness({ config: cfg({ node_name: 'do', node_role: 'secondary' }), state: seedStateBeing('e', 'wren'), copyArrives: false });
     await cmds.linkSideGroup({ chatId: SPLIT_CHAT, surface: 'whatsapp', chatName: 'SI+egpt split de Proyecto X', fromNode: 'kg', canary: { group: SPLIT_CHAT, origin: C_CHAT, kind: 'split', transcript: null } });
@@ -373,19 +439,28 @@ describe('linkSideGroup — a /split opener on the other node forks THIS node\'s
     const split = getContact(st, 'whatsapp', SPLIT_CHAT);
     expect(split.jid).toBe(SPLIT_CHAT);
     expect(split.entry.parent_chat).toBe(C_CHAT);
-    const splitFolder = slugDir('whatsapp', split.slug);
+    expect(split.slug).toBe(getContact(st, 'whatsapp', C_CHAT).slug);
+    expect(forkKeyOf(st, 'whatsapp', SPLIT_CHAT)).toBe('SI+egpt split de Proyecto X');
     for (const being of ['e', 'wren']) {
       const newId = getBeing(st, 'whatsapp', SPLIT_CHAT, being)?.threadId;
       expect(newId).toBeTruthy();
       expect(newId).not.toBe(SRC_BY_BEING[being]);
-      const projects = join(STORE, newId, 'projects');
-      const copy = readdirSync(projects).map((d) => join(projects, d, `${newId}.jsonl`)).find((p) => existsSync(p));
-      const r0 = JSON.parse(readFileSync(copy, 'utf8').split('\n')[0]);
-      expect([r0.sessionId, r0.cwd]).toEqual([newId, splitFolder]);
+      const r0 = JSON.parse(readFileSync(join(STORE, newId, 'projects', 'C--orig', `${newId}.jsonl`), 'utf8').split('\n')[0]);
+      expect([r0.sessionId, r0.cwd]).toEqual([newId, 'C:/orig']);
       expect(getBeing(st, 'whatsapp', C_CHAT, being)?.threadId).toBe(SRC_BY_BEING[being]);
     }
     expect(calls.create).toEqual([]);
     expect(calls.post).toEqual([]);
+  });
+
+  it('the linked fork inherits THIS node\'s chat settings for each being', async () => {
+    seedSourceThreads('e');
+    const state = patchBeing(seedState(), 'whatsapp', C_CHAT, 'e', { allowed_users: ['*'], mode: 'accum' });
+    const { cmds, getState } = harness({ config: cfg({ node_name: 'do', node_role: 'secondary' }), state, copyArrives: false });
+    await cmds.linkSideGroup({ chatId: SPLIT_CHAT, surface: 'whatsapp', chatName: 'SI+egpt split de Proyecto X', fromNode: 'kg', canary: { group: SPLIT_CHAT, origin: C_CHAT, kind: 'split', transcript: null } });
+    const e = getContact(getState(), 'whatsapp', SPLIT_CHAT).entry.agents.e;
+    expect(e).toMatchObject({ allowed_users: ['*'], mode: 'accum' });
+    expect(e.threadId).not.toBe(SRC_E);
   });
 });
 

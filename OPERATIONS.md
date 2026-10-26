@@ -112,7 +112,8 @@ shell (the node's own console) still take the bare line.
 
 **A deploy waits for turns in progress (since 2026-09-28).** `/upgrade` and `/restart`
 no longer exit on the spot: the spine keeps answering and exits the moment no turn is
-running, or after **30 minutes** regardless (logged loudly). While it waits it writes
+running, with no cap (since 2026-10-26; every 30 min the logging group is told, and
+`/restart force` / `/upgrade force` leave without waiting). While it waits it writes
 `state/draining.json`, and `upgrade.ps1` prints who it is waiting for every ~30 s
 instead of counting down. `/rewind`, `STOP` and the daemon's wedge-restart stay immediate.
 

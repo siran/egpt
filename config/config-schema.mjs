@@ -2932,22 +2932,14 @@ export const CONFIG_SCHEMA = {
   `,
 
   turn_timeout_ms: `
-    Per-turn backstop (DEFECT 2; src/spine/spine.mjs runTurnWithTimeout, the
-    turnTimeoutMs factory param wired at boot's createSpine). Milliseconds a single
-    brain turn may run before it is failed VISIBLY and its wedged warm entry
+    Opt-in per-turn timeout (src/spine/spine.mjs runTurnWithTimeout). Milliseconds a
+    single brain turn may run before it is failed VISIBLY and its warm entry
     EVICTED, so the chat's queue drains onto a fresh session. A node-wide scalar —
     there is deliberately no per-being / per-chat rung.
 
-      DEFAULT: 600000 (10 min) when the key is ABSENT — today's behavior exactly.
-      -1 (or ANY value <= 0, including 0) = INFINITE: no per-turn cap. It flows
-        through to runTurnWithTimeout's \`!(turnTimeoutMs > 0)\` check, which skips
-        the race entirely, so the turn runs to completion and is never killed.
-
-    The default is a WEDGE GUARD: a genuinely hung CLI session is evicted so the
-    queue can drain. Disabling it (-1) means a wedged turn will NOT self-heal until
-    a restart — a per-node operator choice, not the shipped default. A legitimately
-    long tool-heavy turn finishes well under 10 min; this is the higher bridge-level
-    backstop, NOT the warm pool's own timeout-free design (left untouched).
+      DEFAULT: 0/absent = no limit (operator 2026-10-26: the backend ends its turns;
+        a timeout only killed long ops turns and lost their replies).
+      > 0 = that bound, in ms. Restart-only (config-swap.mjs RESTART_KEYS).
   `,
 
   liveness: `

@@ -377,10 +377,7 @@ networks:
 # echo_max_age_ms: 3600000        # never echo a note older than this (skips resynced backlog)
 
 # --- Everyday knobs (defaults shown) -----------------------------------------
-# -1 = infinite (no per-turn cap). Default 600000 (10 min) is a wedge guard: it evicts a hung
-# CLI session so the chat's queue can drain. Disabling it means a genuinely wedged turn will
-# NOT self-heal until a restart.
-turn_timeout_ms: 600000
+# turn_timeout_ms: 0             # opt-in per-turn timeout (ms; > 0): the turn fails and its session is evicted. 0/absent = no limit (default)
 # auto_restart_on_config_change: false   # true = editing this file auto-triggers /restart (full drain+respawn) so the edit applies; keyed on content (no-op saves + mid-write/malformed files never restart). Default false.
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always

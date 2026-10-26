@@ -11,7 +11,8 @@
 //   FEATURE   a QUEUED turn prompts with the accumulated cycle (intervening chatter + E's
 //             own replies delivered meanwhile) ending with its own mention line; an
 //             IMMEDIATE turn keeps its single dispatch line.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 
@@ -105,7 +106,7 @@ function buildSpine(over = {}) {
     sender: over.sender, transcript: over.transcript ?? recordingTranscript(),
     heartbeats: fakeHeartbeats,
     clock: { now: () => 1000 },
-    turnTimeoutMs: over.turnTimeoutMs ?? 600_000,
+    ...('turnTimeoutMs' in over ? { turnTimeoutMs: over.turnTimeoutMs } : {}),   // absent → createSpine's own default
     setTimeout: over.setTimeout, clearTimeout: over.clearTimeout,   // undefined → createSpine's globalThis defaults
     log: over.log,
   });
@@ -256,16 +257,54 @@ describe('spine — the per-turn timeout is configurable; a non-positive bound d
     expect(sender.placeholders[0].finished.text).toBe('quick');
   });
 
-  it('ABSENT config key → the shipped 600000 default still arms the guard (boot/factory default = enabled)', async () => {
-    // buildSpine mirrors boot's `Number.isFinite(cfg.turn_timeout_ms) ? ... : 600_000` and the
-    // spine factory default (spine.mjs turnTimeoutMs = 600_000): omitting it keeps the 10-min cap.
+  it('ABSENT → no timeout (operator 2026-10-26): the factory arms nothing, and boot reads an absent key as 0', async () => {
     const brain = { async turn() { return { text: 'quick', sessionId: 's0' }; } };
     const timers = fakeTimers();
     const sender = recordingSender();
     const { bridge } = buildSpine({ brain, sender, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
     await bridge.emit(mention('hola', 'm1'));
 
-    expect(timers.armed.map((t) => t.ms)).toEqual([600_000]);   // default is the enabled wedge guard, not disabled
+    expect(timers.armed).toEqual([]);
+    const boot = readFileSync(new URL('../src/spine/boot.mjs', import.meta.url), 'utf8');
+    expect(boot).toContain('const turnTimeoutMs = Number.isFinite(cfg.turn_timeout_ms) ? cfg.turn_timeout_ms : 0;');
+  });
+});
+
+// A turn longer than the old 10-min default (EDW 2026-10-26: ops turns past it were killed, their
+// replies lost). Real timers under vi's clock, so the spine's own defaults are what runs.
+describe('spine — a long turn runs to its end unless a timeout is configured', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  async function elevenMinuteTurn(over = {}) {
+    vi.useFakeTimers();
+    const evicted = [];
+    let resolveTurn, turnCalled;
+    const called = new Promise((r) => { turnCalled = r; });
+    const brain = {
+      evict(being, ev) { evicted.push(`${being}:${ev.surface}:${ev.chatId}`); },
+      turn() { turnCalled(); return new Promise((r) => { resolveTurn = r; }); },
+    };
+    const sender = recordingSender();
+    const { bridge } = buildSpine({ brain, sender, ...over });
+    const p = bridge.emit(mention('hola', 'm1'));
+    await called;
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+    return { p, sender, evicted, resolve: (v) => resolveTurn(v) };
+  }
+
+  it('default: past 600 s the turn is not killed or evicted, and its reply lands', async () => {
+    const run = await elevenMinuteTurn();
+    expect(run.evicted).toEqual([]);
+    expect(run.sender.placeholders[0].failed).toBe(null);
+    run.resolve({ text: 'done after 11 min', sessionId: 's0' });
+    await run.p;
+    expect(run.sender.placeholders[0].finished.text).toBe('done after 11 min');
+  });
+
+  it('a configured turn_timeout_ms still applies (opt-in): the turn fails visibly and is evicted', async () => {
+    const run = await elevenMinuteTurn({ turnTimeoutMs: 600_000 });
+    await run.p;
+    expect(run.evicted).toEqual([`e:wa:${CHAT}`]);
+    expect(run.sender.placeholders[0].failed).toMatch(/turn timeout after 600000ms/);
   });
 });
 
