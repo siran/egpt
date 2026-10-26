@@ -85,8 +85,14 @@ export const SHELL_SURFACE = surfaceOf('shell');
 
 // `timeZone`: the node's config default_time_zone (boot-resolved via the heartbeat loader's
 // resolveTimeZone) — the zone the dispatch line's HH:MM renders in. null → UTC, unchanged.
-export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now(), timeZone = null } = {}) {
+export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now(), timeZone = null, loadState = async () => null } = {}) {
   return {
+    // A turn the spine starts itself (a heartbeat, a background wake) names its chat as an inbound
+    // line does: the chat's stored name and the surface's node tag.
+    async spineEvent(surface, chatId) {
+      const chatName = (await loadState())?.contacts?.[surface]?.[chatId]?.pushedName || null;
+      return { surface, chatId, chatName, node: NODE_OF[surface] ?? null };
+    },
     /** @param {{ body: string, from: object }} payload @returns {import('./spine.mjs').InboundEvent} */
     build({ body: rawBody, from } = {}) {
       // Decode the structural node signature ONCE, before anything reads the text: `…hola` +

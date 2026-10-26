@@ -58,7 +58,7 @@ function build({ stop = { present: false }, mouth = null, livenessEveryMs, publi
   const logged = [], streamed = [], notes = [], group = [];
   const spine = createSpine({
     bridge, brain, livenessEveryMs,
-    identity: { build: (m) => ({ ...m, line: m.body }) },
+    identity: { build: (m) => ({ ...m, line: m.body }), spineEvent: async (surface, chatId) => ({ surface, chatId }) },
     router: { resolve: () => ({ being: 'egpt', mention: { atEStart: true, atEAnywhere: true } }) },
     gating: { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: (d) => d.mayReply },
     sender: createSender({ bridge, peerMouth, publicOf, bodyEmojiOf: () => '🐶', labelOf: () => 'E' }),

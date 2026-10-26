@@ -88,7 +88,7 @@ const config = (extra = {}) => ({
 // A resolved conversation for NS, so chatIdForEntity(state, NS) → PRIMES_ROOM (egpt is resident).
 const stateWithPrimes = () => {
   const s = emptyState();
-  s.contacts = { ...(s.contacts ?? {}), whatsapp: { ...((s.contacts ?? {}).whatsapp ?? {}), [PRIMES_ROOM]: { slug: 'primes', agents: { egpt: {} } } } };
+  s.contacts = { ...(s.contacts ?? {}), whatsapp: { ...((s.contacts ?? {}).whatsapp ?? {}), [PRIMES_ROOM]: { slug: 'primes', pushedName: 'primes', agents: { egpt: {} } } } };
   return s;
 };
 
@@ -99,6 +99,7 @@ async function bootWith(cfg, makeSession = REPLY_SESSION) {
   const { start, built } = fakeTransport();
   const lines = [];
   let convState = stateWithPrimes();
+  const io = memIo();
   app = await boot({
     readConfig: () => cfg,
     startBridge: start,
@@ -106,7 +107,7 @@ async function bootWith(cfg, makeSession = REPLY_SESSION) {
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => convState,
     writeState: async (s) => { convState = s; },
-    io: memIo(), ingest: false, tickMs: 0,
+    io, ingest: false, tickMs: 0,
     spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
     reapPort: () => 0,
     now: () => Date.UTC(2026, 8, 30, 16, 0),
@@ -114,7 +115,8 @@ async function bootWith(cfg, makeSession = REPLY_SESSION) {
   });
   const sentTo = (room) => built.flatMap((b) => b.sent).filter((s) => s.chatId === room);
   const allSent = () => built.flatMap((b) => b.sent);
-  return { app, built, lines, sentTo, allSent };
+  const transcript = () => [...io.files].filter(([p]) => p.endsWith('transcript.md')).map(([, t]) => t).join('\n');
+  return { app, built, lines, sentTo, allSent, transcript };
 }
 
 describe('a silent: heartbeat posts its whole self to eGPT Admin', () => {
@@ -177,6 +179,12 @@ describe('a heartbeat turn fails on the engine\'s flag, never on its text', () =
     const t = await bootWith(config(), session({ text: 'El portal responde 403: Require all denied.' }));
     await t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'check', name: `${NS}:check` });
     expect(t.sentTo(PRIMES_ROOM).some((s) => s.text.includes('responde 403'))).toBe(true);
+  });
+
+  it('its reply line names the chat and the WhatsApp tag, as an inbound line does', async () => {
+    const t = await bootWith(config());
+    await t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'say a prime', name: `${NS}:prime` });
+    expect(t.transcript()).toMatch(/E@\[primes\]\.wa \(\d\d:\d\d\): the beat reply/);
   });
 
   it('a flagged failure throws, so nothing is posted', async () => {

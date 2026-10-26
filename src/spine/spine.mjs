@@ -1427,7 +1427,7 @@ export function createSpine({
       : lost != null
         ? `[egpt] The bridge restarted while you were answering, and that process ended before you replied (${why}) — nothing reached the chat. The message was:\n\n${lost}\n\nAnswer it now.`
         : `[egpt] A background task you started has finished: ${what}. Verify its result and report to the chat.`;
-    const ev = { surface, chatId, body: line, line, cause: 'background' };   // cause: agent stats' system bucket
+    const ev = { ...(await identity.spineEvent(surface, chatId)), body: line, line, cause: 'background' };   // cause: agent stats' system bucket
     const where = `${being}/${chatId}`;
     if (stopSwitch?.present()) { note(`wake ${where}: STOP file present — not woken`); return false; }
     const channel = guard ? guardChannel(ev) : null;
