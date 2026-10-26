@@ -114,10 +114,11 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                restarts Beeper (eGPT stays up),
                                                one result line in log_to_group;
                                                else the one-line Beeper state
-/<handle> browser refresh [url]                close this chat's browser and open
-                                               a normal Chrome window on its
-                                               profile, to sign in or pass a
-                                               check yourself (see below)
+/<handle> browser refresh [group] [url]        close this chat's (or [group]'s)
+                                               browser and open a normal Chrome
+                                               window on its profile, to sign in
+                                               or pass a check yourself (see
+                                               below)
 ```
 
 **Reply modes** (`/agents … auto <mode>`): `on` (receive every burst, reply per
@@ -292,22 +293,27 @@ id with no conversations.yaml entry, or a file with no text and no files, is
 logged and ignored. The box sits under `~/.egpt`, so only the node's owner can
 write it; a sandboxed being cannot.
 
-### `/<handle> browser refresh [url]` — sign in yourself
+### `/<handle> browser refresh [group] [url]` — sign in yourself
 
 Some sites refuse eGPT's browser because it is automated: Google says "This
 browser or app may not be secure", and some captchas loop. Pass them yourself in
 a normal Chrome window on the same profile. eGPT's browser then reuses the
 session.
 
-`/<handle> browser refresh [url]` (owners only) closes eGPT's browser for this
-chat's group and opens a normal Chrome window on that group's profile at `url`
-(default `about:blank`; a bare host means `https://`). The window opens on the
-desktop of the node that runs the being. On a container node, open its VNC
-(`:6080`) to see it. Sign in or pass the check, then close the window. Until that
-window's Chrome exits, eGPT does not open the browser again, and a being that
-asks for it is told the browser is held for sign-in. When it exits, the chat
-gets one line: "browser <group> is back — signed-in session will be used". eGPT
-uses no stealth and solves no captchas. You pass the check yourself.
+`/<handle> browser refresh [group] [url]` (owners only) closes eGPT's browser for
+this chat's group and opens a normal Chrome window on that group's profile at
+`url` (default `about:blank`; a bare host means `https://`). If the first word
+names a group this node knows (`brain`, `shared`, a `browsers.yaml` group, or a
+folder under the profiles root; any case), that group is used instead and the
+next word is the url: `/e browser refresh brain accounts.google.com`. A word with
+a dot, a slash or a scheme is always the url. An unknown word gets the usage and
+the known group names. The window opens on the desktop of the node that runs the
+being. On a container node, open its VNC (`:6080`) to see it. Sign in or pass the
+check, then close the window. Until that window's Chrome exits, eGPT does not
+open the browser again, and a being that asks for it is told the browser is held
+for sign-in. When it exits, the chat you typed the command in gets one line:
+"browser <group> is back — signed-in session will be used". eGPT uses no stealth
+and solves no captchas. You pass the check yourself.
 
 On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
 [url]` (default `brain`, Google sign-in). It closes the Chrome processes on that
