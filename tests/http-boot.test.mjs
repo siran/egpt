@@ -28,7 +28,7 @@ let envToken;
 beforeEach(() => { envToken = process.env.BEEPER_ACCESS_TOKEN; delete process.env.BEEPER_ACCESS_TOKEN; });
 afterEach(async () => {
   if (envToken !== undefined) process.env.BEEPER_ACCESS_TOKEN = envToken;
-  await fs.rm(join(_HOME, 'state'), { recursive: true, force: true });
+  await fs.rm(join(_HOME, 'state'), { recursive: true, force: true, maxRetries: 10 });   // the limb may still be writing a session's history
 });
 
 const AGENTS = {

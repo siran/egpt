@@ -1,10 +1,10 @@
 // http-limb.test.mjs — the chatbox limb (src/bridges/http.mjs) on a real loopback server: sessions,
 // the JSON and SSE reads, CORS, max_chars, the rate limit, widget.js.
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS } from '../src/bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS, DEEP_CHAT } from '../src/bridges/http.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const live = [];
@@ -109,6 +109,58 @@ describe('sessions', () => {
       const b = await (await two.post({ session: a.session, text: 'de vuelta' })).json();
       expect(b.session).toBe(a.session);
       expect(two.got[0].from.chatId).toBe(one.got[0].from.chatId);
+      await two.b.stop();
+    } finally { await rm(stateDir, { recursive: true, force: true }); }
+  });
+
+  it('history survives a restart: GET messages returns the log (a reply cut mid-stream settled as it stood), old ids stay editable, new seqs come after', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-state-'));
+    const t = Date.UTC(2026, 9, 26);   // a frozen clock: only the saved seqs keep the new ones ahead
+    try {
+      const one = await limb(undefined, { stateDir, now: () => t });
+      const a = await (await one.post({ text: 'hola' })).json();
+      const chatId = one.got[0].from.chatId;
+      const sent = await one.b.send('Hola, ¿en qué te ayudo?', { chatId });
+      const h = one.b.startStreamMessage('⏳', { chatId });
+      h.update('Un momento');
+      await one.b.stop();
+      const sid = chatId.slice(-16);
+      expect(await readdir(join(stateDir, 'http-messages'))).toEqual([`${sid}.json`]);
+      expect(await readFile(join(stateDir, 'http-messages', `${sid}.json`), 'utf8')).not.toContain(a.session);
+
+      const two = await limb(undefined, { stateDir, now: () => t });
+      const r = await fetch(`${two.url()}messages?session=${encodeURIComponent(a.session)}`);
+      expect(r.status).toBe(200);
+      const j = await r.json();
+      expect(j.messages.map((m) => [m.from, m.text, m.done])).toEqual([['visitor', 'hola', true], ['being', 'Hola, ¿en qué te ayudo?', true], ['being', 'Un momento', true]]);
+      expect(j.messages[1].id).toBe(sent.messageId);
+      expect(two.b.editMessage(chatId, sent.messageId, 'Hola de nuevo')).toBe(true);
+      const after = await (await fetch(`${two.url()}messages?session=${encodeURIComponent(a.session)}&since=${j.seq}`)).json();
+      expect(after.messages.map((m) => [m.id, m.text])).toEqual([[sent.messageId, 'Hola de nuevo']]);
+      const b = await (await two.post({ session: a.session, text: 'sigo' })).json();
+      expect(b.message.seq).toBeGreaterThan(after.seq);
+      expect(j.messages.map((m) => m.id)).not.toContain(b.message.id);
+      await two.b.stop();
+    } finally { await rm(stateDir, { recursive: true, force: true }); }
+  });
+
+  it('an expired session\'s history file is removed, and a file with no session is pruned at start', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-state-'));
+    let t = Date.UTC(2026, 9, 26);
+    try {
+      const one = await limb(undefined, { stateDir, now: () => t });
+      const a = await (await one.post({ text: 'hola' })).json();
+      t += 31 * 24 * 3600_000;
+      await one.post({ session: a.session, text: 'sigo aquí' });
+      await one.b.stop();
+      const [oldChat, newChat] = one.got.map((g) => g.from.chatId.slice(-16));
+      expect(await readdir(join(stateDir, 'http-messages'))).toEqual([`${newChat}.json`]);
+      expect(oldChat).not.toBe(newChat);
+
+      await writeFile(join(stateDir, 'http-messages', 'ffffffffffffffff.json'), '[]');
+      const two = await limb(undefined, { stateDir, now: () => t });
+      await two.b.stop();
+      expect(await readdir(join(stateDir, 'http-messages'))).toEqual([`${newChat}.json`]);
     } finally { await rm(stateDir, { recursive: true, force: true }); }
   });
 
@@ -298,6 +350,19 @@ describe('widget.js and routing', () => {
     expect(js).toContain('"send":"Mandar"');
     expect(js).toContain(JSON.stringify(HTTP_STRINGS.placeholder));
     expect(() => new Function(js)).not.toThrow();
+  });
+
+  it('widget.js is a Deep Chat loader: the pinned bundle with its integrity, wired to messages and events', async () => {
+    const { url } = await limb();
+    const js = await (await fetch(`${url()}widget.js`)).text();
+    expect(DEEP_CHAT.url).toMatch(/^https:\/\/cdn\.jsdelivr\.net\/npm\/deep-chat@\d+\.\d+\.\d+\/dist\/deepChat\.bundle\.js$/);
+    expect(DEEP_CHAT.integrity).toMatch(/^sha384-[A-Za-z0-9+/]{64}$/);
+    expect(js).toContain(JSON.stringify(DEEP_CHAT));
+    expect(js).toContain("createElement('deep-chat')");
+    expect(js).toContain("base + 'messages?session='");
+    expect(js).toContain("base + 'events?session='");
+    expect(js).toContain("fetch(base + 'messages', { method: 'POST'");
+    expect(js).toContain('"client":"acme"');
   });
 
   it('an unknown client or path is 404', async () => {
