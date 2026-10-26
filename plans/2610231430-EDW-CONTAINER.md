@@ -631,3 +631,7 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Bug:** a /split fork of a SANDBOXED being can't resume its copied thread (EDW keeps boxed sessions per thread and cwd, ~/.egpt-jsonl/<thread>/projects/<cwd-slug>/). "the --resume target is gone, so no turn ran", and the user's message was dropped.
   - Hand fix: ED's threadIds cleared in EduWeb's topic entries /55, /42, /66 (backups conversations.yaml.pre-forkreset-*); the next message starts fresh.
   - Code fix added to the /split agent (feat/no-turn-limits): a fork copies the session where the fork's turn looks, and a missing resume target starts a fresh session instead of dropping the turn.
+- **Ruling: /split forks share the parent's folder** (operator: "/split groups are not using the same folder as main conversation").
+  - Live: ED in topic "an" (own folder an-2610261304) had no files, keys or history, and its commands needed approval (no inherited access_level).
+  - Design: the same conversation_path as the parent (same box uid, desktop, .ssh, tools); its own thread diverging at the split; its own transcript file in the folder (transcript-<fork>.md); per-being settings inherited; the thread resumable.
+  - Sent to the /split agent (feat/no-turn-limits), with the existing EDW forks /42, /55, /66 to re-point afterwards.
