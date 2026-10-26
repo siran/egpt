@@ -680,3 +680,10 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Pending: a daemon restart on kg/do** (chrome-host reloads only with the daemon). Until then the old daemon refuses the plain launch ("not a pipe Chrome") after eGPT's Chrome has closed; harmless, it relaunches on need. The restart ends sessions, background agents and Chromes: pick a quiet moment.
 - Known gap: a spine restart while a sign-in window is open keeps the hold (re-read from the daemon's list) but loses the chat for the "back" line.
 - Flake: tests/transcriptor.test.mjs "rejects … signatures" fails ~1 in 3 with fetch "bad port"; fix dispatched (fix/transcriptor-flake).
+- **13:40 — suite flakes fixed (75211980, tests only):**
+  - "bad port": reve's ephemeral range is 1024–15000, which holds 19 of fetch's blocked ports. listen(0) sometimes handed one out, and fetch refused it before connecting. This was never load.
+  - The fix: one shared tests/free-safe-http-port.mjs (cdp-proxy's helper moved, list completed with 4190, 6679). 12 test files bind it, and the vitest.config comment is corrected.
+  - Forced repro near a blocked cluster: the old files failed 14/45, the converted ones 0/45.
+  - telegram-topics' move test now waits for the reply's transcript line.
+  - Full suite 2×7676/7676.
+  - Optional machine fix (operator, admin): `netsh int ipv4 set dynamicport tcp start=49152 num=16384`.
