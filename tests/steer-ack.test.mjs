@@ -2,24 +2,24 @@
 // (operator 2026-09-09, live 1:1 `Joyce Vicente-2606301852`).
 //
 // WHAT HAPPENED. Four messages arrived while a turn was "running"; each was steered, each got a
-// 👀, and no reply ever came. Measured on the box afterwards: the sandboxed claude.exe had NO
+// 👍, and no reply ever came. Measured on the box afterwards: the sandboxed claude.exe had NO
 // CHILDREN and ~350s of CPU over 21 hours — idle, not hung. The turn had ended as far as the CLI
 // was concerned; the pool's `busy` flag never cleared, so the live-turn register kept admitting
 // new input, and every message was folded into a turn that was already over.
 //
 // WHY EVERY LAYER REPORTED SUCCESS. `inject()` wrote a user line to a LIVE process's stdin and
 // returned true. A write to a live pipe succeeds whether or not anything on the other end ever
-// reads it — so `true` meant SENT, never RECEIVED, and the 👀 sitting on top of it was a claim
+// reads it — so `true` meant SENT, never RECEIVED, and the 👍 sitting on top of it was a claim
 // about the model that nothing had checked. Operator: "nothing in eGPT can be allowed to lie".
 //
 // THE TWO REACTIONS, AND WHY THEY ARE A PAIR (operator 2026-09-09):
-//   📩  the BRIDGE has it. Placed on arrival, for a message destined for an agent. It claims
+//   ✍️  the BRIDGE has it. Placed on arrival, for a message destined for an agent. It claims
 //       receipt and nothing else, so it is honest by construction.
-//   👀  the MODEL took it. Placed only on real evidence of ingestion — never on a write.
-// 📩 with no 👀 following is now a VISIBLE SYMPTOM, in the chat, at the time. In the Joyce
-// incident that is exactly what the operator would have seen instead of four confident 👀s.
+//   👍  the MODEL took it. Placed only on real evidence of ingestion — never on a write.
+// ✍️ with no 👍 following is now a VISIBLE SYMPTOM, in the chat, at the time. In the Joyce
+// incident that is exactly what the operator would have seen instead of four confident 👍s.
 //
-// THE EVIDENCE THE 👀 NOW RIDES ON, measured 2026-09-09 against the real
+// THE EVIDENCE THE 👍 NOW RIDES ON, measured 2026-09-09 against the real
 // `claude --input-format stream-json` CLI (claude.exe 2.x, this box):
 //   `--replay-user-messages` — "Re-emit user messages from stdin back on stdout for
 //   acknowledgment". A line written to a live stdin comes back on stdout as
@@ -99,7 +99,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
     let acked = null;
     handed.ack.then((r) => { acked = r; });
     await flush();
-    expect(acked).toBe(null);            // …and NOTHING has acknowledged it. No 👀 may be placed.
+    expect(acked).toBe(null);            // …and NOTHING has acknowledged it. No 👍 may be placed.
     s.close();
   });
 
@@ -270,7 +270,7 @@ describe('warm pool — steer refuses loudly, and never on a write alone', () =>
 });
 
 // ── THE PAIR, WHERE THE CHAT SEES IT ───────────────────────────────────────────────────────────
-describe('turns.steerLiveTurn — 📩 is the bridge, 👀 is the model', () => {
+describe('turns.steerLiveTurn — ✍️ is the bridge, 👍 is the model', () => {
   const KEY = 'e:wa:chat-1';
   const EV = { surface: 'wa', chatId: 'chat-1', senderId: 'an', senderName: 'An', body: 'actually do X', msgId: 'm2' };
   const LIVE = { senderId: 'an', chatId: 'chat-1' };
@@ -287,54 +287,54 @@ describe('turns.steerLiveTurn — 📩 is the bridge, 👀 is the model', () => 
     return { turns, reactions, notes };
   }
 
-  it('THE JOYCE SHAPE END TO END: 📩 lands, the steer is never acknowledged, and NO 👀 is placed', async () => {
+  it('THE JOYCE SHAPE END TO END: ✍️ lands, the steer is never acknowledged, and NO 👍 is placed', async () => {
     let settle;
     const ack = new Promise((r) => { settle = r; });
     const { turns, reactions, notes } = harness(() => ({ ack }));
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await flush();
-    expect(reactions).toEqual([{ chatId: 'chat-1', msgId: 'm2', emoji: '📩' }]);   // receipt, and ONLY receipt
+    expect(reactions).toEqual([{ chatId: 'chat-1', msgId: 'm2', emoji: '✍️' }]);   // receipt, and ONLY receipt
 
-    // The model never took it. The chat is left showing 📩 with no 👀 — the visible symptom —
+    // The model never took it. The chat is left showing ✍️ with no 👍 — the visible symptom —
     // and the log says it in words rather than reporting a success.
     settle({ ok: false, reason: 'the turn ended before the CLI ingested it' });
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩']);
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️']);
     expect(notes.join('\n')).toMatch(/NEVER INGESTED/);
     expect(notes.join('\n')).toMatch(/the turn ended before the CLI ingested it/);
   });
 
-  it('the healthy shape: 📩 first, then 👀 — in that order, and only after real evidence', async () => {
+  it('the healthy shape: ✍️ first, then 👍 — in that order, and only after real evidence', async () => {
     let settle;
     const ack = new Promise((r) => { settle = r; });
     const { turns, reactions, notes } = harness(() => ({ ack }));
 
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩']);         // the 👀 has NOT been placed yet
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️']);         // the 👍 has NOT been placed yet
     settle({ ok: true });
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩', '👀']);
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️', '👍']);
     expect(reactions.every((r) => r.chatId === 'chat-1' && r.msgId === 'm2')).toBe(true);
     expect(notes.join('\n')).toMatch(/the model took the steered message/);
   });
 
-  it('a steer that reports success with NO evidence gets 📩 and never a 👀', async () => {
+  it('a steer that reports success with NO evidence gets ✍️ and never a 👍', async () => {
     const { turns, reactions } = harness(() => true);              // the old contract, bare
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩']);
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️']);
   });
 
-  // The 📩 does not depend on the steer, which is the entire reason it is honest. A steer that
-  // could not be handed over queues instead (unchanged), and the sender sees 📩 + the ordinary
-  // queued placeholder — never a 👀, because nothing took it.
-  it('nothing was handed over at all: 📩 still stands, no 👀, the caller queues, and it says why', async () => {
+  // The ✍️ does not depend on the steer, which is the entire reason it is honest. A steer that
+  // could not be handed over queues instead (unchanged), and the sender sees ✍️ + the ordinary
+  // queued placeholder — never a 👍, because nothing took it.
+  it('nothing was handed over at all: ✍️ still stands, no 👍, the caller queues, and it says why', async () => {
     const { turns, reactions, notes } = harness(() => false);
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(false);
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩']);
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️']);
     expect(notes.join('\n')).toMatch(/steer FAILED/);
     expect(notes.join('\n')).toMatch(/queueing it instead/);
   });
@@ -349,7 +349,7 @@ describe('turns.steerLiveTurn — 📩 is the bridge, 👀 is the model', () => 
     expect(reactions).toEqual([]);
   });
 
-  it('THE 21:33 SHAPE END TO END: the CLI absorbs the rewritten line — 👀 placed, no "never ingested"', async () => {
+  it('THE 21:33 SHAPE END TO END: the CLI absorbs the rewritten line — 👍 placed, no "never ingested"', async () => {
     const f = fakeClaude();
     const pool = createWarmPool({ makeSession: (o) => createWarmCliSession({ ...o, spawn: f.spawn }) });
     const run = pool.run('k', 'ORIGINAL');
@@ -361,7 +361,7 @@ describe('turns.steerLiveTurn — 📩 is the bridge, 👀 is the model', () => 
     f.result('done');
     await run;
     await flush();
-    expect(reactions.map((r) => r.emoji)).toEqual(['📩', '👀']);
+    expect(reactions.map((r) => r.emoji)).toEqual(['✍️', '👍']);
     expect(notes.join('\n')).not.toMatch(/NEVER INGESTED/);
   });
 

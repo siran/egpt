@@ -158,7 +158,7 @@ function fakeMouth({ route = async () => AS_PRIMARY, answer = { ok: true, chatId
     calls,
     mouth: {
       async route(chatId) { calls.route.push(chatId); return route(chatId); },
-      // THE 👀 THROUGH THE PEER — boot's makePeerMouth.react, which hands the whole thing to
+      // THE 👍 THROUGH THE PEER — boot's makePeerMouth.react, which hands the whole thing to
       // reactThroughPeer. What the real one does over a real socket is locked in
       // tests/peer-mouth.test.mjs; what matters here is WHAT the sender/turns ask it and what they
       // do with each answer.
@@ -752,23 +752,23 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     expect(logs.some((l) => l.includes('[secondary]') && l.includes('ambiguous'))).toBe(true);
   });
 
-  // ── AND THE 👀, END TO END (operator 2026-09-07) ─────────────────────────────────────────────
+  // ── AND THE 👍, END TO END (operator 2026-09-07) ─────────────────────────────────────────────
   // The whole path, composed: the REAL steer machinery, boot's REAL makePeerMouth, the REAL
   // cross-account chat and message keys, and the REAL receiving verb table. Only the socket is
   // stood in for. This is the case that had no answer before the verb existed — the ack was
   // suppressed and the reader saw nothing — and it is the one the operator asked to be placed by
   // the account that actually answers.
   const KEY = 'e:wa:chat-1';
-  // `{ ack }`, not a bare `true` (2026-09-09): the 👀 is placed only on the session's own word
-  // that the MODEL took the line, so a fake claiming success without evidence would get 📩 and
-  // no 👀 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
+  // `{ ack }`, not a bare `true` (2026-09-09): the 👍 is placed only on the session's own word
+  // that the MODEL took the line, so a fake claiming success without evidence would get ✍️ and
+  // no 👍 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
   const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => ({ ack: Promise.resolve({ ok: true }) }) });
   const STEER_EV = {
     surface: 'wa', chatId: CHAT_ID, senderId: 'marina', senderName: 'marina', body: STEERED_TEXT,
     msgId: STEERED_ON_PRIMARY.id, msgHash: STEERED_KEY, msgTs: STEERED_TS,
   };
 
-  it("the 👀 lands on the SECONDARY's own copy of the message — 1118, never the brain's 2901", async () => {
+  it("the 👍 lands on the SECONDARY's own copy of the message — 1118, never the brain's 2901", async () => {
     const { sender, bridge, mouth, reacted, listed, logs } = twoSpines();
     const notes = [];
     const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth, log: { line: (s) => notes.push(s) } });
@@ -779,18 +779,18 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     // …and a message steered into that live turn is acknowledged by the SAME account.
     turns.setLive(KEY, { senderId: 'an', chatId: CHAT_ID });
     expect(await turns.steerLiveTurn({ to: 'e', ev: STEER_EV, turnKey: KEY })).toBe(true);
-    await settled();                                          // the 👀 waits on the model's ack
+    await settled();                                          // the 👍 waits on the model's ack
 
     // BOTH reactions, on the SECONDARY's own copy and in order: the bridge's receipt, then the
     // model's acknowledgement. Neither ever lands on the account that is not answering.
     expect(reacted).toEqual([
-      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '📩' },
-      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👀' },
+      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '✍️' },
+      { chatId: SECONDARY_CHAT_ID, msgId: '1118', emoji: '👍' },
     ]);
     expect(listed).toEqual([SECONDARY_CHAT_ID, SECONDARY_CHAT_ID]);
     expect(bridge.reactions).toEqual([]);                     // nothing from the account not answering
-    expect(logs.some((l) => l.includes('[secondary]') && /placed a peer's 👀 on HuXFQeZSY1X4khNDWTzz\/1118/.test(l))).toBe(true);
-    expect(notes.join('\n')).toMatch(/placed the 👀 on its own copy/);
+    expect(logs.some((l) => l.includes('[secondary]') && /placed a peer's 👍 on HuXFQeZSY1X4khNDWTzz\/1118/.test(l))).toBe(true);
+    expect(notes.join('\n')).toMatch(/placed the 👍 on its own copy/);
 
     await out.finish({ text: 'done' });
   });
@@ -808,8 +808,8 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     expect(reacted).toEqual([]);
     expect(bridge.reactions).toEqual([]);
     expect(logs.some((l) => l.includes('[secondary]') && /REFUSING to react.*no-match/.test(l))).toBe(true);
-    expect(notes.join('\n')).toMatch(/could not place the 📩 \(no-match/);
-    expect(notes.join('\n')).toMatch(/could not place the 👀 \(no-match/);
+    expect(notes.join('\n')).toMatch(/could not place the ✍️ \(no-match/);
+    expect(notes.join('\n')).toMatch(/could not place the 👍 \(no-match/);
   });
 
   it('two identical bodies at the same instant on the secondary: nobody reacts, and it says which two', async () => {
@@ -826,10 +826,10 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     expect(reacted).toEqual([]);
     expect(bridge.reactions).toEqual([]);
     expect(logs.some((l) => l.includes('[secondary]') && /ambiguous: 2 messages key alike \(1118, 1200\)/.test(l))).toBe(true);
-    expect(notes.join('\n')).toMatch(/could not place the 👀 \(ambiguous/);
+    expect(notes.join('\n')).toMatch(/could not place the 👍 \(ambiguous/);
   });
 
-  it('a chat the peer is NOT in: the reply is local and so is the 👀 — the two never disagree', async () => {
+  it('a chat the peer is NOT in: the reply is local and so is the 👍 — the two never disagree', async () => {
     const { sender, bridge, mouth, reacted } = twoSpines({ primaryChat: NO_PEER_CHAT });
     const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth });
     sender.open(CHAT_ID, { being: 'e' });
@@ -840,8 +840,8 @@ describe('end to end: a reply in the primary\'s room is streamed in the SECONDAR
     await settled();
     expect(reacted).toEqual([]);                                     // the peer was never asked
     expect(bridge.reactions).toEqual([
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '✍️' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' },
     ]);
   });
 });
@@ -951,16 +951,16 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
 
     // The SPEAKING half opens trains as well as routing them — the sender calls exactly this.
     expect(typeof app.peerMouth.startStream).toBe('function');
-    // …and places the steer 👀 through the peer — src/spine/turns.mjs calls exactly this.
+    // …and places the steer 👍 through the peer — src/spine/turns.mjs calls exactly this.
     expect(typeof app.peerMouth.react).toBe('function');
 
     app.stop();
   });
 });
 
-// ── 6. THE 👀 RIDES THE SAME MOUTH THE REPLY DOES (operator 2026-09-07) ─────────────────────────
+// ── 6. THE 👍 RIDES THE SAME MOUTH THE REPLY DOES (operator 2026-09-07) ─────────────────────────
 // THE LIVE FAULT. In a WhatsApp group where BOTH accounts are present, a message steered into a
-// running turn got its 👀 acknowledgement from the PRIMARY account while the ANSWER arrived from
+// running turn got its 👍 acknowledgement from the PRIMARY account while the ANSWER arrived from
 // the SECONDARY. The read receipt and the reply disagreed — which is exactly what gives away that
 // the primary is the account really listening.
 //
@@ -970,7 +970,7 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
 // `makeOutbound` is now the single answer to "which connection does this outbound go out on", and
 // the steer ack asks it too, so the two can never disagree again.
 //
-// WHERE THE ACK GOES, AND THE ONE RELEASE IT WENT NOWHERE (operator 2026-09-07). The 👀 sits on the
+// WHERE THE ACK GOES, AND THE ONE RELEASE IT WENT NOWHERE (operator 2026-09-07). The 👍 sits on the
 // INBOUND MESSAGE, and the two accounts see one real message as two different Matrix events in two
 // different rooms — id 2901 here, 1118 there, measured. No Beeper message id crosses the mouth
 // link, by design, so for one release the fix above SUPPRESSED the ack on a peer route: the peer
@@ -980,12 +980,12 @@ describe('boot — a node with no peer_spine builds neither half, and one with i
 // answer goes, placed by the peer on ITS OWN copy.
 //
 // SUPPRESSION IS NOW THE FALLBACK, NOT THE ANSWER, and every case below that ends in silence is
-// that floor being held: a missing 👀 is cosmetic, a 👀 from the wrong account is the bug.
+// that floor being held: a missing 👍 is cosmetic, a 👍 from the wrong account is the bug.
 describe('the steer ack rides the same mouth the reply does', () => {
   const KEY = 'e:wa:chat-1';
-  // `{ ack }`, not a bare `true` (2026-09-09): the 👀 is placed only on the session's own word
-  // that the MODEL took the line, so a fake claiming success without evidence would get 📩 and
-  // no 👀 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
+  // `{ ack }`, not a bare `true` (2026-09-09): the 👍 is placed only on the session's own word
+  // that the MODEL took the line, so a fake claiming success without evidence would get ✍️ and
+  // no 👍 at all. See tests/steer-ack.test.mjs for the Joyce fault that split the two.
   const steerable = () => ({ async allowNewInput() { return 'any'; }, steer: () => ({ ack: Promise.resolve({ ok: true }) }) });
   // The steered message as the BRAIN's account sees it: its own local id, plus the two fields the
   // bridge mints for naming it across accounts (beeper.crossAccountMsgKey / the payload timestamp).
@@ -995,7 +995,7 @@ describe('the steer ack rides the same mouth the reply does', () => {
   };
   const LIVE = { senderId: 'an', chatId: CHAT_ID };
 
-  it('the peer IS in the chat: the PEER places the 👀 and this account places none', async () => {
+  it('the peer IS in the chat: the PEER places the 👍 and this account places none', async () => {
     const { calls, mouth } = fakeMouth();
     const bridge = fakeBridge();
     const notes = [];
@@ -1016,13 +1016,13 @@ describe('the steer ack rides the same mouth the reply does', () => {
     // the SAME chat payload the route handed back, naming the message by content + timestamp.
     await settled();
     expect(calls.reacts).toEqual([
-      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '📩' },
-      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' },
+      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '✍️' },
+      { chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👍' },
     ]);
     // …and nothing at all on the account that is not answering.
     expect(bridge.reactions).toEqual([]);
-    expect(notes.filter((l) => /steer-ack/.test(l) && /placed the 📩 on its own copy/.test(l))).toHaveLength(1);
-    expect(notes.filter((l) => /steer-ack/.test(l) && /placed the 👀 on its own copy/.test(l))).toHaveLength(1);
+    expect(notes.filter((l) => /steer-ack/.test(l) && /placed the ✍️ on its own copy/.test(l))).toHaveLength(1);
+    expect(notes.filter((l) => /steer-ack/.test(l) && /placed the 👍 on its own copy/.test(l))).toHaveLength(1);
 
     await out.finish({ text: 'done' });
     expect(bridge.sent).toHaveLength(0);
@@ -1044,7 +1044,7 @@ describe('the steer ack rides the same mouth the reply does', () => {
       expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);   // the weave still landed
       await settled();
       expect(bridge.reactions, `${refusal.reason} must not fall back to this account`).toEqual([]);
-      const line = notes.find((l) => /steer-ack/.test(l) && /could not place the 👀/.test(l));
+      const line = notes.find((l) => /steer-ack/.test(l) && /could not place the 👍/.test(l));
       expect(line).toContain(refusal.reason);
       expect(line).toMatch(/no reaction from this account either/);
     }
@@ -1062,7 +1062,7 @@ describe('the steer ack rides the same mouth the reply does', () => {
     await settled();
     expect(bridge.reactions).toEqual([]);
     expect(notes.join('\n')).toMatch(/asking the peer to react threw — the link exploded/);
-    expect(notes.join('\n')).toMatch(/could not place the 👀/);
+    expect(notes.join('\n')).toMatch(/could not place the 👍/);
   });
 
   it('a message with NO cross-account key (no body, no sized attachment) is refused by the link, and nobody reacts', async () => {
@@ -1078,14 +1078,14 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(await turns.steerLiveTurn({ to: 'e', ev: { ...EV, msgHash: null, msgTs: null }, turnKey: KEY })).toBe(true);
     await settled();
     expect(calls.reacts).toEqual([
-      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '📩' },
-      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '👀' },
+      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '✍️' },
+      { chat: AS_PRIMARY, msgKey: null, timestamp: null, emoji: '👍' },
     ]);
     expect(bridge.reactions).toEqual([]);
-    expect(notes.join('\n')).toMatch(/could not place the 👀 \(no-key/);
+    expect(notes.join('\n')).toMatch(/could not place the 👍 \(no-key/);
   });
 
-  it('the peer is NOT in the chat: the reply is local and the 👀 goes out here, exactly as before', async () => {
+  it('the peer is NOT in the chat: the reply is local and the 👍 goes out here, exactly as before', async () => {
     const { calls, mouth } = fakeMouth({ route: async () => null });
     const bridge = fakeBridge();
     const turns = createTurns({ brain: steerable(), bridge, peerMouth: mouth });
@@ -1100,15 +1100,15 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await settled();
     expect(bridge.reactions).toEqual([                                                                   // …so both are this account's too
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '✍️' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' },
     ]);
     await out.finish({ text: 'done' });
   });
 
   // The single-account path (operator 2026-10-18): the only account is the operator's, so the
   // mechanical acks are skipped, never posted as reactions or text.
-  it('NO mouth on this node: the steer still lands, and neither 📩 nor 👀 is placed — logged', async () => {
+  it('NO mouth on this node: the steer still lands, and neither ✍️ nor 👍 is placed — logged', async () => {
     const bridge = fakeBridge();
     const notes = [];
     const turns = createTurns({ brain: steerable(), bridge, log: { line: (s) => notes.push(s) } });
@@ -1122,7 +1122,7 @@ describe('the steer ack rides the same mouth the reply does', () => {
   });
 
   // A Telegram bot is the being's OWN account (EDW): its limb says so, and the acks are placed on it.
-  it('NO mouth, but the limb\'s account is the being\'s own (beingAccount): 📩 and 👀 are placed on it', async () => {
+  it('NO mouth, but the limb\'s account is the being\'s own (beingAccount): ✍️ and 👍 are placed on it', async () => {
     const bridge = { ...fakeBridge(), beingAccount: true };
     const reactions = [];
     bridge.react = async (chatId, msgId, emoji) => { reactions.push({ chatId, msgId, emoji }); return true; };
@@ -1132,8 +1132,8 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await settled();
     expect(reactions).toEqual([
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '✍️' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' },
     ]);
   });
 
@@ -1147,15 +1147,15 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(await turns.steerLiveTurn({ to: 'e', ev: EV, turnKey: KEY })).toBe(true);
     await settled();
     expect(bridge.reactions).toEqual([
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '✍️' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' },
     ]);
     expect(notes.filter((l) => /could not decide the route/.test(l))).toHaveLength(2);   // asked once per reaction
   });
 
-  // The 2026-10-14 📩/👀 outbreak: a LOCAL mouth not in the chat, so the ack fell back to the ear and
+  // The 2026-10-14 ✍️/👍 outbreak: a LOCAL mouth not in the chat, so the ack fell back to the ear and
   // came back as the operator's own reaction. Now neither account acks.
-  it('a LOCAL mouth that is not in this chat: no 📩/👀 from the ear either, and the log says why', async () => {
+  it('a LOCAL mouth that is not in this chat: no ✍️/👍 from the ear either, and the log says why', async () => {
     const { ear, mouthBridge, peerMouth } = earAndMouth({ mouthIsMember: false });
     const notes = [];
     const turns = createTurns({ brain: steerable(), bridge: ear, peerMouth, log: { line: (s) => notes.push(s) } });
@@ -1180,8 +1180,8 @@ describe('the steer ack rides the same mouth the reply does', () => {
     expect(await turns.steerLiveTurn({ to: 'rodz', ev: EV, turnKey: 'rodz:wa:chat-1' })).toBe(true);
     await settled();
     expect(rodz.reactions).toEqual([
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '📩' },
-      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👀' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '✍️' },
+      { chatId: CHAT_ID, msgId: STEERED_ON_PRIMARY.id, emoji: '👍' },
     ]);
     expect(main.reactions).toEqual([]);
   });
@@ -1797,7 +1797,7 @@ describe("an ordinary reply quotes the mouth's own copy of the message it answer
 
 // ── 10d. THE MOUTH'S OWN COPY, FROM ITS ARRIVAL ALONE (live 2026-10-18, reve) ────────────────────
 // "e" from the operator's Beeper client: the ear's copy carries ms (…16.013Z), the mouth's arrives
-// ~0.8s later truncated (…16.000Z). The waiter compared the timestamp exactly, so the 📩 / quote
+// ~0.8s later truncated (…16.000Z). The waiter compared the timestamp exactly, so the ✍️ / quote
 // found nothing; with an older "e" in the chat it picked the old one, or refused both. The copy is
 // now taken from the mouth's arrival record only (no GET), matched to the second.
 describe("the mouth's own copy is found by its arrival, to the second — never by a search", () => {
@@ -1832,7 +1832,7 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
   const on = (id, ...emojis) => emojis.map((emoji) => ({ chatId: SECONDARY_CHAT_ID, msgId: id, emoji }));
   afterEach(() => vi.useRealTimers());
 
-  it('THE REPRODUCTION (21:33): the copy lands 800ms after the lookup, ms vs whole second — the 📩 goes on it', async () => {
+  it('THE REPRODUCTION (21:33): the copy lands 800ms after the lookup, ms vs whole second — the ✍️ goes on it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { ear, mouthBridge, mouthListed, arrive, steer } = steerNode();
     const steered = steer();
@@ -1840,7 +1840,7 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
     arrive(NEW_E);
     await vi.advanceTimersByTimeAsync(1500);
     expect(await steered).toBe(true);
-    expect(mouthBridge.reactions).toEqual(on('14688', '📩', '👀'));
+    expect(mouthBridge.reactions).toEqual(on('14688', '✍️', '👍'));
     expect(ear.reactions).toEqual([]);
     expect(mouthListed).toEqual([]);                      // no search
   });
@@ -1851,7 +1851,7 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
     const steered = steer();
     await vi.advanceTimersByTimeAsync(10);
     expect(await steered).toBe(true);
-    expect(mouthBridge.reactions).toEqual(on('14688', '📩', '👀'));
+    expect(mouthBridge.reactions).toEqual(on('14688', '✍️', '👍'));
     expect(mouthListed).toEqual([]);
   });
 
@@ -1864,7 +1864,7 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
     arrive(NEW_E);
     await vi.advanceTimersByTimeAsync(1500);
     expect(await steered).toBe(true);
-    expect(mouthBridge.reactions).toEqual(on('14688', '📩', '👀'));
+    expect(mouthBridge.reactions).toEqual(on('14688', '✍️', '👍'));
     expect(mouthListed).toEqual([]);
   });
 
@@ -1887,12 +1887,12 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
     const { ear, mouthBridge, mouthListed, notes, steer } = steerNode([OLD_E]);
     const steered = steer();
     await vi.advanceTimersByTimeAsync(999);
-    expect(notes.join('\n')).not.toMatch(/could not place the 📩/);
+    expect(notes.join('\n')).not.toMatch(/could not place the ✍️/);
     await vi.advanceTimersByTimeAsync(2000);
     expect(await steered).toBe(true);
     expect(mouthBridge.reactions).toEqual([]);
     expect(ear.reactions).toEqual([]);
-    expect(notes.join('\n')).toMatch(/could not place the 📩 \(no-match: .*nor did it arrive within 1000ms\)/);
+    expect(notes.join('\n')).toMatch(/could not place the ✍️ \(no-match: .*nor did it arrive within 1000ms\)/);
     expect(mouthListed).toEqual([]);
   });
 
@@ -1904,7 +1904,7 @@ describe("the mouth's own copy is found by its arrival, to the second — never 
     expect(await steered).toBe(true);
     expect(mouthBridge.reactions).toEqual([]);
     expect(ear.reactions).toEqual([]);
-    expect(notes.join('\n')).toMatch(/could not place the 📩 \(ambiguous: .*refusing to pick/);
+    expect(notes.join('\n')).toMatch(/could not place the ✍️ \(ambiguous: .*refusing to pick/);
   });
 });
 
@@ -2001,7 +2001,7 @@ describe('the one placement takes a reaction back off, on the account that place
     expect(dialled).toBe(0);
   });
 
-  // REGRESSION LOCK: the steer 👀 and /react on a TEXT message ask the mouth exactly what they asked
+  // REGRESSION LOCK: the steer 👍 and /react on a TEXT message ask the mouth exactly what they asked
   // before — no `remove` on the frame, and nothing is ever taken back off.
   it('/react and the steer ack on a text message are unchanged: added once, never removed', async () => {
     const { ear, mouthBridge, react } = earAndMouth();
@@ -2012,8 +2012,8 @@ describe('the one placement takes a reaction back off, on the account that place
 
     const { calls, mouth } = fakeMouth();
     const out = makeOutbound({ bridge: fakeBridge(), peerMouth: mouth })('e', CHAT_ID);
-    await out.react(STEERED_ON_PRIMARY.id, '👀', () => ({ msgKey: STEERED_KEY, timestamp: STEERED_TS }), 'steer-ack');
-    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👀' }]);
+    await out.react(STEERED_ON_PRIMARY.id, '👍', () => ({ msgKey: STEERED_KEY, timestamp: STEERED_TS }), 'steer-ack');
+    expect(calls.reacts).toEqual([{ chat: AS_PRIMARY, msgKey: STEERED_KEY, timestamp: STEERED_TS, emoji: '👍' }]);
   });
 });
 
