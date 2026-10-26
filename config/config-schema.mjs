@@ -1809,7 +1809,13 @@ export const CONFIG_SCHEMA = {
         See src/spine/config-resolver.mjs.
       actions
         OPTIONAL list (operator 2026-10-15) of the spine-executed limbs this
-        agent may emit: book, email (top-level book: / email:). Absent = none:
+        agent may emit: book, email (top-level book: / email:), group
+        (2026-10-26: /group photo <path> | title <text> | description <text>
+        sets THIS chat's own photo, title or description; a Telegram topic's
+        are its group's; the bot must be an admin with "Change group info";
+        the photo is a file in the conversation folder, checked like /media;
+        outcome set | failed (+ Telegram's reason) | not-supported (not a
+        Telegram chat), returned to the being as a wake turn). Absent = none:
         the verb is refused and logged, never run.
       public
         OPTIONAL Boolean (operator 2026-10-15). true = a public-facing agent

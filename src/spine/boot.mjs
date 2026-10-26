@@ -83,7 +83,7 @@ import { createCommands, loginProfilePathOf } from './commands.mjs';
 import { createLoginLimb } from './login.mjs';
 import { readChromeCredential } from '../tools/chrome-creds.mjs';
 import { createBeingLink } from './being-link.mjs';
-import { createReplyActions } from './reply-actions.mjs';
+import { createReplyActions, confinedFile } from './reply-actions.mjs';
 import { createEmail } from './email.mjs';
 import { createBookLimb } from './book.mjs';
 import { createAdvice } from './advice.mjs';
@@ -229,7 +229,7 @@ export const LIMB_ROUTED_METHODS = [
   'send', 'startStream', 'postStatus', 'editStatus', 'deleteStatus', 'react', 'unreact', 'sendMedia',
   'editOwn', 'editMessage', 'wasSentByUs', 'sendFailure', 'chatHasParticipant', 'getChatName',
   'postVerbatim', 'startStreamVerbatim', 'chatRaw', 'listMessagesRaw', 'recentMessages', 'awaitMessage',
-  'archiveChat', 'resolveChatId', 'createGroup',
+  'archiveChat', 'resolveChatId', 'createGroup', 'setChatInfo',
 ];
 export function makeLimbAwareBridge(bridge, ...limbs) {
   if (!limbs.length) return bridge;
@@ -3439,7 +3439,20 @@ export async function boot({
   // outcome returns to the being through the background wake (spine.wakeOnBackground).
   const mail = createEmail({ getConfig, fetch: fetchFn, readTranscript: (ev) => readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface }), now, log: (m) => log.line?.(`[email] ${m}`) });
   const bookLimb = createBookLimb({ getConfig, fetch: fetchFn, ses: mail.ses, missingMail: mail.missing, now, log: (m) => log.line?.(`[book] ${m}`) });
-  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: (r) => spineLate?.wakeOnBackground(r), onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), onLog: (m) => log.line?.(`[actions] ${m}`) });
+  // /group (2026-10-26): ev.chatId's own photo/title/description, on the bridge that holds the chat. The
+  // photo passes the /media containment check; a bridge without setChatInfo (Beeper) answers null.
+  const groupLimb = async (a, ev, being) => {
+    let info = { [a.what]: a.value };
+    if (a.what === 'photo') {
+      const f = confinedFile(await resolveConvDir(ev), a.value);
+      if (!f.ok) return { outcome: 'failed', detail: f.reason };
+      info = { photo: f.path };
+    }
+    const r = await rawBridgeOf(being, ev.chatId).setChatInfo?.(ev.chatId, info);
+    if (r == null) return { outcome: 'not-supported', detail: `this chat's bridge cannot change a group's ${a.what} (Telegram groups only)` };
+    return r.ok ? { outcome: 'set' } : { outcome: 'failed', detail: r.reason };
+  };
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: (r) => spineLate?.wakeOnBackground(r), onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's

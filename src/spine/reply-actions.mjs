@@ -46,6 +46,9 @@
 //   - /book and /email run ONLY for a being whose agents.<name>.actions lists them, and reach
 //     only config-fixed recipients (src/spine/book.mjs, src/spine/email.mjs). Their outcome
 //     returns to the being as a wake turn (spine.wakeOnBackground).
+//   - /group (2026-10-26) is gated the same way and changes ONLY ev.chatId's own photo, title or
+//     description (a Telegram topic's are its group's); its photo passes the /media containment
+//     check (confinedFile). A bridge without setChatInfo (Beeper) answers not-supported.
 //
 // EMIT SYNTAX (documented for E in config/skeletons/room/10-actions.md — a SPINE
 // CONTRACT that feeds EVERY being independent of identity, operator 2026-07-06):
@@ -57,6 +60,9 @@
 //   /ask <question>            (mode: auto) consult the operator in the advice channel
 //   /book <YYYY-MM-DD> <HH:MM> <summary>   book a demo on the team calendar (enabled agents only)
 //   /email <text>              send a lead summary to the team (enabled agents only)
+//   /group photo <path>        set this chat's photo from a file in this conversation's folder
+//   /group title <text>        set this chat's title
+//   /group description <text>  set this chat's description (enabled agents only, all three)
 import { resolve as resolvePath, relative as relPath, isAbsolute } from 'node:path';
 import { realpathSync } from 'node:fs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
@@ -69,7 +75,7 @@ import { makeOutbound } from './sender.mjs';
 // Exported so tests/skeletons.test.mjs can hold the shipped actions CARD to it. A card
 // advertising a verb that is not in here is worse than a missing card: the model emits
 // the line, the parser refuses it, and it is posted to the chat as literal prose.
-export const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask', 'book', 'email']);
+export const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask', 'book', 'email', 'group']);
 const PLACEHOLDER_ONLY = /^(?:<[^<>]*>\s*)+$/;
 const ACTION_LINE = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i;
 
@@ -215,6 +221,15 @@ function parseOne(verb, args, ev, opts = {}) {
       // <text> — the whole line is the body; recipients and subject are config's.
       if (!raw || PLACEHOLDER_ONLY.test(raw)) return { ok: false, reason: 'email: empty or placeholder' };
       return { ok: true, action: { type: 'email', chatId, text: raw } };
+    }
+    case 'group': {
+      // photo <path> | title <text> | description <text> — the chat is ev.chatId, never an argument.
+      const m = /^(photo|title|description)\s+([\s\S]+)$/i.exec(raw);
+      if (!m) return { ok: false, reason: 'group: expected "photo <path>", "title <text>" or "description <text>"' };
+      const what = m[1].toLowerCase(), value = m[2].trim();
+      const bad = what === 'photo' ? unsafePath(value) : PLACEHOLDER_ONLY.test(value) ? 'placeholder' : null;
+      if (bad) return { ok: false, reason: `group: ${bad}` };
+      return { ok: true, action: { type: 'group', chatId, what, value } };
     }
     case 'media': {
       // <path> [caption]. A leading "quoted path" tolerates a filename with spaces.
@@ -418,6 +433,25 @@ export function partialProse(partial, ev = {}, opts = {}) {
 }
 
 /**
+ * THE execute-time containment check for a file a being names (/media, /group photo — boot's group
+ * limb): `path` resolved inside `convDir` (the conversation folder, E's confined cwd), present, and
+ * still inside it once every link is followed. { ok: true, path } (absolute) or { ok: false, reason };
+ * the reason never names the host path, since /group hands it back to the being.
+ */
+export function confinedFile(convDir, path) {
+  if (!convDir) return { ok: false, reason: 'no conversation dir — skipped' };
+  const abs = resolvePath(convDir, path);
+  const escapes = (rel) => rel === '' || rel.startsWith('..') || isAbsolute(rel);
+  // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
+  if (escapes(relPath(convDir, abs))) return { ok: false, reason: `"${path}" escapes the conversation dir — rejected (fail-closed)` };
+  let real;
+  try { real = realpathSync.native(abs); } catch { return { ok: false, reason: `file not found "${path}" in the conversation dir — skipped` }; }
+  // ...and so must its REAL path: a boxed being can plant a junction in its Room, and the spine reads as the operator.
+  if (escapes(relPath(realpathSync.native(convDir), real))) return { ok: false, reason: `"${path}" leaves the conversation dir through a link — rejected (fail-closed)` };
+  return { ok: true, path: abs };
+}
+
+/**
  * The effectful executor. Injected with the bridge port + persona resolvers + a
  * conversation-dir resolver (for /media confinement). Exposes .parse (the pure
  * split) and .execute (run the actions against the bridge, confined + logged).
@@ -426,7 +460,7 @@ export function partialProse(partial, ev = {}, opts = {}) {
 // wired to more than one Beeper connection runs a being's own limbs (react/reply/media/edit)
 // against ITS OWN bridge. Absent, or returning nullish for a given being, falls straight back
 // to the single `bridge` below — BYTE-IDENTICAL to before for every existing caller.
-// limbs / actionsOf / wake (2026-10-15, /book + /email): limbs = { book, email } — each
+// limbs / actionsOf / wake (2026-10-15, /book + /email; /group 2026-10-26): limbs = { book, email, group } — each
 // (action, ev, being) -> { outcome, detail }; actionsOf(being) -> that agent's `actions` list;
 // wake = spine.wakeOnBackground, which carries the outcome back to the being as a turn.
 // onUndeliverable({ being, chatId, what, reason }) (2026-10-19): a limb that said nothing anywhere —
@@ -461,16 +495,9 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
   const _askAdvice = askAdvice ?? (async ({ question } = {}) => { onLog(`ask: no advice channel wired — dropped (fail-closed): ${JSON.stringify(String(question ?? '').slice(0, 120))}`); return false; });
 
   async function runMedia(a, ev, being) {
-    const convDir = await resolveConvDir(ev);
-    if (!convDir) { onLog(`media: no conversation dir for ${ev.surface}/${ev.chatId} — skipped`); return false; }
-    const abs = resolvePath(convDir, a.path);
-    const escapes = (rel) => rel === '' || rel.startsWith('..') || isAbsolute(rel);
-    // Belt-and-suspenders confinement: the resolved path must stay INSIDE convDir.
-    if (escapes(relPath(convDir, abs))) { onLog(`media: "${a.path}" escapes the conversation dir — rejected (fail-closed)`); return false; }
-    let real;
-    try { real = realpathSync.native(abs); } catch { onLog(`media: file not found "${a.path}" in ${convDir} — skipped`); return false; }
-    // ...and so must its REAL path: a boxed being can plant a junction in its Room, and the spine reads as the operator.
-    if (escapes(relPath(realpathSync.native(convDir), real))) { onLog(`media: "${a.path}" leaves the conversation dir through a link — rejected (fail-closed)`); return false; }
+    const f = confinedFile(await resolveConvDir(ev), a.path);
+    if (!f.ok) { onLog(`media: ${f.reason} (${ev.surface}/${ev.chatId})`); return false; }
+    const abs = f.path;
     // No target, so nothing to key: whoever says this being's lines in this chat posts it (sender.mjs makeOutbound `say`).
     const out = outbound(being, ev.chatId);
     const ok = await out.say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being }), { what: 'media' });
@@ -478,7 +505,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     return !!ok;
   }
 
-  // /book, /email: refused unless enabled for this being; the outcome is recorded on the action
+  // /book, /email, /group: refused unless enabled for this being; the outcome is recorded on the action
   // and handed back through `wake`. Not awaited: this turn holds the FIFO the wake turn queues on.
   async function runGated(a, ev, being) {
     const enabled = actionsOf(being);
@@ -488,7 +515,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     }
     const r = limbs?.[a.type] ? await limbs[a.type](a, ev, being) : { outcome: 'not-configured' };
     a.outcome = r?.outcome ?? 'failed';
-    const what = a.type === 'book' && a.date ? `/book ${a.date} ${a.time}` : `/${a.type}`;
+    const what = a.type === 'book' && a.date ? `/book ${a.date} ${a.time}` : a.type === 'group' ? `/group ${a.what}` : `/${a.type}`;
     const result = `${what} → ${a.outcome}${r?.detail ? `: ${r.detail}` : ''}`;
     if (typeof wake !== 'function') { onLog(`${a.type}: no wake wired — result not returned to ${being}: ${result}`); return true; }
     Promise.resolve()
@@ -541,7 +568,8 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
       }
       case 'media': return runMedia(a, ev, being);
       case 'book':
-      case 'email': return runGated(a, ev, being);
+      case 'email':
+      case 'group': return runGated(a, ev, being);
       case 'edit': {
         // Made by whoever says this being's lines in this chat, on ITS OWN copy of the target
         // (sender.mjs makeOutbound `say`) — and only if THAT account sent it: the fail-closed check

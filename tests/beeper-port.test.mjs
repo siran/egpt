@@ -460,6 +460,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
       editMessage: async (...a) => { calls.push(['edit', ...a]); return true; },
       createGroup: async (...a) => { calls.push(['create', ...a]); return { success: true, chatID: '!new:beeper.com' }; },
       archiveChat: async (...a) => { calls.push(['archive', ...a]); return true; },
+      setChatInfo: async (...a) => { calls.push(['info', ...a]); return { ok: true }; },
       getChatName: (id) => (id === '!room' ? 'Proyecto X' : null),
       resolveUserIdByPhone: async (digits, opts) => { calls.push(['resolve', digits, opts]); return '@whatsapp_lid-99:beeper.local'; },
       isAlive: () => true, stop() {},
@@ -471,6 +472,9 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(created).toEqual({ success: true, chatID: '!new:beeper.com' });
     expect(calls).toContainEqual(['create', opts, { chatId: '!room' }]);
     expect(await port.archiveChat('!room')).toBe(true);
+    // /group (2026-10-26): a chat's title is not speech — RAW, no persona wrap
+    expect(await port.setChatInfo('!room', { title: 'T' })).toEqual({ ok: true });
+    expect(calls).toContainEqual(['info', '!room', { title: 'T' }]);
     expect(port.getChatName('!room')).toBe('Proyecto X');
     // the create's participant is resolved from a phone → the person's Beeper user id
     expect(await port.resolveUserIdByPhone('13472576794', { accountID: 'wa' })).toBe('@whatsapp_lid-99:beeper.local');
@@ -484,6 +488,7 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(await port.editMessage('!room', 'm1', 'x')).toBe(false);
     expect(await port.createGroup('!room', {})).toBe(null);
     expect(await port.archiveChat('!room')).toBe(false);
+    expect(await port.setChatInfo('!room', { title: 'T' })).toBe(null);
     expect(port.getChatName('!room')).toBe(null);
     expect(await port.resolveUserIdByPhone('1347', {})).toBe(null);
   });

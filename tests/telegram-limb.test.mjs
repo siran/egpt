@@ -25,8 +25,9 @@ function fakeApi({ me = ME } = {}) {
     editMessageText: () => ok(true),
     deleteMessage: () => ok(true),
     setMessageReaction: () => ok(true),
+    setChatPhoto: () => ok(true), setChatTitle: () => ok(true), setChatDescription: () => ok(true),
   };
-  const sentMedia = (b) => ok({ message_id: nextId++, chat: { id: Number(b.chat_id) } });
+  const sentMedia =(b) => ok({ message_id: nextId++, chat: { id: Number(b.chat_id) } });
   for (const m of ['sendPhoto', 'sendVideo', 'sendVoice', 'sendAudio', 'sendDocument']) answers[m] = sentMedia;
   // getFile names a path; the file URL (GET, token in it) answers with `files[path]`.
   const files = {};
@@ -644,6 +645,38 @@ describe('telegram limb — outbound', () => {
     expect(api.of('setMessageReaction')[0].body.reaction).toEqual([{ type: 'emoji', emoji: '❤' }]);
     bridge.stop();
   });
+
+  // /group (2026-10-26): the chat's photo (multipart, like sendMedia), title and description. A topic's
+  // are its group's: the thread is dropped at the API, and no message_thread_id goes with them.
+  it('setChatInfo: photo uploads multipart, title and description go as JSON, a topic sets its parent group', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-tg-chatinfo-'));
+    try {
+      const api = fakeApi();
+      const { bridge } = start(api);
+      const p = join(dir, 'logo.png'); writeFileSync(p, 'png');
+      expect(await bridge.setChatInfo('tg:-1001234/77', { photo: p })).toEqual({ ok: true });
+      expect(await bridge.setChatInfo('tg:-1001234/77', { title: 'EduWeb · Ventas' })).toEqual({ ok: true });
+      expect(await bridge.setChatInfo('tg:-1001234', { description: 'Demos y ventas' })).toEqual({ ok: true });
+      const [photo] = api.of('setChatPhoto');
+      expect(photo.body).toEqual({ chat_id: '-1001234', photo: { name: 'logo.png', type: 'image/png', size: 3 } });
+      expect(photo.headers).toBeNull();
+      expect(api.of('setChatTitle').map((c) => c.body)).toEqual([{ chat_id: '-1001234', title: 'EduWeb · Ventas' }]);
+      expect(api.of('setChatDescription').map((c) => c.body)).toEqual([{ chat_id: '-1001234', description: 'Demos y ventas' }]);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('setChatInfo: Telegram\'s refusal is { ok: false, reason } with its text (token scrubbed); a non-telegram chat is refused, no call', async () => {
+    const api = fakeApi();
+    const { bridge, lines } = start(api);
+    api.answers.setChatTitle = () => api.err(400, `Bad Request: not enough rights to change chat title ${TOKEN}`);
+    const r = await bridge.setChatInfo('tg:-1001234', { title: 'X' });
+    expect(r).toEqual({ ok: false, reason: 'Bad Request: not enough rights to change chat title <token>' });
+    expect(lines.join('\n')).not.toContain(TOKEN);
+    expect(await bridge.setChatInfo('!room:beeper.local', { title: 'X' })).toMatchObject({ ok: false });
+    expect(api.of('setChatTitle')).toHaveLength(1);
+    bridge.stop();
+  });
 });
 
 // A being writes Markdown; Telegram shows it only as HTML with parse_mode (operator 2026-10-24).
@@ -823,6 +856,14 @@ describe('telegram limb behind the shared port adapter (beeper-port createBeeper
     expect(h.delivered).toBe(true);
     expect(await port.postStatus('tg:42', 'status')).toBe('501');
     expect(await port.react('tg:42', '501', '👀')).toBe(true);
+    port.stop();
+  });
+
+  it('setChatInfo passes through the port raw: no stamp, no signature on a title', async () => {
+    const api = fakeApi();
+    const port = await portOn(api);
+    expect(await port.setChatInfo('tg:-1001234/77', { title: 'Ventas' })).toEqual({ ok: true });
+    expect(api.of('setChatTitle').map((c) => c.body)).toEqual([{ chat_id: '-1001234', title: 'Ventas' }]);
     port.stop();
   });
 });

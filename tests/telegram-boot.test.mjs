@@ -81,9 +81,9 @@ function fakeTransport(declared = {}) {
   return { start, built };
 }
 
-async function bootWith(config, { state, telegram = true, session = fakeSession } = {}) {
+async function bootWith(config, { state, telegram = true, session = fakeSession, tgExtra = {} } = {}) {
   const beeper = fakeTransport();
-  const tg = fakeTransport({ visibleOnly: true });   // as the real limb declares (telegram.mjs)
+  const tg = fakeTransport({ visibleOnly: true, ...tgExtra });   // as the real limb declares (telegram.mjs)
   const lines = [];
   let convState = state ?? emptyState();
   const app = await boot({
@@ -233,6 +233,60 @@ describe('reactions: the bot reacts like E on kg', () => {
     await beeper[0].onIncoming('hola E', waFrom);
     await vi.waitFor(() => expect(beeper[0].sent.some((s) => /👍 \(/.test(s.text))).toBe(true));
     expect(beeper[0].reactions).toEqual([]);
+    app.stop();
+  });
+});
+
+// /group (2026-10-26): a being changes ITS OWN chat's photo, title or description, through the gated
+// limbs path (agents.<being>.actions lists group) and the bridge that holds the chat; the outcome is
+// woken back as a turn. A Beeper chat cannot: not-supported, said back the same way.
+describe('/group: the being sets its own chat\'s info', () => {
+  const ENABLED = { egpt: { ...AGENTS.egpt, actions: ['group'] } };
+  // Emits `line` on its first turn only, then echoes — so the wake turn is seen and ends there.
+  const once = (line, seen) => { let first = true; return (opts) => ({ ...fakeSession(opts), async turn(m, onUpdate) { seen.push(m); const t = first ? line : `↩ ${m}`; first = false; onUpdate?.(t); return { text: t, sessionId: 'sess-1' }; } }); };
+  const recording = (set, answer = { ok: true }) => ({ async setChatInfo(chatId, info) { set.push({ chatId, info }); return answer; } });
+
+  it('enabled, on a Telegram chat: the title is set on that chat and "/group title → set" is woken back', async () => {
+    await writeToken();
+    const set = [], seen = [];
+    const { app, tg } = await bootWith({ ...TELEGRAM_ONLY(), agents: ENABLED }, { state: seedOn('telegram', 'tg:42', 'An R'), session: once('/group title Ventas', seen), tgExtra: recording(set) });
+    await tg[0].onIncoming('E, ponle título', tgFrom);
+    await vi.waitFor(() => expect(seen.some((m) => m.includes('/group title → set'))).toBe(true));
+    expect(set).toEqual([{ chatId: 'tg:42', info: { title: 'Ventas' } }]);
+    app.stop();
+  });
+
+  it('a photo from the conversation folder goes up by its absolute path; Telegram\'s refusal is woken back verbatim', async () => {
+    await writeToken();
+    const ens = ensureContact(emptyState(), 'telegram', 'tg:42', { pushedName: 'An R', slugHint: 'An R' });
+    ens.state.contacts.telegram['tg:42'].agents = { egpt: { mode: 'on' } };
+    const { slugDir } = await import('../src/conversations-state.mjs');
+    const dir = slugDir('telegram', ens.slug);
+    await fs.mkdir(join(dir, 'media'), { recursive: true });
+    await fs.writeFile(join(dir, 'media', 'logo.png'), 'png');
+    const set = [], seen = [];
+    const { app, tg } = await bootWith({ ...TELEGRAM_ONLY(), agents: ENABLED }, { state: ens.state, session: once('/group photo media/logo.png', seen), tgExtra: recording(set, { ok: false, reason: 'Bad Request: not enough rights to change chat photo' }) });
+    await tg[0].onIncoming('E, pon el logo', tgFrom);
+    await vi.waitFor(() => expect(seen.some((m) => m.includes('/group photo → failed: Bad Request: not enough rights to change chat photo'))).toBe(true));
+    expect(set).toEqual([{ chatId: 'tg:42', info: { photo: join(dir, 'media', 'logo.png') } }]);
+    app.stop();
+  });
+
+  it('not enabled: refused and logged, the bridge is never asked', async () => {
+    await writeToken();
+    const set = [], seen = [];
+    const { app, tg, lines } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R'), session: once('/group title Ventas', seen), tgExtra: recording(set) });
+    await tg[0].onIncoming('E, ponle título', tgFrom);
+    await vi.waitFor(() => expect(lines.some((l) => l.includes('[actions] group: not enabled for egpt (agents.egpt.actions) — refused'))).toBe(true));
+    expect(set).toEqual([]);
+    app.stop();
+  });
+
+  it('a Beeper chat: not-supported, woken back; nothing throws', async () => {
+    const seen = [];
+    const { app, beeper } = await bootWith({ ...BEEPER_ONLY(), agents: ENABLED }, { state: seedOn('whatsapp', waFrom.chatId, 'fam'), session: once('/group title Ventas', seen) });
+    await beeper[0].onIncoming('hola E', waFrom);
+    await vi.waitFor(() => expect(seen.some((m) => m.includes('/group title → not-supported'))).toBe(true));
     app.stop();
   });
 });

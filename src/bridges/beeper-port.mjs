@@ -352,6 +352,11 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     async archiveChat(chat, opts) {
       return real.archiveChat ? await real.archiveChat(chat, opts) : false;
     },
+    // /group (2026-10-26): the chat's photo/title/description — RAW like createGroup (not speech).
+    // A transport without it (Beeper) answers null, which the limb reads as not-supported.
+    async setChatInfo(chat, info) {
+      return real.setChatInfo ? await real.setChatInfo(chat, info) : null;
+    },
     getChatName(id) {
       return real.getChatName ? real.getChatName(id) : null;
     },

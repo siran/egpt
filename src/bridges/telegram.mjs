@@ -588,6 +588,30 @@ export function startTelegramBridge({
     catch (e) { log(`closeForumTopic ${chatId} failed — ${e.message}`); return false; }
   }
 
+  // /group (2026-10-26): ONE of photo (a file path, uploaded like sendMedia), title, description.
+  // A topic's are its group's: apiChatId drops the thread. { ok: true } or { ok: false, reason }.
+  async function setChatInfo(chatId, { photo = null, title = null, description = null } = {}) {
+    chatId = current(chatId);
+    const chat = apiChatId(chatId);
+    if (chat == null) return { ok: false, reason: `${chatId} is not a telegram chat` };
+    const what = photo != null ? 'photo' : title != null ? 'title' : 'description';
+    try {
+      if (photo != null) {
+        const { mime } = mediaMethod(photo);
+        const f = new FormData();
+        f.append('chat_id', chat);
+        f.append('photo', new Blob([await readFile(photo)], mime ? { type: mime } : {}), basename(String(photo)));
+        await call('setChatPhoto', f);
+      } else if (title != null) await call('setChatTitle', { chat_id: chat, title: String(title) });
+      else await call('setChatDescription', { chat_id: chat, description: String(description ?? '') });
+      log(`${what} set in ${chatId}`);
+      return { ok: true };
+    } catch (e) {
+      log(`setting the ${what} of ${chatId} failed — ${e.message}`);
+      return { ok: false, reason: e.message };
+    }
+  }
+
   // .ogg/.opus is a voice note; Telegram's audio player takes only mp3/m4a, so any other audio is a document.
   function mediaMethod(filePath) {
     const ext = extname(String(filePath)).slice(1).toLowerCase();
@@ -698,6 +722,7 @@ export function startTelegramBridge({
     startStreamMessage,
     createGroup,
     archiveChat,
+    setChatInfo,
     wasSentByUs,
     sendFailure: (chatId) => failures.get(current(chatId)) ?? null,
     getChatName: (chatId) => titles.get(chatId) ?? null,
