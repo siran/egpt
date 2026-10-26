@@ -19,7 +19,32 @@ export const PROFILE_AGENTS_DIR = join(EGPT_HOME, 'config', 'agents');
 // an identity is a property of the agent) — config/agents/identities/<name>.md.
 export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'agents', 'identities');
 
+// Write dest ONLY when it does not already exist. Returns true iff it wrote.
+export function copyIfMissing(dest, produce, { io = {}, onLog = () => {} } = {}) {
+  try {
+    if ((io.existsSync ?? existsSync)(dest)) return false;    // never touch an operator's file
+    (io.mkdirSync ?? mkdirSync)(dirname(dest), { recursive: true });
+    (io.writeFileSync ?? writeFileSync)(dest, produce());
+    onLog(`seeded ${dest}`);
+    return true;
+  } catch (e) { onLog(`seed ${dest}: ${e?.message ?? e}`); return false; }
+}
 
+// Every file and folder under srcDir → the same place under destDir, copied as bytes, copy-if-missing.
+// Returns how many files it wrote; an unreadable srcDir throws.
+export function copyTreeIfMissing(srcDir, destDir, { io = {}, onLog = () => {} } = {}) {
+  const readDir = io.readdirSync ?? readdirSync;
+  const readFile = io.readFileSync ?? readFileSync;
+  let wrote = 0;
+  for (const ent of readDir(srcDir, { withFileTypes: true })) {
+    const from = join(srcDir, ent.name), to = join(destDir, ent.name);
+    if (ent.isDirectory()) {
+      (io.mkdirSync ?? mkdirSync)(to, { recursive: true });
+      wrote += copyTreeIfMissing(from, to, { io, onLog });
+    } else if (ent.isFile() && copyIfMissing(to, () => readFile(from), { io, onLog })) wrote += 1;
+  }
+  return wrote;
+}
 
 export function seedSkeletons({
   repoDir = REPO_SKELETONS_DIR,
@@ -29,29 +54,16 @@ export function seedSkeletons({
   io = {},
   onLog = () => {},
 } = {}) {
-  const exists = io.existsSync ?? existsSync;
   const readDir = io.readdirSync ?? readdirSync;
   const readFile = io.readFileSync ?? readFileSync;
-  const writeFile = io.writeFileSync ?? writeFileSync;
-  const mkdir = io.mkdirSync ?? mkdirSync;
-
-  // Write dest ONLY when it does not already exist. Returns true iff it wrote.
-  const copyIfMissing = (dest, produce) => {
-    try {
-      if (exists(dest)) return false;                          // never touch an operator's file
-      mkdir(dirname(dest), { recursive: true });
-      writeFile(dest, produce());
-      onLog(`seeded ${dest}`);
-      return true;
-    } catch (e) { onLog(`seed ${dest}: ${e?.message ?? e}`); return false; }
-  };
+  const seed = (dest, produce) => copyIfMissing(dest, produce, { io, onLog });
 
   // 1. every repo skeleton → the profile's skeletons/ (files only).
   let names = [];
   try { names = readDir(repoDir); } catch { names = []; }
   for (const name of names) {
     if (typeof name !== 'string' || !name.endsWith('.yaml') && !name.endsWith('.md')) continue;
-    copyIfMissing(join(profileSkeletonsDir, name), () => readFile(join(repoDir, name), 'utf8'));
+    seed(join(profileSkeletonsDir, name), () => readFile(join(repoDir, name), 'utf8'));
   }
 
   // 1b. the room template (config/skeletons/room/*.md) — the SHARED identity/pointers/rules
@@ -62,7 +74,7 @@ export function seedSkeletons({
   try { roomNames = readDir(join(repoDir, 'room')); } catch { roomNames = []; }
   for (const name of roomNames) {
     if (typeof name !== 'string' || !name.endsWith('.md')) continue;
-    copyIfMissing(join(profileSkeletonsDir, 'room', name), () => readFile(join(repoDir, 'room', name), 'utf8'));
+    seed(join(profileSkeletonsDir, 'room', name), () => readFile(join(repoDir, 'room', name), 'utf8'));
   }
 
   // 1c. the shipped BRAIN DEFS (config/skeletons/agents/*.yaml) → config/agents/<name>.yaml,
@@ -75,7 +87,7 @@ export function seedSkeletons({
   try { defNames = readDir(join(repoDir, 'agents')); } catch { defNames = []; }
   for (const name of defNames) {
     if (typeof name !== 'string' || !name.endsWith('.yaml')) continue;
-    copyIfMissing(join(agentsDir, name), () => readFile(join(repoDir, 'agents', name), 'utf8'));
+    seed(join(agentsDir, name), () => readFile(join(repoDir, 'agents', name), 'utf8'));
   }
 
   // 1d. the shipped PERSONALITIES (config/skeletons/agents/identities/*.md) → the FLAT
@@ -86,7 +98,7 @@ export function seedSkeletons({
   try { idNames = readDir(join(repoDir, 'agents', 'identities')); } catch { idNames = []; }
   for (const name of idNames) {
     if (typeof name !== 'string' || !name.endsWith('.md')) continue;
-    copyIfMissing(join(identitiesDir, name), () => readFile(join(repoDir, 'agents', 'identities', name), 'utf8'));
+    seed(join(identitiesDir, name), () => readFile(join(repoDir, 'agents', 'identities', name), 'utf8'));
   }
 
 }

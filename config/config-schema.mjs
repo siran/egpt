@@ -756,8 +756,7 @@ export const CONFIG_SCHEMA = {
 
   limbs: `
     The node's conversational I/O transports, one block each (operator
-    2026-10-23): beeper and telegram; an http chatbox will sit beside them.
-    Restart-only.
+    2026-10-23): beeper, telegram and the http chatbox. Restart-only.
 
     Not the /book and /email action limbs (agents.<name>.actions,
     src/spine/reply-actions.mjs): those are not configured here.
@@ -775,6 +774,44 @@ export const CONFIG_SCHEMA = {
         Its chats are tg:<chat id>; networks.telegram.allowed_users (Telegram
         numeric user ids) may command. A node with no limbs.beeper connection and
         no Beeper token runs on Telegram alone.
+      http
+        A website chatbox (src/bridges/http.mjs, 2026-10-26). Each visitor session
+        is its own conversation: chat id http:<client>-<sid>, folder
+        conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
+        token itself is never logged). Under <path>/<client>/:
+          POST messages {session?, text} → {session, message}; no or an unknown or
+            expired session (30 days idle) starts a new one. application/json only.
+          GET messages?session=&since=<seq> → {session, seq, messages}
+          GET events?session=&since=<seq>   SSE, each message as posted/edited/settled
+          GET widget.js                     the embeddable bubble + panel
+        A message is {id, from: visitor|being, text, done, seq} or {id, deleted, seq}.
+        The session's conversation is created with
+        agents.<being>: { default: true, mode: on, allowed_users: ['*'] } and
+        public_commands: [], so any visitor wakes the client's being there and no
+        other, and a visitor's /split, /send or /end is plain text.
+        bind              default 127.0.0.1 (the website's server proxies the path)
+        port              required; absent ⇒ not wired
+        path              default /chat
+        trust_proxy       default false. true: a visitor's address is the last
+                          X-Forwarded-For entry (what the proxy saw); false: the
+                          socket's address
+        clients:
+          <client>:       lowercase letters, digits, - and _
+            being             the agent that answers its visitors
+            seed              a folder (relative: under EGPT_HOME) copied, files and
+                              subfolders, into each NEW session's conversation folder
+                              before its first line enters. Once: a later edit to the
+                              seed never touches an existing conversation
+            allowed_origins   CORS list; empty (default) = same-origin only: no CORS
+                              headers and every preflight refused. Non-empty: a
+                              request whose Origin is not listed is refused (403)
+            title             the panel's title
+            strings           UI strings (Spanish defaults): open, close,
+                              placeholder, send, error, too_long, too_many
+            max_chars         one message, default 4000 (413 over it)
+            rate              { messages: 30, minutes: 10 } per session (429 over it)
+            new_sessions      { count: 30, minutes: 60 } new sessions per visitor
+                              address (429 over it; see trust_proxy)
   `,
 
   beeper: `
