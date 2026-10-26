@@ -587,3 +587,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Running beside edw (restart ~20 s); it waits for secrets/oficina-tunnel.target (logs "waiting 5 min").
   - known_hosts entries are `[oficina.eserviciosat.net]:35547` (correct for a non-22 port).
   - Remaining, after ED's service and key line: write the target LAST (oficina runs fail2ban), check 127.0.0.1:18089 from EDW, set EDW's transcription to [oficina] (whisper-server-local, port 18089, large-v3 only), test with a note.
+
+## 10-26 ~01:10 — "did you turn private chats into topics?" No
+- Scan on EDW: no topic conversations exist; the bot's private-chat topics are off (getMe has_topics_enabled false); An's DM is private; SI An, SI Diego, SI Dagie and An y Dando are normal groups. Only EduWeb changed (the operator's Topics toggle → supergroup tg:-1004408163350).
+- **Stray from the move:** the old id tg:-5256478300 had been re-registered as a new empty conversation (EduWeb-2610260140, header only). Archived to conversations/archive/telegram/, entry removed (backup conversations.yaml.pre-stray-20261026T050519).
+- **Fix dispatched** (fix/telegram-move-glitches): the migration service message must not register the old id; the moved chat keeps its title (the transcript shows [telegram] since the move).
+- **Back to a normal group:** EduWeb → settings → Topics off. It stays a supergroup with the same id (no second move; egpt unaffected). Without Topics, /split on Telegram answers "turn on Topics…" until real groups via a group-maker account (the soporte number) exist.
