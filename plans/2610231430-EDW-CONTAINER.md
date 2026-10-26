@@ -528,3 +528,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - EDW's originals kept on branch `leo-local-20261025`; checkout rewound to the merge base, then `/upgrade` (ingest) fast-forwarded to 98145dfe, npm installed, the bot is listening, alive fresh.
   - Rule for leo: don't commit in EDW's checkout (it blocks every upgrade); hand changes to the orchestrator as patches or proposals.
 - **Telegram Topics can now be turned on in EduWeb:** the id-follow code is live on EDW. Then make @edwsi_bot an admin with Manage topics; `/ed split <name>` → a forked topic + its link.
+- **GPU worker, design v2** (orchestrator, after the infra agent's finding).
+  - Why: ECS warm pools don't support ReuseOnScaleIn, so every sleep would terminate the instance, and the replacement re-downloads 3 GB. Managed scaling adds ~1–2 min to a wake and ~15 min of runtime after each sleep.
+  - Now: ONE g4dn.xlarge `edw-whisper-node`, normally stopped (model kept on its EBS); the ECS service edw-whisper at desired 1 always (placement role=whisper, awsvpc, 8089 from edw-sg).
+  - The waker starts and stops the instance: ec2 Start/StopInstances on that tag only, DescribeInstances, ecs List/DescribeTasks. Nightly 03:00 Caracas StopInstances.
+  - Expected: wake ~1.5–2 min, sleep immediate, asleep ~$2.40/mo. Both agents resumed (infra rework; engine on feat/whisper-ec2-wake).
