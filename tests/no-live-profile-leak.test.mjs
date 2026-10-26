@@ -11,8 +11,10 @@
 // the real profile. Same mechanism as beeper-log-path / tool-profile-paths: EGPT_HOME is
 // frozen at module load, so we flip process.env then vi.resetModules() + dynamic import.
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 
 // The suite's ambient EGPT_HOME, captured BEFORE any case below mutates it — this is what
 // tests/setup-egpt-home.mjs forced it to for the run.
@@ -57,5 +59,38 @@ describe('no test derives a logging path into the LIVE ~/.egpt profile', () => {
   it('TRIPWIRE: the running suite forces EGPT_HOME to a NON-live temp profile', () => {
     expect(SUITE_HOME, 'tests/setup-egpt-home.mjs must set EGPT_HOME for the whole suite').toBeTruthy();
     expect(SUITE_HOME).not.toBe(REAL_PROFILE);
+  });
+});
+
+// 2026-10-24: a being's shell INHERITS the spine's EGPT_HOME (the live profile), and the
+// ||= in tests/setup-egpt-home.mjs kept it. The setup file must now REFUSE an inherited
+// EGPT_HOME that is a real profile (has config/config.yaml). Run directly by node in a
+// child whose env is a scrubbed copy of ours (no EGPT_* leaks in from this process).
+describe('tests/setup-egpt-home.mjs refuses an inherited LIVE profile', () => {
+  const SETUP = join(import.meta.dirname, 'setup-egpt-home.mjs');
+  const scrubbed = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('EGPT_')));
+  const run = (env) => spawnSync(process.execPath, [SETUP], { env, encoding: 'utf8' });
+  const tmp = mkdtempSync(join(tmpdir(), 'egpt-setup-home-'));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it('EGPT_HOME is a real profile (config/config.yaml): non-zero exit, refusal names the path', () => {
+    const live = join(tmp, 'live');
+    mkdirSync(join(live, 'config'), { recursive: true });
+    writeFileSync(join(live, 'config', 'config.yaml'), '');
+    const r = run({ ...scrubbed, EGPT_HOME: live });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('refusing to run the test suite against a LIVE eGPT profile');
+    expect(r.stderr).toContain(`EGPT_HOME=${live}`);
+    expect(r.stderr).toContain('env -u EGPT_HOME');
+  });
+
+  it('EGPT_HOME set but no config/config.yaml: exit 0', () => {
+    const r = run({ ...scrubbed, EGPT_HOME: join(tmp, 'empty') });
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it('EGPT_HOME unset: exit 0', () => {
+    const r = run(scrubbed);
+    expect(r.status, r.stderr).toBe(0);
   });
 });

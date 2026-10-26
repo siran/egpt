@@ -1446,6 +1446,19 @@ export const CONFIG_SCHEMA = {
           type: "whisper-cli"
             command, model_path, language, ffmpeg_command, threads — the
             always-available floor.
+              audio_ctx  "auto" | absent. DEFAULT: absent — off, the full
+                         window as before. whisper.cpp's encoder ALWAYS runs a
+                         full 30 s window (audio_ctx 1500 = 50 frames/s), so a
+                         5 s note costs as much as a 30 s one (~52 s per pass
+                         on a 2-vCPU box with ggml-small). auto passes -ac sized
+                         to EACH note: ceil((duration_s + 2) * 50 / 64) * 64 —
+                         a 2 s margin, rounded up to a multiple of 64, never
+                         under 512 (at 320 a 3 s note looped, 384+ did not) —
+                         and omits it once that reaches 1500 (~28 s+), so long
+                         audio is never truncated. 10.5 s note → -ac 640, ~61 s
+                         → ~30 s, same transcript. extra_args still override.
+                         whisper-cli engine ONLY — the whisper-server engines
+                         are unaffected.
 
     A change of WINNING engine posts one ⚠️/✅ to the operator Self DM
     (transition-only, never per note).

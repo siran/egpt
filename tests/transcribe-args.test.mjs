@@ -19,6 +19,36 @@ describe('buildWhisperArgs — whisper-native anti-repetition', () => {
   });
 });
 
+describe('buildWhisperArgs — audio_ctx: auto sizes the encoder window to the note', () => {
+  const base = ['-m', 'm.bin', '-nt', '-f', 'a.wav', '-mc', '0', '-sns'];
+  const auto = (durationSec, extra = {}) => buildWhisperArgs({ model: 'm.bin', wav: 'a.wav', audio_ctx: 'auto', durationSec, ...extra });
+
+  it('ceil((d + 2) * 50 / 64) * 64, never under 512 — 10.5 s → 640; 5.5 s and 2 s → 512', () => {
+    expect(auto(10.5)).toEqual([...base, '-ac', '640']);
+    expect(auto(5.5)).toEqual([...base, '-ac', '512']);
+    expect(auto(2)).toEqual([...base, '-ac', '512']);
+  });
+
+  it('no -ac once N reaches 1500 (28 s+) — long audio keeps the full window', () => {
+    expect(auto(28)).toEqual(base);
+    expect(auto(60)).toEqual(base);
+  });
+
+  it('audio_ctx absent → argv unchanged, whatever the duration', () => {
+    expect(buildWhisperArgs({ model: 'm.bin', wav: 'a.wav', durationSec: 5.5 })).toEqual(base);
+  });
+
+  it('auto without a usable duration (missing / 0 / NaN) → no -ac', () => {
+    expect(auto(undefined)).toEqual(base);
+    expect(auto(0)).toEqual(base);
+    expect(auto(NaN)).toEqual(base);
+  });
+
+  it('extra_args still come last, so they override -ac', () => {
+    expect(auto(5.5, { extra_args: ['-ac', '768'] })).toEqual([...base, '-ac', '512', '-ac', '768']);
+  });
+});
+
 describe('wavDurationSec — exact from the ffmpeg WAV', () => {
   it('computes seconds from a 16kHz mono s16le byte length', () => {
     expect(wavDurationSec(44 + 32000)).toBe(1);          // 1 second of audio

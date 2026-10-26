@@ -23,7 +23,20 @@
 // (conversations-state.conversationPathOf) resolve the same way they do in production.
 // Not created on disk — the bridge's log append harmlessly no-ops on the missing
 // config/logs dir, so nothing accumulates here; tests that need dirs create their own.
+//
+// 2026-10-24 INCIDENT (node EDW): a coding agent ran `npx vitest run` from a being's
+// shell, which INHERITS the spine's EGPT_HOME — the LIVE profile. The ||= kept it (an
+// explicit value wins), so the suite ran AGAINST the live profile: stray dirs in ~/.egpt,
+// and spine-brainpool's failure output printed the profile's real OAuth token in plain
+// text. So an inherited EGPT_HOME that is a REAL profile (marker: config/config.yaml —
+// the throwaway home above is never created, so it has none) is REFUSED: this throws,
+// every test file fails loudly, and the message names the rerun. Never a silent redirect.
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+
+if (process.env.EGPT_HOME && existsSync(join(process.env.EGPT_HOME, 'config', 'config.yaml'))) {
+  throw new Error(`refusing to run the test suite against a LIVE eGPT profile: EGPT_HOME=${process.env.EGPT_HOME} has config/config.yaml. Rerun with it unset:  env -u EGPT_HOME npx vitest run`);
+}
 
 process.env.EGPT_HOME ||= join(homedir(), '.egpt-test-home');

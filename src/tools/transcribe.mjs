@@ -34,10 +34,19 @@ export function wavDurationSec(byteLength) {
 // --suppress-nst). Defaults FIRST so cfg.extra_args can override; anti_repetition:
 // false opts out. The transcript-repeat-guard post-pass is the backend-agnostic
 // net for whatever still slips through (C3.5).
-export function buildWhisperArgs({ model, wav, language, extra_args, anti_repetition } = {}) {
+// audio_ctx: 'auto' sizes the encoder window (-ac) to the note: whisper.cpp always
+// encodes a full 30 s (1500 frames, 50/s), which on a slow box costs ~52 s per pass
+// even for a 5 s note. N = duration + 2 s margin, rounded up to a multiple of 64,
+// never under 512: at 320 a 3 s note looped ("Leo, si, arde la lo." x3; EDW
+// 2026-10-24), 384+ did not. At 1500+ it is omitted so long audio is never truncated.
+export function buildWhisperArgs({ model, wav, language, extra_args, anti_repetition, audio_ctx, durationSec } = {}) {
   const args = ['-m', model, '-nt', '-f', wav];
   if (language) args.push('-l', String(language));
   if (anti_repetition !== false) args.push('-mc', '0', '-sns');
+  if (audio_ctx === 'auto' && Number.isFinite(durationSec) && durationSec > 0) {
+    const n = Math.max(512, Math.ceil((durationSec + 2) * 50 / 64) * 64);
+    if (n < 1500) args.push('-ac', String(n));
+  }
   if (Array.isArray(extra_args)) args.push(...extra_args.map(String));
   return args;
 }
@@ -100,10 +109,12 @@ export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}, m
   let wav;
   try {
     wav = await convertToWav16k(audioPath, ffmpeg);
-    // The ffmpeg step we just ran gives the duration for free (#3, op 2026-06-16).
-    if (meta) { try { meta.durationSec = wavDurationSec((await stat(wav)).size); } catch { /* best-effort */ } }
+    // The ffmpeg step we just ran gives the duration for free (#3, op 2026-06-16) —
+    // for meta, and for audio_ctx: 'auto' to size the encoder window.
+    let durationSec;
+    if (meta || cfg.audio_ctx === 'auto') { try { durationSec = wavDurationSec((await stat(wav)).size); if (meta) meta.durationSec = durationSec; } catch { /* best-effort */ } }
     // whisper-cli prints the transcript to stdout with -nt (no timestamps).
-    const args = buildWhisperArgs({ model, wav, language: cfg.language, extra_args: cfg.extra_args, anti_repetition: cfg.anti_repetition });
+    const args = buildWhisperArgs({ model, wav, language: cfg.language, extra_args: cfg.extra_args, anti_repetition: cfg.anti_repetition, audio_ctx: cfg.audio_ctx, durationSec });
     const stdout = await _run(whisper, args, { captureStdout: true });
     // whisper-cli may emit a few non-transcript lines; keep printable content,
     // collapse whitespace (whisper splits long output across segment lines).
