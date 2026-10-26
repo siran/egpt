@@ -2167,6 +2167,8 @@ export async function boot({
     const state = await _loadState();
     const next = moveChatId(state, surface, from, to);
     if (next !== state) await _writeState(next);
+    // a turn still running on the old id files under the new one, never a fresh entry (unless both hold one)
+    if (next !== state || !state.contacts?.[surface]?.[from]) contacts.moved(surface, from, to);
     log.line?.(`[conversations] ${surface} ${from} → ${to}: ${next !== state ? 'its conversation moved with it' : state.contacts?.[surface]?.[to] ? `${to} already has a conversation — nothing moved, merge by hand` : `no conversation for ${from} — nothing to move`}`);
   }).then(async () => {
     if (!Object.hasOwn(getConfig()?.closed_chats?.[surface] ?? {}, from)) return;
@@ -2913,7 +2915,7 @@ export async function boot({
   const strangerSeedOf = (ev) => { const b = strangerAgentFor(ev, getConfig()); return b ? { [b]: { ...STRANGER_SEED } } : null; };
   // --- services (each DI-wired; none closes over another) ---
   const services = {
-    identity: createIdentity({ now, timeZone: transcriptTimeZone }),
+    identity: createIdentity({ now, timeZone: transcriptTimeZone, loadState: _loadState }),
     // sideGroupFor: a reply in a side_group.automatic chat goes to its SI+ group (commands, below; decide runs once the spine exists).
     gating: createGating({ getConfig, loadState: _loadState, seedOf: strangerSeedOf, sideGroupFor: (ev, o) => commands.autoSideGroup?.(ev, o) }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
@@ -3493,7 +3495,7 @@ export async function boot({
   const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
-    const ev = { surface: target.surface, chatId: target.chatId };
+    const ev = await services.identity.spineEvent(target.surface, target.chatId);
     // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being or one that would run unboxed
     const res = await brain.turn(being, { ...ev, line: prompt, body: prompt, beingWritten, cause: 'heartbeat' });
     const text = String(res?.text ?? '').trim();
@@ -3527,7 +3529,7 @@ export async function boot({
     }
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
-    await heartbeatSay({ being: null, ns, ev: { surface: target.surface, chatId: target.chatId }, text, tag: {}, recordAs: 'system', what: 'post' });
+    await heartbeatSay({ being: null, ns, ev: await services.identity.spineEvent(target.surface, target.chatId), text, tag: {}, recordAs: 'system', what: 'post' });
   };
 
   // WHAT BOTH SAY THROUGH: ONE send via THE outbound resolver's `say` (sayOnce, above — every line

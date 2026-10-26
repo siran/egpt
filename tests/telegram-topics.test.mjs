@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { startTelegramBridge, TOPICS_NEEDED } from '../src/bridges/telegram.mjs';
 import { boot, chatIdForEntity } from '../src/spine/boot.mjs';
-import { emptyState, ensureContact, recordThread, aliasContact, patchContact, patchBeing, moveChatId } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, recordThread, aliasContact, patchContact, patchBeing, moveChatId, conversationPathOf } from '../src/conversations-state.mjs';
 
 afterAll(async () => { try { await fs.rm(HOME, { recursive: true, force: true }); } catch {} });
 
@@ -236,7 +236,7 @@ function fakeBeeper() {
   return { start, built };
 }
 
-async function bootNode(config = TELEGRAM_ONLY(), { state = seeded(), beeper = null } = {}) {
+async function bootNode(config = TELEGRAM_ONLY(), { state = seeded(), beeper = null, makeSession = fakeSession } = {}) {
   await fs.mkdir(join(HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   const api = fakeApi();
@@ -246,7 +246,7 @@ async function bootNode(config = TELEGRAM_ONLY(), { state = seeded(), beeper = n
     readConfig: () => config,
     startTelegram: (opts) => startTelegramBridge({ ...opts, fetch: api.fetch }),
     ...(beeper ? { startBridge: beeper.start } : {}),
-    makeSession: fakeSession,
+    makeSession,
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => st,
     writeState: async (s) => { st = s; },
@@ -341,6 +341,14 @@ const migrated = () => [
   { message_id: 50, date: now(), chat: basicChat, from: AN, migrate_to_chat_id: -1009999 },
   { message_id: 1, date: now(), chat: superChat, from: AN, migrate_from_chat_id: -5256478300 },
 ];
+// What the Bot API answers anything sent to a group that became a supergroup.
+const UPGRADED = () => ({ status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: group chat was upgraded to a supergroup chat', parameters: { migrate_to_chat_id: -1009999 } }) });
+const mediaFile = async () => {
+  const dir = join(HOME, 'media-out');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(join(dir, 'nota.txt'), 'x');
+  return join(dir, 'nota.txt');
+};
 
 describe('moveChatId — a conversation follows its chat to a new id', () => {
   const base = () => {
@@ -394,6 +402,39 @@ describe('telegram limb — a group turned supergroup', () => {
     await vi.waitFor(() => expect(moves).toEqual([[BASIC, SUPER]]));
     bridge.stop();
   });
+
+  it('after the move, everything said to the old id goes to the new one', async () => {
+    const api = fakeApi();
+    const moves = [];
+    const { bridge } = start(api, { onChatMoved: (from, to) => { moves.push([from, to]); } });
+    await bridge.startupReady;
+    api.updates(...migrated());
+    await vi.waitFor(() => expect(moves).toHaveLength(1));
+    const { messageId } = await bridge.send('hola', { chatId: BASIC });
+    await bridge.editMessage(BASIC, messageId, 'hola!');
+    await bridge.sendReaction(BASIC, messageId, '👍');
+    await bridge.deleteMessage(BASIC, messageId);
+    expect((await bridge.sendMedia(BASIC, await mediaFile())).ok).toBe(true);
+    const chats = ['sendMessage', 'editMessageText', 'setMessageReaction', 'deleteMessage', 'sendDocument'].map((m) => api.of(m).map((c) => c.body.chat_id));
+    expect(chats).toEqual([['-1009999'], ['-1009999'], ['-1009999'], ['-1009999'], ['-1009999']]);
+    expect(bridge.wasSentByUs(BASIC, messageId)).toBe(true);
+    bridge.stop();
+  });
+
+  it('a send refused because the group moved goes once more to the new id and hands the move over (a move missed across a restart)', async () => {
+    const api = fakeApi();
+    const sendDocument = api.answers.sendDocument;
+    api.answers.sendDocument = (b) => (b.chat_id === '-5256478300' ? UPGRADED() : sendDocument(b));
+    const moves = [];
+    const { bridge } = start(api, { onChatMoved: (from, to) => { moves.push([from, to]); } });
+    await bridge.startupReady;
+    expect((await bridge.sendMedia(BASIC, await mediaFile())).ok).toBe(true);
+    expect(api.of('sendDocument').map((c) => c.body.chat_id)).toEqual(['-5256478300', '-1009999']);
+    expect(moves).toEqual([[BASIC, SUPER]]);
+    await bridge.send('hola', { chatId: BASIC });   // known now: straight to the new id
+    expect(api.of('sendMessage').map((c) => c.body.chat_id)).toEqual(['-1009999']);
+    bridge.stop();
+  });
 });
 
 describe('a Telegram node: the conversation follows the chat to its new id', () => {
@@ -403,9 +444,13 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     return patchBeing(s, 'telegram', BASIC, 'egpt', { mode: 'on', allowed_users: ['42'] });
   };
 
+  const tgDir = join(HOME, 'conversations', 'telegram');
+  const dirs = async () => { try { return (await fs.readdir(tgDir)).sort(); } catch { return []; } };
+
   it('folder, thread and beings\' settings move to the new id, and the next message there is answered in that conversation', async () => {
     const n = await bootNode(TELEGRAM_ONLY(), { state: basicSeed() });
     const before = n.state().contacts.telegram[BASIC];
+    const dirsBefore = await dirs();
     n.api.updates(...migrated());
     await vi.waitFor(() => expect(n.state().contacts.telegram[SUPER]).toBeTruthy());
     expect(n.state().contacts.telegram[SUPER]).toEqual(before);
@@ -415,6 +460,46 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     const edit = n.api.of('editMessageText').find((c) => c.body.text.includes('seguimos aquí'));
     expect(edit.body.chat_id).toBe('-1009999');
     expect(Object.keys(n.state().contacts.telegram)).toEqual([SUPER]);
+    expect(n.state().contacts.telegram[SUPER].slug).toBe(before.slug);
+    // the migrate pair made no folder; the lines after the move carry the group's title
+    expect((await dirs()).filter((d) => !dirsBefore.includes(d) && d !== before.slug)).toEqual([]);
+    const tx = await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8');
+    expect(tx).toMatch(/An R@\[EduWeb\]\.tg \(\d\d:\d\d\) #2: seguimos aquí/);
+    expect(tx).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ /);
+    expect(tx).not.toMatch(/@\[telegram\]/);
+    n.app.stop();
+  });
+
+  it('a turn still running in the old group when it moves files its reply in the moved conversation: nothing is registered for the old id', async () => {
+    const SLUG = 'EduWeb-2610240312';   // made days before the move, as live
+    const state = patchContact(basicSeed(), 'telegram', BASIC, { slug: SLUG, conversation_path: conversationPathOf('telegram', SLUG) });
+    let release, started;
+    const gate = new Promise((r) => { release = r; });
+    const running = new Promise((r) => { started = r; });
+    const slow = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { started(); await gate; onUpdate?.(`↩ ${m}`); return { text: `↩ ${m}`, sessionId: 'sess-2' }; }, close() {} });
+    const n = await bootNode(TELEGRAM_ONLY(), { state, makeSession: slow });
+    n.api.updates({ message_id: 49, date: now(), chat: basicChat, from: AN, text: 'hola antes' });
+    await running;
+    const dirsBefore = await dirs();
+    n.api.updates(...migrated());
+    await vi.waitFor(() => expect(n.state().contacts.telegram[SUPER]).toBeTruthy());
+    release();
+    await answered(n.api, 'hola antes');
+    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, SLUG, 'transcript.md'), 'utf8')).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ .*#49: hola antes/));
+    expect(Object.keys(n.state().contacts.telegram)).toEqual([SUPER]);
+    expect(await dirs()).toEqual(dirsBefore);
+    n.app.stop();
+  });
+
+  it('a move the node missed heals on the first refused send: the reply reaches the new chat and the conversation moves', async () => {
+    const n = await bootNode(TELEGRAM_ONLY(), { state: basicSeed() });
+    const before = n.state().contacts.telegram[BASIC];
+    const sendMessage = n.api.answers.sendMessage;
+    n.api.answers.sendMessage = (b) => (b.chat_id === '-5256478300' ? UPGRADED() : sendMessage(b));
+    n.api.updates({ message_id: 60, date: now(), chat: basicChat, from: AN, text: 'última en el grupo viejo' });
+    await answered(n.api, 'última en el grupo viejo');
+    expect(n.api.of('editMessageText').find((c) => c.body.text.includes('última en el grupo viejo')).body.chat_id).toBe('-1009999');
+    await vi.waitFor(() => expect(Object.keys(n.state().contacts.telegram)).toEqual([SUPER]));
     expect(n.state().contacts.telegram[SUPER].slug).toBe(before.slug);
     n.app.stop();
   });
@@ -430,6 +515,34 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
       await vi.waitFor(async () => expect(await fs.readFile(cfgPath, 'utf8')).toBe(text.replace(BASIC, SUPER)));
       n.app.stop();
     } finally { await fs.rm(cfgPath, { force: true }); }
+  });
+});
+
+describe('a Telegram node: a turn the spine starts names its chat like any other line', () => {
+  const slug = (n) => n.state().contacts.telegram[MAIN].slug;
+  const tx = (n) => fs.readFile(join(HOME, 'conversations', 'telegram', slug(n), 'transcript.md'), 'utf8');
+
+  it('a heartbeat turn', async () => {
+    const n = await bootNode();
+    const ns = `telegram/${slug(n)}`;
+    await n.app.dispatchHeartbeatTurn({ being: 'egpt', ns, prompt: 'latido de prueba', name: `${ns}:latido` });
+    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): .*latido de prueba/);
+    n.app.stop();
+  });
+
+  it('a heartbeat post', async () => {
+    const n = await bootNode();
+    await n.app.dispatchHeartbeatPost({ ns: `telegram/${slug(n)}`, text: 'el primo es 1637' });
+    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): el primo es 1637/);
+    n.app.stop();
+  });
+
+  it('a background wake', async () => {
+    const n = await bootNode();
+    await n.app.spine.wakeOnBackground({ being: 'egpt', surface: 'telegram', chatId: MAIN, summaries: ['benchmark — completed'] });
+    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): .*finished: benchmark — completed/);
+    expect(await tx(n)).not.toMatch(/@\[telegram\]/);
+    n.app.stop();
   });
 });
 

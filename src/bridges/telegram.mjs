@@ -144,8 +144,22 @@ export function startTelegramBridge({
   const titles = new Map();
   const failures = new Map();
   const refused = new Set(), refusedLogged = new Set();   // reactions Telegram would not take
-  const movedChats = new Set();    // old ids already handed over (the move is said on both sides)
+  const movedTo = new Map();       // old id → new id (said on both sides, or by a refused send)
   let stopped = false, alive = false, me = null, offset = 0, privacyNoted = false;
+  // Anything addressed to an old id goes to the chat it became.
+  const current = (chatId) => {
+    const [chat, thread] = String(chatId ?? '').split('/');
+    const to = movedTo.get(chat);
+    return to ? to + (thread ? `/${thread}` : '') : chatId;
+  };
+  // Handed over once, not awaited, so the conversation has moved before the new id's first message.
+  const handOver = (from, to) => {
+    if (movedTo.has(from)) return;
+    movedTo.set(from, to);
+    log(`${from} is now ${to} (a supergroup)`);
+    try { Promise.resolve(onChatMoved?.(from, to)).catch((e) => log(`onChatMoved threw — ${e?.message ?? e}`)); }
+    catch (e) { log(`onChatMoved threw — ${e?.message ?? e}`); }
+  };
   const replyWake = (Array.isArray(replyWakeWords) && replyWakeWords.length) ? replyWakeWords : (wakeWords ?? []);
   const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
   const wrapEcho = makeWrapPersona({ bridgeSignatureOpen, bridgeSignatureClose, nodeName, visibleOnly: true });
@@ -172,12 +186,20 @@ export function startTelegramBridge({
     const err = new Error(scrub(j?.description ?? `HTTP ${res.status}`));
     err.status = j?.error_code ?? res.status;
     err.retryAfter = j?.parameters?.retry_after ?? null;
+    err.migrateTo = j?.parameters?.migrate_to_chat_id ?? null;
     throw err;
   }
-  // One retry on 429, after the wait Telegram names (when it is short).
+  // One retry on 429, after the wait Telegram names (when it is short). A chat that became a
+  // supergroup is refused with its new id: handed over, and said once more there.
   async function call(method, body) {
     try { return await api(method, body); }
     catch (e) {
+      if (e.migrateTo != null) {
+        const form = body instanceof FormData;
+        handOver(TG_PREFIX + (form ? body.get('chat_id') : body.chat_id), TG_PREFIX + e.migrateTo);
+        if (form) body.set('chat_id', String(e.migrateTo)); else body = { ...body, chat_id: String(e.migrateTo) };
+        return api(method, body);
+      }
       if (e.status !== 429 || !(e.retryAfter <= RETRY_AFTER_MAX_S) || stopped) throw e;
       await wait(e.retryAfter * 1000);
       return api(method, body);
@@ -199,7 +221,7 @@ export function startTelegramBridge({
     sent.add(`${chatId}#${id}`);
     if (sent.size > SENT_MAX) sent.delete(sent.values().next().value);
   };
-  const wasSentByUs = (chatId, msgId) => msgId != null && sent.has(`${chatId}#${msgId}`);
+  const wasSentByUs = (chatId, msgId) => msgId != null && sent.has(`${current(chatId)}#${msgId}`);
   // A message of ours is this node's; its being is the one whose stamp it carries.
   const authorOf = (ours, text) => (ours ? { replyToNode: String(nodeName).trim() || null, replyToBeing: stampedBeing(text, personaStamps()) } : { replyToNode: null, replyToBeing: null });
   // The text of every message seen or sent: a reaction names its target's text, an edit its old text.
@@ -317,18 +339,9 @@ export function startTelegramBridge({
     const md = pickMedia(m);
     let text = String(m.text ?? m.caption ?? '');
     remember(chatId, m.message_id, text);
-    // A group turned supergroup (Topics on) says so on both sides; handed over before any later
-    // update is (not awaited), so the conversation has moved before the new id's first message.
+    // A group turned supergroup (Topics on) says so on both sides, before any later update.
     const moved = m.migrate_to_chat_id != null ? [chat.id, m.migrate_to_chat_id] : m.migrate_from_chat_id != null ? [m.migrate_from_chat_id, chat.id] : null;
-    if (moved) {
-      const [from, to] = moved.map((id) => TG_PREFIX + id);
-      if (movedChats.has(from)) return;
-      movedChats.add(from);
-      log(`${from} is now ${to} (a supergroup)`);
-      try { Promise.resolve(onChatMoved?.(from, to)).catch((e) => log(`onChatMoved threw — ${e?.message ?? e}`)); }
-      catch (e) { log(`onChatMoved threw — ${e?.message ?? e}`); }
-      return;
-    }
+    if (moved) { handOver(...moved.map((id) => TG_PREFIX + id)); return; }
     if (!text.trim() && !md) return;
     if (group && me && me.can_read_all_group_messages === false && !privacyNoted) {
       privacyNoted = true;
@@ -484,6 +497,7 @@ export function startTelegramBridge({
 
   // --- outbound ---
   async function send(text, { chatId, replyToMessageID = null } = {}) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null) { log(`send refused — ${chatId} is not a telegram chat`); return null; }
     text = stripInvisible(text);
@@ -507,6 +521,7 @@ export function startTelegramBridge({
   }
 
   async function editMessage(chatId, msgId, text) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null || msgId == null) return false;
     const head = chunks(stripInvisible(text))[0];
@@ -519,6 +534,7 @@ export function startTelegramBridge({
   }
 
   async function deleteMessage(chatId, msgId) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null || msgId == null) return false;
     try { return !!(await call('deleteMessage', { chat_id: chat, message_id: Number(msgId) })); }
@@ -529,6 +545,7 @@ export function startTelegramBridge({
   // Bots may only use Telegram's fixed reaction set (and a group's allowed list): a refused emoji
   // is logged once, then skipped in that chat. Never text instead.
   async function setReaction(chatId, msgId, reaction) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null || msgId == null) return false;
     const emoji = reaction[0]?.emoji;
@@ -547,6 +564,7 @@ export function startTelegramBridge({
 
   // A side room is a topic of the chat it is made from: { success, chatID, link }, or { success: false, reason }.
   async function createGroup({ title } = {}, { chatId } = {}) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null) return null;
     try {
@@ -563,6 +581,7 @@ export function startTelegramBridge({
 
   // /end closes a topic; a whole chat is never closed.
   async function archiveChat(chatId) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null || threadOf(chatId) == null) return false;
     try { return !!(await call('closeForumTopic', { chat_id: chat, ...inThread(chatId) })); }
@@ -580,6 +599,7 @@ export function startTelegramBridge({
 
   // A caption over Telegram's limit goes out as a text reply to the media instead.
   async function sendMedia(chatId, filePath, { caption = null, replyTo = null } = {}) {
+    chatId = current(chatId);
     const chat = apiChatId(chatId);
     if (chat == null || !filePath) { log(`media refused — ${chatId} is not a telegram chat or there is no file`); return false; }
     const { method, field, mime } = mediaMethod(filePath);
@@ -612,6 +632,7 @@ export function startTelegramBridge({
 
   // Placeholder now, in-place edits (at most one a second), the final text in the same message.
   function startStreamMessage(initialText, { chatId, replyToMessageID = null, existingMsgId = null } = {}) {
+    chatId = current(chatId);
     let realId = existingMsgId ?? null, finished = false, latest = initialText;
     let lastEditAt = 0, timer = null, pending = null, chain = Promise.resolve();
     const handle = { delivered: false, lastError: null, get confirmedId() { return realId; } };
@@ -678,7 +699,7 @@ export function startTelegramBridge({
     createGroup,
     archiveChat,
     wasSentByUs,
-    sendFailure: (chatId) => failures.get(chatId) ?? null,
+    sendFailure: (chatId) => failures.get(current(chatId)) ?? null,
     getChatName: (chatId) => titles.get(chatId) ?? null,
     isAlive: () => alive,
     stop: () => {

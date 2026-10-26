@@ -21,6 +21,10 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
   }
   const rename = io.rename ?? fsRename;
   const appendFile = io.appendFile ?? fsAppendFile;
+  // A chat that moved to a new id (boot moveChat): its old id resolves to where it went. In memory
+  // (moves are rare): a restart forgets it, and the limb re-learns it from the next refused send.
+  const movedTo = new Map();
+  const current = (surface, chatId) => movedTo.get(`${surface}\0${chatId}`) ?? chatId;
 
   /**
    * Resolve (and self-heal) the slug for a chat. ALWAYS calls ensureContact —
@@ -35,7 +39,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
       // A known chat with nothing to change is a READ: answered without the node-wide lock.
       if (chatId) {
         try {
-          const seen = ensureContact(await loadState(), surface, chatId, { pushedName: chatName, slugHint: chatName, agents });
+          const seen = ensureContact(await loadState(), surface, current(surface, chatId), { pushedName: chatName, slugHint: chatName, agents });
           if (!seen.changed) return seen.slug ?? null;
         } catch { /* the locked path below reports it */ }
       }
@@ -45,6 +49,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
       return mutateState(writeState, async () => {
       try {
         if (!chatId) return null;
+        chatId = current(surface, chatId);   // again under the lock: a move may have landed meanwhile
         const state = await loadState();
         const ens = ensureContact(state, surface, chatId, { pushedName: chatName, slugHint: chatName, agents });
 
@@ -111,5 +116,5 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
     return { slug, room, path: room.transcriptPathFor(key) };
   }
 
-  return { resolve, transcriptTarget };
+  return { resolve, transcriptTarget, moved: (surface, from, to) => movedTo.set(`${surface}\0${from}`, to) };
 }

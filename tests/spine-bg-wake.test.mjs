@@ -53,7 +53,7 @@ function build({ brain, mode = 'mention', mayReply = null, guard = null, stopPre
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {} },
     brain,
-    identity: { build: (m) => m },
+    identity: { build: (m) => m, spineEvent: async (surface, chatId) => ({ surface, chatId }) },
     router: { resolve: () => ({ being: 'egpt' }) },
     gating,
     sender,
