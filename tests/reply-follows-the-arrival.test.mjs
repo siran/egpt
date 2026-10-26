@@ -212,7 +212,7 @@ function fakeTransport() {
     const spy = { connection: NAME_OF[token] ?? token, token, opts, onIncoming: opts.onIncoming, sent: [], streams: [], edits: [], reactions: [], unreactions: [] };
     built.push(spy);
     return {
-      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return spy.onSend?.(text, o) ?? { ok: true }; },   // `onSend` (off by default): a case's own send result
       async editMessage(chatId, msgId, text) { spy.edits.push({ chatId, msgId, text }); return true; },
       startStreamMessage(init, o) {
         const h = { delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
@@ -1236,5 +1236,36 @@ describe('/send through the mouth: Rodz\'s own room for the original, found by i
     expect(byConnection.primary.sent.filter((m) => m.chatId === BOTH_AS_PRIMARY)).toEqual([]);
     delete LISTED[SIDE_ROOM];
     app.stop();
+  });
+});
+
+describe('the ingest box\'s question in a chat both accounts are in (ingest.auto false)', () => {
+  const AT = '2026-09-11T14:06:00.000Z';
+  const known = () => ({ ...emptyState(), contacts: { whatsapp: { [BOTH_AS_PRIMARY]: { slug: 'both', pushedName: 'both' } } } });
+
+  it('NO arrival since boot: the MOUTH asks in its own room, and the owner\'s "sí" on the ear\'s copy dispatches it', async () => {
+    const { app, byConnection, io } = await bootWith(KG(), { state: known() });
+    // the mouth's post, and the same message as the ear hears it (another id, same body, same second)
+    byConnection.secondary.onSend = (text) => {
+      LISTED[BOTH_AS_SECONDARY].push({ id: 'mouth-ask', text, timestamp: AT });
+      LISTED[BOTH_AS_PRIMARY].push({ id: 'ear-ask', text, timestamp: AT });
+      return { ok: true, confirmedId: 'mouth-ask' };
+    };
+    const handled = vi.spyOn(app.spine, 'handleInbound');
+    try {
+      await app.ingestLine(`/to ${BOTH_AS_PRIMARY}\ne, resume the thread`);
+      expect(byConnection.secondary.sent.map((m) => m.chatId)).toEqual([BOTH_AS_SECONDARY]);
+      expect(byConnection.secondary.sent[0].text).toContain('📥 An (ingest): e, resume the thread');
+      expect(byConnection.primary.sent).toEqual([]);
+      expect(JSON.parse(io.files.get(join(_PRIVATE_HOME, 'state', 'ingest-asks.json')))[0].ids).toEqual(['ear-ask']);
+
+      await byConnection.primary.onIncoming('sí', { chatId: BOTH_AS_PRIMARY, chatName: 'both', network: 'whatsapp', userId: AN, senderName: 'An', isSender: true, authorized: true, msgKey: 'ear-si', replyToId: 'ear-ask' });
+      const sent = await waitFor(() => handled.mock.calls.find(([m]) => m.from?.via === 'ingest'));
+      expect(sent?.[0]).toMatchObject({ body: 'e, resume the thread', from: { chatId: BOTH_AS_PRIMARY, via: 'ingest' } });
+    } finally {
+      LISTED[BOTH_AS_SECONDARY] = LISTED[BOTH_AS_SECONDARY].filter((m) => m.id !== 'mouth-ask');
+      LISTED[BOTH_AS_PRIMARY] = LISTED[BOTH_AS_PRIMARY].filter((m) => m.id !== 'ear-ask');
+      app.stop();
+    }
   });
 });

@@ -3135,6 +3135,26 @@ export const CONFIG_SCHEMA = {
     /agents auto <handle> auto); the turn-counter guard bounds runaway unchanged.
   `,
 
+  ingest: `
+    A \`/to <chatId>\` file in the ingest box (EGPT_HOME/state/ingest, src/spine/ingest.mjs;
+    boot.mjs ingestTo) types its text into that chat as the node's owner. These
+    decide what the chat sees and when the line reaches a being. Read live.
+
+    KEYS:
+      show
+        DEFAULT: true. Post the line in the chat ("📥 <user_name> (ingest): …",
+        with its /file attachments) through the mouth.
+      auto
+        DEFAULT: false. false = nothing reaches a being until an owner answers
+        the posted question: a reply to it (or a reaction on it) saying yes / si /
+        sí / y / ok / 👍 dispatches it, no / n / 👎 drops it. Pending questions
+        survive a restart (state/ingest-asks.json) and never expire. true =
+        dispatched at once. show false + auto false posts only the question;
+        show false + auto true posts nothing.
+      ask
+        DEFAULT: "received message, dispatch? reply yes / no". The question text.
+  `,
+
   admin_channel: `
     The node's admin channel (operator 2026-09-24: "make it's posted on admin
     channel, eGPT Admin. BTW the 'admin channel' must be defined in config.yaml")

@@ -9,7 +9,7 @@
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
 import { readFile, writeFile, mkdir, unlink, readdir, rename, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename, extname } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 
 import { createSpine } from './spine.mjs';
@@ -64,7 +64,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf, isOwner } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
@@ -78,7 +78,10 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
-import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine } from './ingest.mjs';
+import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, answerOf } from './ingest.mjs';
+import { savedEntry, withMediaLines } from '../bridges/limb-intake.mjs';
+import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
+import { reactionEmoji } from '../dispatch-line.mjs';
 import { createCommands, loginProfilePathOf } from './commands.mjs';
 import { createLoginLimb } from './login.mjs';
 import { readChromeCredential } from '../tools/chrome-creds.mjs';
@@ -3752,7 +3755,10 @@ export async function boot({
   // backgroundWork: what a restart drain waits for. Held by the daemon, it survives a spine restart, so
   // there is nothing to wait for; spawned by this spine (no daemon host), it dies with it.
   // allBackground: all of it, whoever holds it — what a /standdown ends (the daemon ends its sessions).
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, advice, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  // The ingest box's open questions (ingest.auto false), kept across restarts (ingestTo, below).
+  const ingestAsks = createIngestAsks({ path: join(EGPT_HOME, 'state', 'ingest-asks.json'), io, onLog: (m) => log.line?.(`[ingest] ${m}`) });
+  await ingestAsks.load();
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -3871,18 +3877,84 @@ export async function boot({
 
   // `/to <chatId>` (2026-10-26): the text enters that chat as the owner's line, through the limbs'
   // own entry. Only a chat conversations.yaml already holds — the box never creates one.
-  async function ingestTo({ chatId, text }) {
+  // ingest.show posts it there first; ingest.auto false holds it until an owner answers the post.
+  const ingestSurface = (state, chatId) => Object.keys(state?.contacts ?? {}).find((s) => state.contacts[s]?.[chatId]);
+  const ingestNetwork = (surface) => (surface === SHELL_SURFACE ? 'shell' : surface);
+  async function ingestTo({ chatId, text, files = [] }) {
     const state = await _loadState();
-    const surface = Object.keys(state?.contacts ?? {}).find((s) => state.contacts[s]?.[chatId]);
-    if (!surface || !text) { log.line?.(`[ingest] /to ${chatId} ignored: ${surface ? 'no text' : 'no conversation with that id'}`); return; }
-    const st = mentionStatus(text, wakeWords, { addressWithoutAt });
+    const surface = ingestSurface(state, chatId);
+    if (!surface || !(text || files.length)) { log.line?.(`[ingest] /to ${chatId} ignored: ${surface ? 'no text' : 'no conversation with that id'}`); return; }
+    await placeChat(chatId, '[ingest]');   // nothing may have arrived in it since boot
+    const saved = [], lost = [];
+    for (const [i, p] of files.entries()) {
+      const ext = extname(p).slice(1).toLowerCase();
+      const kind = mediaKind(MIME_BY_EXT[ext], ext);
+      // saved where a limb saves an inbound attachment (media.save), announced the way it announces one
+      const r = await media.save({ chatID: chatId, chatName: state.contacts[surface][chatId].pushedName ?? null, network: ingestNetwork(surface), senderName: cfg.user_name ?? null, ts: now(), msgId: `ingest${i + 1}`, kind, mime: MIME_BY_EXT[ext] ?? null, fileName: basename(p), localPath: p });
+      if (r) saved.push(savedEntry(r, { kind, localPath: p, fileName: basename(p) }));
+      else { lost.push(p); log.line?.(`[ingest] /to ${chatId}: /file ${p} not attached — missing or unreadable`); }
+    }
+    const body = withMediaLines(text, saved);
+    const show = cfg.ingest?.show !== false;
+    const auto = cfg.ingest?.auto === true;
+    const ask = auto ? null : (String(cfg.ingest?.ask ?? '').trim() || INGEST_ASK);
+    const who = `📥 ${cfg.user_name ?? 'owner'} (ingest)`;
+    const ids = [];
+    if (show) for (const m of saved) ids.push(await ingestPost(chatId, (on, room) => on.sendMedia?.(room, m.savedPath, { caption: who })));
+    const head = [show && `${who}: ${text}`.trim(), ...lost.map((p) => `⚠️ /file ${p}: missing or unreadable`)].filter(Boolean).join('\n');
+    if (show || ask) ids.push(await ingestPost(chatId, (on, room) => on.send?.(room, [head, ask].filter(Boolean).join('\n\n'), { systemLine: true })));
+    if (auto) { await dispatchIngest(chatId, body); return; }
+    const posted = ids.filter((id) => id != null).map(String);
+    if (!posted.length) { log.line?.(`[ingest] /to ${chatId}: the question has no posted message an owner can answer — not dispatched`); return; }
+    await ingestAsks.add({ chatId, ids: posted, body });
+    log.line?.(`[ingest] /to ${chatId}: asked (#${posted.join(' #')}) — waiting for an owner's yes / no`);
+  }
+  // One post through the one placement. Its id as the chat's own connection holds it, since that is
+  // the copy an owner replies to: a local mouth's post is found there by its cross-account key.
+  async function ingestPost(chatId, act) {
+    const out = outbound(null, chatId);
+    let id = null;
+    await out.say(async (on, room) => {
+      const r = await act(on, room);
+      if (!r || r.blocked) return false;
+      id = (await r.confirmedId) ?? null;
+      if (id != null && on !== out.bridge) {
+        const hit = await peerMouth?.quote?.({ bridge: out.bridge, chatId }, await out.keyOf(id, 'ingest', { bridge: on, chatId: room })());
+        if (!hit?.ok) log.line?.(`[ingest] /to ${chatId}: post #${id} not found on the chat's own connection (${hit?.reason ?? 'no answer'}) — an answer to it cannot be matched`);
+        id = hit?.ok ? hit.msgId : null;
+      }
+      return true;
+    }, { what: 'ingest' });
+    return id;
+  }
+  async function dispatchIngest(chatId, body) {
+    const state = await _loadState();
+    const surface = ingestSurface(state, chatId);
+    if (!surface) { log.line?.(`[ingest] /to ${chatId} ignored: no conversation with that id`); return; }
+    const st = mentionStatus(body, wakeWords, { addressWithoutAt });
     // not awaited, as the shell limb: the turn must not hold the box (a /restart behind it)
-    spine.handleInbound({ body: text, from: {
+    spine.handleInbound({ body, from: {
       chatId, chatName: state.contacts[surface][chatId].pushedName ?? null,
-      network: surface === SHELL_SURFACE ? 'shell' : surface,
+      network: ingestNetwork(surface),
       userId: ownersOf(cfg, surface)[0] ?? null, senderName: cfg.user_name ?? null,
       authorized: true, via: 'ingest', msgKey: null, atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
     } }).catch((e) => log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`));
+  }
+  // An owner's yes / no to an open question: a reply to one of its posts, or a reaction on one.
+  function ingestAnswerOf(ev) {
+    const ask = ingestAsks.find(ev.chatId, ev.kind === 'reaction' ? ev.msgId : ev.kind === 'text' ? ev.replyToId : null);
+    const yes = ask && isOwner(ev, cfg) ? answerOf(ev.kind === 'reaction' ? reactionEmoji(ev.body) : ev.body) : null;
+    return yes == null ? null : { ask, yes };
+  }
+  async function answerIngest(ev) {
+    const a = ingestAnswerOf(ev);
+    if (!a) return;
+    await ingestAsks.take(a.ask);
+    const { chatId } = a.ask;
+    log.line?.(`[ingest] /to ${chatId}: ${a.yes ? 'dispatched' : 'dropped'} by ${ev.senderName ?? ev.senderId ?? '?'}`);
+    try { await sayOnce({ chatId, text: a.yes ? '✅ dispatched' : '🚫 dropped', opts: { systemLine: true }, what: 'ingest' }); }
+    catch (e) { log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`); }
+    if (a.yes) await dispatchIngest(chatId, a.ask.body);
   }
 
   // Command ingest: drop /restart, /upgrade or /rewind <ref> into

@@ -148,6 +148,7 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
+  ingestAsk = null,                    // optional { isAnswer(ev), answer(ev) } — an owner's yes/no to the ingest box's question (boot)
   guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
   stopPhrase = () => STOP_PHRASE,      // () => the kill phrase (boot: config stop_phrase; unset → STOP_PHRASE, '' → off)
@@ -916,6 +917,9 @@ export function createSpine({
       // only be cleared by a restart.
       if (guard && (word === 'resume' || word === 'resume_all')) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
     }
+
+    // The owner's yes/no to the ingest box's question: recorded, consumed here, routed to no being.
+    if (humanTurn(ev) && ingestAsk?.isAnswer?.(ev)) return async () => { await ingestAsk.answer(ev); };
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
     // to the brain. Recorded like any inbound, then executed (lifecycle exits the

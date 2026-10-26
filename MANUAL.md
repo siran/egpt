@@ -251,16 +251,35 @@ you (the node's owner), as if you had sent it there:
 
 ```
 /to tg:-1004408163350/55
+/file C:\Users\an\Desktop\factura.pdf
 ed, pick up the invoice thread above
 ```
 
 The chat id is its conversations.yaml key (a Telegram topic, a WhatsApp chat id,
-a room). The line takes the normal path: addressing and the chat's mode decide
-who answers, the answer goes to that chat, and the transcript records the line
-with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). Nobody
-else in the chat sees your line, only the answer. An id with no conversations.yaml
-entry, or a file with no text, is logged and ignored. The box sits under
-`~/.egpt`, so only the node's owner can write it; a sandboxed being cannot.
+a room). Each `/file <path>` line (zero or more) attaches that file: it is copied
+into the chat's `media/` and reaches the being as an inbound attachment does
+(`(document factura.pdf) [saved: media/…]`). A missing path is logged and named
+in the chat post; the text still goes through.
+
+What the chat sees, and when the line is dispatched (`ingest:` in config.yaml):
+
+- `show` (default `true`): the line is posted in the chat,
+  `📥 An (ingest): ed, pick up…`, with its files.
+- `auto` (default `false`): the post also asks `ask` (default `received message,
+  dispatch? reply yes / no`) and nothing reaches a being until an owner answers:
+  reply to the post (or react on it) with yes / si / sí / y / ok / 👍 to dispatch,
+  no / n / 👎 to drop. A one-line outcome is posted and logged; the answer itself
+  wakes nobody. Anyone else's reply is ordinary chat. Open questions survive a
+  restart (`state/ingest-asks.json`) and never expire. `auto: true` dispatches at
+  once. `show: false` + `auto: false` posts only the question; `show: false` +
+  `auto: true` posts nothing.
+
+Once dispatched the line takes the normal path: addressing and the chat's mode
+decide who answers, the answer goes to that chat, and the transcript records the
+line with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). An
+id with no conversations.yaml entry, or a file with no text and no files, is
+logged and ignored. The box sits under `~/.egpt`, so only the node's owner can
+write it; a sandboxed being cannot.
 
 ### `/<handle> browser refresh [url]` — sign in yourself
 

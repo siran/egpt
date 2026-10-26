@@ -12,7 +12,9 @@ const _HOME = vi.hoisted(() => {
 
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createIngest, toLine } from '../src/spine/ingest.mjs';
+import { createIngest, toLine, answerOf, INGEST_ASK } from '../src/spine/ingest.mjs';
+import { stripNodeSignature } from '../src/node-signature.mjs';
+import { reactionAction } from '../src/dispatch-line.mjs';
 
 let boot, emptyState, ensureContact;
 beforeAll(async () => {
@@ -37,8 +39,9 @@ const writeTgToken = async () => {
 };
 
 const AGENTS = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
-const BEEPER_ONLY = () => ({ node_name: 'kg', user_name: 'An', limbs: { beeper: { main: { account: 'you@example.com', token: 'TOK-b' } } }, agents: AGENTS });
-const TELEGRAM_ONLY = () => ({ node_name: 'EDW', user_name: 'An', limbs: { telegram: { main: { account: 'edw_bot' } } }, networks: { telegram: { allowed_users: [42] } }, agents: AGENTS });
+const SILENT = { ingest: { show: false, auto: true } };   // the box before ingest.show / ingest.auto
+const BEEPER_ONLY = (ingest = SILENT.ingest) => ({ node_name: 'kg', user_name: 'An', limbs: { beeper: { main: { account: 'you@example.com', token: 'TOK-b' } } }, agents: AGENTS, ...(ingest ? { ingest } : {}) });
+const TELEGRAM_ONLY = (ingest = SILENT.ingest) => ({ node_name: 'EDW', user_name: 'An', limbs: { telegram: { main: { account: 'edw_bot' } } }, networks: { telegram: { allowed_users: [42] } }, agents: AGENTS, ...(ingest ? { ingest } : {}) });
 
 function memIo() {
   const files = new Map();
@@ -53,6 +56,7 @@ function memIo() {
     existsSync: (path) => files.has(path) || dirs.has(path),
     readdir: async (path) => [...files.keys()].filter((f) => dirname(f) === path).map((f) => f.slice(path.length + 1)),
     rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
+    copyFile: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); },
   };
 }
 function fakeSession(opts) {
@@ -60,12 +64,14 @@ function fakeSession(opts) {
 }
 function fakeTransport(declared = {}) {
   const built = [];
+  let n = 0;
   const start = async (opts) => {
-    const spy = { opts, sent: [], streams: [] };
+    const spy = { opts, sent: [], streams: [], media: [] };
     built.push(spy);
     return {
       ...declared,
-      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async send(text, o) { const id = `m${++n}`; spy.sent.push({ text, chatId: o?.chatId, id }); return { ok: true, confirmedId: id }; },
+      async sendMedia(chatId, path, o) { const id = `m${++n}`; spy.media.push({ chatId, path, caption: o?.caption ?? null, id }); return { ok: true, confirmedId: id }; },
       async sendReaction() { return true; },
       startStreamMessage(init, o) {
         const h = { init, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
@@ -78,12 +84,11 @@ function fakeTransport(declared = {}) {
   return { start, built };
 }
 
-async function bootWith(config, { state, telegram = false, session = fakeSession } = {}) {
+async function bootWith(config, { state, telegram = false, session = fakeSession, io = memIo() } = {}) {
   const beeper = fakeTransport();
   const tg = fakeTransport({ visibleOnly: true });
   const lines = [];
   const exits = [];
-  const io = memIo();
   let convState = state ?? emptyState();
   const app = await boot({
     readConfig: () => config,
@@ -118,9 +123,12 @@ const transcriptOf = (io) => [...io.files].filter(([p]) => /transcript\.md$/.tes
 
 describe('toLine', () => {
   it('first line /to <chatId>, the rest (trimmed, multi-line, CRLF ok) is the text', () => {
-    expect(toLine('/to tg:-1004408163350/55\ned, hola\nsegunda línea\n')).toEqual({ chatId: 'tg:-1004408163350/55', text: 'ed, hola\nsegunda línea' });
-    expect(toLine('/to !abc:beeper.com\r\ne, hi\r\n')).toEqual({ chatId: '!abc:beeper.com', text: 'e, hi' });
-    expect(toLine('/to lobby')).toEqual({ chatId: 'lobby', text: '' });
+    expect(toLine('/to tg:-1004408163350/55\ned, hola\nsegunda línea\n')).toEqual({ chatId: 'tg:-1004408163350/55', text: 'ed, hola\nsegunda línea', files: [] });
+    expect(toLine('/to !abc:beeper.com\r\ne, hi\r\n')).toEqual({ chatId: '!abc:beeper.com', text: 'e, hi', files: [] });
+    expect(toLine('/to lobby')).toEqual({ chatId: 'lobby', text: '', files: [] });
+  });
+  it('/file <path> lines (any number, anywhere below the head) are attachments, not text', () => {
+    expect(toLine('/to !abc:beeper.com\n/file C:\\tmp\\a b.png\ne, mira\n/file /tmp/doc.pdf\n')).toEqual({ chatId: '!abc:beeper.com', text: 'e, mira', files: ['C:\\tmp\\a b.png', '/tmp/doc.pdf'] });
   });
   it('anything else is not a /to file', () => {
     for (const s of ['/restart', '/to', '/to a b\nhi', '/tox abc\nhi', 'hola', '', null]) expect(toLine(s)).toBe(null);
@@ -206,5 +214,245 @@ describe('/to a Telegram topic', () => {
     expect(tg[0].streams.map((s) => s.chatId)).toEqual([TOPIC]);
     expect(tg[0].streams[0].finals[0]).toContain('An@[EduWeb · Ventas].ingest (');
     app.stop();
+  });
+});
+
+// ── ingest.show / ingest.auto (2026-10-26): the line is shown in the chat, and an owner confirms it ──
+const CHAT = '!fam:beeper.com';
+const plain = (s) => stripNodeSignature(String(s ?? ''));
+const posts = (spy, chatId = CHAT) => spy.sent.filter((s) => s.chatId === chatId).map((s) => ({ ...s, text: plain(s.text) }));
+const ingestCalls = (handled) => handled.mock.calls.filter(([m]) => m.from?.via === 'ingest');
+const onMode = (state, chatId = CHAT, surface = 'whatsapp') => { state.contacts[surface][chatId].agents = { egpt: { mode: 'on' } }; return state; };
+let seq = 0;
+// The owner's (or a stranger's) quote-reply, as a limb hands it to the spine.
+const replyTo = (app, id, body, { owner = true, chatId = CHAT, network = 'whatsapp', userId = owner ? 'an' : 'pepe' } = {}) => app.spine.handleInbound({ body, from: {
+  chatId, chatName: 'fam', network, userId, senderName: owner ? 'An' : 'Pepe', isSender: owner && network !== 'telegram', authorized: owner, msgKey: `in${++seq}`, replyToId: id,
+} });
+const reactTo = (app, id, emoji, { owner = true, chatId = CHAT, network = 'whatsapp' } = {}) => app.spine.handleInbound({ body: reactionAction({ emoji, targetId: id, snippet: '📥 An (ingest)' }), from: {
+  chatId, chatName: 'fam', network, userId: owner ? 'an' : 'pepe', senderName: owner ? 'An' : 'Pepe', isSender: false, authorized: owner, isReaction: true, msgKey: id,
+} });
+
+describe('ingest.show / ingest.auto', () => {
+  it('defaults (show, ask): the line is posted in the chat with the question, and nothing reaches the being yet', async () => {
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, resume the thread`);
+    const [post] = posts(beeper[0]);
+    expect(post?.text).toContain('📥 An (ingest): e, resume the thread');
+    expect(post?.text).toContain(INGEST_ASK);
+    expect(ingestCalls(handled)).toEqual([]);
+    expect(beeper[0].streams).toEqual([]);
+    app.stop();
+  });
+
+  it('show:false + auto:false posts only the question', async () => {
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY({ show: false }), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, resume the thread`);
+    expect(posts(beeper[0]).map((p) => p.text.trim())).toEqual([INGEST_ASK]);
+    expect(ingestCalls(handled)).toEqual([]);
+    app.stop();
+  });
+
+  it('show:true + auto:true posts the line (no question) and dispatches at once', async () => {
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY({ auto: true }), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, resume the thread`);
+    const shown = posts(beeper[0]);
+    expect(shown).toHaveLength(1);
+    expect(shown[0].text).toContain('📥 An (ingest): e, resume the thread');
+    expect(shown[0].text).not.toContain(INGEST_ASK);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    await settled(handled);
+    expect(beeper[0].streams.map((s) => s.chatId)).toEqual([CHAT]);
+    app.stop();
+  });
+
+  it('show:false + auto:true is the silent box: nothing posted, dispatched at once', async () => {
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY({ show: false, auto: true }), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, resume the thread`);
+    expect(posts(beeper[0])).toEqual([]);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    app.stop();
+  });
+
+  it('ingest.ask is the question text', async () => {
+    const { app, beeper } = await bootWith(BEEPER_ONLY({ ask: '¿lo mando? sí / no' }), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, hola`);
+    expect(posts(beeper[0])[0]?.text).toContain('¿lo mando? sí / no');
+    expect(posts(beeper[0])[0]?.text).not.toContain(INGEST_ASK);
+    app.stop();
+  });
+});
+
+describe('answering the question', () => {
+  it('answerOf: yes/si/sí/y/ok/👍 dispatch, no/n/👎 drop, anything else is not an answer', () => {
+    for (const s of ['yes', 'Yes', 'si', 'Sí', 'sí.', 'y', 'OK', 'ok!', '👍', '👍🏽', ' yes ']) expect(answerOf(s), s).toBe(true);
+    for (const s of ['no', 'No', 'n', 'NO.', '👎', '👎🏻']) expect(answerOf(s), s).toBe(false);
+    for (const s of ['', 'yes please', 'maybe', 'nope', '❤️', null]) expect(answerOf(s), String(s)).toBe(null);
+  });
+
+  it('an owner\'s "yes" reply dispatches the line once; the yes itself wakes no being (on-mode chat)', async () => {
+    const { app, beeper, handled, lines } = await bootWith(BEEPER_ONLY(null), { state: onMode(seed('whatsapp', CHAT, 'fam')) });
+    await drop(app, `/to ${CHAT}\ne, resume the thread`);
+    const ask = posts(beeper[0])[0];
+    await replyTo(app, ask?.id, 'yes');
+    await settled(handled);
+    const sent = ingestCalls(handled);
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toMatchObject({ body: 'e, resume the thread', from: { chatId: CHAT, via: 'ingest', authorized: true } });
+    expect(beeper[0].streams).toHaveLength(1);                    // the ingested line's turn, none for "yes"
+    expect(posts(beeper[0]).map((p) => p.text)).toContainEqual(expect.stringContaining('✅ dispatched'));
+    expect(lines.some((l) => /\[ingest\] \/to !fam:beeper\.com: dispatched by An/.test(l))).toBe(true);
+    await replyTo(app, ask.id, 'yes');                            // answered: a second yes is ordinary input
+    await settled(handled);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    app.stop();
+  });
+
+  it('"sí" works the same; "no" drops it with an outcome line and nothing reaches the being', async () => {
+    const a = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(a.app, `/to ${CHAT}\ne, uno`);
+    await replyTo(a.app, posts(a.beeper[0])[0]?.id, 'Sí');
+    await settled(a.handled);
+    expect(ingestCalls(a.handled)).toHaveLength(1);
+    a.app.stop();
+
+    const b = await bootWith(BEEPER_ONLY(null), { state: onMode(seed('whatsapp', CHAT, 'fam')) });
+    await drop(b.app, `/to ${CHAT}\ne, dos`);
+    await replyTo(b.app, posts(b.beeper[0])[0]?.id, 'no');
+    await settled(b.handled);
+    expect(ingestCalls(b.handled)).toEqual([]);
+    expect(b.beeper[0].streams).toEqual([]);
+    expect(posts(b.beeper[0]).map((p) => p.text)).toContainEqual(expect.stringContaining('🚫 dropped'));
+    expect(b.lines.some((l) => /\[ingest\] \/to !fam:beeper\.com: dropped by An/.test(l))).toBe(true);
+    b.app.stop();
+  });
+
+  it('a 👍 reaction on the post dispatches, a 👎 drops', async () => {
+    const a = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(a.app, `/to ${CHAT}\ne, uno`);
+    await reactTo(a.app, posts(a.beeper[0])[0]?.id, '👍');
+    await settled(a.handled);
+    expect(ingestCalls(a.handled)).toHaveLength(1);
+    a.app.stop();
+
+    const b = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(b.app, `/to ${CHAT}\ne, dos`);
+    await reactTo(b.app, posts(b.beeper[0])[0]?.id, '👎');
+    await settled(b.handled);
+    expect(ingestCalls(b.handled)).toEqual([]);
+    expect(posts(b.beeper[0]).map((p) => p.text)).toContainEqual(expect.stringContaining('🚫 dropped'));
+    b.app.stop();
+  });
+
+  it('a non-owner\'s "yes" is ordinary chat input: nothing dispatched, the question still open for the owner', async () => {
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\ne, resume`);
+    const ask = posts(beeper[0])[0];
+    await replyTo(app, ask?.id, 'yes', { owner: false });
+    await reactTo(app, ask?.id, '👍', { owner: false });
+    await settled(handled);
+    expect(ingestCalls(handled)).toEqual([]);
+    await replyTo(app, ask?.id, 'yes');
+    await settled(handled);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    app.stop();
+  });
+
+  it('the pending question survives a restart (state/ingest-asks.json)', async () => {
+    const io = memIo();
+    const state = seed('whatsapp', CHAT, 'fam');
+    const first = await bootWith(BEEPER_ONLY(null), { state, io });
+    await drop(first.app, `/to ${CHAT}\ne, resume the thread`);
+    const ask = posts(first.beeper[0])[0];
+    first.app.stop();
+    expect(JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')) ?? 'null')).toEqual([{ chatId: CHAT, ids: [ask?.id], body: 'e, resume the thread' }]);
+
+    const second = await bootWith(BEEPER_ONLY(null), { state, io });
+    await replyTo(second.app, ask?.id, 'yes');
+    await settled(second.handled);
+    expect(ingestCalls(second.handled)).toHaveLength(1);
+    expect(JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')))).toEqual([]);
+    second.app.stop();
+  });
+
+  it('the shown post coming back on the ear (signed, from the account) wakes nobody in an on-mode chat', async () => {
+    const echo = (app, p) => app.spine.handleInbound({ body: p.text, from: { chatId: CHAT, chatName: 'fam', network: 'whatsapp', userId: 'an', senderName: 'An', isSender: true, authorized: true, msgKey: `echo-${p.id}` } });
+    const a = await bootWith(BEEPER_ONLY(null), { state: onMode(seed('whatsapp', CHAT, 'fam')) });
+    await drop(a.app, `/to ${CHAT}\ne, resume the thread`);
+    expect(a.beeper[0].sent).toHaveLength(1);
+    await echo(a.app, a.beeper[0].sent[0]);
+    await settled(a.handled);
+    expect(a.beeper[0].streams).toEqual([]);
+    expect(ingestCalls(a.handled)).toEqual([]);
+    a.app.stop();
+
+    const b = await bootWith(BEEPER_ONLY({ auto: true }), { state: onMode(seed('whatsapp', CHAT, 'fam')) });
+    await drop(b.app, `/to ${CHAT}\ne, resume the thread`);
+    await settled(b.handled);
+    const shown = b.beeper[0].sent.filter((s) => s.text.startsWith('📥'));
+    expect(shown).toHaveLength(1);
+    expect(b.beeper[0].streams).toHaveLength(1);
+    await echo(b.app, shown[0]);
+    await settled(b.handled);
+    expect(b.beeper[0].streams).toHaveLength(1);                  // the dispatched line's turn only
+    b.app.stop();
+  });
+});
+
+describe('/file attachments', () => {
+  const withFiles = (io) => { io.files.set('/in/foto.png', 'PNG'); io.files.set('/in/factura.pdf', 'PDF'); return io; };
+  const tail = (p) => p.replace(/\\/g, '/').split('/').slice(-2).join('/');
+
+  it('an image and a PDF are saved to media/, shown in the chat, and reach the being as media lines', async () => {
+    const io = withFiles(memIo());
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY({ auto: true }), { state: seed('whatsapp', CHAT, 'fam'), io });
+    await drop(app, `/to ${CHAT}\n/file /in/foto.png\n/file /in/factura.pdf\ne, mira esto`);
+    const media = beeper[0].media;
+    expect(media.map((m) => tail(m.path))).toEqual(['media/20261026-140500-an-image-ingest1.png', 'media/20261026-140500-an-document-ingest2.pdf']);
+    expect(media.every((m) => io.files.has(m.path))).toBe(true);
+    expect(ingestCalls(handled)[0]?.[0].body).toBe('e, mira esto\n(image foto.png) [saved: media/20261026-140500-an-image-ingest1.png]\n(document factura.pdf) [saved: media/20261026-140500-an-document-ingest2.pdf]');
+    app.stop();
+  });
+
+  it('with the question, a reply to the attachment answers it too, and yes delivers the media lines', async () => {
+    const io = withFiles(memIo());
+    const { app, beeper, handled } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io });
+    await drop(app, `/to ${CHAT}\n/file /in/foto.png\ne, mira`);
+    await replyTo(app, beeper[0].media[0]?.id, 'ok');
+    await settled(handled);
+    expect(ingestCalls(handled)[0]?.[0].body).toBe('e, mira\n(image foto.png) [saved: media/20261026-140500-an-image-ingest1.png]');
+    app.stop();
+  });
+
+  it('a missing path is logged and reported in the post; the text still goes through', async () => {
+    const { app, beeper, handled, lines } = await bootWith(BEEPER_ONLY({ auto: true }), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(app, `/to ${CHAT}\n/file /in/nope.png\ne, hola`);
+    expect(beeper[0].media).toEqual([]);
+    expect(posts(beeper[0])[0]?.text).toContain('/in/nope.png');
+    expect(lines.some((l) => l.startsWith('[ingest]') && l.includes('/in/nope.png'))).toBe(true);
+    expect(ingestCalls(handled)[0]?.[0].body).toBe('e, hola');
+    app.stop();
+  });
+});
+
+describe('the question on a Telegram topic', () => {
+  const TOPIC = 'tg:-1004408163350/55';
+
+  it('a reply in the topic, or a 👍 that names no topic (after a restart), answers it', async () => {
+    await writeTgToken();
+    const a = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'EduWeb · Ventas') });
+    await drop(a.app, `/to ${TOPIC}\ne, hola`);
+    const ask = posts(a.tg[0], TOPIC)[0];
+    expect(ask?.text).toContain('📥 An (ingest): e, hola');
+    await replyTo(a.app, ask?.id, 'sí', { chatId: TOPIC, network: 'telegram', userId: 42 });
+    await settled(a.handled);
+    expect(ingestCalls(a.handled)[0]?.[0].from).toMatchObject({ chatId: TOPIC, network: 'telegram', userId: 42 });
+    a.app.stop();
+
+    const b = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'EduWeb · Ventas') });
+    await drop(b.app, `/to ${TOPIC}\ne, hola`);
+    await reactTo(b.app, posts(b.tg[0], TOPIC)[0]?.id, '👍', { chatId: 'tg:-1004408163350', network: 'telegram' });
+    await settled(b.handled);
+    expect(ingestCalls(b.handled)).toHaveLength(1);
+    b.app.stop();
   });
 });
