@@ -544,3 +544,19 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Proposal: the EDW node moves onto the g4dn.xlarge (one instance: node + a whisper-server container on :8089, adopted by the node's whisper-server-local; fallback_order [gpu] only, a note waits rather than going to a small model). One cutover. Pending the operator's go and the commitment.
   - The wake/sleep rework was stopped (engine agent killed; worktree egpt-wt-gpuwake unused). The CUDA image (feat/whisper-gpu, docker/whisper-gpu) is reusable; the start/stop provision scripts aren't needed. whisper-server-ecs (50d0f61e) becomes unused; remove it once the always-on design lands.
 - **leo:** branch + PR (operator). Needs a GitHub token on EDW (fine-grained: siran/egpt, Contents rw + Pull requests rw) and branch protection on main; leo works in a separate worktree, never in the live checkout.
+
+## 10-25 ~22:35 — voice on oficina's CPU (operator); ED's brief
+- **Operator:** keep it on CPU (cheap); c7a isn't covered by the t3a plan and t3a.2xlarge is too expensive; "better not to use voice notes with AWS"; oficina could be the worker.
+- **CPU prices** (1-yr EC2 Instance SP, /mo): t3a.medium 17, t3a.xlarge 69, t3a.2xlarge 138, c7a.xlarge 99, c7a.2xlarge 198, c7i.xlarge 86, c7i.2xlarge 172; GPU g4dn.xlarge 242.
+- **oficina:**
+  - Debian 12; i5-9500T, 6 cores (no HT), up to 3.7 GHz, AVX2/FMA; 15 GB RAM (12 free); no NVIDIA.
+  - Docker root /home/docker (266 GB free); root disk 91 % (avoid).
+  - Runs EduWeb dev/QA containers, apache2, mariadb, postgresql@18, samba, clamav; load 0.00 at 22:09.
+- **Design:**
+  - whisper-server on oficina at 127.0.0.1:8089 only (--cpus=4);
+  - EDW opens an outbound SSH tunnel to oficina:35547 with a tunnel-only key (restrict, port-forwarding, permitopen 127.0.0.1:8089, command /bin/false);
+  - EDW transcribes with large-v3 only, no small; if oficina is down, notes wait and An is told.
+- **ED's brief** (operator: "create document so that eduweb's E can grab it"): conversations/telegram/EduWeb-2610240312/desktop/transcripcion-oficina/BRIEF.md + referencias.md (kg's large-v3 texts for An's 3 notes: 4.5 s, 5.4 s, 56.8 s, already in ED's media).
+  - Step 1: benchmark at night (whisper.cpp v1.9.5 with -ac trimmed, faster-whisper int8; large-v3 f16/q5, turbo; 6 and 4 threads; everything on /home).
+  - Step 2: the service + tunnel key, after An's OK. EDW's tunnel and config: orchestrator.
+- **Open on EDW's side:** a supervised outbound tunnel in the container (no egpt mechanism yet); check that boot's whisper-reap never kills the tunnel's listener.
