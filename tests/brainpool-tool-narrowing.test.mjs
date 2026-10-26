@@ -74,8 +74,9 @@ describe('regression locks — E, ken and wren run exactly as before (no top-lev
   });
 });
 
-// Captured from the code BEFORE the narrowing change (main 985f80c) — the lock is that it never moves.
-const BOXED = (effort) => ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--allowedTools', 'Read Write Edit Glob Grep Bash Agent WebSearch WebFetch', '--model', 'opus', '--effort', effort, '--settings', '{"cleanupPeriodDays":3650000}'];
+// Captured from the code BEFORE the narrowing change (main 985f80c) — the lock is that it never moves
+// (+ --strict-mcp-config, every being since 2026-10-26).
+const BOXED = (effort) => ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--strict-mcp-config', '--allowedTools', 'Read Write Edit Glob Grep Bash Agent WebSearch WebFetch', '--model', 'opus', '--effort', effort, '--settings', '{"cleanupPeriodDays":3650000}'];
 const SNAP = { egpt: BOXED('high'), ken: BOXED('xhigh'), wren: BOXED('xhigh') };
 
 const FIVE = ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch'];
@@ -86,7 +87,7 @@ describe('a ccode type that declares allowed_tools narrows its level to that lis
     expect(opts.sandboxed).toBe(true);
     expect(opts.allowedTools).toEqual(FIVE);
     expect(opts.tools).toEqual(FIVE);
-    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Grep,Glob,WebFetch,WebSearch', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Grep,Glob,WebFetch,WebSearch', '--strict-mcp-config', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
   });
 
   it('edw-marketer at access_level sandbox narrows the same way (the level adds Bash/Agent; the type drops them)', async () => {
@@ -109,7 +110,7 @@ describe('a ccode type that declares allowed_tools narrows its level to that lis
     const { opts, argv } = await optionsFor('djh', agents, types);
     expect(opts.allowedTools).toEqual(['Read', 'Bash(curl:*)']);
     expect(opts.tools).toEqual(['Read', 'Bash']);
-    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Bash', '--allowedTools', 'Read Bash(curl:*)', '--model', 'haiku', '--effort', 'high', '--settings', '{"cleanupPeriodDays":3650000}']);
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Bash', '--strict-mcp-config', '--allowedTools', 'Read Bash(curl:*)', '--model', 'haiku', '--effort', 'high', '--settings', '{"cleanupPeriodDays":3650000}']);
   });
 
   it('two scoped entries of one tool name it once in --tools', async () => {

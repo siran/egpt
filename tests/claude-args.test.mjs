@@ -283,6 +283,17 @@ describe('the three permission tiers (2026-09-23)', () => {
   });
 });
 
+describe('no MCP server (operator 2026-10-26: "off for all beings")', () => {
+  it('every tier carries --strict-mcp-config, once — the claude.ai connectors never load', () => {
+    for (const o of [{}, { allowedTools: ['Read'] }, { confineToDirs: ['/c/conv'], allowedTools: ['Read'] }, { dangerouslySkipPermissions: true }, { osConfined: true }, { strictMcpConfig: true }]) {
+      expect(buildClaudeArgs(o).filter((x) => x === '--strict-mcp-config')).toHaveLength(1);
+    }
+  });
+  it('strictMcpConfig: false drops it (textecute: not a being)', () => {
+    expect(has(buildClaudeArgs({ strictMcpConfig: false }), '--strict-mcp-config')).toBe(false);
+  });
+});
+
 describe('FILE_TOOLS sanity', () => {
   it('covers the write/read-class tools', () => {
     for (const t of ['read', 'write', 'edit', 'glob', 'grep']) expect(FILE_TOOLS.has(t)).toBe(true);

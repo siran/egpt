@@ -90,8 +90,18 @@ function daemon() {
   const state = { conv: null };
   const exits = [];
   const lines = [];
-  const spine = async () => {
+  const spine = async ({ previousBuild = false } = {}) => {
     const pair = ipcPair();
+    // A spine of the build before --strict-mcp-config: its spawns carry neither the flag nor the option.
+    if (previousBuild) {
+      const send = pair.spineSide.send;
+      pair.spineSide.send = (m) => {
+        if (m?.t !== 'cli:spawn') return send(m);
+        const opened = { ...m.meta.opened };
+        delete opened.strictMcpConfig;
+        return send({ ...m, args: m.args.filter((a) => a !== '--strict-mcp-config'), meta: { ...m.meta, opened } });
+      };
+    }
     host.attach(pair.daemonSide);
     const { start, built } = fakeTransport();
     const app = await boot({
@@ -160,6 +170,52 @@ describe('boot — the daemon holds the sessions across a spine restart', () => 
     expect(d.lines.some((l) => l.includes('drain: waiting for'))).toBe(false);
     expect(d.spawns[0].child.killed).toBe(false);
     one.app.stop();
+  });
+});
+
+describe('boot — a held session spawned before --strict-mcp-config (deploy of 2026-10-26)', () => {
+  it('idle: adopted, then reopened by resume WITH the flag on the being\'s next turn', async () => {
+    const d = daemon();
+    const one = await d.spine({ previousBuild: true });
+    await one.say('e, hola');
+    await vi.waitFor(() => expect(finals(one.spy).some((f) => f.includes('echo:'))).toBe(true), { timeout: 5000 });
+    expect(d.spawns[0].args).not.toContain('--strict-mcp-config');
+    one.app.stop();
+    one.pair.drop();
+
+    const two = await d.spine();
+    await vi.waitFor(() => expect(d.lines.some((l) => l.includes('[cli-host] adopted'))).toBe(true), { timeout: 5000 });
+    await two.say('e, sigues?');
+    await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('sigues?'))).toBe(true), { timeout: 5000 });
+    expect(d.spawns[0].child.killed).toBe(true);
+    expect(d.spawns).toHaveLength(2);
+    expect(d.spawns[1].args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--resume', 'sess-1']));
+    expect(d.spawns[1].child.lines.at(-1)).toMatch(/sigues\?/);
+    expect(d.lines.some((l) => /configuration changed: strictMcpConfig/.test(l))).toBe(true);
+    two.app.stop();
+  });
+
+  it('background work running: the old process keeps serving until it ends, then the next turn reopens', async () => {
+    const d = daemon();
+    const one = await d.spine({ previousBuild: true });
+    await one.say('e, bg: run the audit');
+    await vi.waitFor(() => expect(finals(one.spy)).toHaveLength(1), { timeout: 5000 });
+    one.app.stop();
+    one.pair.drop();
+
+    const two = await d.spine();
+    await vi.waitFor(() => expect(d.lines.some((l) => l.includes('[cli-host] adopted'))).toBe(true), { timeout: 5000 });
+    await two.say('e, sigues?');
+    await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('sigues?'))).toBe(true), { timeout: 5000 });
+    expect(d.spawns).toHaveLength(1);
+    expect(d.spawns[0].child.killed).toBe(false);
+    expect(d.lines.some((l) => /strictMcpConfig\) — reopen deferred: 1 background task/.test(l))).toBe(true);
+
+    d.spawns[0].child.finishBg();
+    await vi.waitFor(() => expect(d.spawns).toHaveLength(2), { timeout: 5000 });
+    expect(d.spawns[0].child.killed).toBe(true);
+    expect(d.spawns[1].args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--resume', 'sess-1']));
+    two.app.stop();
   });
 });
 
