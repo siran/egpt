@@ -660,3 +660,16 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **leo's PR workflow on EDW:** credential helper in the repo config reads secrets/github-leo.token (ls-remote auth OK); leo's own worktree ~/.egpt/agents/leo/desktop/egpt (detached at origin/main); note agents/leo/desktop/GIT-WORKFLOW.md (branch leo/<topic>, push, PR via the API, never main, no AI attribution); git identity An Rodriguez <anmichel@gmail.com>. The operator's admin bypass also covers the token (it acts as him), so "never main" is a rule, not a lock; a separate GitHub account for leo would make it binding.
 - **cf5b0c15 (3c24e0d4) ingest `/to <chatId>`** + text: deployed to EDW (kg/do at the next deploy). First use: the step-2 go to ED in topic "an" (tg:-1004408163350/55); ED's turn opened on the fork's branch at 15:29 UTC.
 - **NYSCEF** (kg, brain profile): the guest search looped its captcha in egpt's automated Chrome. Passing it once in a plain window on the same profile (chrome-signin.cmd brain <nyscef url>; the helper now takes a URL) fixed it ("nyscef worked"). No stealth, no agent captcha solving.
+
+## 10-26 ~12:25 Caracas — voice on oficina live
+- **ED's step 2 on oficina:**
+  - container whisper-oficina (large-v3 f16, 4 threads, 127.0.0.1:8089 only, --cpus=4, 6 GB, auto-restart). ED put a whisper-cli wrapper in front, since the plain server encodes 30 s windows.
+  - Timings: es fixed 13/10 s on short notes; auto 35–46 s short, 112 s long (language detection costs ~25 s); WER 0/0/4.5 %.
+  - Tunnel user edw-tunnel@oficina.eserviciosat.net (no shell/password; our key SHA256:X8l0fhXb… verified).
+  - ED proposes a small model ONLY to detect the language (<1 s), large-v3 still transcribing: operator to decide.
+- **Tunnel:** target written; the sidecar wasn't running.
+  - Cause: while waiting it exited 0 every 5 min; the ECS agent logged "Not Restarting container" and re-stopped it (14:22 UTC). Started by hand → GET / 200 through 127.0.0.1:18089.
+  - jfk.wav: language=es → translated Spanish (wrong); auto → correct English.
+  - Fix 8f6bc5a1: the sidecar loops forever. Deploy as edw:3 tonight (a ~20 s task restart).
+- **EDW transcription:** fallback_order [oficina] (whisper-server-local 127.0.0.1:18089, language auto, timeout 600 s); cli.language auto (the caller cfg = profile.cli, whose language overrides the engine's); never small. Drained /restart; backup config.yaml.pre-oficina-20261026T162153.
+- /browser refresh command dispatched (feat/browser-refresh).
