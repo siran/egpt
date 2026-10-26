@@ -72,6 +72,8 @@ export const HEARTBEATS_DIR = 'heartbeats';
 //   accum          — accumulate; reply on a batched cadence
 export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active', 'mention-direct', 'off', 'accum'];
 export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain', 'shell', 'extension'];
+// A CHAT member: its id is a chat id the relay sends to, and a line said there tunnels in (room-relay.mjs).
+export const CHAT_MEMBER_KINDS  = ['wa-group', 'tg-group'];
 export const DEFAULT_MEMBER_STATE = 'muted';
 
 // Operator-friendly aliases for the member state — `on`/`unmute` read more

@@ -50,6 +50,7 @@ function clientConfig(name, c = {}) {
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
   return {
     name,
+    being: c.being ? String(c.being) : null,
     origins: Array.isArray(c.allowed_origins) ? c.allowed_origins.map(String) : [],
     maxChars,
     rateMessages: posInt(c.rate?.messages, HTTP_DEFAULTS.rateMessages),
@@ -239,7 +240,8 @@ export async function startHttpBridge({
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
       atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-      backlog: false, replyToBot: false, isReaction: false, isTranscriptFromVoice: false,
+      // the widget is a reply thread with the client's being: every visitor line addresses it
+      backlog: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
       msgKey: m.id, msgTs: n,
     });
     return json(res, 200, { session: token, message: view(m) }, cors);

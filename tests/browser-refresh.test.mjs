@@ -1,4 +1,4 @@
-// tests/browser-refresh.test.mjs — /<handle> browser refresh [url] (operator 2026-10-26): sites refuse
+// tests/browser-refresh.test.mjs — /<handle> browser refresh [group] [url] (operator 2026-10-26): sites refuse
 // eGPT's pipe Chrome (Google sign-in, NYSCEF's captcha), so a human signs in in a PLAIN Chrome on the
 // group's profile. The command closes eGPT's Chrome through the pool, opens the plain one through the
 // daemon, and holds the group until that window's Chrome exits. Fake chrome-host (fake-pipe-chrome.mjs).
@@ -20,6 +20,7 @@ const GROUPS = { brain: ['eGPT Admin'], work: ['NYSCEF case', 'Twice'], other: [
 const WORK = { key: 'NYSCEF case-2610200000', name: 'NYSCEF case', group: 'work' };
 const workDir = join(dirname(CHROME_BRAIN_PROFILE), 'work');
 const NYSCEF = 'https://iapps.courts.state.ny.us/nyscef/Login';
+const FOLDERS = ['brain', 'Old Chrome', 'legacy'];
 
 function build({ profileHolder = () => null, chromeHost } = {}) {
   const fake = fakePipeChrome({ listTabs: async () => [{ id: 'P1', url: 'https://x/', title: 'x' }] });
@@ -30,6 +31,7 @@ function build({ profileHolder = () => null, chromeHost } = {}) {
     profileHolder, freeMem: () => 8192 * MB, rssOf: () => null,
     onChromeLog: (m) => logs.push(m),
     browserGroups: async () => GROUPS,
+    profileFolders: () => FOLDERS,
     loadState: async () => STATE, writeState: async () => {},
     send: async (chatId, text) => sent.push({ chatId, text }),
     brains: { resolve: (name) => ({ name, type: 'ccode' }) },
@@ -122,13 +124,62 @@ describe('/browser refresh — the plain sign-in window', () => {
 
   it('the url is a page, never a Chrome switch; anything but refresh is the usage line', async () => {
     const w = build();
-    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser', '/browser open https://x', `/browser refresh ${NYSCEF} extra`]) {
+    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser', '/browser open https://x', `/browser refresh ${NYSCEF} extra`, '/browser refresh --remote-debugging-port=9222', '/browser refresh work file:///C:/x', `/browser refresh work ${NYSCEF} extra`]) {
       await run(w.cmds, '!nys', bad);
-      expect(lastText(w.sent)).toMatch(/^usage: \/e browser refresh \[url\]/);
+      expect(lastText(w.sent)).toMatch(/^usage: \/e browser refresh \[group\] \[url\]/);
     }
-    await run(w.cmds, '!nys', '/browser refresh --remote-debugging-port=9222');
+    expect(w.plain).toHaveLength(0);
+    await run(w.cmds, '!nys', '/browser refresh work --remote-debugging-port=9222');
     expect(w.plain[0].argv.at(-1)).toMatch(/^https:\/\//);
     expect(w.plain[0].argv.filter((a) => a.startsWith('-'))).toEqual([`--user-data-dir=${workDir}`, '--no-first-run']);
+  });
+});
+
+describe("/browser refresh <group> — a named profile, not this chat's", () => {
+  const brainDir = CHROME_BRAIN_PROFILE;
+
+  it('`refresh brain` targets brain from a work chat; the back line comes to that chat', async () => {
+    const w = build();
+    await w.cmds.startBrowser({ key: '', name: '', group: 'brain' });
+    await run(w.cmds, '!nys', '/browser refresh brain');
+    expect(w.events).toEqual(['launch:brain', 'kill:brain', 'plain:brain']);
+    expect(w.plain[0]).toMatchObject({ group: 'brain', profileDir: brainDir, argv: chromePlainArgs({ userDataDir: brainDir, url: 'about:blank' }) });
+    expect(lastText(w.sent)).toMatch(/^I closed my browser for brain\. A normal Chrome window opened on kg at about:blank:/);
+    w.plain[0].close();
+    expect(w.sent.at(-1)).toEqual({ chatId: '!nys', text: 'browser brain is back — signed-in session will be used' });
+  });
+
+  it('`refresh Brain accounts.google.com` targets brain with that url (group matched case-insensitively)', async () => {
+    const w = build();
+    await run(w.cmds, '!nys', '/browser refresh Brain accounts.google.com');
+    expect(w.plain[0]).toMatchObject({ group: 'brain', profileDir: brainDir });
+    expect(w.plain[0].argv.at(-1)).toBe('https://accounts.google.com/');
+  });
+
+  it("`refresh accounts.google.com` is still this chat's group", async () => {
+    const w = build();
+    await run(w.cmds, '!nys', '/browser refresh accounts.google.com');
+    expect(w.plain[0]).toMatchObject({ group: 'work', profileDir: workDir });
+    expect(w.plain[0].argv.at(-1)).toBe('https://accounts.google.com/');
+  });
+
+  it('a browsers.yaml group or a folder under the profiles root is a target too', async () => {
+    const w = build();
+    await run(w.cmds, '!admin', '/browser refresh WORK');
+    expect(w.plain[0]).toMatchObject({ group: 'work', profileDir: workDir });
+    await run(w.cmds, '!admin', '/browser refresh legacy https://x.example/');
+    expect(w.plain[1]).toMatchObject({ group: 'legacy', profileDir: join(dirname(CHROME_BRAIN_PROFILE), 'legacy') });
+    expect(w.plain[1].argv.at(-1)).toBe('https://x.example/');
+  });
+
+  it('an unknown word with no url shape → the usage and the known group names, nothing opened', async () => {
+    const w = build();
+    await run(w.cmds, '!nys', '/browser refresh nosuch');
+    expect(lastText(w.sent)).toMatch(/^usage: \/e browser refresh \[group\] \[url\]/);
+    expect(lastText(w.sent)).toMatch(/groups: brain, legacy, other, shared, work$/);
+    await run(w.cmds, '!nys', '/browser refresh nosuch x.example');
+    expect(lastText(w.sent)).toMatch(/groups: brain, legacy, other, shared, work$/);
+    expect(w.events).toEqual([]);
   });
 });
 

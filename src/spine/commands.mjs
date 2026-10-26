@@ -173,6 +173,12 @@ const signinUrlOf = (raw) => {
   try { const u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`); return /^(https?|about):$/.test(u.protocol) ? u.href : null; }
   catch { return null; }
 };
+// A dot, a slash or a scheme: a url, never a group name.
+const urlShaped = (s) => /[./]|^[a-z][a-z0-9+.-]*:/i.test(s);
+function defaultProfileFolders() {
+  try { return readdirSync(dirname(CHROME_BRAIN_PROFILE), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+  catch { return []; }
+}
 const trunc = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 
 // Compact uptime: "2h13m" / "13m05s" / "42s". Whole seconds; drops the finest
@@ -564,6 +570,7 @@ export function createCommands({
   rssOf = defaultRssOf,
   onChromeLog = () => {},
   browserGroups = readBrowserGroups,     // config/browsers.yaml's groups, read fresh (rooms-file.readBrowserGroups)
+  profileFolders = defaultProfileFolders,   // the folder names under the profiles root
   browserColors = readBrowserColors,     // its optional colors: map, read at each launch
   commandAliasesPath = join(EGPT_HOME, 'config', 'commands_alias.yaml'),   // alias → command line (aliased, below)
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
@@ -984,7 +991,7 @@ export function createCommands({
     const loginMatch = /^\/login\s+(\S+)\s*$/i.exec(line);
     if (loginMatch) { await send?.(ev.chatId, await loginCmd(ev, loginMatch[1])); return; }
 
-    // /browser refresh [url] — this chat's browser profile in a plain Chrome window, for a human
+    // /browser refresh [group] [url] — this chat's (or a named group's) browser profile in a plain Chrome window, for a human
     // sign-in or check (browserRefresh). Pre-catch-all.
     const browserMatch = /^\/browser\b[ \t]*(.*)$/i.exec(line);
     if (browserMatch) { await send?.(ev.chatId, await browserCmd(ev, browserMatch[1].trim())); return; }
@@ -1244,19 +1251,35 @@ export function createCommands({
   }
   const chatClientOf = async (ev, opts) => (await chatChromeOf(surfaceOf(ev), ev.chatId, opts)).client;
 
-  // /browser refresh [url] — sites refuse the pipe Chrome (Google sign-in, captchas), so a human does
+  // /browser refresh [group] [url] — sites refuse the pipe Chrome (Google sign-in, captchas), so a human does
   // it in a PLAIN Chrome on the group's profile: eGPT's Chrome closes through the daemon, the plain one
   // opens there, and the group is held until it exits. No stealth, no captcha solving here.
+  // [group]: a known group's name (any case, never url-shaped); else the chat's group and [url].
   async function browserCmd(ev, args) {
-    const [verb, raw, extra] = args.split(/\s+/);
-    const url = signinUrlOf(raw ?? 'about:blank');
-    if (verb.toLowerCase() !== 'refresh' || extra || !url) return `usage: ${hintOf('browser refresh [url]', ev)} — close my browser for this chat and open a normal Chrome window on its profile, for you to sign in or pass a check`;
-    return browserRefresh(ev, url);
+    const [verb, ...rest] = args.split(/\s+/);
+    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check${more}`;
+    if (verb.toLowerCase() !== 'refresh' || rest.length > 2) return usage();
+    let group = null;
+    if (rest[0] && !urlShaped(rest[0])) {
+      const known = await knownBrowserGroups();
+      group = known.find((g) => g.toLowerCase() === rest[0].toLowerCase());
+      if (!group) return usage(`; groups: ${known.join(', ')}`);
+      rest.shift();
+    }
+    const url = rest.length > 1 ? null : signinUrlOf(rest[0] ?? 'about:blank');
+    if (!url) return usage();
+    return browserRefresh(ev, url, group);
   }
-  async function browserRefresh(ev, url) {
-    const { group, profileDir, why } = groupProfileOf(await browserConversationOf(surfaceOf(ev), ev.chatId));
-    if (!profileDir) return `no browser for this chat — ${why}`;
-    if (!chromeHost) return `no browser for this chat — ${NO_CHROME_HOST}`;
+  // The groups a name can pick: brain, shared, browsers.yaml's, the profile folders — one typeable word each.
+  async function knownBrowserGroups() {
+    const names = [BRAIN_GROUP, SHARED_GROUP, ...Object.keys(await browserGroups()), ...profileFolders()];
+    return [...new Set(names)].filter((g) => isSafeGroupName(g) && !/\s/.test(g) && !urlShaped(g)).sort();
+  }
+  async function browserRefresh(ev, url, named) {
+    const whose = named ? `group "${named}"` : 'this chat';
+    const { group, profileDir, why } = groupProfileOf(named ? { key: '', name: named, group: named } : await browserConversationOf(surfaceOf(ev), ev.chatId));
+    if (!profileDir) return `no browser for ${whose} — ${why}`;
+    if (!chromeHost) return `no browser for ${whose} — ${NO_CHROME_HOST}`;
     await _reattached;
     if (_signin.has(profileDir)) return `the "${group}" browser is already held for sign-in — close that Chrome window first`;
     const hold = { group, pid: null, chatId: ev.chatId };

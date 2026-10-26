@@ -46,7 +46,7 @@ import { reapPort } from '../tools/reap-port.mjs';
 // (tests/beeper-whoami.test.mjs): GET /v1/accounts with a candidate's OWN token. Imported, never
 // re-implemented — a second probe here would be a second thing to get wrong about what a 401 means.
 import { probe as probeBeeperEndpoint } from '../tools/beeper-whoami.mjs';
-import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR } from '../room-core.mjs';
+import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR, CHAT_MEMBER_KINDS } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
   CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, LOBBY_SLUG, fixedSlugFor,
@@ -928,20 +928,27 @@ export function createRadioNoteRelay({
 // room's own conversation lives on surface `room`, so a room turn has nothing it could match. That
 // is structural rather than a counter — without it, two rooms each listing the other's name would
 // re-enter into each other forever.
-export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile } = {}) {
+//
+// Each entry is the inviting conversation's address { surface, chatId, chatName } plus the
+// `member` record that names this chat there (kind, title).
+export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile, loadState = async () => null } = {}) {
   return async (surface, chatId) => {
     try {
       const tunnelRooms = [];
       if (surface !== SHELL_SURFACE) {
+        let state;
         for (const [ns, row] of Object.entries(await readRooms())) {
-          const listed = Array.isArray(row?.members) ? row.members : [];
-          if (!listed.some((m) => m && m.kind === 'wa-group' && String(m.id) === String(chatId))) continue;
-          // The row KEY is the room's ns — `<surface>/<slug>`, the same string Room.ns() emits —
-          // so the SLUG it names is the chatId the re-entry addresses the room by (a room is a
-          // contact on surface `room` whose chatId IS its name). A key with no surface prefix is
-          // not a room address; skip it.
-          const cut = String(ns).indexOf('/');
-          if (cut > 0) tunnelRooms.push(String(ns).slice(cut + 1));
+          const member = (Array.isArray(row?.members) ? row.members : []).find((m) => m && CHAT_MEMBER_KINDS.includes(m.kind) && String(m.id) === String(chatId));
+          if (!member) continue;
+          // The row KEY is the conversation's ns — `<surface>/<slug>`, the same string Room.ns()
+          // emits — resolved to its chat id the way every ns is (a room's chatId IS its name). A key
+          // that resolves to no conversation is not an address; skip it. Named by its slug where the
+          // slug is fixed (a room, a chatbox), else by its stored title (a re-entry never renames it).
+          state ??= (await loadState()) ?? {};
+          const to = chatIdForEntity(state, ns);
+          if (!to) continue;
+          const slug = String(ns).slice(String(ns).indexOf('/') + 1);
+          tunnelRooms.push({ ...to, chatName: fixedSlugFor(to.surface, to.chatId) ? slug : (state.contacts?.[to.surface]?.[to.chatId]?.pushedName || slug), member });
         }
       }
       const own = await resolveConvRoom(surface, chatId);
@@ -1396,7 +1403,7 @@ export async function boot({
   // by construction the same group whose turn runs on room/acim's thread (operator 2026-08-31).
   // Hoisted here, above the brainpool, only because the brainpool is constructed first; the relay
   // further down takes this same value instead of building a second one.
-  const memberResolver = createMemberResolver({ resolveConvRoom });
+  const memberResolver = createMemberResolver({ resolveConvRoom, loadState: _loadState });
 
   // Voice/video transcription: the fallback CHAIN (remote node → local whisper-
   // server → cli), driven by config.transcription_service. One transcriber feeds
@@ -2218,14 +2225,26 @@ export async function boot({
     for (const [name, c] of Object.entries(block.clients ?? {})) {
       const being = String(c?.being ?? '');
       if (!isLocalAgent(being, agents()[being])) hlog(`limbs.http.clients.${name}.being '${being}' is not a local agent here — its visitors reach nobody`);
+      if (c?.team_group != null && !telegramPort) hlog(`limbs.http.clients.${name}.team_group is set but this node has no Telegram limb — no team topics`);
     }
-    // A new session's conversation folder starts with a copy of its client's `seed` folder (relative: under EGPT_HOME).
-    const onNewSession = ({ client, chatId }) => {
-      const seed = block.clients?.[client]?.seed;
-      if (!seed) return;
-      const from = isAbsolute(String(seed)) ? String(seed) : join(EGPT_HOME, String(seed));
-      const n = copyTreeIfMissing(from, slugDir('http', fixedSlugFor('http', chatId)));
-      hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
+    // A new session's conversation folder starts with a copy of its client's `seed` folder (relative: under EGPT_HOME),
+    // and with a `team_group`, a topic there that is a chat member of the conversation (room-relay.mjs).
+    const onNewSession = async ({ client, chatId }) => {
+      const c = block.clients?.[client] ?? {};
+      const slug = fixedSlugFor('http', chatId);
+      if (c.seed) {
+        const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));
+        const n = copyTreeIfMissing(from, slugDir('http', slug));
+        hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
+      }
+      if (c.team_group == null || !telegramPort) return;
+      const title = `${c.title || client} · ${slug.slice(client.length + 1, client.length + 7)}`;
+      const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
+      if (!made?.success) { hlog(`${chatId}: no team topic — ${made?.reason ?? 'the Telegram limb made none'}`); return; }
+      await Room.forChat('http', slug).setMember({ kind: 'tg-group', id: made.chatID, state: 'active', replies: true, title: c.team_name || c.title || client });
+      // The topic records the team and tunnels it in; its being never answers there (mute): it answers the visitor.
+      await contacts.resolve('telegram', made.chatID, { chatName: title, seed: { agents: { [c.being]: { mode: 'mute' } } } });
+      hlog(`${chatId}: team topic "${title}" is ${made.chatID}`);
     };
     const port = await createBeeperBridgePort({
       ...sharedBridgeOpts,
@@ -2946,10 +2965,12 @@ export async function boot({
   // A stranger's new 1:1 is created with its stranger agent as the conversation's owner, on: the
   // ONE seed, read by the transcript (which writes it) and the router and gate (a line earlier).
   // A chatbox session's is its client's being, which any visitor may wake there (allowed_users), and
-  // no public commands (commands read it, a line earlier too).
+  // no public commands (commands read it, a line earlier too). With a team topic it is `mention`: the
+  // visitor's every line addresses it (http.mjs replyToBeing), the team's only when they name it.
   const strangerSeedOf = (ev) => {
-    const chatbox = ev?.surface === 'http' ? getConfig()?.limbs?.http?.clients?.[httpClientOf(ev.chatId)]?.being : null;
-    if (chatbox) return { agents: { [chatbox]: { ...STRANGER_SEED, allowed_users: ['*'] } }, public_commands: [] };
+    const client = ev?.surface === 'http' ? getConfig()?.limbs?.http?.clients?.[httpClientOf(ev.chatId)] : null;
+    const chatbox = client?.being;
+    if (chatbox) return { agents: { [chatbox]: { ...STRANGER_SEED, ...(client.team_group != null ? { mode: 'mention' } : {}), allowed_users: ['*'] } }, public_commands: [] };
     const b = strangerAgentFor(ev, getConfig()); return b ? { agents: { [b]: { ...STRANGER_SEED } } } : null;
   };
   // --- services (each DI-wired; none closes over another) ---
@@ -3749,7 +3770,8 @@ export async function boot({
     // A member's tab lives in its ROOM's browser-group Chrome (the one resolver); refused → no browser.
     streamFromTab: async (o, ev) => { const { client } = await commands.chatChromeOf(ev?.surface, ev?.chatId); if (!client) throw new Error('no browser for this room'); return client.streamFromTab(o); },
     activateTarget: async (id, ev) => (await commands.chatChromeOf(ev?.surface, ev?.chatId)).client?.activateTarget(id),
-    openStream: (memberId, chatId, opts = {}) => memberSender.open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
+    openStream: (memberId, chatId, opts = {}) => (opts.asBeing ? services.sender : memberSender).open(chatId, { being: memberId, replyTo: opts.replyTo ?? null }),
+    showsMembers: (chatId) => !!httpPort?.owns(chatId),   // a chatbox's widget shows its team's lines
     // NO logRoomTranscript SEAM ANY MORE (operator 2026-08-31, a net deletion): a wa-group message
     // is RE-ENTERED into the room it tunnels into now, so the room's own ingestion writes its ONE
     // transcript record at the same chokepoint every other message goes through — and wakes the
