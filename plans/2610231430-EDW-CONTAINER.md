@@ -522,3 +522,9 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
 - **Voice out:** piper (es_MX-claude-high) synthesizes in the container; voice_service → the local piper server :23391. A voice-triggered turn (or `@ev`) gets its text reply plus an audio reply.
 - **Deploying 4d88a2ba:** kg/do via upgrade.ps1 -Peer; EDW via `/upgrade` in state/ingest (drains, pulls, respawns).
 - **Voice test:** after the GPU infra (agent still running) is applied and EDW's config has fallback_order [gpu, cli].
+- **20:05 — all three nodes on main.** kg 4d88a2ba / do 0feeef23 (upgrade.ps1 -Peer; heartbeats fresh).
+- **EDW:** its `/upgrade` had refused to fast-forward: leo had committed 3 changes in EDW's own checkout (7ca8ee27 audio_ctx: auto, fccf35e3 the live-profile test guard, 71f9dedf the ≥512 floor).
+  - Ported to main as **98145dfe** (the same 107+/5−; config-schema kept CRLF; suite green).
+  - EDW's originals kept on branch `leo-local-20261025`; checkout rewound to the merge base, then `/upgrade` (ingest) fast-forwarded to 98145dfe, npm installed, the bot is listening, alive fresh.
+  - Rule for leo: don't commit in EDW's checkout (it blocks every upgrade); hand changes to the orchestrator as patches or proposals.
+- **Telegram Topics can now be turned on in EduWeb:** the id-follow code is live on EDW. Then make @edwsi_bot an admin with Manage topics; `/ed split <name>` → a forked topic + its link.
