@@ -533,3 +533,14 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Now: ONE g4dn.xlarge `edw-whisper-node`, normally stopped (model kept on its EBS); the ECS service edw-whisper at desired 1 always (placement role=whisper, awsvpc, 8089 from edw-sg).
   - The waker starts and stops the instance: ec2 Start/StopInstances on that tag only, DescribeInstances, ecs List/DescribeTasks. Nightly 03:00 Caracas StopInstances.
   - Expected: wake ~1.5–2 min, sleep immediate, asleep ~$2.40/mo. Both agents resumed (infra rework; engine on feat/whisper-ec2-wake).
+
+## 10-25 ~21:05 — edc5 on Aurora; ED's FYI; voice = always-on GPU, never small
+- **edc5-api-prod DB_HOST → eduweb-2020.cluster-… (Aurora writer)** at 00:43 UTC (operator: "please do, educomp5 is not really production"). Only DB_HOST changed (DB_NAME bertrand, DB_USER/DB_PASSWORD untouched); the environment went Yellow → Green.
+- **ED's FYI** posted by a one-shot heartbeat (heartbeats/edc5-dbhost-fyi.yaml, fired 01:04 UTC): the change, plus the question whether edc5's user exists on Aurora with the same password, to verify or fix.
+  - Lessons: (a) a new beat file is loaded only on an inbound message, a config swap or a boot (two drained /restarts were needed); (b) EDW has no default_time_zone, so `when:` is UTC.
+- **Topics:** EduWeb is still a basic group (getChat: group, -5256478300). "Topics enabled on edwsi_bot" is likely BotFather's bot-level setting; the group's own Topics switch is still off.
+- **Voice (operator):** "never a small model, accuracy is key", "keep the good model warm", "1.5–2 min wake not accepted". The CPU is too slow (t3a: 3.5 min for an 11 s note with large-v3 q5). So an always-on GPU.
+  - Prices, g4dn.xlarge (T4, 4 vCPU/16 GB): on-demand $0.526/h = $384/mo; 1-yr no-upfront EC2 Instance SP (g4dn) $0.331/h = $242/mo; Compute SP $0.381/h = $278/mo.
+  - Proposal: the EDW node moves onto the g4dn.xlarge (one instance: node + a whisper-server container on :8089, adopted by the node's whisper-server-local; fallback_order [gpu] only, a note waits rather than going to a small model). One cutover. Pending the operator's go and the commitment.
+  - The wake/sleep rework was stopped (engine agent killed; worktree egpt-wt-gpuwake unused). The CUDA image (feat/whisper-gpu, docker/whisper-gpu) is reusable; the start/stop provision scripts aren't needed. whisper-server-ecs (50d0f61e) becomes unused; remove it once the always-on design lands.
+- **leo:** branch + PR (operator). Needs a GitHub token on EDW (fine-grained: siran/egpt, Contents rw + Pull requests rw) and branch protection on main; leo works in a separate worktree, never in the live checkout.
