@@ -598,3 +598,8 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
   - Confirmed live: the archived stray transcript holds **ED's 01:46 UTC reply to #364** ("Listo, el colegio ya no está en la tarjeta…"), sent to the old id, so almost certainly never delivered.
   - Fix: contacts.resolve maps moved ids (in memory). Rulings sent: the limb forwards sends old → new, and a 400 carrying migrate_to_chat_id retries on the new id and triggers the move.
   - The "[telegram].telegram" label is pre-existing and on every surface: spine-originated events (heartbeats, background wakes) carry no chat name. Ruling (a): those builders carry the stored name and the node tag (one shared helper).
+- **0fa97118 / 51f066bf deployed to kg, do and EDW** (suite 7600/7600):
+  - the Telegram limb maps old → new ids on every outbound call;
+  - a refusal carrying migrate_to_chat_id retries on the new id and hands the move over (self-heals a missed move);
+  - contacts.resolve files a moved id under its new conversation (in memory);
+  - heartbeat and background-wake lines carry the chat's stored name and node tag (identity.spineEvent): [EduWeb].tg / [SI+EduWeb].wa instead of [telegram].telegram / [whatsapp].whatsapp.
