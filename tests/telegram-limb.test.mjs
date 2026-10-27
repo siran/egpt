@@ -45,9 +45,9 @@ function fakeApi({ me = ME } = {}) {
     const body = init.body instanceof FormData ? formFields(init.body) : JSON.parse(init.body);
     calls.push({ url, method, body, headers: init.headers ?? null });
     if (method === 'getUpdates') {
-      if (queue.length) return queue.shift();
+      if (queue.length) { const r = queue.shift(); if (r.reject) throw r.reject; return r; }
       return new Promise((resolve, reject) => {
-        parked = resolve;
+        parked = (r) => (r.reject ? reject(r.reject) : resolve(r));
         init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
       });
     }
@@ -60,6 +60,7 @@ function fakeApi({ me = ME } = {}) {
     raw: (...ups) => push(ok(ups.map((u) => ({ update_id: ++updateId, ...u })))),
     lastUpdateId: () => updateId,
     pushError: (code, description, parameters) => push(err(code, description, parameters)),
+    pushNetError: (e) => push({ reject: e }),
     of: (method) => calls.filter((c) => c.method === method),
   };
 }
@@ -865,6 +866,179 @@ describe('telegram limb behind the shared port adapter (beeper-port createBeeper
     expect(await port.setChatInfo('tg:-1001234/77', { title: 'Ventas' })).toEqual({ ok: true });
     expect(api.of('setChatTitle').map((c) => c.body)).toEqual([{ chat_id: '-1001234', title: 'Ventas' }]);
     port.stop();
+  });
+});
+
+// What Node's fetch rejects with when no HTTP answer came, each cause as undici/net report it (Node 24, probed).
+const netErr = (cause) => new TypeError('fetch failed', { cause });
+const sysErr = (code, syscall) => Object.assign(new Error(`${syscall} ${code}`), { code, syscall });
+const NEVER_LEFT = {
+  refused: () => netErr(sysErr('ECONNREFUSED', 'connect')),
+  connectTimeout: () => netErr(Object.assign(new Error('Connect Timeout Error'), { name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT' })),
+  // EDW's "fetch failed (ETIMEDOUT)": happy eyeballs gave up on every address at connect
+  eyeballs: () => netErr(Object.assign(new AggregateError([sysErr('ETIMEDOUT', 'connect'), sysErr('ENETUNREACH', 'connect')], ''), { code: 'ETIMEDOUT' })),
+};
+const MAY_HAVE_LANDED = {
+  reset: () => netErr(sysErr('ECONNRESET', 'read')),
+  closed: () => netErr(Object.assign(new Error('other side closed'), { name: 'SocketError', code: 'UND_ERR_SOCKET' })),
+  readTimeout: () => netErr(sysErr('ETIMEDOUT', 'read')),
+};
+const fastTimers = (delays) => ({ setTimeout: (fn, ms) => { delays.push(ms); queueMicrotask(fn); return delays.length; }, clearTimeout: () => {} });
+
+describe('telegram limb — no answer from the network: retried, never posted twice', () => {
+  it('an edit with no answer twice lands on the third try, each retry logged', async () => {
+    const api = fakeApi();
+    const fails = [MAY_HAVE_LANDED.reset, NEVER_LEFT.eyeballs];
+    api.answers.editMessageText = () => { if (fails.length) throw fails.shift()(); return api.ok(true); };
+    const delays = [];
+    const { bridge, lines } = start(api, fastTimers(delays));
+    expect(await bridge.editMessage('tg:42', '9', 'hola')).toBe(true);
+    expect(api.of('editMessageText')).toHaveLength(3);
+    expect(delays).toEqual([1_000, 3_000]);
+    expect(lines.filter((l) => /^editMessageText got no answer/.test(l))).toEqual([
+      'editMessageText got no answer — fetch failed (ECONNRESET); retry 1/3 in 1s',
+      'editMessageText got no answer — fetch failed (ETIMEDOUT); retry 2/3 in 3s',
+    ]);
+    bridge.stop();
+  });
+
+  it('a sendMessage that never left (refused, connect timeout, happy-eyeballs ETIMEDOUT) is retried and posts once', async () => {
+    const api = fakeApi();
+    const real = api.answers.sendMessage;
+    const fails = [NEVER_LEFT.refused, NEVER_LEFT.connectTimeout, NEVER_LEFT.eyeballs];
+    let posted = 0;
+    api.answers.sendMessage = (b) => { if (fails.length) throw fails.shift()(); posted++; return real(b); };
+    const delays = [];
+    const { bridge } = start(api, fastTimers(delays));
+    expect((await bridge.send('hi', { chatId: 'tg:42' }))?.messageId).toBe('500');
+    expect(posted).toBe(1);
+    expect(api.of('sendMessage')).toHaveLength(4);
+    expect(delays).toEqual([1_000, 3_000, 9_000]);
+    bridge.stop();
+  });
+
+  it('…and after the third retry it fails as before', async () => {
+    const api = fakeApi();
+    api.answers.sendMessage = () => { throw NEVER_LEFT.refused(); };
+    const { bridge } = start(api, fastTimers([]));
+    expect(await bridge.send('hi', { chatId: 'tg:42' })).toBeNull();
+    expect(api.of('sendMessage')).toHaveLength(4);
+    expect(bridge.sendFailure('tg:42')).toBe('fetch failed (ECONNREFUSED)');
+    bridge.stop();
+  });
+
+  it('a createForumTopic that never left is retried: the topic is made, once', async () => {
+    const api = fakeApi();
+    let fail = true, made = 0;
+    api.answers.createForumTopic = (b) => { if (fail) { fail = false; throw NEVER_LEFT.eyeballs(); } made++; return api.ok({ message_thread_id: 77, name: b.name }); };
+    const { bridge } = start(api, fastTimers([]));
+    expect(await bridge.createGroup({ title: 'Ventas' }, { chatId: 'tg:-1001234' })).toMatchObject({ success: true, chatID: 'tg:-1001234/77' });
+    expect(made).toBe(1);
+    bridge.stop();
+  });
+
+  it('a send or topic whose request may have reached Telegram (ECONNRESET, UND_ERR_SOCKET, read ETIMEDOUT) is not retried — no double post', async () => {
+    const api = fakeApi();
+    const real = api.answers.sendMessage;
+    let cut = null, posted = 0, made = 0;
+    // Telegram took it, then the connection died before the answer.
+    api.answers.sendMessage = (b) => { posted++; real(b); throw cut(); };
+    api.answers.createForumTopic = () => { made++; throw cut(); };
+    const delays = [];
+    const { bridge, lines } = start(api, fastTimers(delays));
+    for (const failure of Object.values(MAY_HAVE_LANDED)) {
+      cut = failure;
+      expect(await bridge.send('hi', { chatId: 'tg:42' })).toBeNull();
+      expect(await bridge.createGroup({ title: 'Ventas' }, { chatId: 'tg:-1001234' })).toMatchObject({ success: false, reason: expect.stringMatching(/^Telegram did not make the topic \(fetch failed/) });
+    }
+    expect(posted).toBe(3);
+    expect(made).toBe(3);
+    expect(delays).toEqual([]);
+    expect(lines.filter((l) => /got no answer/.test(l))).toEqual([]);
+    bridge.stop();
+  });
+
+  it('an HTTP error is an answer: a 400 edit and a 502 send are not retried', async () => {
+    const api = fakeApi();
+    api.answers.editMessageText = () => api.err(400, 'Bad Request: message to edit not found');
+    api.answers.sendMessage = () => api.err(502, 'Bad Gateway');
+    const delays = [];
+    const { bridge } = start(api, fastTimers(delays));
+    expect(await bridge.editMessage('tg:42', '9', 'hola')).toBe(false);
+    expect(await bridge.send('hi', { chatId: 'tg:42' })).toBeNull();
+    expect(api.of('editMessageText')).toHaveLength(1);
+    expect(api.of('sendMessage')).toHaveLength(1);
+    expect(delays).toEqual([]);
+    bridge.stop();
+  });
+
+  it('getUpdates is not retried twice: the poll loop alone backs off', async () => {
+    const api = fakeApi();
+    const delays = [];
+    const { bridge, lines } = start(api, fastTimers(delays));
+    await bridge.startupReady;
+    await vi.waitFor(() => expect(api.of('getUpdates')).toHaveLength(1));
+    api.pushNetError(NEVER_LEFT.eyeballs());
+    await vi.waitFor(() => expect(api.of('getUpdates')).toHaveLength(2));
+    expect(delays).toEqual([3_000]);
+    expect(lines.filter((l) => /poll failed/.test(l))).toEqual(['poll failed — fetch failed (ETIMEDOUT); retrying in 3s']);
+    expect(lines.filter((l) => /got no answer/.test(l))).toEqual([]);
+    bridge.stop();
+  });
+
+  it('a final edit being retried leaves the last ⏳ frame showing, then lands', async () => {
+    const api = fakeApi();
+    let shown = null, fails = 2;
+    const whileRetrying = [];
+    const real = api.answers.sendMessage;
+    api.answers.sendMessage = (b) => { shown = b.text; return real(b); };
+    api.answers.editMessageText = (b) => {
+      if (b.text === 'hola mundo' && fails-- > 0) { whileRetrying.push(shown); throw NEVER_LEFT.eyeballs(); }
+      shown = b.text; return api.ok(true);
+    };
+    const delays = [];
+    const { bridge } = start(api, fastTimers(delays));
+    const h = bridge.startStreamMessage('⏳ Thinking…', { chatId: 'tg:42' });
+    h.update('hola ⏳');
+    await vi.waitFor(() => expect(shown).toBe('hola ⏳'));
+    await h.finish('hola mundo');
+    expect(whileRetrying).toEqual(['hola ⏳', 'hola ⏳']);
+    expect(shown).toBe('hola mundo');
+    expect(h.delivered).toBe(true);
+    expect(delays).toEqual([1_000, 3_000]);
+    bridge.stop();
+  });
+
+  it('a final edit that never gets an answer ends on the existing ⚠️, not a forever ⏳', async () => {
+    const api = fakeApi();
+    let shown = null;
+    api.answers.editMessageText = (b) => { if (b.text === 'hola mundo') throw NEVER_LEFT.eyeballs(); shown = b.text; return api.ok(true); };
+    const { bridge } = start(api, fastTimers([]));
+    const h = bridge.startStreamMessage('⏳ Thinking…', { chatId: 'tg:42' });
+    await h.finish('hola mundo');
+    expect(api.of('editMessageText').filter((c) => c.body.text === 'hola mundo')).toHaveLength(4);
+    expect(shown).toMatch(/^⚠️ could not deliver this reply/);
+    expect(h.delivered).toBe(false);
+    bridge.stop();
+  });
+
+  it('frames overtaken while an edit is retrying are skipped: only the newest goes out', async () => {
+    const api = fakeApi();
+    let fail = true;
+    api.answers.editMessageText = () => { if (fail) { fail = false; throw MAY_HAVE_LANDED.reset(); } return api.ok(true); };
+    const held = [];
+    let clock = 10_000;
+    const { bridge } = start(api, { now: () => clock, setTimeout: (fn, ms) => { held.push({ fn, ms }); return held.length; }, clearTimeout: () => {} });
+    const h = bridge.startStreamMessage('⏳ Thinking…', { chatId: 'tg:42' });
+    h.update('a ⏳');
+    await vi.waitFor(() => expect(held.map((t) => t.ms)).toEqual([1_000]));   // the edit's first retry wait
+    clock += 1_000; h.update('ab ⏳');
+    clock += 1_000; h.update('abc ⏳');
+    held[0].fn();
+    await vi.waitFor(() => expect(api.of('editMessageText').map((c) => c.body.text)).toEqual(['a ⏳', 'a ⏳', 'abc ⏳']));
+    await h.finish('abc');
+    expect(api.of('editMessageText').at(-1).body.text).toBe('abc');
+    bridge.stop();
   });
 });
 
