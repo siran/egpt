@@ -861,6 +861,9 @@ export const CONFIG_SCHEMA = {
                               gets usuario.json (the verified fields + verified_at,
                               never the token) and a one-line usuario.md, before the
                               seed copy.
+            admin             off (default) | on: the team's read-only folder browser
+                              (below). On without its key file: 404, as off. Any
+                              other value: off (logged).
         THE SIGNED IDENTITY. Key: <EGPT_HOME>/secrets/chatbox-<client>.key, its text used
         as is (not decoded), e.g.  openssl rand -base64 32 > <EGPT_HOME>/secrets/chatbox-demoiev.key
         then chmod 600. Read on each signed call (a new key needs no restart). The same text
@@ -878,6 +881,21 @@ export const CONFIG_SCHEMA = {
             . htmlspecialchars($tok) . '" defer></script>';
         json_encode needs UTF-8 strings (utf8_encode a Latin-1 name, else it returns false).
         A page left open past exp gets strings.identity on its next line: reload.
+        THE FOLDER BROWSER (admin: on; src/bridges/http-admin.mjs). GET <path>/<client>/admin?t=<token>:
+        one Spanish page, search by username (part of it; optionally abrin) → the client's conversations
+        from usuario.json, newest transcript first → the folder's tree (cajon/ and .secrets/ included) →
+        a text file (first 256 KB) or a download. Read-only: any other method is 405. Paths stay inside
+        that conversation's folder (realpath; links out refused). Each tree, view and download is logged,
+        "staff <staff> viewed <conversation>/<file>", and appended to <conversation>/admin-access.log.
+        Key: <EGPT_HOME>/secrets/chatbox-<client>-admin.key, another key than the visitor one (a leaked
+        visitor key never opens it), for AyDE's server only. Token as the identity's, payload
+        {role: "admin", staff, exp}; exp at most 1 h ahead, else 401. The page's calls send it as
+        "Authorization: Bearer". A bad or expired token: 401 "Enlace vencido…". PHP (AyDE):
+          $b64 = function ($s) { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); };
+          $p = $b64(json_encode(['role' => 'admin', 'staff' => $usuario, 'exp' => time() + 1800]));
+          $t = $p . '.' . $b64(hash_hmac('sha256', $p, $adminKey, true));
+          echo '<a href="https://<host>/chat/demoiev/admin?t=' . rawurlencode($t)
+            . '" target="_blank" rel="noopener">Conversaciones del chat</a>';
   `,
 
   beeper: `

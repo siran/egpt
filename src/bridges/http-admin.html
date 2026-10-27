@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Conversaciones del chat</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #667085; --line: #e3e6ec; --accent: #1f6feb; --warn: #b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171c; --card: #1c2027; --ink: #e6e8ec; --muted: #98a2b3; --line: #2c323c; --accent: #58a6ff; --warn: #f97066; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header span { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(300px, 1.4fr); gap: 16px; padding: 16px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  input { flex: 1 1 120px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); cursor: pointer; }
+  button.link { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  tr.pick { cursor: pointer; }
+  tr.pick:hover, tr.on { background: var(--bg); }
+  .muted { color: var(--muted); }
+  .warn { color: var(--warn); }
+  .row { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+  .row .size { margin-left: auto; color: var(--muted); white-space: nowrap; }
+  pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 60vh; overflow: auto; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header><h1>Conversaciones del chat</h1><span id="who"></span><span>Solo lectura · cada archivo abierto queda registrado</span></header>
+<p id="fail" class="warn" hidden></p>
+<main>
+  <section>
+    <h2>Buscar</h2>
+    <form id="find"><input id="q" placeholder="Usuario" autocomplete="off"><input id="abrin" placeholder="Colegio (abrin)" autocomplete="off"><button>Buscar</button></form>
+    <table><thead><tr><th>Usuario</th><th>Nombre</th><th>Tipo</th><th>Colegio</th><th>Última actividad</th></tr></thead><tbody id="found"></tbody></table>
+    <p id="none" class="muted" hidden>Sin resultados.</p>
+  </section>
+  <section>
+    <h2 id="conv">Archivos</h2>
+    <div id="tree" class="muted">Elige una conversación.</div>
+    <div id="view"></div>
+  </section>
+</main>
+<script>
+(() => {
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
+  const when = (ms) => new Date(ms).toLocaleString('es-VE');
+  const size = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+  const fail = (text) => { $('fail').textContent = text; $('fail').hidden = false; };
+  async function call(sub, params) {
+    const r = await fetch(`admin/${sub}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+    if (r.status === 401) { const b = await r.json().catch(() => ({})); fail(b.message || 'Enlace vencido o no válido.'); throw new Error('401'); }
+    if (!r.ok) { fail(r.status === 404 ? 'No encontrado.' : `Error ${r.status}.`); throw new Error(String(r.status)); }
+    $('fail').hidden = true;
+    return r;
+  }
+  async function find() {
+    const b = await (await call('search', { q: $('q').value, abrin: $('abrin').value })).json();
+    $('who').textContent = `· ${b.staff}`;
+    const rows = $('found');
+    rows.replaceChildren();
+    for (const c of b.conversations) {
+      const u = c.usuario || {};
+      const tr = el('tr', null, 'pick');
+      for (const v of [u.username || '(sin usuario)', u.short_name, u.user_type, u.abrin, when(c.last)]) tr.append(el('td', v || ''));
+      tr.title = c.id;
+      tr.onclick = () => { for (const o of rows.children) o.classList.remove('on'); tr.classList.add('on'); open(c.id, u).catch(() => {}); };
+      rows.append(tr);
+    }
+    $('none').hidden = b.conversations.length > 0;
+  }
+  async function open(id, u) {
+    const b = await (await call('tree', { c: id })).json();
+    $('conv').textContent = `${u.username || id} · ${id}`;
+    $('view').replaceChildren();
+    const tree = $('tree');
+    tree.className = '';
+    tree.replaceChildren();
+    for (const e of b.entries) {
+      const row = el('div', null, 'row');
+      row.style.paddingLeft = `${(e.path.split('/').length - 1) * 16}px`;
+      const name = e.path.split('/').pop();
+      if (e.dir) row.append(el('strong', `${name}/`));
+      else {
+        const v = el('button', name, 'link');
+        v.onclick = () => show(id, e.path).catch(() => {});
+        const d = el('button', 'descargar', 'link');
+        d.onclick = () => download(id, e.path).catch(() => {});
+        row.append(v, d);
+      }
+      if (e.link) row.append(el('span', '(enlace)', 'muted'));
+      row.append(el('span', `${size(e.size)} ${when(e.mtime)}`, 'size'));
+      tree.append(row);
+    }
+    if (b.truncated) tree.append(el('p', 'Lista cortada: demasiados archivos.', 'muted'));
+  }
+  async function show(id, path) {
+    const b = await (await call('file', { c: id, f: path })).json();
+    const box = $('view');
+    box.replaceChildren(el('h2', `${b.path} · ${size(b.size)}`));
+    if (b.binary) box.append(el('p', 'Archivo binario: usa «descargar».', 'muted'));
+    else {
+      box.append(el('pre', b.text));
+      if (b.truncated) box.append(el('p', `Mostrando los primeros ${size(b.text.length)}; descárgalo para verlo completo.`, 'muted'));
+    }
+  }
+  async function download(id, path) {
+    const blob = await (await call('file', { c: id, f: path, download: '1' })).blob();
+    const a = el('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = path.split('/').pop();
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  $('find').onsubmit = (ev) => { ev.preventDefault(); find().catch(() => {}); };
+  find().catch(() => {});
+})();
+</script>
+</body>
+</html>

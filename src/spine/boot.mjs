@@ -2224,6 +2224,7 @@ export async function boot({
     const hlog = (m) => log.line?.(`[http] ${m}`);
     if (!Number.isInteger(block.port)) { hlog('limbs.http has no port — not wired'); return null; }
     const chatboxKeyFile = (client) => `chatbox-${client}.key`;
+    const adminKeyFile = (client) => `chatbox-${client}-admin.key`;
     for (const [name, c] of Object.entries(block.clients ?? {})) {
       const being = String(c?.being ?? '');
       if (!isLocalAgent(being, agents()[being])) hlog(`limbs.http.clients.${name}.being '${being}' is not a local agent here — its visitors reach nobody`);
@@ -2231,6 +2232,11 @@ export async function boot({
       if (['optional', 'required'].includes(c?.identity)) {
         const k = readSecret(EGPT_HOME, chatboxKeyFile(name));
         if (!k.token) hlog(`limbs.http.clients.${name}.identity is ${c.identity} but ${k.path} is ${k.problem} — signed visitors are refused`);
+        else if (k.warn) hlog(`${k.path}: ${k.warn}`);
+      }
+      if (c?.admin === 'on' || c?.admin === true) {
+        const k = readSecret(EGPT_HOME, adminKeyFile(name));
+        if (!k.token) hlog(`limbs.http.clients.${name}.admin is on but ${k.path} is ${k.problem} — the folder browser answers 404`);
         else if (k.warn) hlog(`${k.path}: ${k.warn}`);
       }
     }
@@ -2296,6 +2302,8 @@ export async function boot({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients: block.clients, trustProxy: block.trust_proxy === true, now,
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
+      adminKey: (client) => readSecret(EGPT_HOME, adminKeyFile(client)).token,
+      conversationsDir: join(CONVERSATIONS_ROOT, 'http'),
       beforeLine,
       onEnd,
       onLog: hlog,
