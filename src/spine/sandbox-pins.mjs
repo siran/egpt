@@ -7,13 +7,11 @@
 // opt-in is gone (setup/release-sandbox-pin.ps1) on the spine's tick.
 import { spawn as nodeSpawn } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { getBeing } from '../conversations-state.mjs';
+import { SANDBOX_PINS_DIR, spawnPinRelease } from '../tools/sandbox-pin-host.mjs';
 
-// setup/sandbox-account.ps1 $SandboxPinsDir.
-export const SANDBOX_PINS_DIR = join(process.env.ProgramData || 'C:\\ProgramData', 'egpt', 'sandbox-pins');
-const RELEASE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'setup', 'release-sandbox-pin.ps1');
+export { SANDBOX_PINS_DIR };
 const RELEASE_DONE = 0;   // release-sandbox-pin.ps1: released, or no such pin
 
 export const isSandboxPin = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
@@ -57,7 +55,7 @@ export function createSandboxPinReleaser({ loadState, evictWarm = () => {}, plat
   function release(key) {
     return new Promise((resolve) => {
       let tail = '';
-      const proc = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RELEASE_SCRIPT, '-Key', key], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      const proc = spawnPinRelease(key, spawn);
       proc.stderr?.on('data', (c) => { tail = (tail + c).slice(-4000); });
       proc.once('error', (e) => { onLog(`${key}: release could not start — ${e?.message ?? e}`); resolve(-1); });
       proc.once('close', (code) => {
