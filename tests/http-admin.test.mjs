@@ -26,7 +26,7 @@ beforeEach(async () => {
   await writeFile(join(outside, 'secret.txt'), 'outside the conversations', 'utf8');
   const conv = async (id, usuario, files, t) => {
     const dir = join(root, id);
-    await mkdir(join(dir, 'cajon'), { recursive: true });
+    await mkdir(join(dir, 'gavetas'), { recursive: true });
     await mkdir(join(dir, '.secrets'), { recursive: true });
     if (usuario) await writeFile(join(dir, 'usuario.json'), JSON.stringify(usuario), 'utf8');
     for (const [f, text] of Object.entries(files)) await writeFile(join(dir, f), text);
@@ -34,7 +34,7 @@ beforeEach(async () => {
     const at = new Date(t);
     await utimes(join(dir, 'transcript.md'), at, at);
   };
-  await conv(A, { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, { 'cajon/notas.md': 'notas de María\n', '.secrets/db.env': 'PGUSER=dummy\n', 'cajon/foto.bin': Buffer.from([0x89, 0x50, 0, 1, 2, 0]) }, '2026-10-26T10:00:00Z');
+  await conv(A, { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, { 'gavetas/notas.md': 'notas de María\n', '.secrets/db.env': 'PGUSER=dummy\n', 'gavetas/foto.bin': Buffer.from([0x89, 0x50, 0, 1, 2, 0]) }, '2026-10-26T10:00:00Z');
   await conv(B, { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, {}, '2026-10-20T10:00:00Z');
   await conv(C, { abrin: 'CSJ', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez' }, {}, '2026-10-25T10:00:00Z');
   await conv(OTHER, { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, {}, '2026-10-27T10:00:00Z');
@@ -125,13 +125,13 @@ describe('clients.<c>.admin — the folder browser', () => {
     expect(lines.join('\n')).toMatch(/staff jaime searched/);
   });
 
-  it('tree: the whole folder, cajon/ and .secrets/ included, and it is audited', async () => {
+  it('tree: the whole folder, gavetas/ and .secrets/ included, and it is audited', async () => {
     const { get } = await limb();
     const r = await get('tree', { c: A });
     expect(r.status).toBe(200);
     const paths = r.body.entries.map((e) => `${e.path}${e.dir ? '/' : ''}`);
-    expect(paths).toEqual(expect.arrayContaining(['.secrets/', '.secrets/db.env', 'cajon/', 'cajon/notas.md', 'transcript.md', 'usuario.json']));
-    expect(r.body.entries.find((e) => e.path === 'cajon/notas.md')).toMatchObject({ dir: false, size: 16 });
+    expect(paths).toEqual(expect.arrayContaining(['.secrets/', '.secrets/db.env', 'gavetas/', 'gavetas/notas.md', 'transcript.md', 'usuario.json']));
+    expect(r.body.entries.find((e) => e.path === 'gavetas/notas.md')).toMatchObject({ dir: false, size: 16 });
     expect(await readFile(join(root, A, 'admin-access.log'), 'utf8')).toMatch(new RegExp(`staff jaime viewed ${A}/\\n`));
   });
 
@@ -139,24 +139,24 @@ describe('clients.<c>.admin — the folder browser', () => {
     const { get, api, lines } = await limb();
     const t = await get('file', { c: A, f: '.secrets/db.env' });
     expect(t).toEqual({ status: 200, body: { path: '.secrets/db.env', size: 13, text: 'PGUSER=dummy\n', truncated: false } });
-    const bin = await get('file', { c: A, f: 'cajon/foto.bin' });
-    expect(bin.body).toEqual({ path: 'cajon/foto.bin', size: 6, binary: true });
-    const d = await api('file', { c: A, f: 'cajon/foto.bin', download: '1' });
+    const bin = await get('file', { c: A, f: 'gavetas/foto.bin' });
+    expect(bin.body).toEqual({ path: 'gavetas/foto.bin', size: 6, binary: true });
+    const d = await api('file', { c: A, f: 'gavetas/foto.bin', download: '1' });
     expect(d.status).toBe(200);
     expect(d.headers.get('content-disposition')).toMatch(/^attachment; filename\*=UTF-8''foto\.bin$/);
     expect(d.headers.get('content-type')).toBe('application/octet-stream');
     expect([...new Uint8Array(await d.arrayBuffer())]).toEqual([0x89, 0x50, 0, 1, 2, 0]);
     const audit = await readFile(join(root, A, 'admin-access.log'), 'utf8');
     expect(audit).toMatch(/^\d{4}-\d\d-\d\dT\S+ staff jaime viewed acme-00000000000000a1\/\.secrets\/db\.env$/m);
-    expect(audit).toMatch(/staff jaime downloaded acme-00000000000000a1\/cajon\/foto\.bin$/m);
+    expect(audit).toMatch(/staff jaime downloaded acme-00000000000000a1\/gavetas\/foto\.bin$/m);
     expect(lines.join('\n')).toMatch(/staff jaime viewed acme-00000000000000a1\/\.secrets\/db\.env/);
     expect(`${lines.join('\n')}${audit}`).not.toContain('PGUSER');
   });
 
   it('a text file past the cap is cut and says so', async () => {
-    await writeFile(join(root, A, 'cajon', 'big.txt'), 'x'.repeat(300 * 1024), 'utf8');
+    await writeFile(join(root, A, 'gavetas', 'big.txt'), 'x'.repeat(300 * 1024), 'utf8');
     const { get } = await limb();
-    const r = await get('file', { c: A, f: 'cajon/big.txt' });
+    const r = await get('file', { c: A, f: 'gavetas/big.txt' });
     expect(r.body).toMatchObject({ size: 300 * 1024, truncated: true });
     expect(r.body.text.length).toBe(256 * 1024);
   });
@@ -164,9 +164,9 @@ describe('clients.<c>.admin — the folder browser', () => {
   it('paths stay inside this client\'s conversation folders: ../, absolute, another client, a directory, unknown: 404', async () => {
     const { get } = await limb();
     const refused = [
-      { c: A, f: `../${B}/transcript.md` }, { c: A, f: 'cajon/../../outside' }, { c: A, f: '..' }, { c: A, f: 'cajon\\..\\..\\x' },
+      { c: A, f: `../${B}/transcript.md` }, { c: A, f: 'gavetas/../../outside' }, { c: A, f: '..' }, { c: A, f: 'gavetas\\..\\..\\x' },
       { c: `../${A}`, f: 'transcript.md' }, { c: '..', f: `${A}/transcript.md` }, { c: OTHER, f: 'transcript.md' },
-      { c: 'acme-nothex0000000000', f: 'transcript.md' }, { c: A, f: 'cajon' }, { c: A, f: '' }, { c: A, f: 'nope.md' },
+      { c: 'acme-nothex0000000000', f: 'transcript.md' }, { c: A, f: 'gavetas' }, { c: A, f: '' }, { c: A, f: 'nope.md' },
       { c: A, f: join(outside, 'secret.txt') },
     ];
     for (const p of refused) {
@@ -178,17 +178,17 @@ describe('clients.<c>.admin — the folder browser', () => {
   });
 
   it('a symlink (or junction) out of the folder is refused; one to another conversation too', async () => {
-    await symlink(outside, join(root, A, 'cajon', 'fuera'), 'junction');
-    await symlink(join(root, B), join(root, A, 'cajon', 'vecino'), 'junction');
+    await symlink(outside, join(root, A, 'gavetas', 'fuera'), 'junction');
+    await symlink(join(root, B), join(root, A, 'gavetas', 'vecino'), 'junction');
     let fileLink = true;
-    try { await symlink(join(outside, 'secret.txt'), join(root, A, 'cajon', 'secreto.txt')); } catch { fileLink = false; }   // Windows without the privilege
+    try { await symlink(join(outside, 'secret.txt'), join(root, A, 'gavetas', 'secreto.txt')); } catch { fileLink = false; }   // Windows without the privilege
     const { get } = await limb();
-    expect((await get('file', { c: A, f: 'cajon/fuera/secret.txt' })).status).toBe(404);
-    expect((await get('file', { c: A, f: 'cajon/vecino/transcript.md' })).status).toBe(404);
-    if (fileLink) expect((await get('file', { c: A, f: 'cajon/secreto.txt' })).status).toBe(404);
+    expect((await get('file', { c: A, f: 'gavetas/fuera/secret.txt' })).status).toBe(404);
+    expect((await get('file', { c: A, f: 'gavetas/vecino/transcript.md' })).status).toBe(404);
+    if (fileLink) expect((await get('file', { c: A, f: 'gavetas/secreto.txt' })).status).toBe(404);
     const tree = (await get('tree', { c: A })).body.entries.map((e) => e.path);
-    expect(tree).toContain('cajon/fuera');
-    expect(tree.some((p) => p.startsWith('cajon/fuera/') || p.startsWith('cajon/vecino/'))).toBe(false);
+    expect(tree).toContain('gavetas/fuera');
+    expect(tree.some((p) => p.startsWith('gavetas/fuera/') || p.startsWith('gavetas/vecino/'))).toBe(false);
   });
 
   it('a conversation folder that is itself a link out is refused', async () => {
