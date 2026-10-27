@@ -1,5 +1,5 @@
-// http-admin.mjs — the team's read-only folder browser of a chatbox client (limbs.http clients.<c>.admin).
-// http.mjs checks the token (verifyAdmin); under <path>/<client>/admin:
+// http-admin.mjs — the escritorio: the team's read-only folder browser of a chatbox client (limbs.http clients.<c>.escritorio).
+// http.mjs checks who is in (HTTP Basic against the users file below, or verifyAdmin); under <path>/<client>/escritorio/:
 //   (none)                          the page (http-admin.html)
 //   search?q=&abrin=                {staff, conversations: [{id, usuario, last}]} newest first; q: part of a username
 //   tree?c=<conversation>           {id, entries: [{path, dir, size, mtime, link?}], truncated}; links not followed
@@ -10,7 +10,8 @@ import { readFileSync, createReadStream, constants } from 'node:fs';
 import { readdir, readFile, realpath, stat, lstat, open } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, sep, basename } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 
 const PAGE = readFileSync(new URL('./http-admin.html', import.meta.url), 'utf8');
 const TEXT_MAX = 256 * 1024;
@@ -21,6 +22,26 @@ const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id']
 const SID_RE = /^[0-9a-f]{16}$/;
 const clean = (s) => String(s).replace(/[\u0000-\u001f\u007f]/g, '?');
 const inside = (dir, p) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : `${dir}${sep}`);
+// The staff: secrets/<escritorioUsersFile>, one line each: <user>:N=<n>,r=<r>,p=<p>:<salt base64>:<scrypt hash base64>.
+export const escritorioUsersFile = (client) => `chatbox-${client}-escritorio.users`;
+export const STAFF_RE = /^[A-Za-z0-9._@-]{1,64}$/;
+export const staffOf = (line) => String(line).split(':')[0].trim();
+const SCRYPT = { N: 16384, r: 8, p: 1 };
+const LINE_RE = /^([^:]+):N=(\d+),r=(\d+),p=(\d+):([A-Za-z0-9+/]+=*):([A-Za-z0-9+/]+=*)$/;
+const derive = promisify(scrypt);
+const kdf = (password, salt, len, { N, r, p }) => derive(String(password), salt, len, { N, r, p, maxmem: 256 * N * r });
+export async function staffLine(user, password) {
+  const salt = randomBytes(16);
+  return `${user}:N=${SCRYPT.N},r=${SCRYPT.r},p=${SCRYPT.p}:${salt.toString('base64')}:${(await kdf(password, salt, 32, SCRYPT)).toString('base64')}`;
+}
+// Whether the users file's text holds <user> with this password. An unknown user costs the same scrypt.
+export async function checkStaff(text, user, password) {
+  const m = String(text ?? '').split('\n').map((l) => LINE_RE.exec(l.trim())).find((x) => x?.[1] === user);
+  const want = m ? Buffer.from(m[6], 'base64') : null;
+  const ok = want?.length >= 16;
+  const got = await kdf(password, ok ? Buffer.from(m[5], 'base64') : Buffer.alloc(16), ok ? want.length : 32, ok ? { N: +m[2], r: +m[3], p: +m[4] } : SCRYPT).catch(() => null);
+  return ok && !!got && timingSafeEqual(got, want);
+}
 const rfc5987 = (s) => encodeURIComponent(s).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 
 export function createFolderBrowser({ root, json, log = () => {}, now = () => Date.now() }) {

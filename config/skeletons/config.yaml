@@ -88,6 +88,7 @@ limbs:
   #       # team_name: "Equipo"         # the team's name in the widget
   #       # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}
   #       # identity: off               # optional | required: a signed user (key: secrets/chatbox-mysite.key)
+  #       # escritorio: off             # on: staff folder browser at <path>/mysite/escritorio/ (node setup/escritorio-user.mjs mysite add <user>)
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

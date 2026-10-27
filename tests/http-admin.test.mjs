@@ -1,22 +1,30 @@
-// http-admin.test.mjs — the team's read-only folder browser on the chatbox limb (clients.<c>.admin):
-// AyDE signs {role: "admin", staff, exp} with the client's ADMIN key; the page and its calls show the
+// http-admin.test.mjs — the escritorio: the team's read-only folder browser on the chatbox limb
+// (clients.<c>.escritorio), at <path>/<client>/escritorio/. In by HTTP Basic (the client's users file)
+// or by AyDE's link ({role: "admin", staff, exp} signed with the client's escritorio key). It shows the
 // client's conversation folders (search by username → tree → file), never outside them, never writing.
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, beforeAll } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttpBridge } from '../src/bridges/http.mjs';
+import { staffLine } from '../src/bridges/http-admin.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const ADMIN_KEY = 'dummy-admin-key-not-a-secret';
 const VISITOR_KEY = 'dummy-visitor-key-not-a-secret';
+const PASSWORD = 'dummy-password-not-a-secret';
+const CHALLENGE = 'Basic realm="escritorio acme", charset="UTF-8"';
 const sign = (payload, key = ADMIN_KEY) => {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   return `${body}.${createHmac('sha256', key).update(body).digest('base64url')}`;
 };
 const exp = (s = 600) => Math.floor(Date.now() / 1000) + s;
 const tok = (over = {}) => sign({ role: 'admin', staff: 'jaime', exp: exp(), ...over });
+const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+
+let USERS;
+beforeAll(async () => { USERS = `${await staffLine('ana', PASSWORD)}\n${await staffLine('luis', 'otra-clave-de-prueba')}`; });
 
 const A = 'acme-00000000000000a1', B = 'acme-00000000000000b2', C = 'acme-00000000000000c3', OTHER = 'zeta-00000000000000d4';
 let root, outside;
@@ -47,31 +55,145 @@ afterEach(async () => {
   await rm(outside, { recursive: true, force: true });
 });
 
-async function limb({ admin = 'on', key = ADMIN_KEY } = {}) {
+// t: a signed token (sent as Bearer) or a "Basic …" header; null sends none.
+async function limb({ escritorio = 'on', key = ADMIN_KEY, users = () => USERS, ...opts } = {}) {
   const port = await freeSafeHttpPort();
   const lines = [];
   const b = await startHttpBridge({
-    port, clients: { acme: { being: 'ed', admin, identity: 'optional' }, zeta: { being: 'ed', admin: 'on' } },
-    identityKey: () => VISITOR_KEY, adminKey: (c) => key, conversationsDir: root, onLog: (m) => lines.push(m),
+    port, clients: { acme: { being: 'ed', escritorio, identity: 'optional' }, zeta: { being: 'ed', escritorio: 'on' } },
+    identityKey: () => VISITOR_KEY, escritorioKey: () => key, escritorioUsers: () => users?.() ?? null, conversationsDir: root, onLog: (m) => lines.push(m), ...opts,
   });
   live.push(() => b.stop());
-  const base = `http://127.0.0.1:${port}/chat/acme/admin`;
-  const api = (sub, params = {}, t = tok(), init = {}) => fetch(`${base}/${sub}?${new URLSearchParams(params)}`, { ...init, headers: t ? { Authorization: `Bearer ${t}` } : {} });
-  const get = async (sub, params, t) => { const r = await api(sub, params, t); return { status: r.status, body: r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text() }; };
-  return { base, api, get, lines };
+  const base = `http://127.0.0.1:${port}/chat/acme/escritorio/`;
+  const auth = (t) => (t ? { Authorization: t.startsWith('Basic ') ? t : `Bearer ${t}` } : {});
+  const api = (sub, params = {}, t = tok(), init = {}) => fetch(`${base}${sub}?${new URLSearchParams(params)}`, { ...init, headers: { ...auth(t), ...init.headers } });
+  const get = async (sub, params, t, init) => { const r = await api(sub, params, t, init); return { status: r.status, challenge: r.headers.get('www-authenticate'), body: r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text() }; };
+  const page = (t, init = {}) => fetch(base, { ...init, headers: { ...auth(t), ...init.headers } });
+  return { port, base, api, get, page, lines };
 }
 
-describe('clients.<c>.admin — the folder browser', () => {
-  it('off (default), or on without a key file: 404 everywhere, the method no matter', async () => {
-    for (const opts of [{ admin: 'off' }, { admin: null }, { key: null }]) {
-      const { base, api } = await limb(opts);
+describe('clients.<c>.escritorio — the folder browser', () => {
+  it('off (default), or on with neither a users file nor a key: 404 everywhere, the method no matter', async () => {
+    for (const opts of [{ escritorio: 'off' }, { escritorio: null }, { key: null, users: null }]) {
+      const { base, api, page } = await limb(opts);
       expect((await fetch(`${base}?t=${tok()}`)).status).toBe(404);
+      expect((await page(basic('ana', PASSWORD))).status).toBe(404);
       expect((await api('search', { q: '' })).status).toBe(404);
       expect((await api('file', { c: A, f: 'transcript.md' }, tok(), { method: 'POST' })).status).toBe(404);
     }
   });
 
-  it('a bad, expired, too long-lived, non-admin or visitor-key token is 401 with a Spanish line; the token never reaches the log', async () => {
+  it('the admin route is gone: 404 with a good token, page and calls', async () => {
+    const { port } = await limb();
+    const old = `http://127.0.0.1:${port}/chat/acme/admin`;
+    expect((await fetch(`${old}?t=${tok()}`)).status).toBe(404);
+    expect((await fetch(`${old}/search?q=`, { headers: { Authorization: `Bearer ${tok()}` } })).status).toBe(404);
+  });
+
+  it('escritorio without its slash: 308 to escritorio/, the query kept', async () => {
+    const { port } = await limb();
+    const r = await fetch(`http://127.0.0.1:${port}/chat/acme/escritorio?t=abc`, { redirect: 'manual' });
+    expect(r.status).toBe(308);
+    expect(r.headers.get('location')).toBe('escritorio/?t=abc');
+  });
+
+  it('no credentials: 401 with the Basic challenge (the browser\'s own login), page and calls', async () => {
+    const { base, get } = await limb();
+    const p = await fetch(base);
+    expect(p.status).toBe(401);
+    expect(p.headers.get('www-authenticate')).toBe(CHALLENGE);
+    expect(await p.text()).toMatch(/AyDE/);
+    for (const sub of ['search', 'tree', 'file']) {
+      const r = await get(sub, { c: A, f: 'transcript.md' }, null);
+      expect(r.status, sub).toBe(401);
+      expect(r.challenge, sub).toBe(CHALLENGE);
+      expect(r.body.message).toMatch(/AyDE/);
+    }
+  });
+
+  it('HTTP Basic: a wrong password or an unknown user is 401; the right one opens the page and the calls, and the audit names the user', async () => {
+    const { get, page, lines } = await limb();
+    for (const t of [basic('ana', 'wrong-password-x'), basic('nadie', PASSWORD), basic('ana', ''), basic('', PASSWORD), 'Basic ###', 'Basic ']) {
+      const r = await page(t);
+      expect(r.status, t).toBe(401);
+      expect(r.headers.get('www-authenticate')).toBe(CHALLENGE);
+    }
+    expect((await get('search', { q: '' }, basic('ana', 'wrong-password-x'))).status).toBe(401);
+    const ok = basic('ana', PASSWORD);
+    const p = await page(ok);
+    expect(p.status).toBe(200);
+    expect(p.headers.get('content-type')).toMatch(/text\/html/);
+    const s = await get('search', { q: 'mlop' }, ok);
+    expect(s.status).toBe(200);
+    expect(s.body.staff).toBe('ana');
+    expect(s.body.conversations.map((c) => c.id)).toEqual([A, B]);
+    expect((await get('tree', { c: A }, ok)).status).toBe(200);
+    expect((await get('file', { c: A, f: 'gavetas/notas.md' }, ok)).body.text).toBe('notas de María\n');
+    const audit = await readFile(join(root, A, 'admin-access.log'), 'utf8');
+    expect(audit).toMatch(new RegExp(`staff ana viewed ${A}/\\n`));
+    expect(audit).toMatch(new RegExp(`staff ana viewed ${A}/gavetas/notas\\.md\\n`));
+    expect(lines.join('\n')).toMatch(/staff ana searched/);
+    expect(lines.join('\n')).not.toMatch(/dummy-password|wrong-password/);
+  });
+
+  it('either credential: users file only takes Basic and refuses a token; key only takes the token', async () => {
+    const usersOnly = await limb({ key: null });
+    expect((await usersOnly.get('search', { q: '' }, tok())).status).toBe(401);
+    expect((await usersOnly.get('search', { q: '' }, basic('luis', 'otra-clave-de-prueba'))).body.staff).toBe('luis');
+    const keyOnly = await limb({ users: null });
+    expect((await keyOnly.get('search', { q: '' }, basic('ana', PASSWORD))).status).toBe(401);
+    expect((await keyOnly.get('search', { q: '' }, tok())).body.staff).toBe('jaime');
+  });
+
+  it('the users file is read on each request: a user added or removed applies without a restart', async () => {
+    let text = USERS;
+    const { get } = await limb({ users: () => text });
+    const ana = basic('ana', PASSWORD);
+    expect((await get('search', { q: '' }, ana)).status).toBe(200);
+    text = await staffLine('luis', 'otra-clave-de-prueba');
+    expect((await get('search', { q: '' }, ana)).status).toBe(401);
+    text = `${text}\n${await staffLine('ana', 'nueva-clave-de-ana')}`;
+    expect((await get('search', { q: '' }, basic('ana', 'nueva-clave-de-ana'))).body.staff).toBe('ana');
+  });
+
+  it('10 failed logins from one address in 15 min: 429 for 15 min, the right password too; another address and the signed link still open it; the log never has a password', async () => {
+    let t = Date.now();
+    const { get, lines } = await limb({ trustProxy: true, now: () => t });
+    const from = (ip) => ({ headers: { 'X-Forwarded-For': ip } });
+    const wrong = basic('ana', 'wrong-password-x'), right = basic('ana', PASSWORD);
+    for (let i = 0; i < 10; i++) expect((await get('search', { q: '' }, wrong, from('203.0.113.5'))).status, `try ${i + 1}`).toBe(401);
+    const locked = await get('search', { q: '' }, right, from('203.0.113.5'));
+    expect(locked.status).toBe(429);
+    expect(locked.body.retry_after_s).toBe(900);
+    expect(locked.body.message).toMatch(/15 minutos/);
+    expect((await get('search', { q: '' }, null, from('203.0.113.5'))).status).toBe(429);
+    expect((await get('search', { q: '' }, right, from('203.0.113.6'))).status).toBe(200);
+    expect((await get('search', { q: '' }, tok(), from('203.0.113.5'))).status).toBe(200);
+    t += 15 * 60_000;
+    expect((await get('search', { q: '' }, right, from('203.0.113.5'))).status).toBe(200);
+    expect(lines.filter((l) => /escritorio login refused for "ana" from 203\.0\.113\.5/.test(l))).toHaveLength(10);
+    expect(lines.some((l) => /203\.0\.113\.5 locked out of the escritorio for 15 min/.test(l))).toBe(true);
+    expect(lines.join('\n')).not.toMatch(/dummy-password|wrong-password/);
+  });
+
+  it('tries sent in parallel count too: of 15 at once, at most 10 reach the password check', async () => {
+    const { get, lines } = await limb();
+    const all = await Promise.all(Array.from({ length: 15 }, () => get('search', { q: '' }, basic('ana', 'wrong-password-x'))));
+    expect(all.filter((r) => r.status === 429).length).toBeGreaterThanOrEqual(5);
+    expect(lines.filter((l) => /escritorio login refused/.test(l)).length).toBeLessThanOrEqual(10);
+  });
+
+  it('failures older than 15 min no longer count', async () => {
+    let t = Date.now();
+    const { get } = await limb({ now: () => t });
+    const wrong = basic('ana', 'wrong-password-x');
+    for (let i = 0; i < 9; i++) expect((await get('search', { q: '' }, wrong)).status).toBe(401);
+    t += 15 * 60_000 + 1;
+    expect((await get('search', { q: '' }, wrong)).status).toBe(401);
+    expect((await get('search', { q: '' }, basic('ana', PASSWORD))).status).toBe(200);
+  });
+
+  it('a bad, expired, too long-lived, non-admin or visitor-key token is 401 with the challenge and a Spanish line; the token never reaches the log', async () => {
     const { base, get, lines } = await limb();
     const good = tok();
     const [body, mac] = good.split('.');
@@ -80,11 +202,12 @@ describe('clients.<c>.admin — the folder browser', () => {
       sign({ abrin: 'IEV', username: 'mlopez', exp: exp() }, VISITOR_KEY),
       sign({ abrin: 'IEV', username: 'mlopez', exp: exp() }),
       tok({ exp: exp(-5) }), tok({ exp: exp(2 * 3600) }), tok({ role: 'staff' }), tok({ staff: '' }), tok({ exp: 'luego' }),
-      `${body}.${mac}x`, 'abc', '',
+      `${body}.${mac}x`, 'abc',
     ];
     for (const t of bad) {
       const page = await fetch(`${base}?t=${encodeURIComponent(t)}`);
       expect(page.status, t.slice(0, 30)).toBe(401);
+      expect(page.headers.get('www-authenticate')).toBe(CHALLENGE);
       expect(await page.text()).toMatch(/AyDE/);
       const r = await get('search', { q: '' }, t);
       expect(r.status, t.slice(0, 30)).toBe(401);
@@ -95,7 +218,7 @@ describe('clients.<c>.admin — the folder browser', () => {
     expect(lines.join('\n')).not.toContain(body);
   });
 
-  it('the page: one self-contained Spanish HTML, no external asset, a nonce CSP, no referrer', async () => {
+  it('the page: one self-contained Spanish HTML, no external asset, a nonce CSP, no referrer; its calls are relative to escritorio/', async () => {
     const { base } = await limb();
     const r = await fetch(`${base}?t=${tok()}`);
     expect(r.status).toBe(200);
@@ -108,6 +231,7 @@ describe('clients.<c>.admin — the folder browser', () => {
     expect(html).toContain(`<script nonce="${nonce}">`);
     expect(html).toMatch(/lang="es"/);
     expect(html).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
+    expect(html).not.toContain('admin/');
   });
 
   it('search: by username (any case, part of it), optionally abrin; this client only, newest transcript first', async () => {
@@ -138,7 +262,7 @@ describe('clients.<c>.admin — the folder browser', () => {
   it('a file: text escaped by the page (sent as JSON text), binary flagged, download as bytes; each audited, no contents in any log', async () => {
     const { get, api, lines } = await limb();
     const t = await get('file', { c: A, f: '.secrets/db.env' });
-    expect(t).toEqual({ status: 200, body: { path: '.secrets/db.env', size: 13, text: 'PGUSER=dummy\n', truncated: false } });
+    expect({ status: t.status, body: t.body }).toEqual({ status: 200, body: { path: '.secrets/db.env', size: 13, text: 'PGUSER=dummy\n', truncated: false } });
     const bin = await get('file', { c: A, f: 'gavetas/foto.bin' });
     expect(bin.body).toEqual({ path: 'gavetas/foto.bin', size: 6, binary: true });
     const d = await api('file', { c: A, f: 'gavetas/foto.bin', download: '1' });
@@ -208,18 +332,18 @@ describe('clients.<c>.admin — the folder browser', () => {
     expect(await readFile(join(root, A, 'transcript.md'), 'utf8')).toBe(`transcript of ${A}\n`);
   });
 
-  it('an unknown call under admin is 404', async () => {
+  it('an unknown call under escritorio/ is 404', async () => {
     const { get } = await limb();
     expect((await get('rename', { c: A })).status).toBe(404);
     expect((await get('file/extra', { c: A })).status).toBe(404);
   });
 
-  it('a client named <c>-admin would share <c>\'s admin key file: <c>\'s browser stays off', async () => {
+  it('a client named <c>-escritorio would share <c>\'s escritorio key file: <c>\'s escritorio stays off', async () => {
     const port = await freeSafeHttpPort();
     const lines = [];
-    const b = await startHttpBridge({ port, clients: { acme: { admin: 'on' }, 'acme-admin': {} }, adminKey: () => ADMIN_KEY, conversationsDir: root, onLog: (m) => lines.push(m) });
+    const b = await startHttpBridge({ port, clients: { acme: { escritorio: 'on' }, 'acme-escritorio': {} }, escritorioKey: () => ADMIN_KEY, escritorioUsers: () => USERS, conversationsDir: root, onLog: (m) => lines.push(m) });
     live.push(() => b.stop());
-    expect((await fetch(`http://127.0.0.1:${port}/chat/acme/admin?t=${tok()}`)).status).toBe(404);
-    expect(lines).toContain("acme: admin off — client 'acme-admin' would share its key file");
+    expect((await fetch(`http://127.0.0.1:${port}/chat/acme/escritorio/?t=${tok()}`)).status).toBe(404);
+    expect(lines).toContain("acme: escritorio off — client 'acme-escritorio' would share its key file");
   });
 });

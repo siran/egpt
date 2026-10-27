@@ -58,8 +58,8 @@
   const size = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
   const fail = (text) => { $('fail').textContent = text; $('fail').hidden = false; };
   async function call(sub, params) {
-    const r = await fetch(`admin/${sub}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-    if (r.status === 401) { const b = await r.json().catch(() => ({})); fail(b.message || 'Enlace vencido o no válido.'); throw new Error('401'); }
+    const r = await fetch(`${sub}?${new URLSearchParams(params)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: 'no-store' });
+    if (r.status === 401 || r.status === 429) { const b = await r.json().catch(() => ({})); fail(b.message || 'Sin acceso.'); throw new Error(String(r.status)); }
     if (!r.ok) { fail(r.status === 404 ? 'No encontrado.' : `Error ${r.status}.`); throw new Error(String(r.status)); }
     $('fail').hidden = true;
     return r;
