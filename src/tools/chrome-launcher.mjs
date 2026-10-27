@@ -141,6 +141,9 @@ export function resolveBrainProfile({ egptHome = EGPT_HOME, fs = defaultFs, read
 export function chromePipeArgs({ userDataDir, extensionDir, url = 'about:blank', windowName }) {
   const args = [
     '--remote-debugging-pipe',
+    // The pipe alone sets navigator.webdriver = true for every site, so captchas and bot filters
+    // refuse the operator's own browsing (NYSCEF, ticket sites; measured 2026-10-27).
+    '--disable-blink-features=AutomationControlled',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--restore-last-session',

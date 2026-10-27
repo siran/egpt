@@ -110,6 +110,9 @@ describe('chromePipeArgs — pipe, non-default profile, no port/origins', () => 
     expect(args.some((a) => a.includes('remote-debugging-port'))).toBe(false);
   });
 
+  it('does not announce automation to sites: the pipe alone makes navigator.webdriver true (measured 2026-10-27)', () => {
+    expect(args).toContain('--disable-blink-features=AutomationControlled');
+  });
   it('drops --remote-allow-origins (that is port/WS-only)', () => {
     expect(args.some((a) => a.startsWith('--remote-allow-origins'))).toBe(false);
   });
