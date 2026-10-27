@@ -73,7 +73,8 @@ The rules are the same as above: dry run unless `--apply`, everything tagged `Pr
 
 1. **`build-push.sh --apply`**, once. The entrypoint now reads the VNC password from `secrets/vnc.password` (made once, 0600) when `VNC_PASSWORD` is unset, so the task definition carries no password. The image in ECR predates this change, so under ECS VNC stays off until the rebuild.
 2. **`ecs/ecs-provision.sh [--on-demand] --apply`** creates:
-   - the role `edw-ecs-role` with its profile `edw-ecs-profile`. It has edw-instance-role's policies (SSM, ECR read, edw-transfer), plus AmazonEC2ContainerServiceforEC2Role, plus `edw-data-attach`: AttachVolume only on the volume tagged `Project=egpt-edw` + `Name=edw-data` and on our tagged instances, and DescribeVolumes;
+   - the role `edw-ecs-role` with its profile `edw-ecs-profile`. It has edw-instance-role's policies (SSM, ECR read, edw-transfer), plus AmazonEC2ContainerServiceforEC2Role, plus `edw-data-attach`: AttachVolume only on the volume tagged `Project=egpt-edw` + `Name=edw-data` and on our tagged instances, and DescribeVolumes, plus `edw-dns`: UPSERT of the A record `edw.egpt.internal` in our zone, nothing else;
+   - the Route 53 private zone `egpt.internal`, found by name + tag, associated with EduWeb's production VPC (`ZONE_VPC` in `ecs-lib.sh`), where Portales-new proxies the chatbox to `edw.egpt.internal:8095`;
    - the cluster `edw`;
    - the launch template `edw-ecs-lt`: the ECS-optimized Amazon Linux 2023 AMI (resolved when the script runs), IMDSv2 with hop limit 1, an encrypted 30 GB gp3 root, edw-sg, a public IPv4, and the user data below;
    - the ASG `edw-ecs-asg`, at 0;
@@ -105,6 +106,7 @@ The user data logs to `/var/log/cloud-init-output.log`. In order, it:
   - Why: the task uses host networking, so hop limit 1 no longer keeps the container away from the role's credentials. Those credentials hold AttachVolume, the ECS agent's rights, and SSM GetParameter on the whole account.
   - The ECS and SSM agents run as root. The container runs as egpt (uid 1000) and the being boxes as uid 200000 and up.
 - sets up Docker log rotation and a 4 GB swap file;
+- installs `edw-dns.service`, which at every boot UPSERTs `edw.egpt.internal` A to the instance's private IP (IMDSv2 `local-ipv4`), retrying for 3 min. Log: `journalctl -u edw-dns`, also on the console. If it fails, the record keeps its old address and the rest of the setup goes on;
 - attaches edw-data, waiting up to 20 min while a previous instance lets go of it, and mounts it at `/srv/egpt` by UUID. It never formats the volume, and it requires `egpt-home/config/config.yaml` to be there;
 - only then sets the attribute `edw-data=mounted`, which the task requires, and makes the ECS agent require the mount on later boots.
 
