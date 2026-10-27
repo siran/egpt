@@ -69,7 +69,7 @@ function brain(turns) {
 }
 
 // withBeeper: a fake Beeper transport beside the chatbox, recording every chat it is asked to post in.
-async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS } = {}) {
+async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, ayde = null } = {}) {
   const port = await freeSafeHttpPort();
   const io = memIo();
   const turns = [];
@@ -86,6 +86,7 @@ async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS } 
   const cfg = config(port);
   Object.assign(cfg.limbs.http.clients.eduweb, client);
   cfg.agents = agents;
+  if (ayde) cfg.limbs.http.ayde = ayde;
   if (withBeeper) cfg.limbs.beeper = { main: { account: 'x@example.com', token: 'TOK' } };
   let convState = emptyState();
   const app = await boot({
@@ -283,56 +284,48 @@ describe('limbs.http beside Beeper', () => {
   });
 });
 
-describe('limbs.http clients.<c>.escritorio through boot', () => {
-  it('the key is secrets/chatbox-<client>-escritorio.key and the root is conversations/http; neither key nor users file: a boot line and 404', async () => {
-    const { createHmac } = await import('node:crypto');
+describe('limbs.http.ayde through boot', () => {
+  it('rooted at EGPT_HOME, users in secrets/ayde.users; no users file: a boot line and 404', async () => {
+    const { app, lines } = await bootChatbox({ ayde: { on: true } });
+    const root = lines.find((l) => l.startsWith('[http] listening on'));
+    expect(root).toMatch(/; ayde at \/ayde\/$/);
+    expect(lines.some((l) => /^\[http\] limbs\.http\.ayde is on but .*ayde\.users is missing — \/ayde answers 404 \(node setup\/ayde-user\.mjs add <user> <level>\)$/.test(l))).toBe(true);
+    const port = /:(\d+)\//.exec(root)[1];
+    expect((await fetch(`http://127.0.0.1:${port}/ayde/`)).status).toBe(404);
+    app.stop();
+  });
+
+  it('HTTP Basic by level, the users file read on each request; the escritorio route is gone', async () => {
+    const { userLine } = await import('../src/bridges/http-ayde.mjs');
+    const usersFile = join(_HOME, 'secrets', 'ayde.users');
     const id = 'eduweb-00000000000000aa';
-    const keyFile = join(_HOME, 'secrets', 'chatbox-eduweb-escritorio.key');
+    const basic = (user, pass) => ({ headers: { Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}` } });
+    await fs.mkdir(dirname(usersFile), { recursive: true });
+    await fs.writeFile(usersFile, `${await userLine('ana', 'team', 'clave-de-ana-1')}\n${await userLine('rob', 'root', 'clave-de-rob-1')}\n`);
     await fs.mkdir(convDir(id), { recursive: true });
     await fs.writeFile(join(convDir(id), 'usuario.json'), JSON.stringify({ abrin: 'IEV', username: 'mlopez' }));
     try {
-      const body = Buffer.from(JSON.stringify({ role: 'admin', staff: 'jaime', exp: Math.floor(Date.now() / 1000) + 600 })).toString('base64url');
-      const t = `${body}.${createHmac('sha256', 'dummy-admin-key').update(body).digest('base64url')}`;
-      const off = await bootChatbox({ client: { escritorio: 'on' } });
-      expect(off.lines.some((l) => /^\[http\] limbs\.http\.clients\.eduweb\.escritorio is on but .*chatbox-eduweb-escritorio\.users is missing and .*chatbox-eduweb-escritorio\.key is missing — the escritorio answers 404$/.test(l))).toBe(true);
-      expect((await fetch(`${off.url}escritorio/?t=${t}`)).status).toBe(404);
-      off.app.stop();
-
-      await fs.mkdir(dirname(keyFile), { recursive: true });
-      await fs.writeFile(keyFile, 'dummy-admin-key\n');
-      const on = await bootChatbox({ client: { escritorio: 'on' } });
-      expect((await fetch(`${on.url}escritorio/?t=${t}`)).status).toBe(200);
-      const found = await fetch(`${on.url}escritorio/search?q=mlo`, { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.json());
-      expect(found.conversations.map((c) => c.id)).toEqual([id]);
-      expect((await fetch(`${on.url}admin?t=${t}`)).status).toBe(404);
-      on.app.stop();
-    } finally {
-      await fs.rm(keyFile, { force: true });
-      await fs.rm(convDir(id), { recursive: true, force: true });
-    }
-  });
-
-  it('HTTP Basic against secrets/chatbox-<client>-escritorio.users, read on each request: a user added or removed applies without a restart', async () => {
-    const { staffLine } = await import('../src/bridges/http-admin.mjs');
-    const usersFile = join(_HOME, 'secrets', 'chatbox-eduweb-escritorio.users');
-    const basic = (user, pass) => ({ headers: { Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}` } });
-    await fs.mkdir(dirname(usersFile), { recursive: true });
-    await fs.writeFile(usersFile, `${await staffLine('ana', 'clave-de-ana-1')}\n`);
-    try {
-      const { app, url, lines } = await bootChatbox({ client: { escritorio: 'on' } });
-      expect(lines.some((l) => /escritorio is on but/.test(l))).toBe(false);
-      const none = await fetch(`${url}escritorio/`);
+      const { app, url, lines } = await bootChatbox({ ayde: { on: true } });
+      const ayde = url.replace('/chat/eduweb/', '/ayde/');
+      expect(lines.some((l) => /ayde is on but/.test(l))).toBe(false);
+      const none = await fetch(ayde);
       expect(none.status).toBe(401);
-      expect(none.headers.get('www-authenticate')).toBe('Basic realm="escritorio eduweb", charset="UTF-8"');
-      expect((await fetch(`${url}escritorio/`, basic('ana', 'clave-de-ana-1'))).status).toBe(200);
-      expect((await fetch(`${url}escritorio/search?q=`, basic('ana', 'clave-de-ana-1')).then((r) => r.json())).staff).toBe('ana');
+      expect(none.headers.get('www-authenticate')).toBe('Basic realm="ayde team", charset="UTF-8"');
+      const ana = basic('ana', 'clave-de-ana-1');
+      expect((await fetch(ayde, ana)).status).toBe(200);
+      expect((await fetch(`${ayde}tree`, ana).then((r) => r.json())).path).toBe('conversations');
+      expect((await fetch(`${ayde}search?q=mlo`, ana).then((r) => r.json())).conversations.map((c) => c.path)).toEqual([`conversations/http/${id}`]);
+      expect((await fetch(`${ayde}tree?p=`, ana)).headers.get('www-authenticate')).toBe('Basic realm="ayde admin", charset="UTF-8"');
+      expect((await fetch(`${ayde}tree?p=secrets`, basic('rob', 'clave-de-rob-1')).then((r) => r.json())).entries.map((e) => e.name)).toContain('ayde.users');
+      expect((await fetch(`${url}escritorio/`, ana)).status).toBe(404);
 
-      await fs.writeFile(usersFile, `${await staffLine('luis', 'clave-de-luis-1')}\n`);
-      expect((await fetch(`${url}escritorio/search?q=`, basic('ana', 'clave-de-ana-1'))).status).toBe(401);
-      expect((await fetch(`${url}escritorio/search?q=`, basic('luis', 'clave-de-luis-1')).then((r) => r.json())).staff).toBe('luis');
+      await fs.writeFile(usersFile, `${await userLine('luis', 'devs', 'clave-de-luis-1')}\n`);
+      expect((await fetch(`${ayde}tree`, ana)).status).toBe(401);
+      expect((await fetch(`${ayde}tree`, basic('luis', 'clave-de-luis-1')).then((r) => r.json())).level).toBe('devs');
       app.stop();
     } finally {
       await fs.rm(usersFile, { force: true });
+      await fs.rm(convDir(id), { recursive: true, force: true });
     }
   });
 });
