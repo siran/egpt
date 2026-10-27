@@ -11,11 +11,12 @@ const HOME = vi.hoisted(() => {
 });
 
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-import { startTelegramBridge, TOPICS_NEEDED } from '../src/bridges/telegram.mjs';
+import { join, basename } from 'node:path';
+import { startTelegramBridge, TOPICS_NEEDED, topicGroupOf } from '../src/bridges/telegram.mjs';
 import { boot, chatIdForEntity } from '../src/spine/boot.mjs';
 import { emptyState, ensureContact, recordThread, aliasContact, patchContact, patchBeing, moveChatId, conversationPathOf } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
+import { sanitizeSlug } from '../src/sanitize.mjs';
 
 afterAll(async () => { try { await fs.rm(HOME, { recursive: true, force: true }); } catch {} });
 
@@ -42,7 +43,15 @@ function fakeApi() {
     createForumTopic: (b) => ok({ message_thread_id: nextThread++, name: b.name, icon_color: 7322096 }),
     closeForumTopic: () => ok(true),
   };
+  // getFile names a path; the file URL answers with `files[path]`.
+  const files = {};
+  answers.getFile = (b) => ok({ file_id: b.file_id, file_path: Object.keys(files).find((p) => p.includes(b.file_id)) ?? `x/${b.file_id}` });
   const fetch = async (url, init) => {
+    if (url.includes('/file/bot')) {
+      const path = url.split(`/file/bot${TOKEN}/`)[1];
+      if (!(path in files)) return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+      return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(files[path]).buffer };
+    }
     const method = url.split('/').pop();
     const body = init.body instanceof FormData
       ? Object.fromEntries([...init.body.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : { name: v.name }]))
@@ -62,7 +71,7 @@ function fakeApi() {
   };
   const push = (r) => { if (parked) { const p = parked; parked = null; p(r); } else queue.push(r); };
   return {
-    fetch, calls, answers, ok, err,
+    fetch, calls, answers, ok, err, files,
     updates: (...msgs) => push(ok(msgs.map((message) => ({ update_id: ++updateId, message })))),
     raw: (...ups) => push(ok(ups.map((u) => ({ update_id: ++updateId, ...u })))),
     of: (method) => calls.filter((c) => c.method === method),
@@ -130,6 +139,7 @@ describe('telegram limb — a side room is a forum topic', () => {
     api.updates(inTopic(77, 'hola'));
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
     expect(incoming[0].from).toMatchObject({ chatId: TOPIC, chatName: 'SI+EduWeb-mygroup', chatType: 'group', replyToId: null, replyToBot: false });
+    expect(topicGroupOf(TOPIC)).toBe(MAIN);
     bridge.stop();
   });
 
@@ -199,6 +209,7 @@ describe('telegram limb — a side room is a forum topic', () => {
     api.updates({ message_id: 900, date: now(), chat: PLAIN, from: AN, text: 'r', message_thread_id: 850, reply_to_message: { message_id: 850, date: now(), chat: PLAIN, from: DIEGO, text: 'q' } });
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
     expect(incoming[0].from).toMatchObject({ chatId: 'tg:-1005555', chatName: 'Plain', replyToId: '850' });
+    expect(topicGroupOf('tg:-1005555')).toBeNull();
     await bridge.send('x', { chatId: 'tg:-1005555', replyToMessageID: '850' });
     expect(sends(api)[0]).not.toHaveProperty('message_thread_id');
     bridge.stop();
@@ -347,6 +358,71 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
     await vi.waitFor(() => expect(n.api.of('closeForumTopic')).toHaveLength(1));
     expect(n.api.of('closeForumTopic')[0].body).toEqual({ chat_id: String(GROUP), message_thread_id: 77 });
     await vi.waitFor(() => expect(n.state().contacts.telegram[TOPIC]).toBeUndefined());
+    n.app.stop();
+  });
+});
+
+// ── a topic made outside /split (live 2026-10-27, EduWeb /585): topics always fork the chat ───────
+const OUTSIDE = 'Agente de ventas · documentos';
+const T585 = `${MAIN}/585`;
+const tgDirOf = (slug) => join(HOME, 'conversations', 'telegram', slug);
+
+describe('a Telegram node: a topic made outside /split is a fork of the chat', () => {
+  it('its first message runs in the chat\'s folder, on its own transcript and a branched thread', async () => {
+    const turns = [];
+    const recording = (opts) => { turns.push({ cwd: opts.cwd, sessionId: opts.sessionId ?? null }); return fakeSession(opts); };
+    const state = seeded();
+    state.contacts.telegram[MAIN].agents.egpt.allowed_users = ['*'];
+    const n = await bootNode(TELEGRAM_ONLY(), { state, makeSession: recording });
+    n.api.updates(inTopic(585, '@e hola desde un tema nuevo', {}, OUTSIDE));
+    await answered(n.api, 'hola desde un tema nuevo');
+    const main = n.state().contacts.telegram[MAIN];
+    const topic = n.state().contacts.telegram[T585];
+    expect(topic).toMatchObject({ slug: main.slug, conversation_path: main.conversation_path, parent_chat: MAIN, transcript: sanitizeSlug(OUTSIDE), pushedName: OUTSIDE });
+    expect(topic.agents.egpt).toMatchObject({ mode: 'on', allowed_users: ['*'] });
+    expect(topic.agents.egpt.threadId).toBeTruthy();
+    expect(topic.agents.egpt.threadId).not.toBe('eduweb-thread');
+    expect(main.agents.egpt.threadId).toBe('eduweb-thread');
+    expect(basename(turns[0].cwd)).toBe(main.slug);
+    expect(turns[0].sessionId).toBe(topic.agents.egpt.threadId);
+    const room = Room.forChat('telegram', main.slug);
+    await vi.waitFor(async () => expect(await fs.readFile(room.transcriptPathFor(topic.transcript), 'utf8')).toContain('hola desde un tema nuevo'));
+    expect(await fs.readFile(room.transcriptPath, 'utf8').catch(() => '')).not.toContain('hola desde un tema nuevo');
+    expect(n.lines.some((l) => l.includes(`${T585} "${OUTSIDE}" -> fork of ${MAIN}`))).toBe(true);
+    n.app.stop();
+  });
+
+  it('a first message that is a file lands in the chat\'s media/', async () => {
+    const n = await bootNode();
+    n.api.files['documents/doc585.pdf'] = 'pdf';
+    n.api.updates(inTopic(585, undefined, { document: { file_id: 'doc585', file_unique_id: 'u585', file_name: 'precios.pdf', mime_type: 'application/pdf' }, caption: 'la lista de precios' }, OUTSIDE));
+    await vi.waitFor(() => expect(n.state().contacts.telegram[T585]?.parent_chat).toBe(MAIN));
+    const main = n.state().contacts.telegram[MAIN];
+    expect(n.state().contacts.telegram[T585].slug).toBe(main.slug);
+    await vi.waitFor(async () => expect(await fs.readFile(join(tgDirOf(main.slug), 'media', 'index.md'), 'utf8').catch(() => '')).toContain('la lista de precios'));
+    n.app.stop();
+  });
+
+  it('a /split topic keeps the entry /split made: its first message registers nothing', async () => {
+    const n = await bootNode();
+    await splitInto(n);
+    const made = structuredClone(n.state().contacts.telegram[TOPIC]);
+    n.api.updates(inTopic(77, '@e en el tema del split'));
+    await answered(n.api, 'en el tema del split');
+    expect(n.state().contacts.telegram[TOPIC]).toMatchObject({ slug: made.slug, parent_chat: MAIN, transcript: made.transcript, agents: { egpt: { threadId: made.agents.egpt.threadId } } });
+    expect(n.lines.some((l) => /-> fork of /.test(l))).toBe(false);
+    n.app.stop();
+  });
+
+  it('a topic of a group whose General chat is no conversation here is a conversation of its own, as before', async () => {
+    const n = await bootNode(TELEGRAM_ONLY(), { state: emptyState() });
+    n.api.updates(inTopic(585, '@e hola', {}, OUTSIDE));
+    await vi.waitFor(() => expect(n.state().contacts.telegram?.[T585]).toBeTruthy());
+    const topic = n.state().contacts.telegram[T585];
+    expect(topic.parent_chat).toBeUndefined();
+    expect(topic.transcript).toBeUndefined();
+    expect(topic.slug.startsWith(sanitizeSlug(OUTSIDE))).toBe(true);
+    expect(n.state().contacts.telegram[MAIN]).toBeUndefined();
     n.app.stop();
   });
 });
