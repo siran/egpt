@@ -60,7 +60,7 @@ function fakeApi() {
         init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
       });
     }
-    const res = answers[method](call.body);
+    const res = await answers[method](call.body);
     call.out = await res.json();
     return res;
   };
@@ -105,7 +105,7 @@ function brain(turns) {
 
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
 // realFs: transcripts on disk (under _HOME), where /agents rethread's roll reads them.
-async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false } = {}) {
+async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false, now } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   const port = await freeSafeHttpPort();
@@ -126,7 +126,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => st,
     writeState: async (s) => { st = s; },
-    ...(realFs ? {} : { io }), ingest: false, tickMs: 0,
+    ...(realFs ? {} : { io }), ...(now ? { now } : {}), ingest: false, tickMs: 0,
     log: { line: (s) => lines.push(s) },
   });
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
@@ -177,7 +177,7 @@ describe('a chatbox client with a team_group', () => {
     expect(made).toHaveLength(1);
     const slug = n.slugOf(n.turns[0]);
     expect(made[0].body).toEqual({ chat_id: String(GROUP), name: `EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}` });
-    expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]);
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
     // the session's being answers its visitor in mode mention; the topic holds it mute
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
     expect(getContact(n.state(), 'telegram', TOPIC).entry.agents.ed.mode).toBe('mute');
@@ -187,12 +187,15 @@ describe('a chatbox client with a team_group', () => {
     n.app.stop();
   });
 
-  it("the visitor's line and the being's reply both appear in the topic, the reply in the being's own stamp", async () => {
+  it("a new session's topic opens with its first line (no header); later lines and replies appear live, the reply in the being's own stamp", async () => {
     const n = await bootTeam();
-    await n.post({ text: 'hola, quiero una demo' });
-    await vi.waitFor(() => expect(n.inThread().map((m) => m.text)).toEqual([
-      expect.stringMatching(/visitor: hola, quiero una demo$/),
-      expect.stringMatching(/^🦉 respuesta a .*hola, quiero una demo$/),
+    const a = await n.post({ text: 'hola, quiero una demo' });
+    await vi.waitFor(() => expect(n.inThread()[0]?.text.split('\n')[0]).toBe('visitor: hola, quiero una demo'), { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    await n.post({ session: a.session, text: 'somos un colegio' });
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).slice(-2)).toEqual([
+      expect.stringMatching(/visitor: somos un colegio$/),
+      expect.stringMatching(/^🦉 respuesta a .*somos un colegio$/),
     ]), { timeout: 5000 });
     n.app.stop();
   });
@@ -229,19 +232,23 @@ describe('a chatbox client with a team_group', () => {
     n.app.stop();
   });
 
-  it("our own copies in the topic (the visitor's line, the being's reply), handed back by Telegram, re-enter nowhere", async () => {
+  it("our own copies in the topic (the recap, the visitor's line, the being's reply), handed back by Telegram, re-enter nowhere", async () => {
     const n = await bootTeam();
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
-    await vi.waitFor(() => expect(n.inThread().map((m) => m.text)).toEqual([expect.stringMatching(/visitor: hola$/), expect.stringMatching(/^🦉 respuesta a /)]), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.inThread().length).toBeGreaterThan(0), { timeout: 5000 });
+    await n.post({ session: a.session, text: 'otra' });
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).slice(-2)).toEqual([expect.stringMatching(/visitor: otra$/), expect.stringMatching(/^🦉 respuesta a .*otra$/)]), { timeout: 5000 });
+    await settle();
     const slug = n.slugOf(n.turns[0]);
     const before = n.transcript(slug);
-    n.api.updates(...n.inThread().map((copy) => inTopic(copy.text, { message_id: copy.id, from: ME })));
-    await vi.waitFor(() => expect(n.lines.filter((l) => /echo: .*own output re-entered/.test(l))).toHaveLength(2), { timeout: 5000 });
+    const copies = n.inThread();
+    n.api.updates(...copies.map((copy) => inTopic(copy.text, { message_id: copy.id, from: ME })));
+    await vi.waitFor(() => expect(n.lines.filter((l) => /echo: .*own output re-entered/.test(l))).toHaveLength(copies.length), { timeout: 5000 });
     await settle();
     expect(n.transcript(slug)).toBe(before);
-    expect(n.turns).toHaveLength(1);
-    expect((await n.messages(a.session)).filter((m) => m.from === 'being')).toHaveLength(1);
+    expect(n.turns).toHaveLength(2);
+    expect((await n.messages(a.session)).filter((m) => m.from === 'being')).toHaveLength(2);
     n.app.stop();
   });
 
@@ -260,6 +267,58 @@ describe('a chatbox client with a team_group', () => {
     expect(topic.slug).not.toBe(getContact(n.state(), 'telegram', `tg:${GROUP}`).entry.slug);
     expect(topic.agents.ed).toEqual({ mode: 'mute' });
     expect(n.turns).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('the topic is made in the background: lines reach the being while createForumTopic hangs, one attempt, and the topic gets their recap', async () => {
+    const n = await bootTeam();
+    let release;
+    n.api.answers.createForumTopic = (b) => new Promise((r) => { release = () => r({ status: 200, json: async () => ({ ok: true, result: { message_thread_id: 77, name: b.name } }) }); });
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    await n.post({ session: a.session, text: 'somos un colegio' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session), 2)).toBe(true), { timeout: 5000 });
+    expect(n.api.of('createForumTopic')).toHaveLength(1);
+    expect(n.inThread()).toEqual([]);
+    release();
+    await vi.waitFor(() => expect(n.inThread()[0]?.text.split('\n')).toEqual([
+      'visitor: hola', expect.stringMatching(/^ed: 🦉 respuesta a .*: hola$/),
+      'visitor: somos un colegio', expect.stringMatching(/^ed: 🦉 respuesta a .*: somos un colegio$/),
+    ]), { timeout: 5000 });
+    await n.post({ session: a.session, text: 'tercera' });
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).slice(1)).toEqual([
+      expect.stringMatching(/visitor: tercera$/),
+      expect.stringMatching(/^🦉 respuesta a .*tercera$/),
+    ]), { timeout: 5000 });
+    expect(n.api.of('createForumTopic')).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('a failed topic is tried again by the first line after a 2-minute cooldown, not before; the topic then gets the recap', async () => {
+    let skew = 0;
+    const n = await bootTeam(undefined, { now: () => Date.now() + skew });
+    n.api.answers.createForumTopic = () => n.api.err(502, 'Bad Gateway');
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.lines.filter((l) => /^\[http\] http:eduweb-[0-9a-f]{16}: no team topic — Telegram did not make the topic \(Bad Gateway\)$/.test(l))).toHaveLength(1), { timeout: 5000 });
+    n.api.answers.createForumTopic = (b) => ({ status: 200, json: async () => ({ ok: true, result: { message_thread_id: 77, name: b.name } }) });
+    skew = 110_000;
+    await n.post({ session: a.session, text: 'dos' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session), 2)).toBe(true), { timeout: 5000 });
+    await settle();
+    expect(n.api.of('createForumTopic')).toHaveLength(1);
+    skew = 125_000;
+    await n.post({ session: a.session, text: 'tres' });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    expect(n.lines.filter((l) => l.endsWith(`http:${slug}: no team topic yet — trying again`))).toHaveLength(1);
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
+    await vi.waitFor(() => {
+      const recap = n.inThread()[0]?.text.split('\n') ?? [];
+      expect(recap[0]).toMatch(/^\(conversación iniciada antes: [56] mensajes\)$/);
+      expect(recap).toContain('visitor: dos');
+      expect(recap).toContain('visitor: tres');
+    }, { timeout: 5000 });
     n.app.stop();
   });
 

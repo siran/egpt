@@ -172,21 +172,33 @@ describe('sessions', () => {
     } finally { await rm(stateDir, { recursive: true, force: true }); }
   });
 
-  it('onNewSession is awaited before a new session\'s first line enters, and only for a new session', async () => {
+  it('beforeLine is awaited before each line enters; isNew only for a new session\'s first', async () => {
     const order = [];
     const { post } = await limb(undefined, {
-      onNewSession: async ({ client, chatId }) => { order.push(`hook ${client} ${chatId}`); await new Promise((r) => setTimeout(r, 50)); order.push('hook done'); },
+      beforeLine: async ({ client, chatId, isNew }) => { order.push(`hook ${client} ${chatId} ${isNew}`); await new Promise((r) => setTimeout(r, 50)); order.push('hook done'); },
       onIncoming: (text) => order.push(`line ${text}`),
     });
     const a = await (await post({ text: 'uno' })).json();
     await post({ session: a.session, text: 'dos' });
-    expect(order).toHaveLength(4);
-    expect(order[0]).toMatch(/^hook acme http:acme-[0-9a-f]{16}$/);
-    expect(order.slice(1)).toEqual(['hook done', 'line uno', 'line dos']);
+    expect(order).toHaveLength(6);
+    expect(order[0]).toMatch(/^hook acme http:acme-[0-9a-f]{16} true$/);
+    expect(order[3]).toBe(order[0].replace(/true$/, 'false'));
+    expect(order.filter((_, i) => i !== 0 && i !== 3)).toEqual(['hook done', 'line uno', 'hook done', 'line dos']);
   });
 
-  it('a failing onNewSession is logged and the line still enters', async () => {
-    const { post, got, lines } = await limb(undefined, { onNewSession: () => { throw new Error('seed folder missing'); } });
+  it("beforeLine's recap(): the panel's earlier lines, a header with their count and the last five", async () => {
+    const recaps = [];
+    const { b, post, got } = await limb({ acme: { being: 'asesor', strings: { earlier: 'antes: {n}' } } }, { beforeLine: ({ recap }) => { recaps.push(recap()); } });
+    const a = await (await post({ text: 'l1' })).json();
+    b.send('r1', { chatId: got[0].from.chatId });
+    for (const t of ['l2', 'l3', 'l4', 'l5', 'l6']) await post({ session: a.session, text: t });
+    expect(recaps[0]).toBeNull();
+    expect(recaps.at(-1)).toBe(['antes: 6', 'asesor: r1', 'visitor: l2', 'visitor: l3', 'visitor: l4', 'visitor: l5'].join('\n'));
+    expect(HTTP_STRINGS.earlier).toBe('(conversación iniciada antes: {n} mensajes)');
+  });
+
+  it('a failing beforeLine is logged and the line still enters', async () => {
+    const { post, got, lines } = await limb(undefined, { beforeLine: () => { throw new Error('seed folder missing'); } });
     expect((await post({ text: 'hola' })).status).toBe(200);
     expect(got).toHaveLength(1);
     expect(lines.some((l) => /seed folder missing/.test(l))).toBe(true);
@@ -320,6 +332,38 @@ describe('limits', () => {
     expect((await post({ session: 'unknown', text: '4' })).status).toBe(429);
     expect((await post({ session: a.session, text: 'sigo' })).status).toBe(200);
     expect(got.map((g) => g.text)).toEqual(['1', '2', 'sigo']);
+  });
+
+  it('a retried POST (the same client id) posts one line and gets the first answer, a new session\'s token included', async () => {
+    const { post, got, url } = await limb();
+    const id = 'c0ffee'.repeat(4);
+    const first = await (await post({ text: 'hola', id })).json();
+    const again = await post({ text: 'hola', id });   // the first answer was lost: still no session
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(first);
+    const next = { session: first.session, text: 'otra', id: 'beef'.repeat(6) };
+    const n1 = await (await post(next)).json();
+    expect(await (await post(next)).json()).toEqual(n1);
+    expect(got.map((g) => g.text)).toEqual(['hola', 'otra']);
+    const log = await (await fetch(`${url()}messages?session=${encodeURIComponent(first.session)}`)).json();
+    expect(log.messages.map((m) => m.text)).toEqual(['hola', 'otra']);
+  });
+
+  it('a retry while the first POST is still held waits for it: one session, one line; a retry is not counted by the rate', async () => {
+    let release;
+    const held = new Promise((r) => { release = r; });
+    const { post, got, lines } = await limb({ acme: { being: 'ed', rate: { messages: 2, minutes: 10 } } }, { beforeLine: ({ isNew }) => (isNew ? held : null) });
+    const id = 'f00d'.repeat(6);
+    const one = post({ text: 'hola', id });
+    while (!lines.some((l) => /new session/.test(l))) await new Promise((r) => setTimeout(r, 10));
+    const two = post({ text: 'hola', id });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(got).toHaveLength(0);
+    release();
+    const [a, b] = await Promise.all([one, two].map((p) => p.then((r) => r.json())));
+    expect(b).toEqual(a);
+    expect(got).toHaveLength(1);
+    expect((await post({ session: a.session, text: 'dos' })).status).toBe(200);
   });
 
   it('the default is 30 new sessions per address per hour', async () => {
@@ -462,6 +506,17 @@ describe('widget.js and routing', () => {
     expect(js).toContain('JSON.stringify({ session: token })');
     expect(js).toContain('chat.clearMessages()');
     expect(js).toContain(`"end":${JSON.stringify(HTTP_STRINGS.end)}`);
+  });
+
+  it('widget.js shows ⏳ (Deep Chat\'s loading bubble) while a line is out, and retries a POST that got no answer or a 5xx, with the same id', async () => {
+    const { url } = await limb();
+    const js = await (await fetch(`${url()}widget.js`)).text();
+    expect(js).toContain('chat.displayLoadingBubble = true');
+    expect(js).toContain("loading: { message: { html: '⏳' } }");
+    expect(js).toContain('var BACKOFF = [1000, 3000, 9000]');
+    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id })');
+    expect(js).toContain('crypto.getRandomValues');
+    expect(js).toMatch(/if \(\(status && status < 500\) \|\| n >= BACKOFF\.length\) return Promise\.reject\(status\)/);
   });
 
   it('an unknown client or path is 404', async () => {

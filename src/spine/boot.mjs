@@ -2227,24 +2227,44 @@ export async function boot({
       if (!isLocalAgent(being, agents()[being])) hlog(`limbs.http.clients.${name}.being '${being}' is not a local agent here — its visitors reach nobody`);
       if (c?.team_group != null && !telegramPort) hlog(`limbs.http.clients.${name}.team_group is set but this node has no Telegram limb — no team topics`);
     }
-    // A new session's conversation folder starts with a copy of its client's `seed` folder (relative: under EGPT_HOME),
-    // and with a `team_group`, a topic there that is a chat member of the conversation (room-relay.mjs).
-    const onNewSession = async ({ client, chatId }) => {
+    // With a `team_group`, the conversation's topic there, a chat member of it (room-relay.mjs). Made in
+    // the background when none is seated: from a session's first line, and from a later line until one
+    // is, not within TOPIC_COOLDOWN_MS of a failed try. One attempt at a time per chat. Lines said before
+    // it is seated reach it as a recap.
+    const TOPIC_COOLDOWN_MS = 2 * 60_000;
+    const seating = new Map(), failedAt = new Map();
+    const seatTeamTopic = (client, chatId, { isNew, recap }) => {
       const c = block.clients?.[client] ?? {};
-      const slug = fixedSlugFor('http', chatId);
-      if (c.seed) {
+      if (c.team_group == null || !telegramPort || seating.has(chatId)) return;
+      if (now() - (failedAt.get(chatId) ?? -Infinity) < TOPIC_COOLDOWN_MS) return;
+      const fail = (why) => { failedAt.set(chatId, now()); hlog(`${chatId}: no team topic — ${why}`); };
+      seating.set(chatId, (async () => {
+        const slug = fixedSlugFor('http', chatId);
+        const room = Room.forChat('http', slug);
+        if ((await room.members()).some((m) => m.kind === 'tg-group')) return;
+        if (!isNew) hlog(`${chatId}: no team topic yet — trying again`);
+        const title = `${c.title || client} · ${slug.slice(client.length + 1, client.length + 7)}`;
+        const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
+        if (!made?.success) return fail(made?.reason ?? 'the Telegram limb made none');
+        failedAt.delete(chatId);
+        // The topic records the team and tunnels it in; its being never answers there (mute): it answers the visitor.
+        await contacts.resolve('telegram', made.chatID, { chatName: title, seed: { agents: { [c.being]: { mode: 'mute' } } } });
+        await room.setMember({ kind: 'tg-group', id: made.chatID, state: 'active', replies: true, title: c.team_name || c.title || client });
+        hlog(`${chatId}: team topic "${title}" is ${made.chatID}`);
+        const said = recap({ header: !isNew });   // a new session's topic just starts; a late one says what came before
+        if (said) await sayOnce({ chatId: made.chatID, text: said, what: 'chatbox recap' });
+      })().catch((e) => fail(e?.message ?? e)).finally(() => seating.delete(chatId)));
+    };
+    // A new session's conversation folder starts with a copy of its client's `seed` folder (relative: under EGPT_HOME).
+    // The line never waits on Telegram.
+    const beforeLine = async ({ client, chatId, isNew, recap }) => {
+      const c = block.clients?.[client] ?? {};
+      if (isNew && c.seed) {
         const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));
-        const n = copyTreeIfMissing(from, slugDir('http', slug));
+        const n = copyTreeIfMissing(from, slugDir('http', fixedSlugFor('http', chatId)));
         hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
       }
-      if (c.team_group == null || !telegramPort) return;
-      const title = `${c.title || client} · ${slug.slice(client.length + 1, client.length + 7)}`;
-      const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
-      if (!made?.success) { hlog(`${chatId}: no team topic — ${made?.reason ?? 'the Telegram limb made none'}`); return; }
-      await Room.forChat('http', slug).setMember({ kind: 'tg-group', id: made.chatID, state: 'active', replies: true, title: c.team_name || c.title || client });
-      // The topic records the team and tunnels it in; its being never answers there (mute): it answers the visitor.
-      await contacts.resolve('telegram', made.chatID, { chatName: title, seed: { agents: { [c.being]: { mode: 'mute' } } } });
-      hlog(`${chatId}: team topic "${title}" is ${made.chatID}`);
+      seatTeamTopic(client, chatId, { isNew, recap });
     };
     // A visitor's "end conversation": a fresh thread in the same conversation (/agents rethread's
     // own path), and the `ended` line to its chat members seated for replies (the team topic).
@@ -2259,7 +2279,7 @@ export async function boot({
     const port = await createBeeperBridgePort({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients: block.clients, trustProxy: block.trust_proxy === true, now,
-      onNewSession,
+      beforeLine,
       onEnd,
       onLog: hlog,
     }, { start: startHttpBridge });
