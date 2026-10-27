@@ -86,14 +86,22 @@ describe('sessions', () => {
     expect(new Set(chats).size).toBe(3);
   });
 
-  it('an expired token (idle past 30 days) starts a new session', async () => {
+  it('a token idle past session_days (default 365, per client) is expired and starts a new session', async () => {
+    const DAY = 24 * 3600_000;
     let t = Date.UTC(2026, 9, 26);
-    const { post, got } = await limb(undefined, { now: () => t });
+    const { post, got } = await limb({ acme: { being: 'ed' }, brief: { being: 'ed', session_days: 30 } }, { now: () => t });
     const a = await (await post({ text: 'hola' })).json();
-    t += 31 * 24 * 3600_000;
-    const b = await (await post({ session: a.session, text: 'sigo aquí' })).json();
+    const s = await (await post({ text: 'hola' }, {}, 'brief')).json();
+    t += 31 * DAY;
+    expect((await (await post({ session: a.session, text: 'sigo aquí' })).json()).session).toBe(a.session);
+    expect(got[2].from.chatId).toBe(got[0].from.chatId);
+    const s2 = await (await post({ session: s.session, text: 'sigo aquí' }, {}, 'brief')).json();
+    expect(s2.session).not.toBe(s.session);
+    expect(got[3].from.chatId).not.toBe(got[1].from.chatId);
+    t += 365 * DAY;
+    const b = await (await post({ session: a.session, text: 'un año después' })).json();
     expect(b.session).not.toBe(a.session);
-    expect(got[1].from.chatId).not.toBe(got[0].from.chatId);
+    expect(got[4].from.chatId).not.toBe(got[0].from.chatId);
   });
 
   it('sessions survive a restart (stateDir): the token still names its chat', async () => {
@@ -150,7 +158,7 @@ describe('sessions', () => {
     try {
       const one = await limb(undefined, { stateDir, now: () => t });
       const a = await (await one.post({ text: 'hola' })).json();
-      t += 31 * 24 * 3600_000;
+      t += 366 * 24 * 3600_000;
       await one.post({ session: a.session, text: 'sigo aquí' });
       await one.b.stop();
       const [oldChat, newChat] = one.got.map((g) => g.from.chatId.slice(-16));
@@ -339,6 +347,85 @@ describe('limits', () => {
   });
 });
 
+describe('POST end: the visitor ends the conversation', () => {
+  const end = (url, session, headers = {}) => fetch(`${url}end`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ session }) });
+  const history = async (url, session) => (await (await fetch(`${url}messages?session=${encodeURIComponent(session)}`)).json()).messages;
+
+  it('onEnd gets the chat and the ended line; the history is cleared, on disk too; the same token keeps the same chat', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-end-'));
+    try {
+      const ends = [];
+      const { b, post, url, got } = await limb({ acme: { being: 'ed', strings: { ended: 'FIN' } } }, { stateDir, onEnd: (e) => { ends.push(e); } });
+      const a = await (await post({ text: 'hola' })).json();
+      const chatId = got[0].from.chatId;
+      await b.send('respuesta', { chatId });
+      expect(await history(url(), a.session)).toHaveLength(2);
+      const r = await end(url(), a.session);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ ok: true });
+      expect(ends).toEqual([{ client: 'acme', chatId, ended: 'FIN' }]);
+      expect(await history(url(), a.session)).toEqual([]);
+      const again = await (await post({ session: a.session, text: 'otra cosa' })).json();
+      expect(again.session).toBe(a.session);
+      expect(got[1].from.chatId).toBe(chatId);
+      expect((await history(url(), a.session)).map((m) => m.text)).toEqual(['otra cosa']);
+      await b.stop();
+      const saved = JSON.parse(await readFile(join(stateDir, 'http-messages', `${chatId.split('-').at(-1)}.json`), 'utf8'));
+      expect(saved.map((m) => m.text)).toEqual(['otra cosa']);
+    } finally { await rm(stateDir, { recursive: true, force: true }); }
+  });
+
+  it('the default ended line is the Spanish one; nothing said since the last end: a second end does nothing', async () => {
+    const ends = [];
+    const { post, url } = await limb(undefined, { onEnd: (e) => { ends.push(e); } });
+    const a = await (await post({ text: 'hola' })).json();
+    expect((await end(url(), a.session)).status).toBe(200);
+    expect((await end(url(), a.session)).status).toBe(200);
+    expect(ends.map((e) => e.ended)).toEqual([HTTP_STRINGS.ended]);
+  });
+
+  it('an unknown session is 404 and onEnd is not called', async () => {
+    const ends = [];
+    const { url } = await limb(undefined, { onEnd: (e) => { ends.push(e); } });
+    expect((await end(url(), 'no-such-token')).status).toBe(404);
+    expect((await end(url(), undefined)).status).toBe(404);
+    expect(ends).toEqual([]);
+  });
+
+  it('the client\'s origins hold: a listed origin gets CORS (preflight too), an unlisted one is refused', async () => {
+    const ends = [];
+    const { post, url } = await limb({ acme: { being: 'ed', allowed_origins: ['https://www.acme.test'] } }, { onEnd: (e) => { ends.push(e); } });
+    const a = await (await post({ text: 'hola' })).json();
+    expect((await end(url(), a.session, { Origin: 'https://evil.test' })).status).toBe(403);
+    expect(ends).toEqual([]);
+    const pre = await fetch(`${url()}end`, { method: 'OPTIONS', headers: { Origin: 'https://www.acme.test', 'Access-Control-Request-Method': 'POST' } });
+    expect(pre.status).toBe(204);
+    const ok = await end(url(), a.session, { Origin: 'https://www.acme.test' });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('access-control-allow-origin')).toBe('https://www.acme.test');
+    expect(ends).toHaveLength(1);
+  });
+
+  it('a failing onEnd: 500, the history kept', async () => {
+    const { post, url, lines } = await limb(undefined, { onEnd: () => { throw new Error('boom'); } });
+    const a = await (await post({ text: 'hola' })).json();
+    expect((await end(url(), a.session)).status).toBe(500);
+    expect((await history(url(), a.session)).map((m) => m.text)).toEqual(['hola']);
+    expect(lines.some((l) => /^end acme-[0-9a-f]{16}: boom$/.test(l))).toBe(true);
+  });
+
+  it('a reply still streaming when the visitor ends stays out of the fresh panel', async () => {
+    const { b, post, url, got } = await limb(undefined, { onEnd: () => {} });
+    const a = await (await post({ text: 'hola' })).json();
+    const h = b.startStreamMessage('…', { chatId: got[0].from.chatId });
+    h.update('a medias');
+    expect((await end(url(), a.session)).status).toBe(200);
+    h.update('a medias, y más');
+    await h.finish('respuesta vieja');
+    expect(await history(url(), a.session)).toEqual([]);
+  });
+});
+
 describe('widget.js and routing', () => {
   it('widget.js is served as JavaScript with the client\'s title and Spanish strings', async () => {
     const { url } = await limb({ acme: { being: 'ed', title: 'EduWeb', strings: { send: 'Mandar' } } });
@@ -363,6 +450,18 @@ describe('widget.js and routing', () => {
     expect(js).toContain("base + 'events?session='");
     expect(js).toContain("fetch(base + 'messages', { method: 'POST'");
     expect(js).toContain('"client":"acme"');
+  });
+
+  it('widget.js has the end button with its inline confirm, and ends through POST end then clears the panel', async () => {
+    const { url } = await limb();
+    const js = await (await fetch(`${url()}widget.js`)).text();
+    expect(js).toContain('class="egc-end"');
+    expect(js).toContain('class="egc-ask"');
+    expect(js).not.toContain('confirm(');
+    expect(js).toContain("fetch(base + 'end', { method: 'POST'");
+    expect(js).toContain('JSON.stringify({ session: token })');
+    expect(js).toContain('chat.clearMessages()');
+    expect(js).toContain(`"end":${JSON.stringify(HTTP_STRINGS.end)}`);
   });
 
   it('an unknown client or path is 404', async () => {

@@ -2246,10 +2246,21 @@ export async function boot({
       await contacts.resolve('telegram', made.chatID, { chatName: title, seed: { agents: { [c.being]: { mode: 'mute' } } } });
       hlog(`${chatId}: team topic "${title}" is ${made.chatID}`);
     };
+    // A visitor's "end conversation": a fresh thread in the same conversation (/agents rethread's
+    // own path), and the `ended` line to its chat members seated for replies (the team topic).
+    const onEnd = async ({ chatId, ended }) => {
+      const slug = fixedSlugFor('http', chatId);
+      const beings = await commands.endConversation({ surface: 'http', chatId, chatName: slug });
+      hlog(`${chatId}: ended by the visitor — ${beings.length ? `${beings.join(', ')} rethreaded` : 'no being had a thread'}`);
+      for (const m of await Room.forChat('http', slug).members()) {
+        if (m.replies === true && CHAT_MEMBER_KINDS.includes(m.kind)) await sayOnce({ chatId: m.id, text: ended, what: 'chatbox end' });
+      }
+    };
     const port = await createBeeperBridgePort({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients: block.clients, trustProxy: block.trust_proxy === true, now,
       onNewSession,
+      onEnd,
       onLog: hlog,
     }, { start: startHttpBridge });
     return sendGuard.wrap({ ...port, owns: isHttpChatId });

@@ -20,6 +20,7 @@ import { startTelegramBridge } from '../src/bridges/telegram.mjs';
 import { emptyState, getContact, ensureContact, recordThread } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
 import { ROOMS_FILE } from '../src/rooms-file.mjs';
+import { HTTP_STRINGS } from '../src/bridges/http.mjs';
 
 afterEach(async () => {
   await fs.rm(ROOMS_FILE, { force: true });
@@ -89,16 +90,22 @@ function memIo() {
     rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
   };
 }
+// A resumed session keeps its id; a fresh one mints the next (sess-1, sess-2, …).
 function brain(turns) {
-  return (opts) => ({
-    sessionId: 'sess-1',
-    async turn(m) { turns.push({ cwd: opts.cwd, m }); return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: 'sess-1' }; },
-    close() {},
-  });
+  let minted = 0;
+  return (opts) => {
+    const id = opts.sessionId ?? `sess-${++minted}`;
+    return {
+      sessionId: id,
+      async turn(m) { turns.push({ cwd: opts.cwd, m, session: id, resumed: opts.sessionId ?? null }); return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: id }; },
+      close() {},
+    };
+  };
 }
 
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
-async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState() } = {}) {
+// realFs: transcripts on disk (under _HOME), where /agents rethread's roll reads them.
+async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   const port = await freeSafeHttpPort();
@@ -119,7 +126,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => st,
     writeState: async (s) => { st = s; },
-    io, ingest: false, tickMs: 0,
+    ...(realFs ? {} : { io }), ingest: false, tickMs: 0,
     log: { line: (s) => lines.push(s) },
   });
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
@@ -263,6 +270,42 @@ describe('a chatbox client with a team_group', () => {
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
     expect(n.lines.some((l) => /^\[http\] http:eduweb-[0-9a-f]{16}: no team topic — .*Topics/.test(l))).toBe(true);
     expect(await Room.forChat('http', n.slugOf(n.turns[0])).members()).toEqual([]);
+    n.app.stop();
+  });
+});
+
+describe('the visitor ends the conversation (POST end)', () => {
+  it('a fresh thread in the same conversation: thread cleared, transcript rolled under the boundary, history empty, the team told; the same token keeps its folder and topic', async () => {
+    const n = await bootTeam(undefined, { realFs: true });
+    const a = await n.post({ text: 'hola, quiero una demo' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    const chatId = `http:${slug}`;
+    const dir = join(_HOME, 'conversations', 'http', slug);
+    await vi.waitFor(() => expect(getContact(n.state(), 'http', chatId).entry.agents.ed.threadId).toBe('sess-1'), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await fs.readFile(join(dir, 'transcript.md'), 'utf8')).toMatch(/thread_id: sess-1[\s\S]*respuesta a/), { timeout: 5000 });
+
+    const r = await fetch(`${n.url}end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: a.session }) });
+    expect(r.status).toBe(200);
+    expect(getContact(n.state(), 'http', chatId).entry.agents.ed).toMatchObject({ threadId: null, mode: 'mention', allowed_users: ['*'] });
+    expect(await fs.readFile(join(dir, 'transcripts', 'sess-1.md'), 'utf8')).toContain('hola, quiero una demo');
+    const fresh = await fs.readFile(join(dir, 'transcript.md'), 'utf8');
+    expect(fresh).toContain('rethreaded — fresh session from here; nothing above this line is in context');
+    expect(fresh).not.toContain('quiero una demo');
+    expect(await n.messages(a.session)).toEqual([]);
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).at(-1)).toBe(HTTP_STRINGS.ended), { timeout: 5000 });
+
+    const b = await n.post({ session: a.session, text: 'otra pregunta' });
+    expect(b.session).toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(n.turns[1]).toMatchObject({ cwd: n.turns[0].cwd, session: 'sess-2', resumed: null });
+    expect(n.turns[1].m).not.toContain('quiero una demo');
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).slice(-2)).toEqual([
+      expect.stringMatching(/visitor: otra pregunta$/),
+      expect.stringMatching(/^🦉 respuesta a .*otra pregunta$/),
+    ]), { timeout: 5000 });
+    expect(n.api.of('createForumTopic')).toHaveLength(1);
+    expect((await n.messages(a.session)).map((m) => m.from)).toEqual(['visitor', 'being']);
     n.app.stop();
   });
 });

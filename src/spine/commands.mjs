@@ -1965,40 +1965,61 @@ export function createCommands({
   // The accum boundary below is the one thing that stays with the TYPED chat: spine.mjs reads
   // `readTranscript(ev.chatId)` for the accum window, so that line has to land where it reads.
   async function agentsRethread(ev, surface, jid, where, handles, state, named = handles.join(', ')) {
-    const sc = await oneScope(handles, ev, surface, jid);
-    if (sc.error) { await send?.(ev.chatId, `/agents: rethread — ${sc.error}`); return; }
-    const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
-      : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
-    if (!room) { await send?.(ev.chatId, "can't resolve this conversation's room"); return; }
-    where = whereWrote([sc], where);
     try {
-      // THE RETIRING THREADS, read BEFORE patchBeing nulls them: ~/.egpt-jsonl/<threadId> is keyed
-      // by that id, so once the block says null the store's own name is the only thing left that
-      // knows which conversation it belonged to — which is the orphan this fixes.
-      const retiring = handles.map((h) => [h, getBeing(state, sc.surface, sc.chatId, h)?.threadId ?? null]);
-      let next = state;
-      for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { threadId: null });
-      await writeState(next);
-      // THE ROLL, through the shared mover. Reported by its result, never assumed.
-      const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir, readdir }, key: forkKeyOf(state, sc.surface, sc.chatId) });
-      // …AND THE CLI STORE GOES BESIDE IT (operator 2026-09-11) — <threadId>.cli/ next to the
-      // <threadId>.md the roll just filed. AFTER the roll, so the transcript half is already done
-      // and transcripts/ already exists (rollTranscript's ensureTree made it), and so a store that
-      // cannot be moved costs a store and not the rethread.
-      const stores = [];
-      for (const [h, tid] of retiring) {
-        const r = await moveCliStore(tid, room.transcriptsDir);
-        if (r) stores.push([h, r]);
-      }
+      const r = await rethreadAt(ev, surface, jid, where, handles, state);
+      if (r.error) { await send?.(ev.chatId, r.error); return; }
       // The roll's outcome leads its own clause and is never folded into the ✅: "but ... was
       // NOT moved" has to be readable at a glance, because the operator's next move depends on
       // it. The ✅ says the command ran; this says what it managed.
-      const rolled = dest
-        ? `and transcript.md moved to transcripts/${basename(dest)}`
+      const rolled = r.dest
+        ? `and transcript.md moved to transcripts/${basename(r.dest)}`
         : 'but transcript.md was NOT moved (nothing written there yet, or it names no thread to file it under)';
-      await send?.(ev.chatId, `✅ ${named} rethread ${where} — threadId cleared, ${rolled}.${cliStoreNote(stores)} An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
+      await send?.(ev.chatId, `✅ ${named} rethread ${r.where} — threadId cleared, ${rolled}.${cliStoreNote(r.stores)} An accum boundary is marked in transcript.md, so nothing said before now is fed back; the next message starts a fresh session (mode/access_level unchanged, the conversation folder stays where it is — /agents reset is what archives).`);
       await rethreadBoundary(ev, surface, jid, handles, state);
     } catch (e) { onLog(`/agents rethread ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/agents: rethread failed — ${e?.message ?? e}`); }
+  }
+
+  // The rethread itself, shared by /agents rethread and a chatbox's "end conversation"
+  // (endConversation): threadIds cleared, transcript.md rolled, CLI stores moved.
+  // { error } before any write; else { where, dest, stores }. The caller marks the boundary after.
+  async function rethreadAt(ev, surface, jid, where, handles, state) {
+    const sc = await oneScope(handles, ev, surface, jid);
+    if (sc.error) return { error: `/agents: rethread — ${sc.error}` };
+    const room = sc.moved ? await resolveConvRoom(sc.surface, sc.chatId)
+      : (where === 'here') ? await convRoomOf(ev) : await resolveConvRoom(surface, jid);
+    if (!room) return { error: "can't resolve this conversation's room" };
+    // THE RETIRING THREADS, read BEFORE patchBeing nulls them: ~/.egpt-jsonl/<threadId> is keyed
+    // by that id, so once the block says null the store's own name is the only thing left that
+    // knows which conversation it belonged to — which is the orphan this fixes.
+    const retiring = handles.map((h) => [h, getBeing(state, sc.surface, sc.chatId, h)?.threadId ?? null]);
+    let next = state;
+    for (const h of handles) next = patchBeing(next, sc.surface, sc.chatId, h, { threadId: null });
+    await writeState(next);
+    // THE ROLL, through the shared mover. Reported by its result, never assumed.
+    const dest = await rollTranscript(room.surface, room.slug, { io: { readFile, writeFile, rename, mkdir, readdir }, key: forkKeyOf(state, sc.surface, sc.chatId) });
+    // …AND THE CLI STORE GOES BESIDE IT (operator 2026-09-11) — <threadId>.cli/ next to the
+    // <threadId>.md the roll just filed. AFTER the roll, so the transcript half is already done
+    // and transcripts/ already exists (rollTranscript's ensureTree made it), and so a store that
+    // cannot be moved costs a store and not the rethread.
+    const stores = [];
+    for (const [h, tid] of retiring) {
+      const r = await moveCliStore(tid, room.transcriptsDir);
+      if (r) stores.push([h, r]);
+    }
+    return { where: whereWrote([sc], where), dest, stores };
+  }
+
+  // A chatbox visitor's "end conversation" (src/bridges/http.mjs POST end): every being in the
+  // conversation rethreads, as `/agents rethread force all` there would, with no reply in the chat.
+  // Returns the beings rethreaded; throws when it could not.
+  async function endConversation(ev) {
+    const state = await loadState();
+    const handles = residentsOf(getContact(state, ev.surface, ev.chatId)?.entry);
+    if (!handles.length) return [];
+    const r = await rethreadAt(ev, ev.surface, ev.chatId, 'here', handles, state);
+    if (r.error) throw new Error(r.error);
+    await rethreadBoundary(ev, ev.surface, ev.chatId, handles, state);
+    return handles;
   }
 
   // THE ACCUM BOUNDARY (operator ruling 2026-08-29: "the reset should clean next accum, so
@@ -4329,5 +4350,5 @@ export function createCommands({
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 
-  return { isCommand, commandOf, hintOf, run, currentRoomOf, startBrowser, chromeClientFor: ensureChrome, browserConversationOf, chatChromeOf, autoSideGroup, linkSideGroup, forkTopic };
+  return { isCommand, commandOf, hintOf, run, currentRoomOf, startBrowser, chromeClientFor: ensureChrome, browserConversationOf, chatChromeOf, autoSideGroup, linkSideGroup, forkTopic, endConversation };
 }

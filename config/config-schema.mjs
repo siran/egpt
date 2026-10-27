@@ -780,9 +780,14 @@ export const CONFIG_SCHEMA = {
         conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
         token itself is never logged). Under <path>/<client>/:
           POST messages {session?, text} → {session, message}; no or an unknown or
-            expired session (30 days idle) starts a new one. application/json only.
+            expired session (session_days idle) starts a new one. application/json only.
           GET messages?session=&since=<seq> → {session, seq, messages}
           GET events?session=&since=<seq>   SSE, each message as posted/edited/settled
+          POST end {session} → {ok}         the visitor's "end conversation": same
+            session, folder and team topic; every being there rethreads (as
+            /agents rethread), the session's history is cleared, and the team
+            topic gets strings.ended. Unknown session 404. Nothing said since
+            the last end: nothing done.
           GET widget.js                     the embeddable bubble + panel
         A message is {id, from: visitor|being, text, done, seq} or {id, deleted, seq}.
         The session's conversation is created with
@@ -807,7 +812,12 @@ export const CONFIG_SCHEMA = {
                               request whose Origin is not listed is refused (403)
             title             the panel's title
             strings           UI strings (Spanish defaults): open, close,
-                              placeholder, send, error, too_long, too_many
+                              placeholder, send, error, too_long, too_many,
+                              end, end_confirm, end_yes, cancel; intro (the panel's first
+                              line, again after an end; default none); ended (the
+                              line the team topic gets on an end)
+            session_days      idle days before a session expires (its token then
+                              starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)
             rate              { messages: 30, minutes: 10 } per session (429 over it)
             new_sessions      { count: 30, minutes: 60 } new sessions per visitor
