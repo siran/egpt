@@ -229,7 +229,7 @@ export async function startHttpBridge({
   for (const s of sessions.values()) for (const m of s.log) tick = Math.max(tick, m.seq);
   const nextTick = () => (tick = Math.max(tick + 1, now()));
   const put = (res, chunk) => { if (!res.writableEnded) res.write(chunk); };
-  const view = (m) => (m.deleted ? { id: m.id, deleted: true, seq: m.seq } : { id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
+  const view = (m) => ({ id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
   const changed = (s, m) => {
     if (m.ended) return;   // cleared by an end: a reply still streaming stays out of the fresh panel
     m.seq = nextTick();
@@ -251,7 +251,7 @@ export async function startHttpBridge({
     const s = hit && sessions.get(hit[2]);
     return s && s.client === hit[1] ? s : null;
   };
-  const ownMessage = (s, msgId) => s?.log.find((m) => m.id === String(msgId) && m.from === 'being' && !m.deleted) ?? null;
+  const ownMessage = (s, msgId) => s?.log.find((m) => m.id === String(msgId) && m.from === 'being') ?? null;
   // A known, unexpired token of this client → its session; else null.
   const sessionOfToken = (c, token) => {
     if (typeof token !== 'string' || !token || token.length > 200) return null;
@@ -306,7 +306,7 @@ export async function startHttpBridge({
   };
   // The panel's settled lines so far, for a team topic seated after them: their count, then the last few.
   const recapOf = (c, s, { header = true } = {}) => {
-    const said = s.log.filter((m) => m.done && !m.deleted && m.text);
+    const said = s.log.filter((m) => m.done && m.text);
     if (!said.length) return null;
     const clip = (t) => ([...t].length > RECAP_CHARS ? `${[...t].slice(0, RECAP_CHARS).join('')}…` : t);
     return [...(header ? [c.earlier.replaceAll('{n}', String(said.length))] : []), ...said.slice(-RECAP_LINES).map((m) => `${m.from === 'visitor' ? 'visitor' : c.being}: ${clip(m.text)}`)].join('\n');
@@ -547,20 +547,12 @@ export async function startHttpBridge({
     changed(s, m);
     return true;
   }
-  function deleteMessage(chatId, msgId) {
-    const s = sessionOfChat(chatId);
-    const m = ownMessage(s, msgId);
-    if (!m) return false;
-    Object.assign(m, { deleted: true, text: '' });
-    changed(s, m);
-    return true;
-  }
   // The placeholder at once, each update an edit, the final text in the same message (done).
   function startStreamMessage(initialText, { chatId, existingMsgId = null } = {}) {
     const s = sessionOfChat(chatId);
     let m = existingMsgId != null ? ownMessage(s, existingMsgId) : null;
     let finished = false;
-    const h = { delivered: false, lastError: null, get confirmedId() { return m && !m.deleted ? m.id : null; } };
+    const h = { delivered: false, lastError: null, get confirmedId() { return m ? m.id : null; } };
     if (!s) h.lastError = 'no live chatbox session';
     else if (m) { m.text = stripInvisible(initialText); m.done = false; changed(s, m); }
     else m = append(s, 'being', stripInvisible(initialText), false);
@@ -574,11 +566,6 @@ export async function startHttpBridge({
       changed(s, m);
       h.delivered = true;
     };
-    h.delete = async () => {
-      if (finished || !m) return false;
-      finished = true;
-      return deleteMessage(chatId, m.id);
-    };
     h.fail = (e) => { finished = true; h.lastError = e?.message ?? String(e); log(`stream fail — ${h.lastError}`); };
     return h;
   }
@@ -589,7 +576,6 @@ export async function startHttpBridge({
     send,
     async sendAndGetId(text, { chatId } = {}) { return (await send(text, { chatId }))?.messageId ?? null; },
     editMessage,
-    deleteMessage,
     startStreamMessage,
     wasSentByUs: (chatId, msgId) => !!ownMessage(sessionOfChat(chatId), msgId),
     sendFailure: (chatId) => failures.get(chatId) ?? null,

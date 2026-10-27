@@ -345,19 +345,20 @@ describe('telegram limb — inbound media (the shared intake)', () => {
   });
 
   // contract 8.4
-  it('a bare name reply to a text, with a voice service: 🔊 reading…, the piper audio as a voice note replying to it, the ack deleted', async () => {
+  it('a bare name reply to a text, with a voice service: 🔊 reading…, the piper audio as a voice note replying to it, the ack edited to 🔊 — never deleted', async () => {
     const api = fakeApi();
     const synthesize = vi.fn(async () => Buffer.from('OggS'));
     const { bridge, incoming } = start(api, { synthesize, voice: 'es_MX', readTranscript: async () => '' });
     await bridge.startupReady;
     api.updates(privateMsg({ text: '@ed', reply_to_message: { message_id: 6, from: { id: 77 }, text: 'lee esto' } }));
-    await vi.waitFor(() => expect(api.of('deleteMessage')).toHaveLength(1));
+    await vi.waitFor(() => expect(api.of('editMessageText')).toHaveLength(1));
     expect(synthesize.mock.calls[0][0]).toBe('lee esto');
     expect(api.of('sendMessage')[0].body).toMatchObject({ text: '🔊 reading…', reply_parameters: { message_id: 6 } });
     const v = api.of('sendVoice')[0].body;
     expect(JSON.parse(v.reply_parameters).message_id).toBe(6);
     expect(v.voice.type).toBe('audio/ogg');
-    expect(api.of('deleteMessage')[0].body).toEqual({ chat_id: '42', message_id: 500 });
+    expect(api.of('editMessageText')[0].body).toMatchObject({ chat_id: '42', message_id: 500, text: '🔊' });
+    expect(api.of('deleteMessage')).toEqual([]);
     expect(incoming).toEqual([]);
     bridge.stop();
   });
@@ -549,12 +550,14 @@ describe('telegram limb — outbound', () => {
     bridge.stop();
   });
 
-  it('a stream\'s delete removes its own placeholder (a Telegram delete leaves no tombstone)', async () => {
+  it('a stream has no delete: its placeholder only ever settles by an edit (operator 2026-10-27)', async () => {
     const api = fakeApi();
     const { bridge } = start(api);
     const h = bridge.startStreamMessage('⏳', { chatId: 'tg:42' });
-    expect(await h.delete()).toBe(true);
-    expect(api.of('deleteMessage')[0].body).toEqual({ chat_id: '42', message_id: 500 });
+    expect(h.delete).toBeUndefined();
+    await h.finish('✓');
+    expect(api.of('editMessageText').map((c) => [c.body.message_id, c.body.text])).toEqual([[500, '✓']]);
+    expect(api.of('deleteMessage')).toEqual([]);
     bridge.stop();
   });
 
@@ -570,19 +573,18 @@ describe('telegram limb — outbound', () => {
     bridge.stop();
   });
 
-  it('edit treats "message is not modified" as done; react sets and clears one emoji; delete is deleteMessage', async () => {
+  it('edit treats "message is not modified" as done; react sets and clears one emoji; there is no delete', async () => {
     const api = fakeApi();
     api.answers.editMessageText = () => api.err(400, 'Bad Request: message is not modified');
     const { bridge } = start(api);
     expect(await bridge.editMessage('tg:42', '9', 'same')).toBe(true);
     expect(await bridge.sendReaction('tg:42', '9', '👍')).toBe(true);
     expect(await bridge.removeReaction('tg:42', '9', '👍')).toBe(true);
-    expect(await bridge.deleteMessage('tg:42', '9')).toBe(true);
+    expect(bridge.deleteMessage).toBeUndefined();
     expect(api.of('setMessageReaction').map((c) => c.body)).toEqual([
       { chat_id: '42', message_id: 9, reaction: [{ type: 'emoji', emoji: '👍' }] },
       { chat_id: '42', message_id: 9, reaction: [] },
     ]);
-    expect(api.of('deleteMessage')[0].body).toEqual({ chat_id: '42', message_id: 9 });
     bridge.stop();
   });
 

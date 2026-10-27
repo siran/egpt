@@ -48,10 +48,9 @@
 // twice. It is counted rather than left out because an uncounted PUT is exactly the seam an
 // infinite-edit runaway would sit in.
 //
-// REACTIONS AND DELETES COUNT AS NEITHER (react / deleteStatus / deleteOwn). They carry no
-// text: a reaction is not a line in a chat and a delete removes one. There is no third
-// category and they belong in neither counter — do not re-add them reasoning "it is still
-// traffic".
+// REACTIONS COUNT AS NEITHER (react / unreact). They carry no text: a reaction is not a line
+// in a chat. There is no third category and they belong in neither counter — do not re-add
+// them reasoning "it is still traffic". There are no deletes (operator 2026-10-27).
 //
 // NOTHING INBOUND IS COUNTED HERE. The send rules wrap the ports' SEND surface only. A peer's
 // message arriving at this node is the TURN rules' business (src/stop-guard.mjs, via
@@ -308,7 +307,7 @@ export function createSendGuard({
   // and a null would throw on a node that is merely on its way out.
   const deadStream = () => ({
     update() {}, fail() {},
-    async finish() {}, async delete() {},
+    async finish() {},
     delivered: false,
     lastError: 'loop guard: outbound ceiling tripped — egpt is stopping',
   });
@@ -330,7 +329,7 @@ export function createSendGuard({
   // count is node-wide rather than per-limb (the operator's "any limb"). A Proxy, not a
   // spread: the shell port exposes `isConnected` as a GETTER and a spread would freeze it to
   // its boot-time value. Everything the port has that is not a counted emit passes straight
-  // through — react / deleteStatus / deleteOwn included, deliberately (see the header).
+  // through — react / unreact included, deliberately (see the header).
   function wrap(port) {
     // A per-chat drop: answered as said (see the header), never as a failure.
     const ok = (chat, text, opts) => admitChat(chat, text, opts, port);

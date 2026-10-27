@@ -48,8 +48,6 @@ function fakePort(clock) {
     async sendMedia(chat, filePath) { posts.push({ at: clock.now(), kind: 'sendMedia', chat, filePath }); return true; },
     editStatus(chat, msgId, text) { posts.push({ at: clock.now(), kind: 'editStatus', chat, text }); return true; },
     editOwn(chat, msgId, text) { posts.push({ at: clock.now(), kind: 'editOwn', chat, text }); return true; },
-    deleteStatus(chat, msgId) { posts.push({ at: clock.now(), kind: 'deleteStatus', chat }); return true; },
-    deleteOwn(chat, msgId) { posts.push({ at: clock.now(), kind: 'deleteOwn', chat }); return true; },
     react(chat, msgId, emoji) { posts.push({ at: clock.now(), kind: 'react', chat, emoji }); return true; },
     startStream(chat, init) {
       const h = { delivered: false, lastError: null, frames: [] };
@@ -196,16 +194,12 @@ describe('loop guard — the outbound ceiling', () => {
     expect(port.posts).toHaveLength(4);
   });
 
-  it('6. reactions and deletes are NEITHER a message nor an edit', async () => {
+  it('6. reactions are NEITHER a message nor an edit', async () => {
     const { trips, port, sendGuard, bridge } = withTrips({ messages: 1, edits: 1 });
 
-    // No text, so no counter: a reaction is not a line in a chat, a delete removes one.
-    for (let i = 0; i < 50; i++) {
-      bridge.react('!room', 'id', '👍');
-      bridge.deleteStatus('!room', 'id');
-      bridge.deleteOwn('!room', 'id');
-    }
-    expect(port.posts).toHaveLength(150);
+    // No text, so no counter: a reaction is not a line in a chat. (There are no deletes: operator 2026-10-27.)
+    for (let i = 0; i < 50; i++) bridge.react('!room', 'id', '👍');
+    expect(port.posts).toHaveLength(50);
     expect(sendGuard.stats()).toMatchObject({ messages: 0, edits: 0, tripped: null });
     expect(trips).toEqual([]);
   });

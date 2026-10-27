@@ -97,16 +97,16 @@ describe('beeper-port adapter', () => {
     expect(h.finals).toEqual(['🐶 egpt: Aquí estoy bien']);
   });
 
-  it('exposes NO delete limb — a being never removes a message; the stream forwards the bridge\'s own delete', async () => {
-    // operator 2026-08-24: no delete limb. 2026-10-19: a limb-only turn's ⏳ placeholder is deleted by
-    // the BRIDGE (src/spine/sender.mjs), through the stream's own delete.
+  it('exposes NO delete — not as a limb, not on a status, not on a stream: nothing is ever deleted', async () => {
+    // operator 2026-08-24: no delete limb. 2026-10-27 (An, #780): "nadie borra nunca nada, ningún bot,
+    // ni el spine" — a limb-only turn's ⏳ placeholder is EDITED (src/spine/sender.mjs), never deleted.
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     expect(port.deleteOwn).toBeUndefined();
+    expect(port.deleteStatus).toBeUndefined();
     const s2 = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt' });
+    expect(s2.delete).toBeUndefined();
     expect(spy.streams[0].deleted).toBe(false);
-    s2.delete();
-    expect(spy.streams[0].deleted).toBe(true);
   });
 
   // The 🎧 listening mark comes back off (2026-09-16): react and its removal both reach the real bridge.
@@ -121,15 +121,14 @@ describe('beeper-port adapter', () => {
     expect(calls).toEqual([['add', '!room', '7004', '🎧'], ['remove', '!room', '7004', '🎧']]);
   });
 
-  it('A status: postStatus posts + returns id; editStatus edits; deleteStatus deletes', async () => {
+  it('A status: postStatus posts + returns id; editStatus edits; it is never deleted', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     const id = await port.postStatus('!room', '📨 Sending to E...');
     await port.editStatus('!room', id, '📨 Sending to E... ✅');
-    await port.deleteStatus('!room', id);
     expect(spy.statusPosts).toContainEqual({ text: '📨 Sending to E...', chatId: '!room' });
     expect(spy.statusEdits).toContainEqual({ chatId: '!room', msgId: id, text: '📨 Sending to E... ✅' });
-    expect(spy.statusDeletes).toContainEqual({ chatId: '!room', msgId: id });
+    expect(spy.statusDeletes).toEqual([]);
   });
 
   it('ENFORCES body_emoji on a one-shot send too', async () => {

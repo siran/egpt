@@ -166,9 +166,9 @@ function App({ link, themes, initialTheme, onError, history }) {
   useEffect(() => {
     // A spine frame is either a LIVE streaming edit (the ⏳ thinking train — replace the live
     // line in place) or a COMMITTED final (streaming:false — clear the live line and append the
-    // wrapped reply to the transcript). A `delete` final clears the live line, commits nothing.
+    // wrapped reply to the transcript).
     // `header` (the PERMANENT status line, boot's computeShellHeader) may ride ANY frame,
-    // including a header-only frame with neither text nor streaming nor delete — that shape
+    // including a header-only frame with neither text nor streaming — that shape
     // must update the header and fall through WITHOUT touching the transcript/live state below.
     link.onSpineMessage(m => {
       // A header-only frame rides on EVERY (re)connect (shell-port.mjs pushes it the moment
@@ -184,10 +184,9 @@ function App({ link, themes, initialTheme, onError, history }) {
           return null;
         });
       }
-      if (!m.text && !m.streaming && !m.delete) return;
+      if (!m.text && !m.streaming) return;
       if (m.streaming) { setLive({ text: m.text }); return; }
       setLive(null);
-      if (m.delete) return;
       add('egpt', m.text);
     });
     // Server/socket faults (from egpt.mjs's onLog sink) surface as loud error rows, never swallowed.

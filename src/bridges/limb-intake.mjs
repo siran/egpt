@@ -184,7 +184,7 @@ export async function startVoiceNote({
  */
 export async function readBack({
   text, replyToId, ownerSent, replyWake, readTranscript, chatId, title, network, msgId,
-  quoted = () => null, send, sendMedia, deleteMessage, synthesize = null, voice = null, onLog = () => {},
+  quoted = () => null, send, sendMedia, editMessage, synthesize = null, voice = null, onLog = () => {},
 }) {
   const bareReply = (text || '').trim().toLowerCase();
   // BOTH forms accepted (operator 2026-08-10): '@e'/'@egpt' AND the bare 'e'/'egpt' — the gate
@@ -207,9 +207,9 @@ export async function readBack({
   // MIRROR (operator 2026-08-10): the quoted id isn't a VOICE note — try it as ordinary TEXT. Skip
   // a hit that IS a voice-transcription entry or a placeholder: a voice note must never be read
   // aloud as text. synthesize/voice unwired (no voice_service) → this branch no-ops. An immediate
-  // '🔊 reading…' ack (OUR OWN message, so deletable) replies to the quoted text first and is
-  // deleted once the audio lands (success) or at once (failure). E's own lines carry no id in
-  // transcript.md (record-first), so `quoted()` supplies their text.
+  // '🔊 reading…' ack (OUR OWN message) replies to the quoted text first and is EDITED, never deleted
+  // (operator 2026-10-27): to '🔊' once the audio lands below it, or to say it could not be read.
+  // E's own lines carry no id in transcript.md (record-first), so `quoted()` supplies their text.
   const quotedText = bodyForMessageId(doc, replyToId) ?? quoted() ?? null;
   if (quotedText && _MEDIA_MARK.test(quotedText)) {
     // A MEDIA-ANNOUNCEMENT line, not prose: never synthesized. The bare token becomes a vision
@@ -233,15 +233,15 @@ export async function readBack({
         } catch (e) { onLog(`🔊 media send failed ↩${replyToId} [${title}] — ${e?.message ?? e}`); }
         finally { try { await unlink(tmpPath); } catch { /* ignore */ } }
         if (sent) {
-          await deleteMessage(chatId, ackId);
-          onLog(`🔊 quoted text synthesized + sent [${title}] #${msgId} ↩${replyToId} (ack cleaned up; trigger untouched)`);
+          await editMessage(chatId, ackId, '🔊');
+          onLog(`🔊 quoted text synthesized + sent [${title}] #${msgId} ↩${replyToId} (ack edited; trigger untouched)`);
           return { done: true };   // substitution replaces the @e→E routing for this message
         }
-        await deleteMessage(chatId, ackId);
-        onLog(`🔊 quoted-text audio send FAILED ↩${replyToId} [${title}] — ack cleaned up, falling through to @e→E`);
+        await editMessage(chatId, ackId, '🔊 could not read it aloud');
+        onLog(`🔊 quoted-text audio send FAILED ↩${replyToId} [${title}] — ack edited to say so, falling through to @e→E`);
       } else {
-        await deleteMessage(chatId, ackId);
-        onLog(`🔊 quoted-text synthesis declined/failed ↩${replyToId} [${title}] — ack cleaned up, falling through to @e→E`);
+        await editMessage(chatId, ackId, '🔊 could not read it aloud');
+        onLog(`🔊 quoted-text synthesis declined/failed ↩${replyToId} [${title}] — ack edited to say so, falling through to @e→E`);
       }
     } else {
       onLog(`🔊 ack send FAILED to confirm ↩${replyToId} [${title}] — falling through to @e→E`);

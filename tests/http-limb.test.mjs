@@ -236,20 +236,21 @@ describe('replies: the SSE stream and the JSON fetch', () => {
     expect(after.seq).toBe(all.seq);
   });
 
-  it('a reconnecting SSE client (since=) gets only what it missed; a deleted message says so', async () => {
+  it('a reconnecting SSE client (since=) gets only what it missed; a settled placeholder arrives EDITED — a stream has no delete', async () => {
     const { b, post, got, url } = await limb();
     const j = await (await post({ text: 'hola' })).json();
     const chatId = got[0].from.chatId;
     const sent = await b.send('uno', { chatId });
     const h = b.startStreamMessage('⏳', { chatId });
     const placeholder = h.confirmedId;
-    expect(await h.delete()).toBe(true);
-    expect(h.confirmedId).toBeNull();
+    expect(h.delete).toBeUndefined();
+    await h.finish('✓');
+    expect(h.confirmedId).toBe(placeholder);
     const stream = sse(`${url()}events?session=${encodeURIComponent(j.session)}&since=${j.message.seq}`);
     const evs = await stream.until((ev) => ev.length >= 2);
     await stream.close();
     expect(evs[0]).toMatchObject({ id: sent.messageId, from: 'being', text: 'uno' });
-    expect(evs[1]).toEqual({ id: placeholder, deleted: true, seq: evs[1].seq });
+    expect(evs[1]).toEqual({ id: placeholder, from: 'being', text: '✓', done: true, seq: evs[1].seq });
     expect(evs.some((m) => m.from === 'visitor')).toBe(false);
   });
 

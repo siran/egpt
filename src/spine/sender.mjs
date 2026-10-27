@@ -5,7 +5,7 @@
 // arrive it edits in place into the answer. A send failure ends it with
 // "… ❌ Sending failed."; an 'on'/'auto'-mode '...' silence resolves it to the quiet limb mark
 // '✓' (an edit, never deleted; a fresh '✓' when it cannot be edited) — in mention/mention-direct/accum the '...' surfaces. A
-// limb-only turn's placeholder is deleted, else edited to '✓', else a fresh '✓' replies (2026-10-19).
+// limb-only turn's placeholder settles the same way: edited to '✓', else a fresh '✓' replies (operator 2026-10-27).
 // An 'on' turn on a non-human line (`ambient`, operator 2026-10-18) opens nothing until it has text
 // or begin() is called (the being started working): its quick silence posts nothing, only a log line.
 //
@@ -58,10 +58,10 @@ const commandMark = (verbs = []) => `⚙️ processing ${verbs.length > 1 ? 'com
 // [the] reaction also appear as a thinking process"). commandMark is the DEBUG/record view — the
 // legible "a limb ran" line the note above keeps for the verbose reader. With verbose OFF the chat
 // should show JUST the reaction (which already landed on its target, visibly). The ⏳-only
-// placeholder a limb-only turn opened holds no model content, so with verbose OFF the bridge DELETES
-// it (operator 2026-10-19: "that leftover is not needed in the train"). Text already read is kept,
-// nothing appended (the mirror of "the silence mark never lands beside prose", below). This minimal
-// neutral mark is where a placeholder whose delete failed settles. NOT commandMark (the record), NOT
+// placeholder a limb-only turn opened holds no model content, so with verbose OFF it is EDITED to
+// this minimal neutral mark — never deleted (operator 2026-10-27: "nadie borra nunca nada, ningún
+// bot, ni el spine"). Text already read is kept, nothing appended (the mirror of "the silence mark
+// never lands beside prose", below). NOT commandMark (the record), NOT
 // BRIDGE_SILENCE (a limb turn is not silence/error), NOT a faked '…' (the model's own word). The
 // legible record of WHAT ran is the transcript stage-direction (dispatch-line.limbAction), written
 // regardless of verbose — so suppressing this chat line drops no record.
@@ -700,8 +700,8 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           const peerChat = route ? await route : null;
           const t = textOf(reply);
           // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
-          // DELETED (operator 2026-08-24) — except a limb-only turn's own ⏳-only
-          // placeholder (operator 2026-10-19, below). The placeholder resolves to the
+          // DELETED (operator 2026-08-24; An 2026-10-27: "nadie borra nunca nada, ningún
+          // bot, ni el spine"). The placeholder resolves to the
           // silence mark instead of vanishing. 40-rules.md already names it —
           // "A polite silence is '...' or '…'" — so the withheld turn reads as
           // a deliberate silence rather than a message that disappeared.
@@ -720,15 +720,9 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
             openStream(peerChat);
             // A LIMB-ONLY turn says what it is DOING, never that it heard nothing. With verbose ON
             // that is the legible commandMark record; with verbose OFF the chat shows just the
-            // reaction — keep what was already read (append nothing), else DELETE the ⏳-only
-            // placeholder where it opened; a delete that fails settles on quietLimbMark (settle).
+            // reaction — keep what was already read (append nothing), else EDIT the ⏳-only
+            // placeholder to quietLimbMark where it opened (settle). Never deleted (operator 2026-10-27).
             if (commands?.length) {
-              if (!verbose && !shown() && stream) {
-                let gone = false;
-                try { gone = (await stream.delete?.()) === true; } catch { /* settles on ✓ below */ }
-                if (gone) return;
-                onLog(`sender: ${being}/${chatId} limb-only turn — its placeholder could not be deleted, settling on ✓`);
-              }
               const settled = verbose ? commandMark(commands) : (shown() ? '' : quietLimbMark());
               await settle(settled);
               return;

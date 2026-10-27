@@ -569,7 +569,7 @@ describe('shell editor — permanent header (source guard)', () => {
 // as the guards above). A header-only frame rides on EVERY (re)connect and is the one signal
 // guaranteed to fire when the spine's in-memory `awaiting` map is wiped by a restart, so the
 // live-clearing must live INSIDE (or unconditionally reachable from) the `m.header != null`
-// branch, and BEFORE the early return that a header-only frame (no text/streaming/delete)
+// branch, and BEFORE the early return that a header-only frame (no text/streaming)
 // otherwise trips — else a live line left over from before the restart is never cleared.
 describe('shell editor — reconnect clears a stuck live line (source guard)', () => {
   const src = readFileSync(new URL('../src/shell/app.mjs', import.meta.url), 'utf8');
@@ -577,7 +577,7 @@ describe('shell editor — reconnect clears a stuck live line (source guard)', (
   it('the header branch itself calls setLive, clearing any stuck live line', () => {
     const headerIdx = src.indexOf('if (m.header != null) {');
     expect(headerIdx).toBeGreaterThan(-1);
-    const earlyReturnIdx = src.indexOf('if (!m.text && !m.streaming && !m.delete) return;');
+    const earlyReturnIdx = src.indexOf('if (!m.text && !m.streaming) return;');
     expect(earlyReturnIdx).toBeGreaterThan(-1);
     const headerBlock = src.slice(headerIdx, earlyReturnIdx);
     expect(headerBlock).toContain('setLive(prev =>');

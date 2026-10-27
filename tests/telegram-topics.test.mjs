@@ -508,10 +508,9 @@ describe('telegram limb — a group turned supergroup', () => {
     const { messageId } = await bridge.send('hola', { chatId: BASIC });
     await bridge.editMessage(BASIC, messageId, 'hola!');
     await bridge.sendReaction(BASIC, messageId, '👍');
-    await bridge.deleteMessage(BASIC, messageId);
     expect((await bridge.sendMedia(BASIC, await mediaFile())).ok).toBe(true);
-    const chats = ['sendMessage', 'editMessageText', 'setMessageReaction', 'deleteMessage', 'sendDocument'].map((m) => api.of(m).map((c) => c.body.chat_id));
-    expect(chats).toEqual([['-1009999'], ['-1009999'], ['-1009999'], ['-1009999'], ['-1009999']]);
+    const chats = ['sendMessage', 'editMessageText', 'setMessageReaction', 'sendDocument'].map((m) => api.of(m).map((c) => c.body.chat_id));
+    expect(chats).toEqual([['-1009999'], ['-1009999'], ['-1009999'], ['-1009999']]);
     expect(bridge.wasSentByUs(BASIC, messageId)).toBe(true);
     bridge.stop();
   });
