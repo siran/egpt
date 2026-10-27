@@ -3,15 +3,17 @@
 // telegram.mjs is, so replies leave through the one sender path.
 // Inside the spine a chat id is `http:<client>-<sid>`; sid is a hash of the session token, so the
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
-//   POST <path>/<client>/messages        {session?, text, id?} → {session, message}; a repeated id (a retry) gets the first answer
-//   GET  <path>/<client>/messages?session=&since=   → {session, seq, messages}
-//   GET  <path>/<client>/events?session=&since=     SSE: each message as it is posted, edited, settled
-//   POST <path>/<client>/end             {session} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
+//   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message}; a repeated id (a retry) gets the first answer
+//   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
+//   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
+//   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
+// identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
+// a session belongs to the identity it started with, and every call on it must present that identity.
 import { createServer } from 'node:http';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -30,6 +32,7 @@ export const HTTP_STRINGS = Object.freeze({
   title: 'Chat', open: 'Abrir chat', close: 'Cerrar', placeholder: 'Escribe tu mensaje…', send: 'Enviar',
   error: 'No se pudo enviar. Intenta de nuevo.', too_long: 'El mensaje es demasiado largo.', too_many: 'Demasiados mensajes. Espera unos minutos.',
   unavailable: 'No se pudo abrir el chat. Intenta de nuevo.',
+  identity: 'No pudimos verificar tu sesión. Recarga la página o vuelve a iniciar sesión.',
   end: 'Terminar conversación', end_confirm: '¿Terminar esta conversación? El chat empezará de nuevo.', end_yes: 'Sí, terminar', cancel: 'Cancelar',
   ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
   earlier: '(conversación iniciada antes: {n} mensajes)',   // heads the recap a team topic gets when seated
@@ -52,6 +55,46 @@ export const DEEP_CHAT = Object.freeze({
 const sidOf = (token) => createHash('sha256').update(String(token)).digest('hex').slice(0, 16);
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 
+export const IDENTITY_MODES = Object.freeze(['off', 'optional', 'required']);
+const IDENTITY_MAX = 2048;                     // characters of a signed identity
+const IDENTITY_RE = /^([A-Za-z0-9_-]+={0,2})\.([A-Za-z0-9_-]+={0,2})$/;
+const FIELD_MAX = 80;
+const field = (v) => ((typeof v === 'string' || typeof v === 'number')
+  ? [...stripInvisible(String(v)).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()].slice(0, FIELD_MAX).join('')
+  : '');
+// { identity: {abrin, user_type, short_name, username, user_id?} } or { why: 'invalid' | 'expired' }.
+export function verifyIdentity(token, key, nowMs = Date.now()) {
+  const m = typeof token === 'string' && token.length <= IDENTITY_MAX ? IDENTITY_RE.exec(token) : null;
+  if (!m) return { why: 'invalid' };
+  const want = createHmac('sha256', key).update(m[1]).digest();
+  const got = Buffer.from(m[2], 'base64url');
+  if (got.length !== want.length || !timingSafeEqual(got, want)) return { why: 'invalid' };
+  let p;
+  try { p = JSON.parse(Buffer.from(m[1], 'base64url').toString('utf8')); } catch { return { why: 'invalid' }; }
+  if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.exp !== 'number' || !Number.isFinite(p.exp)) return { why: 'invalid' };
+  if (p.exp * 1000 <= nowMs) return { why: 'expired' };
+  const identity = { abrin: field(p.abrin), user_type: field(p.user_type), short_name: field(p.short_name), username: field(p.username) };
+  if (!identity.abrin || !identity.username) return { why: 'invalid' };
+  if (field(p.user_id)) identity.user_id = field(p.user_id);
+  return { identity };
+}
+const whoOf = (identity) => (identity ? createHash('sha256').update(JSON.stringify([identity.abrin, identity.username])).digest('hex').slice(0, 16) : null);
+
+// A team topic's name: {abrin} {user_type} {short_name} {username} {title} {sid}; a missing value is
+// empty, spaces collapse, empty brackets go. Nothing left: the default. At most Telegram's 128.
+export const DEFAULT_TOPIC_TITLE = '{title} · {sid}';
+export const TOPIC_TITLE_MAX = 128;
+const TITLE_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'title', 'sid'];
+export function renderTopicTitle(template, values = {}) {
+  const fill = (t) => t.replace(/\{([a-z_]+)\}/g, (all, k) => (TITLE_KEYS.includes(k) ? field(values[k]) : all))
+    .replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim();
+  const out = (typeof template === 'string' && fill(template)) || fill(DEFAULT_TOPIC_TITLE);
+  if (out.length <= TOPIC_TITLE_MAX) return out;
+  let cut = '';
+  for (const ch of out) { if (cut.length + ch.length > TOPIC_TITLE_MAX - 1) break; cut += ch; }
+  return `${cut}…`;
+}
+
 function clientConfig(name, c = {}) {
   const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
@@ -65,6 +108,8 @@ function clientConfig(name, c = {}) {
     newCount: posInt(c.new_sessions?.count, HTTP_DEFAULTS.newSessions),
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
     idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
+    identity: c.identity == null || c.identity === false ? 'off' : IDENTITY_MODES.includes(c.identity) ? c.identity : null,
+    identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
     widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT })});\n`,
@@ -82,6 +127,7 @@ export async function startHttpBridge({
   stateDir = null,
   beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
+  identityKey = () => null,   // (client) → its HMAC key, or null
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -90,16 +136,19 @@ export async function startHttpBridge({
   const clients = new Map();
   for (const [name, c] of Object.entries(clientsCfg && typeof clientsCfg === 'object' ? clientsCfg : {})) {
     if (!CLIENT_RE.test(name)) { log(`client '${name}' skipped — a client name is lowercase letters, digits, - and _`); continue; }
-    clients.set(name, clientConfig(name, c));
+    const cc = clientConfig(name, c);
+    if (!cc.identity) { log(`${name}: identity '${c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
+    clients.set(name, cc);
   }
 
-  // sid → { sid, client, lastAt, log, subs, posts }; client + lastAt persist across restarts, log in its own file.
+  // sid → { sid, client, lastAt, who, log, subs, posts }; client + lastAt + who persist across restarts, log in its own file.
+  // who: a hash of the identity the session started with (abrin + username), null when unsigned.
   const sessions = new Map();
   const sessionsPath = stateDir ? join(stateDir, SESSIONS_FILE) : null;
   const messagesDir = stateDir ? join(stateDir, MESSAGES_DIR) : null;
   const logPath = (sid) => join(messagesDir, `${sid}.json`);
   const live = (s, n = now()) => !!s && n - s.lastAt < (clients.get(s.client)?.idleMs ?? 0);
-  const fresh = (client, lastAt, sid, log = []) => ({ sid, client, lastAt, log, subs: new Set(), posts: [] });
+  const fresh = (client, lastAt, sid, log = [], who = null) => ({ sid, client, lastAt, who, log, subs: new Set(), posts: [] });
   // A reply cut by the restart is settled as it stood.
   const readLog = async (sid) => {
     try { return JSON.parse(await readFile(logPath(sid), 'utf8')).slice(-LOG_MAX).map((m) => ({ ...m, done: true })); }
@@ -108,7 +157,7 @@ export async function startHttpBridge({
   if (sessionsPath) {
     try {
       const saved = JSON.parse(await readFile(sessionsPath, 'utf8'));
-      for (const [sid, s] of Object.entries(saved ?? {})) if (clients.has(s?.client) && live(s)) sessions.set(sid, fresh(s.client, s.lastAt, sid, await readLog(sid)));
+      for (const [sid, s] of Object.entries(saved ?? {})) if (clients.has(s?.client) && live(s)) sessions.set(sid, fresh(s.client, s.lastAt, sid, await readLog(sid), s.who ?? null));
     } catch (e) { if (e?.code !== 'ENOENT') log(`${sessionsPath} unreadable (${e?.message ?? e}) — starting with no sessions`); }
     for (const f of await readdir(messagesDir).catch(() => [])) {
       if (!sessions.has(f.replace(/\.json$/, ''))) await unlink(join(messagesDir, f)).catch((e) => log(`could not remove ${f} — ${e?.message ?? e}`));
@@ -137,7 +186,7 @@ export async function startHttpBridge({
     const n = now();
     const out = {};
     for (const [sid, s] of sessions) {
-      if (live(s, n)) out[sid] = { client: s.client, lastAt: s.lastAt };
+      if (live(s, n)) out[sid] = { client: s.client, lastAt: s.lastAt, ...(s.who ? { who: s.who } : {}) };
       else if (!s.subs.size) forget(sid);
     }
     saving = saving.then(() => mkdir(stateDir, { recursive: true }).then(() => writeFile(sessionsPath, JSON.stringify(out), 'utf8')))
@@ -182,6 +231,22 @@ export async function startHttpBridge({
     forget(sid);
     return null;
   };
+  // The request's identity: { identity } (null when unsigned and allowed), else { status, error } to refuse.
+  const identityOf = (c, token) => {
+    if (c.identity === 'off') return { identity: null };
+    if (token == null || token === '') return c.identity === 'required' ? { status: 401, error: 'identity required' } : { identity: null };
+    const key = identityKey(c.name);
+    if (!key) { log(`${c.name}: a signed visitor refused — no key for this client`); return { status: 503, error: 'identity unavailable' }; }
+    const r = verifyIdentity(token, key, now());
+    if (r.why) { log(`${c.name}: an ${r.why} identity refused`); return { status: 401, error: `identity ${r.why}` }; }
+    return r;
+  };
+  const refuse = (c, res, idn, cors) => json(res, idn.status, { error: idn.error, ...(idn.status === 401 ? { message: c.identityText } : {}) }, cors);
+  // A read's or an end's session: only with the identity it started with.
+  const ownSession = (c, token, idn) => {
+    const hit = sessionOfToken(c, token);
+    return hit && (c.identity === 'off' || hit.s.who === whoOf(idn.identity)) ? hit : null;
+  };
 
   const json = (res, status, body, headers = {}) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -218,17 +283,21 @@ export async function startHttpBridge({
 
   async function post(c, req, res, cors) {
     if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return json(res, 415, { error: 'send application/json' }, cors);
-    const raw = await readBody(req, c.maxChars * 4 + 1024);
+    const raw = await readBody(req, c.maxChars * 4 + 1024 + IDENTITY_MAX);
     if (raw == null) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
     let body;
     try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'not JSON' }, cors); }
     const text = stripInvisible(String(body?.text ?? ''));
     if (!text.trim()) return json(res, 400, { error: 'empty message' }, cors);
     if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
+    const idn = identityOf(c, body?.identity);
+    if (idn.status) return refuse(c, res, idn, cors);
+    const who = whoOf(idn.identity);
     const key = typeof body?.id === 'string' && ID_RE.test(body.id) ? `${c.name} ${body.id}` : null;
     if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
     const n = now();
     let token = body?.session, hit = sessionOfToken(c, token);
+    if (hit && c.identity !== 'off' && hit.s.who !== who) { log(`${c.name}-${hit.sid}: another identity — a new session`); hit = null; }
     if (hit) {
       const wait = rateWait(c, hit.s, n);
       if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
@@ -243,7 +312,7 @@ export async function startHttpBridge({
       opened.set(key, [...times, n]);
       do token = randomBytes(24).toString('base64url'); while (sessions.has(sidOf(token)));
       hit = { sid: sidOf(token), isNew: true };
-      hit.s = fresh(c.name, n, hit.sid);
+      hit.s = fresh(c.name, n, hit.sid, [], who);
       sessions.set(hit.sid, hit.s);
       log(`new session ${c.name}-${hit.sid}`);
     }
@@ -253,7 +322,7 @@ export async function startHttpBridge({
     s.lastAt = n;
     persist();
     const reply = (async () => {
-      try { await beforeLine?.({ client: c.name, chatId, isNew: !!hit.isNew, recap: (o) => recapOf(c, s, o) }); }
+      try { await beforeLine?.({ client: c.name, chatId, isNew: !!hit.isNew, recap: (o) => recapOf(c, s, o), identity: idn.identity }); }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
       const m = append(s, 'visitor', text, true);
       const st = mentionStatus(text, wakeWords, { addressWithoutAt });
@@ -277,11 +346,13 @@ export async function startHttpBridge({
   // fresh thread, then the panel's history is cleared. Nothing said since the last end: nothing to do.
   async function end(c, req, res, cors) {
     if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return json(res, 415, { error: 'send application/json' }, cors);
-    const raw = await readBody(req, 1024);
+    const raw = await readBody(req, 1024 + IDENTITY_MAX);
     if (raw == null) return json(res, 413, { error: 'too long' }, cors);
     let body;
     try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'not JSON' }, cors); }
-    const hit = sessionOfToken(c, body?.session);
+    const idn = identityOf(c, body?.identity);
+    if (idn.status) return refuse(c, res, idn, cors);
+    const hit = ownSession(c, body?.session, idn);
     if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
     const { sid, s } = hit;
     const n = now(), wait = rateWait(c, s, n);
@@ -301,14 +372,18 @@ export async function startHttpBridge({
 
   const since = (req, url) => Number(req.headers['last-event-id'] ?? url.searchParams.get('since')) || 0;
   function list(c, req, res, url, cors) {
-    const hit = sessionOfToken(c, url.searchParams.get('session'));
+    const idn = identityOf(c, url.searchParams.get('identity'));
+    if (idn.status) return refuse(c, res, idn, cors);
+    const hit = ownSession(c, url.searchParams.get('session'), idn);
     if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
     const after = since(req, url);
     const messages = hit.s.log.filter((m) => m.seq > after).map(view);
     return json(res, 200, { session: url.searchParams.get('session'), seq: Math.max(after, ...hit.s.log.map((m) => m.seq)), messages }, cors);
   }
   function events(c, req, res, url, cors) {
-    const hit = sessionOfToken(c, url.searchParams.get('session'));
+    const idn = identityOf(c, url.searchParams.get('identity'));
+    if (idn.status) return refuse(c, res, idn, cors);
+    const hit = ownSession(c, url.searchParams.get('session'), idn);
     if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', ...cors });
     res.write('retry: 3000\n\n');

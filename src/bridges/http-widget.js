@@ -1,11 +1,17 @@
 // The chatbox loader (served by http.mjs as widget.js, called with its client's config): a bubble and a
 // panel holding Deep Chat (C.deepChat), wired to this limb. The server's log is the one source of
 // truth: on open the panel shows GET messages, then follows GET events; Deep Chat keeps no browser copy.
-function egptChat(C, base) {
+// The host page's signed user, if any, is the script tag's data-identity; it goes with every call, and
+// each user's session token is stored apart.
+function egptChat(C, base, identity) {
   base = base || document.currentScript.src.replace(/widget\.js(?:[?#].*)?$/, '');
-  if (!document.body) { document.addEventListener('DOMContentLoaded', function () { egptChat(C, base); }); return; }
+  if (identity === undefined) identity = document.currentScript.getAttribute('data-identity') || null;
+  if (!document.body) { document.addEventListener('DOMContentLoaded', function () { egptChat(C, base, identity); }); return; }
   var S = C.strings;
-  var KEY = 'egpt-chat:' + C.client;
+  var who = '';
+  try { var p = JSON.parse(decodeURIComponent(escape(atob(identity.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'))))); who = ':' + p.abrin + '/' + p.username; } catch (e) { /* none, or the server refuses it */ }
+  var KEY = 'egpt-chat:' + C.client + who;
+  var idq = identity ? '&identity=' + encodeURIComponent(identity) : '';
   var token = null, chat = null, sig = null, es = null, since = 0, starting = false, wantFocus = false, inflight = 0, held = [];
   var at = {};   // message id → { i: its index in chat.getMessages(), text }
   var store = function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
@@ -87,7 +93,7 @@ function egptChat(C, base) {
   };
   var fetchLog = function () {
     if (!token) return Promise.resolve([]);
-    return fetch(base + 'messages?session=' + encodeURIComponent(token)).then(function (r) {
+    return fetch(base + 'messages?session=' + encodeURIComponent(token) + idq).then(function (r) {
       if (r.status === 404) { token = null; store(KEY, null); return { seq: 0, messages: [] }; }
       return r.ok ? r.json() : Promise.reject(r.status);
     }).then(function (j) { since = j.seq; return j.messages; });
@@ -115,7 +121,7 @@ function egptChat(C, base) {
     if (es) es.close();
     es = null;
     if (!token || !chat || panel.hidden || !window.EventSource) return;
-    es = new EventSource(base + 'events?session=' + encodeURIComponent(token) + '&since=' + since);
+    es = new EventSource(base + 'events?session=' + encodeURIComponent(token) + '&since=' + since + idq);
     es.onmessage = function (e) { show(JSON.parse(e.data)); };
   };
   var BACKOFF = [1000, 3000, 9000];
@@ -126,7 +132,7 @@ function egptChat(C, base) {
   };
   // No answer or a 5xx: the same line again, with the same id (the server keeps one), after BACKOFF[n].
   var postLine = function (text, id, n) {
-    return fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text, id: id }) })
+    return fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text, id: id, identity: identity }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); }, function () { return Promise.reject(0); })
       .catch(function (status) {
         if ((status && status < 500) || n >= BACKOFF.length) return Promise.reject(status);
@@ -148,7 +154,7 @@ function egptChat(C, base) {
         if (renewed) { token = j.session; store(KEY, token); }
         if (renewed || !es) listen();
       })
-      .catch(function (status) { sig.onResponse({ error: status === 413 ? S.too_long : status === 429 ? S.too_many : S.error }); })
+      .catch(function (status) { sig.onResponse({ error: status === 401 ? S.identity : status === 413 ? S.too_long : status === 429 ? S.too_many : S.error }); })
       .then(function () { if (!--inflight) held.splice(0).forEach(show); });
     if (!token && !opening) opening = done.then(function () { opening = null; });
   };
@@ -197,16 +203,16 @@ function egptChat(C, base) {
     starting = true;
     wantFocus = !!focus;
     err.hidden = true;
-    Promise.all([loadLib(), fetchLog()]).then(function (r) { build(r[1]); }, function () {
+    Promise.all([loadLib(), fetchLog()]).then(function (r) { build(r[1]); }, function (status) {
       starting = false;
-      err.textContent = S.unavailable;
+      err.textContent = status === 401 ? S.identity : S.unavailable;
       err.hidden = false;
     });
   };
   // End: the same token (conversation, team topic) gets a fresh thread; the panel starts over.
   var end = function () {
     ask.hidden = true;
-    fetch(base + 'end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token }) })
+    fetch(base + 'end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, identity: identity }) })
       .then(function (r) {
         if (r.status === 404) { token = null; store(KEY, null); listen(); }
         else if (!r.ok) return Promise.reject(r.status);
@@ -214,7 +220,7 @@ function egptChat(C, base) {
         err.hidden = true;
         chat.clearMessages();
       })
-      .catch(function () { err.textContent = S.error; err.hidden = false; });
+      .catch(function (status) { err.textContent = status === 401 ? S.identity : S.error; err.hidden = false; });
   };
   q('.egc-end').onclick = function () { ask.hidden = !(ask.hidden && token && chat && !inflight); };
   q('.egc-no').onclick = function () { ask.hidden = true; };

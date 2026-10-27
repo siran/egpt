@@ -779,13 +779,13 @@ export const CONFIG_SCHEMA = {
         is its own conversation: chat id http:<client>-<sid>, folder
         conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
         token itself is never logged). Under <path>/<client>/:
-          POST messages {session?, text, id?} → {session, message}; no or an unknown or
+          POST messages {session?, text, id?, identity?} → {session, message}; no or an unknown or
             expired session (session_days idle) starts a new one. application/json only.
             id (16-64 of A-Za-z0-9_-, the widget's per-line random): a POST repeating
             an id within 10 min posts nothing and gets the first one's answer (a retry).
-          GET messages?session=&since=<seq> → {session, seq, messages}
-          GET events?session=&since=<seq>   SSE, each message as posted/edited/settled
-          POST end {session} → {ok}         the visitor's "end conversation": same
+          GET messages?session=&since=<seq>&identity= → {session, seq, messages}
+          GET events?session=&since=<seq>&identity=   SSE, each message as posted/edited/settled
+          POST end {session, identity?} → {ok}  the visitor's "end conversation": same
             session, folder and team topic; every being there rethreads (as
             /agents rethread), the session's history is cleared, and the team
             topic gets strings.ended. Unknown session 404. Nothing said since
@@ -815,7 +815,7 @@ export const CONFIG_SCHEMA = {
             title             the panel's title
             strings           UI strings (Spanish defaults): open, close,
                               placeholder, send, error, too_long, too_many,
-                              end, end_confirm, end_yes, cancel; intro (the panel's first
+                              end, end_confirm, end_yes, cancel, identity; intro (the panel's first
                               line, again after an end; default none); ended (the
                               line the team topic gets on an end); earlier (heads the
                               recap a late topic gets, {n} = the earlier lines)
@@ -841,6 +841,43 @@ export const CONFIG_SCHEMA = {
                               (Telegram failed, or team_group added later): the next
                               line tries again, not within 2 min of a failed try
             team_name         the team's name in the widget, default the title
+            topic_title       the team topic's name: {abrin} {user_type} {short_name}
+                              {username} {title} {sid} (6 hex of the sid). Default
+                              "{title} · {sid}". A placeholder with no value is empty,
+                              spaces collapse, an empty () or [] goes; nothing left:
+                              the default. Cut at 128 (Telegram's limit) with "…".
+                              EduWeb: "{abrin} {user_type} {short_name} ({username})"
+            identity          off (default) | optional | required: the host page's
+                              signed user (below). required: a call without one is
+                              401 {error, message: strings.identity}, which the widget
+                              shows. optional: an unsigned visitor works as with off.
+                              An invalid or expired identity is always 401, never
+                              treated as unsigned; no key file: 503. Any other value:
+                              required. A session belongs to the identity it started
+                              with (abrin + username; unsigned is one too): a line
+                              from another identity starts a new session, folder and
+                              topic, its token in the answer; a read or an end with
+                              another identity is 404. A new signed session's folder
+                              gets usuario.json (the verified fields + verified_at,
+                              never the token) and a one-line usuario.md, before the
+                              seed copy.
+        THE SIGNED IDENTITY. Key: <EGPT_HOME>/secrets/chatbox-<client>.key, its text used
+        as is (not decoded), e.g.  openssl rand -base64 32 > <EGPT_HOME>/secrets/chatbox-demoiev.key
+        then chmod 600. Read on each signed call (a new key needs no restart). The same text
+        goes to the host site's server only, never to a browser or a repo.
+        Token: base64url(JSON payload) "." base64url(HMAC-SHA256(key, the first part)), no
+        padding, at most 2048 characters. Payload {abrin, username, user_type, short_name,
+        user_id?, exp}: exp in unix seconds, abrin and username required, each field cut at
+        80 characters. The page passes it to the widget as data-identity; the widget sends it
+        with every call and keeps each user's session token apart (localStorage). PHP:
+          $b64 = function ($s) { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); };
+          $p = $b64(json_encode(['abrin' => $abrin, 'user_type' => $_SESSION['TipoUsuario'],
+            'short_name' => $nombre, 'username' => $login, 'exp' => time() + 12 * 3600]));
+          $tok = $p . '.' . $b64(hash_hmac('sha256', $p, $key, true));
+          echo '<script src="https://<host>/chat/demoiev/widget.js" data-identity="'
+            . htmlspecialchars($tok) . '" defer></script>';
+        json_encode needs UTF-8 strings (utf8_encode a Latin-1 name, else it returns false).
+        A page left open past exp gets strings.identity on its next line: reload.
   `,
 
   beeper: `

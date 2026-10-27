@@ -13,6 +13,7 @@ const _HOME = vi.hoisted(() => {
 });
 
 import { promises as fs } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 import { boot } from '../src/spine/boot.mjs';
@@ -103,11 +104,21 @@ function brain(turns) {
   };
 }
 
+const ID_KEY = 'dummy-chatbox-key-not-a-secret';
+const signed = (who, s = 3600) => {
+  const body = Buffer.from(JSON.stringify({ ...who, exp: Math.floor(Date.now() / 1000) + s })).toString('base64url');
+  return `${body}.${createHmac('sha256', ID_KEY).update(body).digest('base64url')}`;
+};
+const JP = { abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez' };
+const ML = { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' };
+const EDUWEB_TITLE = '{abrin} {user_type} {short_name} ({username})';
+
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
 // realFs: transcripts on disk (under _HOME), where /agents rethread's roll reads them.
 async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false, now } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
+  await fs.writeFile(join(_HOME, 'secrets', 'chatbox-eduweb.key'), `${ID_KEY}\n`);
   const port = await freeSafeHttpPort();
   const api = fakeApi();
   const io = memIo();
@@ -132,7 +143,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
   const url = `http://127.0.0.1:${port}/chat/eduweb/`;
   const post = (body) => fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
-  const messages = async (session) => (await fetch(`${url}messages?session=${encodeURIComponent(session)}`).then((r) => r.json())).messages;
+  const messages = async (session, identity) => (await fetch(`${url}messages?session=${encodeURIComponent(session)}${identity ? `&identity=${encodeURIComponent(identity)}` : ''}`).then((r) => r.json())).messages;
   const slugOf = (turn) => turn.cwd.split(/[\\/]/).at(-1);
   const transcript = (slug) => io.files.get(join(_HOME, 'conversations', 'http', slug, 'transcript.md')) ?? '';
   // Each message posted in the topic, as its last edit left it: { id, text }.
@@ -379,6 +390,76 @@ describe('a chatbox client with no team_group', () => {
     expect(n.api.of('sendMessage')).toEqual([]);
     expect(await Room.forChat('http', slug).members()).toEqual([]);
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'on', allowed_users: ['*'] });
+    n.app.stop();
+  });
+});
+
+describe('a signed visitor (identity)', () => {
+  const client = (identity = 'required') => ({ team_group: GROUP, team_name: 'Equipo EduWeb', identity, topic_title: EDUWEB_TITLE });
+
+  it('a valid token: the topic is "<abrin> <user_type> <short_name> (<username>)", and the user is on the desk (usuario.json, usuario.md), never the token', async () => {
+    const n = await bootTeam(client());
+    const identity = signed({ ...JP, user_id: 4711 });
+    const a = await n.post({ text: 'hola', identity });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['IEV P Juan Pérez (jperez)']), { timeout: 5000 });
+    const dir = n.turns[0].cwd;
+    const usuario = JSON.parse(await fs.readFile(join(dir, 'usuario.json'), 'utf8'));
+    expect(usuario).toMatchObject({ abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', user_id: '4711' });
+    expect(usuario).not.toHaveProperty('exp');
+    const md = await fs.readFile(join(dir, 'usuario.md'), 'utf8');
+    expect(md.trim().split('\n')).toHaveLength(1);
+    expect(md).toMatch(/Juan Pérez \(jperez\).*P.*IEV/);
+    for (const text of [JSON.stringify(usuario), md]) expect(text).not.toContain(identity.split('.')[1]);
+    n.app.stop();
+  });
+
+  it("another user's token on the same session: a new session, folder and topic; the first user keeps theirs", async () => {
+    const n = await bootTeam(client());
+    const a = await n.post({ text: 'hola', identity: signed(JP) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    const b = await n.post({ session: a.session, text: 'soy otra', identity: signed(ML) });
+    expect(b.session).not.toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(n.turns[1].cwd).not.toBe(n.turns[0].cwd);
+    expect(JSON.parse(await fs.readFile(join(n.turns[1].cwd, 'usuario.json'), 'utf8')).username).toBe('mlopez');
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['IEV P Juan Pérez (jperez)', 'IEV R María López (mlopez)']), { timeout: 5000 });
+    const a2 = await n.post({ session: a.session, text: 'sigo', identity: signed(JP) });
+    expect(a2.session).toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(3), { timeout: 5000 });
+    expect(n.turns[2].cwd).toBe(n.turns[0].cwd);
+    expect(n.api.of('createForumTopic')).toHaveLength(2);
+    n.app.stop();
+  });
+
+  it('optional, unsigned: the visitor is answered, the topic has the default title, no usuario.json', async () => {
+    const n = await bootTeam(client('optional'));
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual([`EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}`]), { timeout: 5000 });
+    await expect(fs.access(join(n.turns[0].cwd, 'usuario.json'))).rejects.toThrow();
+    n.app.stop();
+  });
+
+  it('required, unsigned: 401 with the Spanish line, no turn, no topic', async () => {
+    const n = await bootTeam(client());
+    const r = await fetch(`${n.url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'hola' }) });
+    expect(r.status).toBe(401);
+    expect((await r.json()).message).toBe(HTTP_STRINGS.identity);
+    await settle();
+    expect(n.turns).toEqual([]);
+    expect(n.api.of('createForumTopic')).toEqual([]);
+    n.app.stop();
+  });
+
+  it("a long name: the topic's title is cut at Telegram's 128", async () => {
+    const n = await bootTeam(client());
+    await n.post({ text: 'hola', identity: signed({ ...JP, short_name: 'Nombre '.repeat(30), username: 'u'.repeat(100) }) });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(1), { timeout: 5000 });
+    const name = n.api.of('createForumTopic')[0].body.name;
+    expect(name).toHaveLength(128);
+    expect(name).toMatch(/^IEV P Nombre Nombre .*…$/);
     n.app.stop();
   });
 });
