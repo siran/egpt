@@ -728,6 +728,38 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
     }
   });
 
+  // ── THE PIN (operator 2026-10-27, conversations.yaml sandbox_pin). brainpool.mjs hands
+  //    { key, writable, readOnly }; the launcher leases only the pinned account and keeps the standing
+  //    ACEs (setup/sandbox-account.ps1, PINNED ACCOUNTS). Same contract: the key is one scalar like
+  //    -TargetFolder, each path list one JSON-array element. ──
+  it('a pinned turn hands the launcher -PinKey and its standing paths, apart from the per-turn shares', async () => {
+    const args = await argvFor({
+      sandboxSharePaths: ['C:\\turn'],
+      sandboxPin: { key: 'egpt:whatsapp:89xiq', writable: [' C:\\w '], readOnly: ['C:/Users/an/Documents', 'C:\\w', '', 7] },
+    });
+    expect(args[args.indexOf('-PinKey') + 1]).toBe('egpt:whatsapp:89xiq');
+    expect(jsonArgOf(args, '-PinSharePath')).toEqual(['C:\\w']);
+    expect(jsonArgOf(args, '-PinSharePathReadOnly')).toEqual(['C:/Users/an/Documents']);
+    expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\turn', THREAD_STORE]);
+    expect(args.indexOf('-PinKey')).toBeLessThan(args.indexOf('-InnerBin'));
+    expect(args[args.length - 2]).toBe('-InnerArgs');
+  });
+
+  it('a pin with no standing paths is -PinKey alone', async () => {
+    const args = await argvFor({ sandboxPin: { key: 'egpt:whatsapp:89xiq', writable: [], readOnly: [] } });
+    expect(args).toContain('-PinKey');
+    expect(args).not.toContain('-PinSharePath');
+    expect(args).not.toContain('-PinSharePathReadOnly');
+  });
+
+  it('REGRESSION LOCK: an unpinned turn (or a pin with no key) gets no -Pin* flag - the argv is byte-identical', async () => {
+    const plain = await argvFor();
+    for (const f of ['-PinKey', '-PinSharePath', '-PinSharePathReadOnly']) expect(plain).not.toContain(f);
+    for (const junk of [undefined, null, {}, { key: '' }, { key: 42, readOnly: ['C:/x'] }]) {
+      expect(await argvFor({ sandboxPin: junk }), `sandboxPin=${JSON.stringify(junk)} changed the argv`).toEqual(plain);
+    }
+  });
+
   it("engine: 'codex' and 'pi' route through the SAME sandboxSpawn, so both get -SharePath and -InnerArgs in the same shape", () => {
     for (const engine of ['codex', 'pi']) {
       const calls = [];
@@ -1104,6 +1136,15 @@ describe('sandbox-cli-session — the Linux box: same parameters through sudo -n
     expect(jsonArgOf(linux.args, '-SharePathReadOnly')).toEqual(['/r']);
     expect(jsonArgOf(linux.args, '-ReadMounts')).toEqual(['repos=/srv/repos']);
     expect(linux.opts).toMatchObject({ cwd: process.cwd() });
+  });
+
+  it('a sandbox_pin is Windows-only: the linux box is handed no -Pin* flag, and the turn log says so', async () => {
+    const logs = [];
+    const PIN = { sandboxPin: { key: 'egpt:whatsapp:89xiq', writable: [], readOnly: ['/srv/docs'] }, onLog: (l) => logs.push(String(l)) };
+    const { args } = await turnArgv('linux', PIN);
+    expect(args.some((a) => a.startsWith('-Pin'))).toBe(false);
+    expect(args).toEqual((await turnArgv('linux')).args);
+    expect(logs.some((l) => /sandbox_pin is Windows-only/.test(l))).toBe(true);
   });
 
   it('win32 regression lock: the exact argv shape is unchanged', async () => {

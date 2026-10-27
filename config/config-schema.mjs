@@ -2149,6 +2149,17 @@ export const CONFIG_SCHEMA = {
         unset there falls back to this global default, then to "no override"
         (today's behavior).
 
+        sandbox_pin (PER CONVERSATION ONLY, operator 2026-10-27) - on a
+        conversations.yaml entry's agents.<name>: that being, here, runs on ONE
+        sandbox pool account that no other conversation or being ever leases,
+        and gets STANDING grants for that account alone (same shape as
+        allowed_paths; written once, kept across turns):
+          sandbox_pin:
+            C:/Users/an/Documents: { allowed_tools: [ Read, Glob, Grep ] }
+        {} = pinned, no standing paths. Removing the key releases it within a
+        minute (the spine ends that session, revokes every standing ACE, frees
+        the account). Windows box only. setup/SANDBOX.md, "Pinned accounts".
+
     RESOLUTION of a leading @<token> (router.mjs):
       The token matches an agent's name or any handle (case-insensitive).
       A LOCAL agent (configuration ≠ relay) routes like a being

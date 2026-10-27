@@ -47,6 +47,7 @@ import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
 import { loadPermissionLevel, isAccessLevel, isDeskOnly } from './permission-levels.mjs';
 import { readSecret, CLAUDE_OAUTH_TOKEN_FILE } from '../secrets.mjs';
+import { isSandboxPin, sandboxPinKeyOf } from './sandbox-pins.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -1039,6 +1040,9 @@ export function createBrainPool({
       // everything above, handed to resolveBeingDef (turn() below) as convAllowedPaths and merged
       // over the def's own paths (withConvAllowedPaths). null = this conversation states none.
       allowedPaths: b?.allowedPaths ?? null,
+      // sandbox_pin (operator 2026-10-27, src/spine/sandbox-pins.mjs): the pin's key — the contact's
+      // primary id, as the releaser reads it — and its standing paths. null = not pinned here.
+      sandboxPin: isSandboxPin(b?.sandboxPin) ? { key: sandboxPinKeyOf(being, b.surface, b.jid), paths: b.sandboxPin } : null,
     };
   }
 
@@ -1050,7 +1054,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, fork, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sources } = await resolveConv(ev, being);
+      const { scope, slug, fork, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sandboxPin: pin, sources } = await resolveConv(ev, being);
       meter.scope = scope;
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
@@ -1267,6 +1271,9 @@ export function createBrainPool({
       // unboxed turn runs as the operator in his own. Read per turn like the credential above, so
       // an invalid entry is named in this turn's log.
       const sandboxReadMounts = sandboxed === true ? globalReadPathsOf(getConfig()?.global_read_paths, onLog) : [];
+      // THE PIN (sandbox_pin): this being's own pool account in this conversation, and its standing paths
+      // through the same allowed_paths walk — the launcher's -PinKey / -PinSharePath[ReadOnly].
+      const sandboxPin = sandboxed === true && pin ? { key: pin.key, ...sandboxSharePathsFor({ allowed_paths: pin.paths }) } : null;
       // The tools that exist (--tools): a type's narrowed list, or a 'reader''s whole grant.
       const toolsOnly = narrowedTools ?? (desk ? def.allowed_tools : null);
       const baseOpts = {
@@ -1340,6 +1347,7 @@ export function createBrainPool({
         // `-ReadMounts`. Spread in only when there are any, so a node without the key keeps the
         // argv it had.
         ...(sandboxReadMounts.length ? { sandboxReadMounts } : {}),
+        ...(sandboxPin ? { sandboxPin } : {}),
         // ...and the one way a being can ask its spine for anything (operator 2026-09-26: "for now
         // only the browser"): a handle that mints a per-session credential for THIS being in THIS
         // room, revoked at close (src/spine/being-link.mjs) — -SetEnv entries for a boxed session

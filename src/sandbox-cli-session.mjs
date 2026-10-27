@@ -408,6 +408,11 @@ export function createSandboxCliSession(options = {}) {
   // dropped, and none at all contributes ZERO argv elements.
   const readMounts = readMountEntriesOf(options.sandboxReadMounts);
 
+  // THE PIN (brainpool.mjs, conversations.yaml sandbox_pin): this being-in-conversation leases only its
+  // own pool account, which keeps the pin's standing ACEs across leases (setup/sandbox-account.ps1,
+  // PINNED ACCOUNTS). Windows only — the Linux box already gives each conversation folder its own uid.
+  const pin = pinOf(options.sandboxPin, platform, onLog);
+
   // THE BASH THE CLI'S OWN Bash TOOL WILL SPAWN — see GIT_BASH_ENV above for the measured defect
   // and for why msys64 is the first candidate. Windows only (Linux has /bin/bash), and ccode ONLY, exactly like CLAUDE_CONFIG_DIR:
   // CLAUDE_CODE_GIT_BASH_PATH is a Claude Code variable, so a codex/pi turn is untouched. Null
@@ -452,7 +457,7 @@ export function createSandboxCliSession(options = {}) {
     // options.cwd only for the (untested-in-practice) case spawnProc ran
     // with no cwd at all.
     const targetFolder = spawnOpts?.cwd ?? options.cwd;
-    const [cmd, argv] = launchCommand(platform, launcherArgv({ targetFolder, sharePaths, sharePathsReadOnly, setEnv, readMounts, bin, args }), boxLauncher);
+    const [cmd, argv] = launchCommand(platform, launcherArgv({ targetFolder, sharePaths, sharePathsReadOnly, setEnv, readMounts, pin, bin, args }), boxLauncher);
     const proc = _spawn(cmd, argv, spawnOpts);
     if (onLog) tapLaunchLine(proc?.stderr, onLog);
     return proc;
@@ -487,7 +492,7 @@ export function createSandboxCliSession(options = {}) {
 // ORDER: the optional flags stay BEFORE -InnerBin and -InnerArgs comes last. Nothing binds
 // by position any more, so this is purely for readers — the argv reads in the same order
 // the launcher's param block declares.
-function launcherArgv({ targetFolder, sharePaths = [], sharePathsReadOnly = [], setEnv = [], readMounts = [], bin, args }) {
+function launcherArgv({ targetFolder, sharePaths = [], sharePathsReadOnly = [], setEnv = [], readMounts = [], pin = null, bin, args }) {
   return [
     '-TargetFolder', targetFolder,
     // WITH NO SHARE PATHS AND NO TOKEN both spreads are EMPTY and the launcher's own
@@ -504,12 +509,26 @@ function launcherArgv({ targetFolder, sharePaths = [], sharePathsReadOnly = [], 
     ...(setEnv.length ? ['-SetEnv', JSON.stringify(setEnv)] : []),
     // The node's read mounts, same shape, its own flag; absent when the node has none.
     ...(readMounts.length ? ['-ReadMounts', JSON.stringify(readMounts)] : []),
+    // The pin, absent for every unpinned turn.
+    ...(pin ? ['-PinKey', pin.key] : []),
+    ...(pin?.writable.length ? ['-PinSharePath', JSON.stringify(pin.writable)] : []),
+    ...(pin?.readOnly.length ? ['-PinSharePathReadOnly', JSON.stringify(pin.readOnly)] : []),
     '-InnerBin', bin,
     // The WHOLE inner argv as ONE element. Empty elements, `--flags` and repeated flags all
     // ride INSIDE the JSON, verbatim, and the launcher's ConvertFrom-JsonArgv hands them to
     // CreateProcessWithLogonW one array slot each.
     '-InnerArgs', JSON.stringify(Array.isArray(args) ? args : []),
   ];
+}
+
+// brainpool.mjs's sandboxPin ({ key, writable, readOnly }) as launcherArgv takes it, or null. Paths
+// normalised like the share lists; one in both classes stays writable.
+function pinOf(pin, platform, onLog) {
+  if (typeof pin?.key !== 'string' || !pin.key.trim()) return null;
+  if (platform !== 'win32') { onLog?.(`sandbox: sandbox_pin is Windows-only - ignored on ${platform}`); return null; }
+  const list = (v) => [...new Set((Array.isArray(v) ? v : []).filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim()))];
+  const writable = list(pin.writable);
+  return { key: pin.key.trim(), writable, readOnly: list(pin.readOnly).filter((p) => !writable.includes(p)) };
 }
 
 // brainpool.mjs's globalReadPathsOf list ({name, path}) as the launcher's -ReadMounts entries — see

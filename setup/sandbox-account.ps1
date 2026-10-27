@@ -28,6 +28,9 @@ $CredDir = Join-Path $env:ProgramData 'egpt'
 # provisioner's pool-wide reclaim (Clear-SandboxAbandonedLeases, below) and the
 # launcher's per-lease one cannot end up looking in two different directories.
 $SandboxLocksDir = Join-Path $CredDir 'sandbox-pool-locks'
+# One <account>.pin per pinned account (see the PINNED ACCOUNTS block).
+# src/spine/sandbox-pins.mjs derives the same path.
+$SandboxPinsDir = Join-Path $CredDir 'sandbox-pins'
 
 # Every diagnostic goes to STDERR ONLY. The inner process's stdout is wired
 # straight through to THIS script's own stdout handle (step f)  - anything
@@ -105,11 +108,25 @@ function Get-SandboxPoolAccountForFolder {
 # simply stuck - the conversation walks on and runs on another account. It is
 # shuffled so that many turns whose preference is taken do not all pile onto the
 # same next name.
+#
+# PINS (Get-SandboxPins): a turn carrying -PinKey whose pin exists walks ONLY its
+# pinned account - busy means wait, never another. Every other walk skips every
+# pinned account. Advisory: the launcher re-checks after taking the lock
+# (Test-SandboxPinAllows), which is the exact test.
 function Get-SandboxPoolLeaseOrder {
-  param([Parameter(Mandatory = $true)][string]$Folder)
+  param(
+    [Parameter(Mandatory = $true)][string]$Folder,
+    [string]$PinKey = '',
+    [object[]]$Pins = @()
+  )
+  if ($PinKey) {
+    $mine = @($Pins | Where-Object { $_.Key -eq $PinKey })
+    if ($mine.Count -gt 0) { return $mine[0].Account }
+  }
+  $pinned = @($Pins | ForEach-Object { $_.Account })
   $preferred = Get-SandboxPoolAccountForFolder -Folder $Folder
-  $rest = @(Get-SandboxPoolAccountNames | Where-Object { $_ -ne $preferred })
-  $order = @($preferred)
+  $rest = @(Get-SandboxPoolAccountNames | Where-Object { $_ -ne $preferred -and $pinned -notcontains $_ })
+  $order = @($preferred | Where-Object { $pinned -notcontains $_ })
   # Get-Random throws on an empty -InputObject, which is what a pool of one
   # would hand it.
   if ($rest.Count -gt 0) { $order += @(Get-Random -InputObject $rest -Count $rest.Count) }
@@ -117,9 +134,8 @@ function Get-SandboxPoolLeaseOrder {
   # launcher: `return ,$order` writes a NESTED array to the pipeline, and while
   # an assignment unrolls that back to the 16 names, `@(Get-SandboxPoolLeaseOrder
   # ...)` at a call site collects ONE element - the whole array as a single
-  # object. The comma exists to protect an EMPTY or one-element return; this
-  # order always has at least the preferred account in it, so there is nothing
-  # to protect and the comma only buys an inconsistency.
+  # object. Every caller foreach-es it or wraps it in @(), which is what keeps an
+  # empty (every account pinned) or one-name return safe without the comma.
   return $order
 }
 
@@ -2166,6 +2182,214 @@ function Clear-SandboxAbandonedLeases {
     foreach ($lease in $leases) { try { $lease.Stream.Close() } catch { } }
   }
   return $records.ToArray()
+}
+
+# ---- PINNED ACCOUNTS (operator ruling 2026-10-27: "this E should be tied only
+# to this sandbox account, sticky... when the account is released all access
+# permission is reset... no special access would remain").
+#
+# A pin binds ONE pool account to ONE being-in-conversation (the -PinKey the
+# spine builds, src/spine/sandbox-pins.mjs) until it is released. The pin file,
+# $SandboxPinsDir\<account>.pin, is the claim AND the ledger of the pin's
+# STANDING grants: ACEs for that account's own SID, never the group, kept across
+# leases (the lease ledger's are per turn).
+#
+#   key=egpt:whatsapp:89xiqJ8w1iDuKtD4a5BY
+#   C:\Users\an\Documents|fid=<volume serial>:<id>|grant=Read
+#
+# Written only while holding that account's lease lock, and always by atomic
+# replace: a torn pin could lose its key line and hand its standing grants to
+# whoever leased the account next. A line is ledgered BEFORE its grant.
+$SandboxPinHeader = '# egpt sandbox pin - this pool account is leased only for the key= line''s being-in-conversation. Every other line is a STANDING ACE for this account alone; releasing the pin revokes them all and deletes this file.'
+
+function Read-SandboxPinFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  # Shared for delete too, so a reader never blocks Write-SandboxPinFile's replace.
+  $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]'ReadWrite, Delete')
+  try { $text = (New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)).ReadToEnd() } finally { $stream.Close() }
+  $key = $null
+  $entries = New-Object System.Collections.Generic.List[object]
+  foreach ($line in ($text -split "`r?`n")) {
+    $t = $line.Trim()
+    if (-not $t -or $t.StartsWith('#')) { continue }
+    if ($t.StartsWith('key=')) { $key = $t.Substring(4).Trim(); continue }
+    $e = ConvertFrom-SandboxLeaseLedgerLine -Line $t
+    $grant = if ($t -match '\|grant=(Read|Modify)(\||$)') { $Matches[1] } else { '' }
+    [void]$entries.Add([pscustomobject]@{ Path = $e.Path; FileId = $e.FileId; Grant = $grant })
+  }
+  return [pscustomobject]@{ Account = [System.IO.Path]::GetFileNameWithoutExtension($Path); Path = $Path; Key = $key; Entries = $entries.ToArray() }
+}
+
+function Write-SandboxPinFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Key,
+    [object[]]$Entries = @()
+  )
+  $lines = @($SandboxPinHeader, "key=$Key") + @($Entries | Where-Object { $_ -and $_.Path } | ForEach-Object {
+      (ConvertTo-SandboxLeaseLedgerLine -Path "$($_.Path)" -FileId "$($_.FileId)") + "|grant=$($_.Grant)" })
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes((($lines -join "`r`n") + "`r`n"))
+  $tmp = "$Path.tmp"
+  $stream = [System.IO.File]::Open($tmp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Close() }
+  # [NullString]: a bare $null reaches File.Replace as '' and throws.
+  if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $Path) }
+}
+
+# Every pin on this node. Pool-prefixed names only - Remove-SandboxPin revokes by
+# that name. An unreadable pin still claims its account (Key = $null).
+function Get-SandboxPins {
+  param([string]$PinsDir = $SandboxPinsDir)
+  if (-not (Test-Path -LiteralPath $PinsDir)) { return @() }
+  $out = New-Object System.Collections.Generic.List[object]
+  foreach ($f in @(Get-ChildItem -LiteralPath $PinsDir -File -ErrorAction Stop | Where-Object { $_.Extension -eq '.pin' })) {
+    if (-not $f.BaseName.StartsWith($SandboxPoolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+    try { [void]$out.Add((Read-SandboxPinFile -Path $f.FullName)) }
+    catch { [void]$out.Add([pscustomobject]@{ Account = $f.BaseName; Path = $f.FullName; Key = $null; Entries = @() }) }
+  }
+  return $out.ToArray()
+}
+
+# THE EXACT TEST, asked by the launcher once it HOLDS the account's lock - only a
+# lock holder writes a pin, so the answer cannot change under it. Pinned: only to
+# its own key. Unpinned: free, except to a turn whose key is already pinned on
+# another account (one pin per key). Never throws; unsure = no.
+function Test-SandboxPinAllows {
+  param(
+    [Parameter(Mandatory = $true)][string]$Account,
+    [string]$PinKey = '',
+    [string]$PinsDir = $SandboxPinsDir
+  )
+  $path = Join-Path $PinsDir "$Account.pin"
+  try {
+    if (-not (Test-Path -LiteralPath $path)) {
+      return (-not $PinKey) -or (@(Get-SandboxPins -PinsDir $PinsDir | Where-Object { $_.Key -eq $PinKey }).Count -eq 0)
+    }
+    if (-not $PinKey) { return $false }
+    return ((Read-SandboxPinFile -Path $path).Key -eq $PinKey)
+  } catch { return $false }
+}
+
+# THE PIN'S HALF OF A LEASE (launcher step c2). Claims the account for -Key on
+# first use, then converges the standing grants on -Modify / -Read: an entry no
+# longer listed (or listed with another grant) is revoked first, a new one is
+# ledgered, then every listed path goes through Grant-SandboxPoolAce, which
+# writes only when the ACE is missing - so a grant is written once, and one lost
+# to a crash or a sweep comes back on the next lease. A write is read back.
+# Returns records { Action = grant|revoke, Path, Grant, Status, Message }.
+function Sync-SandboxPin {
+  param(
+    [Parameter(Mandatory = $true)][string]$Account,
+    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$Sid,
+    [Parameter(Mandatory = $true)][string]$Key,
+    [string[]]$Modify = @(),
+    [string[]]$Read = @(),
+    [string]$Principal = '',
+    [string]$PinsDir = $SandboxPinsDir
+  )
+  New-Item -ItemType Directory -Path $PinsDir -Force -ErrorAction Stop | Out-Null
+  $pinPath = Join-Path $PinsDir "$Account.pin"
+  $exists = Test-Path -LiteralPath $pinPath
+  $have = @()
+  if ($exists) {
+    $pin = Read-SandboxPinFile -Path $pinPath
+    if ($pin.Key -ne $Key) { throw "sandbox-logon-launcher: '$Account' is pinned to '$($pin.Key)', not '$Key' - its pin is left alone" }
+    $have = @($pin.Entries)
+  }
+  $norm = { param($p) [System.IO.Path]::GetFullPath($p).TrimEnd('\').ToLowerInvariant() }
+  $want = [ordered]@{}
+  foreach ($class in @(@{ Grant = 'Modify'; Paths = $Modify }, @{ Grant = 'Read'; Paths = $Read })) {
+    foreach ($p in @($class.Paths | Where-Object { $_ -and $_.Trim() })) {
+      $k = & $norm $p.Trim()
+      if (-not $want.Contains($k)) { $want[$k] = [pscustomobject]@{ Path = $p.Trim(); Grant = $class.Grant } }
+    }
+  }
+  $records = New-Object System.Collections.Generic.List[object]
+  $keep = New-Object System.Collections.Generic.List[object]
+  $changed = -not $exists
+  foreach ($e in $have) {
+    $k = & $norm $e.Path
+    if ($want.Contains($k) -and $want[$k].Grant -eq $e.Grant) { [void]$keep.Add($e); continue }
+    $changed = $true
+    foreach ($rec in @(Revoke-SandboxPathAces -Path $e.Path -FileId $e.FileId -AccountNames @($Account))) {
+      [void]$records.Add([pscustomobject]@{ Action = 'revoke'; Path = $e.Path; Grant = $e.Grant; Status = $rec.Status; Message = $rec.Message })
+      if ($rec.Status -eq 'failed') { [void]$keep.Add($e) }
+    }
+  }
+  $kept = @($keep | ForEach-Object { "$(& $norm $_.Path)|$($_.Grant)" })
+  foreach ($k in @($want.Keys)) {
+    if ($kept -contains "$k|$($want[$k].Grant)") { continue }
+    $changed = $true
+    [void]$keep.Add([pscustomobject]@{ Path = $want[$k].Path; FileId = "$(Get-SandboxPathFileId -Path $want[$k].Path)"; Grant = $want[$k].Grant })
+  }
+  if ($changed) { Write-SandboxPinFile -Path $pinPath -Key $Key -Entries $keep.ToArray() }
+  foreach ($w in @($want.Values)) {
+    $rec = [pscustomobject]@{ Action = 'grant'; Path = $w.Path; Grant = $w.Grant; Status = ''; Message = '' }
+    try {
+      $rec.Status = Grant-SandboxPoolAce -Path $w.Path -Grant $w.Grant -Sid $Sid -Principal $Principal
+      if ($rec.Status -eq 'granted' -and -not (Test-SandboxPoolAcePresent -Path $w.Path -Grant $w.Grant -Sid $Sid)) {
+        $rec.Status = 'failed'
+        $rec.Message = 'icacls reported success and the DACL does not carry the ACE'
+      }
+    } catch {
+      $rec.Status = 'failed'
+      $rec.Message = $_.Exception.Message
+    }
+    [void]$records.Add($rec)
+  }
+  return $records.ToArray()
+}
+
+# RELEASE: the pinned account goes back to the pool with nothing left on it.
+# Takes its lease the way the launcher does (a live session holding it = 'busy',
+# nothing touched), clears a dead lease's own ledger, revokes every standing ACE
+# on the pin (Revoke-SandboxPathAces reads the DACL back), and deletes the pin
+# only when none is left - otherwise the pin keeps exactly what is still granted
+# and a re-run retries. The profile needs no step: every lease scrubs it on
+# acquire, before anything runs as the account.
+# Returns { Key, Account, Status = released|absent|busy|partial, Message, Aces }.
+function Remove-SandboxPin {
+  param(
+    [Parameter(Mandatory = $true)][string]$Key,
+    [string]$PinsDir = $SandboxPinsDir,
+    [string]$LocksDir = $SandboxLocksDir
+  )
+  $pin = @(Get-SandboxPins -PinsDir $PinsDir | Where-Object { $_.Key -eq $Key }) | Select-Object -First 1
+  if (-not $pin) { return [pscustomobject]@{ Key = $Key; Account = $null; Status = 'absent'; Message = 'no pin carries this key - nothing to release'; Aces = @() } }
+  $account = $pin.Account
+  New-Item -ItemType Directory -Path $LocksDir -Force -ErrorAction Stop | Out-Null
+  $lockPath = Join-Path $LocksDir "$account.lock"
+  $stream = $null
+  $reclaimed = $false
+  try {
+    $stream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
+  } catch [System.IO.IOException] {
+    try {
+      $stream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+      $reclaimed = $true
+    } catch {
+      return [pscustomobject]@{ Key = $Key; Account = $account; Status = 'busy'; Message = "a live session holds '$account' - nothing touched; release again once it has ended"; Aces = @() }
+    }
+  }
+  $leaseCarry = @()
+  try {
+    if ($reclaimed) { $leaseCarry = @(Clear-SandboxStaleLease -Stream $stream -AccountName $account | Where-Object { $_.Status -eq 'failed' }) }
+    else { Write-SandboxLeaseLedger -Stream $stream }
+    $pin = Read-SandboxPinFile -Path $pin.Path
+    $recs = @(Revoke-SandboxLeaseAces -AccountName $account -Entries @($pin.Entries))
+    $failed = @($recs | Where-Object { $_.Status -eq 'failed' })
+    if ($failed.Count -gt 0) {
+      $still = @($pin.Entries | Where-Object { $p = $_.Path; @($failed | Where-Object { $_.Path -eq $p }).Count -gt 0 })
+      Write-SandboxPinFile -Path $pin.Path -Key $Key -Entries $still
+      return [pscustomobject]@{ Key = $Key; Account = $account; Status = 'partial'; Message = "$($failed.Count) standing ACE(s) still granted - the pin is KEPT, so a re-run retries them"; Aces = $recs }
+    }
+    Remove-Item -LiteralPath $pin.Path -Force -ErrorAction Stop
+    return [pscustomobject]@{ Key = $Key; Account = $account; Status = 'released'; Message = "$(@($recs | Where-Object { $_.Status -eq 'revoked' }).Count) standing ACE(s) revoked, pin deleted - '$account' is back in the pool"; Aces = $recs }
+  } finally {
+    $stream.Close()
+    # A dead lease ACE that would not come off keeps its lock, as everywhere else.
+    if ($leaseCarry.Count -eq 0) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 # ---- THE SESSION NAMESPACE GRANT (operator ruling 2026-09-24) ----

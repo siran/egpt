@@ -3045,3 +3045,210 @@ Describe 'the session namespace grant (against the DACL measured on kg and do, 2
     Add-SandboxSessionNamespaceAce -SdBytes $sd -Sid $script:NsPool | Should Be $null
   }
 }
+
+# ---------------------------------------------------------------------------
+# PINNED ACCOUNTS (operator ruling 2026-10-27). Real grants and revokes on
+# throwaway directories, the CURRENT user standing in for the pinned pool
+# account ($SandboxPoolPrefix points at its bare name, so Get-SandboxPins takes
+# its pin file). Pins and locks live in temp dirs; no pool account is named.
+$script:PinSavedPrefix = $null
+function New-PinTestDirs {
+  $root = New-LedgerTempDir
+  $dirs = [pscustomobject]@{ Pins = (Join-Path $root 'pins'); Locks = (Join-Path $root 'locks') }
+  New-Item -ItemType Directory -Path $dirs.Pins, $dirs.Locks -Force | Out-Null
+  return $dirs
+}
+
+Describe 'Get-SandboxPoolLeaseOrder with pins (exclusive both ways)' {
+  $names = @(Get-SandboxPoolAccountNames)
+  $preferred = Get-SandboxPoolAccountForFolder -Folder $script:PoolTestFolder
+  $other = @($names | Where-Object { $_ -ne $preferred })[3]
+
+  It 'a pinned turn whose pin exists walks ONLY its own account, on every sweep' {
+    $pins = @([pscustomobject]@{ Account = $other; Key = 'egpt:whatsapp:A' })
+    foreach ($i in 1..10) {
+      $order = @(Get-SandboxPoolLeaseOrder -Folder $script:PoolTestFolder -PinKey 'egpt:whatsapp:A' -Pins $pins)
+      $order.Count | Should Be 1
+      $order[0] | Should Be $other
+    }
+  }
+
+  It 'an unpinned turn never walks a pinned account - not even the one its folder prefers, nor one whose pin is unreadable' {
+    $pins = @([pscustomobject]@{ Account = $preferred; Key = 'egpt:whatsapp:A' }, [pscustomobject]@{ Account = $other; Key = $null })
+    foreach ($i in 1..10) {
+      $order = @(Get-SandboxPoolLeaseOrder -Folder $script:PoolTestFolder -Pins $pins)
+      $order.Count | Should Be ($names.Count - 2)
+      ($order -contains $preferred) | Should Be $false
+      ($order -contains $other) | Should Be $false
+    }
+  }
+
+  It 'a turn pinned for ANOTHER conversation, not yet claimed, walks around this pin too' {
+    $pins = @([pscustomobject]@{ Account = $preferred; Key = 'egpt:whatsapp:A' })
+    $order = @(Get-SandboxPoolLeaseOrder -Folder $script:PoolTestFolder -PinKey 'egpt:whatsapp:B' -Pins $pins)
+    $order.Count | Should Be ($names.Count - 1)
+    ($order -contains $preferred) | Should Be $false
+  }
+
+  It 'REGRESSION LOCK: with no pins the walk is what it always was - preferred first, then the whole pool' {
+    $order = @(Get-SandboxPoolLeaseOrder -Folder $script:PoolTestFolder -Pins @())
+    $order[0] | Should Be $preferred
+    $order.Count | Should Be $names.Count
+  }
+}
+
+Describe 'the pin lifecycle (Test-SandboxPinAllows, Sync-SandboxPin, Remove-SandboxPin)' {
+  $me = $env:USERNAME
+  $readMask = [int][System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize'
+
+  BeforeEach {
+    $script:PinSavedPrefix = $SandboxPoolPrefix
+    $script:SandboxPoolPrefix = $env:USERNAME
+    $script:IcaclsSpy = $null
+  }
+  AfterEach {
+    $script:SandboxPoolPrefix = $script:PinSavedPrefix
+    $script:IcaclsSpy = $null
+  }
+
+  It 'an unpinned account is free to every turn; a pinned one only to its own key' {
+    $d = New-PinTestDirs
+    (Test-SandboxPinAllows -Account $me -PinsDir $d.Pins) | Should Be $true
+    (Test-SandboxPinAllows -Account $me -PinKey 'egpt:whatsapp:A' -PinsDir $d.Pins) | Should Be $true
+    Write-SandboxPinFile -Path (Join-Path $d.Pins "$me.pin") -Key 'egpt:whatsapp:A'
+    (Test-SandboxPinAllows -Account $me -PinsDir $d.Pins) | Should Be $false
+    (Test-SandboxPinAllows -Account $me -PinKey 'egpt:whatsapp:B' -PinsDir $d.Pins) | Should Be $false
+    (Test-SandboxPinAllows -Account $me -PinKey 'egpt:whatsapp:A' -PinsDir $d.Pins) | Should Be $true
+  }
+
+  It 'one pin per key: a free account is refused to a turn whose key is already pinned on another account' {
+    $d = New-PinTestDirs
+    Write-SandboxPinFile -Path (Join-Path $d.Pins "$($me)2.pin") -Key 'egpt:whatsapp:A'
+    (Test-SandboxPinAllows -Account $me -PinKey 'egpt:whatsapp:A' -PinsDir $d.Pins) | Should Be $false
+    (Test-SandboxPinAllows -Account $me -PinKey 'egpt:whatsapp:B' -PinsDir $d.Pins) | Should Be $true
+    (Test-SandboxPinAllows -Account $me -PinsDir $d.Pins) | Should Be $true
+  }
+
+  It 'the first pinned lease claims the account and writes ONE read ACE for its own SID; later leases write nothing' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    $recs = @(Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins)
+    @($recs | Where-Object { $_.Action -eq 'grant' -and $_.Status -eq 'granted' }).Count | Should Be 1
+    $aces = @(Get-TestExplicitAces $docs)
+    $aces.Count | Should Be 1
+    ([int]$aces[0].FileSystemRights) | Should Be $readMask
+    $aces[0].InheritanceFlags | Should Be ([System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit')
+    $pin = Read-SandboxPinFile -Path (Join-Path $d.Pins "$me.pin")
+    $pin.Key | Should Be 'egpt:whatsapp:A'
+    @($pin.Entries).Count | Should Be 1
+    $pin.Entries[0].Path | Should Be $docs
+    $pin.Entries[0].Grant | Should Be 'Read'
+
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    foreach ($i in 1..3) { Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins | Out-Null }
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $docs) | Should Be 1
+  }
+
+  It 'a path taken off the pin is revoked and leaves the ledger; the one still listed is untouched' {
+    $d = New-PinTestDirs
+    $keep = New-LedgerTempDir
+    $drop = New-LedgerTempDir
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($keep) -Modify @($drop) -PinsDir $d.Pins | Out-Null
+    (Get-TestExplicitAceCount $drop) | Should Be 1
+    $recs = @(Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($keep) -PinsDir $d.Pins)
+    @($recs | Where-Object { $_.Action -eq 'revoke' -and $_.Status -eq 'revoked' }).Count | Should Be 1
+    (Get-TestExplicitAceCount $drop) | Should Be 0
+    (Get-TestExplicitAceCount $keep) | Should Be 1
+    (@((Read-SandboxPinFile -Path (Join-Path $d.Pins "$me.pin")).Entries | ForEach-Object { $_.Path }) -join '|') | Should Be $keep
+  }
+
+  It 'a pin is never re-keyed: another conversation''s key is refused and the pin is left as it was' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins | Out-Null
+    { Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:B' -PinsDir $d.Pins } | Should Throw
+    (Read-SandboxPinFile -Path (Join-Path $d.Pins "$me.pin")).Key | Should Be 'egpt:whatsapp:A'
+    (Get-TestExplicitAceCount $docs) | Should Be 1
+  }
+
+  It 'CRASH between ledger and grant: the next lease grants what the ledger already names' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    Write-SandboxPinFile -Path (Join-Path $d.Pins "$me.pin") -Key 'egpt:whatsapp:A' -Entries @([pscustomobject]@{ Path = $docs; FileId = ''; Grant = 'Read' })
+    (Get-TestExplicitAceCount $docs) | Should Be 0
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins | Out-Null
+    (Get-TestExplicitAceCount $docs) | Should Be 1
+  }
+
+  It 'release revokes every standing ACE, deletes the pin and the lock, and the account is free again' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    $work = New-LedgerTempDir
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -Modify @($work) -PinsDir $d.Pins | Out-Null
+    $r = Remove-SandboxPin -Key 'egpt:whatsapp:A' -PinsDir $d.Pins -LocksDir $d.Locks
+    $r.Status | Should Be 'released'
+    $r.Account | Should Be $me
+    @($r.Aces | Where-Object { $_.Status -eq 'revoked' }).Count | Should Be 2
+    (Get-TestExplicitAceCount $docs) | Should Be 0
+    (Get-TestExplicitAceCount $work) | Should Be 0
+    (Test-Path -LiteralPath (Join-Path $d.Pins "$me.pin")) | Should Be $false
+    (Test-Path -LiteralPath (Join-Path $d.Locks "$me.lock")) | Should Be $false
+    (Test-SandboxPinAllows -Account $me -PinsDir $d.Pins) | Should Be $true
+  }
+
+  It 'release while a live session holds the account is busy and touches nothing' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins | Out-Null
+    $live = New-TestLock (Join-Path $d.Locks "$me.lock")
+    try {
+      (Remove-SandboxPin -Key 'egpt:whatsapp:A' -PinsDir $d.Pins -LocksDir $d.Locks).Status | Should Be 'busy'
+      (Get-TestExplicitAceCount $docs) | Should Be 1
+      (Test-Path -LiteralPath (Join-Path $d.Pins "$me.pin")) | Should Be $true
+    } finally { $live.Close() }
+  }
+
+  It 'CRASH mid-pin: a half-written ledger (a granted line, a never-granted line, a torn last line) still releases clean' {
+    $d = New-PinTestDirs
+    $granted = New-LedgerTempDir; Grant-TestReadAndExecute $granted
+    $never = New-LedgerTempDir
+    $text = "$SandboxPinHeader`r`nkey=egpt:whatsapp:A`r`n$granted|grant=Read`r`n$never|grant=Modify`r`nC:\Users\nobody\Docu"
+    [System.IO.File]::WriteAllText((Join-Path $d.Pins "$me.pin"), $text)
+    $r = Remove-SandboxPin -Key 'egpt:whatsapp:A' -PinsDir $d.Pins -LocksDir $d.Locks
+    $r.Status | Should Be 'released'
+    (Get-TestExplicitAceCount $granted) | Should Be 0
+    (Get-TestExplicitAceCount $never) | Should Be 0
+    (Test-Path -LiteralPath (Join-Path $d.Pins "$me.pin")) | Should Be $false
+  }
+
+  It 'release also clears a dead lease''s own ledger on that account, then frees its lock' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    $room = New-LedgerTempDir; Grant-TestModify $room
+    Sync-SandboxPin -Account $me -Sid $script:MeSid -Key 'egpt:whatsapp:A' -Read @($docs) -PinsDir $d.Pins | Out-Null
+    $dead = New-TestLock (Join-Path $d.Locks "$me.lock")
+    Write-SandboxLeaseLedger -Stream $dead -Paths @($room)
+    $dead.Close()
+    (Remove-SandboxPin -Key 'egpt:whatsapp:A' -PinsDir $d.Pins -LocksDir $d.Locks).Status | Should Be 'released'
+    (Get-TestExplicitAceCount $room) | Should Be 0
+    (Get-TestExplicitAceCount $docs) | Should Be 0
+    (Test-Path -LiteralPath (Join-Path $d.Locks "$me.lock")) | Should Be $false
+  }
+
+  It 'a release whose revoke fails keeps the pin, holding exactly what is still granted' {
+    $d = New-PinTestDirs
+    $docs = New-LedgerTempDir
+    $script:SandboxPoolPrefix = 'egpt-no-such-'
+    Write-SandboxPinFile -Path (Join-Path $d.Pins 'egpt-no-such-account-zzz.pin') -Key 'egpt:whatsapp:A' -Entries @([pscustomobject]@{ Path = $docs; FileId = ''; Grant = 'Read' })
+    $r = Remove-SandboxPin -Key 'egpt:whatsapp:A' -PinsDir $d.Pins -LocksDir $d.Locks
+    $r.Status | Should Be 'partial'
+    $pin = Read-SandboxPinFile -Path (Join-Path $d.Pins 'egpt-no-such-account-zzz.pin')
+    (@($pin.Entries | ForEach-Object { $_.Path }) -join '|') | Should Be $docs
+  }
+
+  It 'a key no pin carries is absent, not an error' {
+    $d = New-PinTestDirs
+    (Remove-SandboxPin -Key 'egpt:whatsapp:nobody' -PinsDir $d.Pins -LocksDir $d.Locks).Status | Should Be 'absent'
+  }
+}

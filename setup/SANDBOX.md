@@ -45,6 +45,7 @@ warm session spawns
 | `setup/provision-sandbox-account.ps1` | **The operator entry point.** Self-elevates via UAC, dot-sources the above, provisions everything. Idempotent. |
 | `setup/sandbox-logon-launcher.ps1` | The per-session launcher. Leases, ACLs, scrubs, launches, cleans up. Invoked by the daemon, not by hand. |
 | `src/sandbox-cli-session.mjs` | Wraps the warm CLI session so its `spawn` goes through the launcher. |
+| `setup/release-sandbox-pin.ps1` / `.cmd`, `src/spine/sandbox-pins.mjs` | Pinned accounts: the release, and the spine side that runs it. See *Pinned accounts*. |
 | `setup/sandbox-account.Tests.ps1`, `setup/sandbox-logon-launcher.Tests.ps1`, `setup/test-sandbox-logon-launcher.ps1` | Their tests. |
 
 The launcher's parameters:
@@ -57,6 +58,7 @@ The launcher's parameters:
 | `-SharePath` | optional — extra paths to ACE **Modify** alongside `TargetFolder`, granted and revoked independently. **One JSON array**, any number of paths: `'["C:\\a","C:\\b"]'` |
 | `-SharePathReadOnly` | optional — the same, but each entry gets a **ReadAndExecute** ACE. Same JSON-array shape, same parser, same ledger and revoke. Omitted = no entries, so a caller that passes only `-SharePath` behaves exactly as before. |
 | `-SetEnv` | optional — `NAME=VALUE` entries overlaid onto a per-user environment block, as **one JSON array**. Values are never logged, only names. |
+| `-PinKey`, `-PinSharePath`, `-PinSharePathReadOnly` | optional — the pin this turn leases for, and its standing paths (the two share shapes). See *Pinned accounts*. |
 
 **One argv element per parameter, and every list is a JSON array.** The launcher
 parses them itself (`ConvertFrom-JsonArgv`) so that PowerShell's *parameter
@@ -217,6 +219,7 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | the conversation folder | leased account, Modify | granted at launch, revoked at exit. The being reaches it through the `egpt` junction in its own profile — the ACE stays on **this** path, because a junction is a name and the target's DACL is what the kernel reads |
 | each `-SharePath` | leased account, Modify | a being's full-access `allowed_paths`, plus its thread's CLI store; granted at launch, revoked at exit |
 | each `-SharePathReadOnly` | leased account, ReadAndExecute | a being's read-only `allowed_paths`; granted at launch, revoked at exit — **unless the pool group can already read that path**, inherited or explicit, in which case nothing is granted and the launcher logs the skip (`Test-SandboxPoolReadCovered`). A read-only share under `~\src\egpt` falls under the standing group read: the per-account ACE would grant what the being already has and leave one more thing for a hard kill to leak. Since the wide `~\src` grant was retired, a read-only share **elsewhere** under `~\src` is no longer covered and does get its own per-lease ACE — except under a `global_read_paths` folder (kg: `~\src\siran`), which the group reads through its standing grant since 2026-09-28. Writable shares are never skipped. |
+| each path of a `sandbox_pin` | the PINNED account, Modify or ReadAndExecute | **standing**: written once when the pin first leases (ledgered in its pin file), kept across leases, revoked only when the pin is released. See *Pinned accounts*. |
 
 **The cwd is a mount, not the Room** (operator ruling 2026-09-23). The scrub
 plants a second junction beside `src`:
@@ -635,6 +638,59 @@ powershell -ExecutionPolicy Bypass -File setup\provision-sandbox-account.ps1
 
 # what is left afterwards: group ACEs are meant to be there, egpt-sbx-NN ones are not
 icacls C:\Users\$env:USERNAME\src\egpt | Select-String 'egpt-sbx-'
+```
+
+## Pinned accounts
+
+Operator ruling 2026-10-27: *"this E should be tied only to this sandbox
+account, sticky... when the account is released all access permission is
+reset... no special access would remain"*. For a being that needs a big tree
+(E in *eGPT Rodz Lulu An*: `~\Documents`, ~40k files) where a per-turn ACE
+would re-propagate every turn and `global_read_paths` would hand it to every
+boxed being.
+
+```yaml
+# conversations.yaml, the conversation's own entry
+agents:
+  egpt:
+    sandbox_pin:
+      C:/Users/an/Documents: { allowed_tools: [ Read, Glob, Grep ] }   # read-only
+```
+
+- **The pin** is `C:\ProgramData\egpt\sandbox-pins\<account>.pin`: a `key=`
+  line (`<being>:<surface>:<chat id>`, the contact's primary id) and one ledger
+  line per standing path. It is written only while holding that account's lease
+  lock, by atomic replace.
+- **Exclusive both ways.** A turn with `-PinKey` whose pin exists walks only that
+  account and waits for it (the usual ~10 s lock contention), never another.
+  Every other turn — other conversations, other beings in the same one, heartbeat
+  commands — walks around every pinned account, and re-checks after taking the
+  lock (`Test-SandboxPinAllows`). The first pinned lease takes any free unpinned
+  account (its folder's preferred one first) and writes the pin.
+- **Standing grants.** Step (c2), `Sync-SandboxPin`: each listed path gets one ACE
+  for the pinned account's own SID (never the group), ledgered first, then
+  `Grant-SandboxPoolAce` — check-first, so it is written once (the first lease pays
+  the propagation over the tree) and later leases cost one DACL read per path.
+  A path taken off the list is revoked on the next lease. Per-turn behaviour is
+  unchanged: the Room ACE, the thread store, the desktop and the scrub are still
+  per lease; a per-turn share naming a pinned path is skipped, because its
+  revoke would take the standing ACE with it.
+- **Release.** Remove `sandbox_pin`. Within a minute the spine
+  (`src/spine/sandbox-pins.mjs`, on its tick) ends that being's warm session
+  there and runs `setup\release-sandbox-pin.ps1 -Key <key>`
+  (`Remove-SandboxPin`): take the account's lease (a live session = *busy*,
+  retried), clear a dead lease's own ledger, revoke every standing ACE with the
+  DACL read back, delete the pin, release the lock. Anything still granted keeps
+  the pin, naming exactly that, and is retried. No elevation. The profile needs
+  no release step: every lease scrubs it on acquire, before anything runs as the
+  account.
+- **Crash recovery** is the ledger: a line written before its grant is granted on
+  the next lease, or revoked (*clean*) on release.
+
+```powershell
+Get-ChildItem C:\ProgramData\egpt\sandbox-pins          # which accounts are pinned
+Get-Content  C:\ProgramData\egpt\sandbox-pins\*.pin     # to whom, with what
+setup\release-sandbox-pin.cmd <key>                      # release by hand
 ```
 
 ## Known gaps

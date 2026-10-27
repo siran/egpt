@@ -23,6 +23,9 @@
 #      The pool is walked STICKILY: the account this conversation's own folder
 #      hashes to is tried first and the rest follow in random order, so a
 #      conversation keeps the same account across leases whenever it is free.
+#      A -PinKey turn walks ONLY its pinned account (waiting while it is busy)
+#      and no other turn ever leases a pinned one; step (c2) keeps the pin's
+#      standing grants (PINNED ACCOUNTS in sandbox-account.ps1).
 #   b) get that account's stored credential (DPAPI, operator-scoped).
 #   c) resolve that account's own fixed user SID - always present in its own
 #      token, unlike the broken per-call logon-session SID.
@@ -99,7 +102,7 @@
 #
 # PARAMS - ONE ARGV ELEMENT PER PARAMETER, AND THAT ELEMENT IS A JSON ARRAY.
 # Every caller-supplied LIST (-InnerArgs, -SharePath, -SharePathReadOnly,
-# -SetEnv, -ReadMounts) arrives as a SINGLE [string] holding a JSON array, which this script
+# -SetEnv, -ReadMounts, -PinSharePath, -PinSharePathReadOnly) arrives as a SINGLE [string] holding a JSON array, which this script
 # parses itself (see ConvertFrom-JsonArgv below). NOTHING A CALLER SUPPLIES IS
 # EVER SEEN BY POWERSHELL'S PARAMETER BINDER AS A TOKEN, and that is the entire
 # point: the binder is what broke all three of the following. All three were
@@ -152,6 +155,7 @@
 #     -TargetFolder <dir> [-SharePath '["<dir>","<dir>"]'] `
 #     [-SharePathReadOnly '["<dir>"]'] [-SetEnv '["NAME=VALUE"]'] `
 #     [-ReadMounts '["NAME=<dir>"]'] `
+#     [-PinKey <key> [-PinSharePath '["<dir>"]'] [-PinSharePathReadOnly '["<dir>"]']] `
 #     -InnerBin <absolute exe> -InnerArgs '["--print","--verbose",""]'
 # src/sandbox-cli-session.mjs's sandboxSpawn is THE one builder of that argv and
 # it JSON.stringify()s every one of them. There is no second shape to support.
@@ -211,7 +215,14 @@ param(
   # `src` in the pool profile - see Clear-SandboxProfileContents. No ACE is
   # written for it here: the pool group reads it through the provisioner's
   # standing grant, and without that grant it is not mounted at all.
-  [string]$ReadMounts = ''
+  [string]$ReadMounts = '',
+  # THE PIN (operator 2026-10-27; PINNED ACCOUNTS in sandbox-account.ps1): the
+  # being-in-conversation this turn leases for, and the pin's standing paths in
+  # the -SharePath / -SharePathReadOnly shapes. No -PinKey = an unpinned turn,
+  # which never leases a pinned account.
+  [string]$PinKey = '',
+  [string]$PinSharePath = '',
+  [string]$PinSharePathReadOnly = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -223,8 +234,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'sandbox-account.ps1')
 
 # ---- THE ONE PARSER for the JSON-array parameters (see PARAMS above).
-# Five consumers, ONE implementation: -InnerArgs, -SharePath, -SharePathReadOnly,
-# -SetEnv and -ReadMounts all mean "a JSON array of strings" and must fail
+# Seven consumers, ONE implementation: -InnerArgs, -SharePath, -SharePathReadOnly,
+# -SetEnv, -ReadMounts and the two -PinSharePath* all mean "a JSON array of strings" and must fail
 # identically when they are not one.
 #
 # PS 5.1 TRAP, and this repo has been bitten by it before, so it is spelled out
@@ -285,6 +296,11 @@ $SharePathList = ConvertFrom-JsonArgv -ParamName 'SharePath' -Raw $SharePath
 $SharePathReadOnlyList = ConvertFrom-JsonArgv -ParamName 'SharePathReadOnly' -Raw $SharePathReadOnly
 $SetEnvList    = ConvertFrom-JsonArgv -ParamName 'SetEnv'    -Raw $SetEnv
 $ReadMountsList = ConvertFrom-JsonArgv -ParamName 'ReadMounts' -Raw $ReadMounts
+$PinSharePathList = ConvertFrom-JsonArgv -ParamName 'PinSharePath' -Raw $PinSharePath
+$PinSharePathReadOnlyList = ConvertFrom-JsonArgv -ParamName 'PinSharePathReadOnly' -Raw $PinSharePathReadOnly
+if (-not $PinKey -and ($PinSharePathList.Count + $PinSharePathReadOnlyList.Count) -gt 0) {
+  throw "sandbox-logon-launcher: -PinSharePath / -PinSharePathReadOnly name a pin's standing paths and need -PinKey"
+}
 # NAME=PATH or nothing, checked HERE, before a lease is taken: a malformed entry
 # is a caller bug, and it is loud rather than a mount that quietly never lands.
 # What a NAME may be, and what a PATH may hold, is the generator's to refuse
@@ -1758,7 +1774,9 @@ $lockPath = $null
 $reclaimCarryOver = @()
 $maxLeaseAttempts = 40   # ~10s total at 250ms between full-pool sweeps
 for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attempt++) {
-  $sweepOrder = Get-SandboxPoolLeaseOrder -Folder $TargetFolder
+  # Pins re-read every sweep: a pinned turn walks only its own account (and so
+  # WAITS for it when busy), everyone else walks around every pinned one.
+  $sweepOrder = Get-SandboxPoolLeaseOrder -Folder $TargetFolder -PinKey $PinKey -Pins @(Get-SandboxPins)
   foreach ($name in $sweepOrder) {
     $candidatePath = Join-Path $locksDir "$name.lock"
     try {
@@ -1768,6 +1786,12 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
       # untouched - File.Open's 3-arg overload is still FileShare::None, so the
       # CreateNew is still the atomic "first caller wins" it has always been.
       $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite)
+      # The exact pin check, now that we hold the lock (the walk above is advisory).
+      if (-not (Test-SandboxPinAllows -Account $name -PinKey $PinKey)) {
+        $lockStream.Close(); $lockStream = $null
+        Remove-Item -LiteralPath $candidatePath -Force -ErrorAction SilentlyContinue
+        continue
+      }
       $leasedName = $name
       $lockPath = $candidatePath
       # Stamp the empty ledger's header so a human who finds this file knows
@@ -1789,6 +1813,8 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
       # unreadable), fall through to the next pool name exactly as before.
       try {
         $lockStream = [System.IO.File]::Open($candidatePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        # Pinned elsewhere: put its stale lock back untouched and walk on.
+        if (-not (Test-SandboxPinAllows -Account $name -PinKey $PinKey)) { $lockStream.Close(); $lockStream = $null; continue }
         $leasedName = $name
         $lockPath = $candidatePath
         Log "RECLAIMED stale lease lock $candidatePath  - the file existed but NO process held it open, i.e. a previous turn on '$name' was hard-killed before its release ran. Frequent reclaims mean turns are dying badly."
@@ -1849,9 +1875,12 @@ for ($attempt = 1; $attempt -le $maxLeaseAttempts -and -not $leasedName; $attemp
   }
 }
 if (-not $leasedName) {
+  if ($PinKey) { throw "sandbox-logon-launcher: no account for pin '$PinKey' - its pinned account stayed leased by another session for the whole wait, or (first lease) every free account is pinned elsewhere" }
   throw "sandbox-logon-launcher: sandbox pool exhausted ($($poolNames.Count) accounts all in use)"
 }
-if ($leasedName -eq $preferredName) {
+if ($PinKey) {
+  Log "leased pool account '$leasedName' for pin '$PinKey'"
+} elseif ($leasedName -eq $preferredName) {
   Log "leased pool account '$leasedName' (this conversation's preferred account)"
 } else {
   Log "leased pool account '$leasedName'  - fell back: preferred '$preferredName' was already leased. Normal under concurrency; account-bound per-conversation state (e.g. a browser profile) does not carry over to this turn."
@@ -1954,6 +1983,16 @@ try {
   # what is actually written; the name is what an operator reads.
   $leasedLabel = "$($leasedSid.Value) ($leasedName)"
 
+  # ---- (c2) THE PIN: claim this account for $PinKey and converge its standing
+  # grants (Sync-SandboxPin). They live on the pin, not this lease's ledger, so
+  # nothing below revokes them. Fatal: a pinned turn never runs unclaimed.
+  if ($PinKey) {
+    foreach ($rec in @(Sync-SandboxPin -Account $leasedName -Sid $leasedSid -Key $PinKey -Modify $PinSharePathList -Read $PinSharePathReadOnlyList -Principal $leasedLabel)) {
+      if ($rec.Status -eq 'failed') { Log "WARNING: pin '$PinKey' could not $($rec.Action) $($rec.Grant) on $($rec.Path) - $($rec.Message)" }
+      elseif ($rec.Action -eq 'revoke') { Log "pin '$PinKey': standing ACE on $($rec.Path) no longer listed - $($rec.Status)" }
+    }
+  }
+
   # ---- (d) grant read/write on exactly TargetFolder  - never broader ----
   # Ledger first, ACE second. If this process dies between the two lines the
   # reclaim revokes a path that carries nothing, which costs one Get-Acl; the
@@ -2048,6 +2087,11 @@ try {
   # read-only pass logs it as a duplicate. src/sandbox-cli-session.mjs drops
   # such a path from the read-only list before it ever gets here.
   [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($TargetFolder).TrimEnd('\'))
+  # ...and with the pin's standing paths: a per-turn share of one would be
+  # revoked by SID at the end of the turn, taking the standing ACE with it.
+  foreach ($pp in @($PinSharePathList) + @($PinSharePathReadOnlyList)) {
+    if ($pp -and $pp.Trim()) { [void]$sharesSeen.Add([System.IO.Path]::GetFullPath($pp.Trim()).TrimEnd('\')) }
+  }
   foreach ($shareClass in @(
     @{ Grant = 'Modify'; SkipIfPoolReadCovered = $false; Paths = $SharePathList },
     @{ Grant = 'Read';   SkipIfPoolReadCovered = $true;  Paths = $SharePathReadOnlyList }

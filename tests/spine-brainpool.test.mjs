@@ -2943,6 +2943,52 @@ describe('brainpool.turn — global_read_paths reaches brainOptions ONLY for a s
   });
 });
 
+// ── sandbox_pin (operator 2026-10-27: "this E should be tied only to this sandbox account,
+//    sticky"). conversations.yaml agents.<being>.sandbox_pin, a map in the allowed_paths shape, hands
+//    THAT being in THAT conversation its pin: the key the launcher leases by (primary chat id, as
+//    src/spine/sandbox-pins.mjs's releaser reads it) and the standing paths through the one walk. ──
+describe('brainpool.turn — sandbox_pin: the pinned being-in-conversation is handed its pin, nobody else is', () => {
+  const defaults = (sandboxed) => ({ agents: {
+    e: { conversation_defaults: { access_level: 'regular', sandboxed } },
+    don: { conversation_defaults: { access_level: 'regular', sandboxed } },
+  } });
+  const PIN = { 'C:/Users/an/Documents': { allowed_tools: ['Read', 'Glob', 'Grep'] }, 'C:/work': null };
+
+  it('the pinned conversation\'s turn carries { key, writable, readOnly }', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', seedAgents: { e: { sandbox_pin: PIN } } });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxPin).toEqual({ key: `e:whatsapp:${ev.chatId}`, writable: ['C:/work'], readOnly: ['C:/Users/an/Documents'] });
+  });
+
+  it('sandbox_pin: {} pins the account with no standing paths', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', seedAgents: { e: { sandbox_pin: {} } } });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sandboxPin).toEqual({ key: `e:whatsapp:${ev.chatId}`, writable: [], readOnly: [] });
+  });
+
+  it('another being in the same chat, and the same being in another chat, get no pin', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', seedAgents: { e: { sandbox_pin: PIN }, don: {} } });
+    await brain.turn('don', ev);
+    await brain.turn('e', { ...ev, chatId: '!other:beeper.com', chatName: 'OTHER' });
+    expect(pool.calls).toHaveLength(2);
+    for (const c of pool.calls) expect(c.brainOptions).not.toHaveProperty('sandboxPin');
+  });
+
+  it('REGRESSION LOCK: no sandbox_pin (or one that is not a map) → no sandboxPin at all', async () => {
+    for (const sandbox_pin of [undefined, null, true, ['C:/x']]) {
+      const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', seedAgents: { e: { sandbox_pin } } });
+      await brain.turn('e', ev);
+      expect(pool.calls[0].brainOptions, `sandbox_pin=${JSON.stringify(sandbox_pin)} was forwarded`).not.toHaveProperty('sandboxPin');
+    }
+  });
+
+  it('an unboxed turn gets no pin: it runs as the operator, on no pool account', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(false), platform: 'win32', seedAgents: { e: { sandbox_pin: PIN } } });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions).not.toHaveProperty('sandboxPin');
+  });
+});
+
 // ── THE BEING LINK (operator 2026-09-26: "for now only the browser"). A BOXED turn is handed a
 //    handle that mints a per-session credential for THIS being in THIS room — the same scope the
 //    turn's warm key is built from — and sandbox-cli-session.mjs turns it into -SetEnv entries.

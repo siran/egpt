@@ -1186,6 +1186,9 @@ export function getBeing(state, surface, jid, being) {
     // read-only grant on the ORIGINAL chat's folder. null/absent = no per-conversation paths,
     // byte-identical to before.
     allowedPaths:       b?.allowed_paths      ?? null,
+    // sandbox_pin (operator 2026-10-27): this being's own pool account here, plus standing paths in
+    // the allowed_paths shape. src/spine/sandbox-pins.mjs.
+    sandboxPin:         b?.sandbox_pin        ?? null,
     // IS AN IDENTITY RE-FEED ARMED for this being's RUNNING thread (operator 2026-09-10,
     // `/agents refresh <handle>`). Read by brainpool.mjs's turn(): an armed RESUMED thread
     // re-wraps with the identity feed on its next turn and stamps identityInjectedAt back,
