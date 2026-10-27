@@ -2973,8 +2973,8 @@ export const CONFIG_SCHEMA = {
       EDITS — a PUT into a message already counted: stream.update / stream.finish /
         stream.fail / editStatus / editOwn. Loose, because it only makes ONE line
         flicker; it is a backstop against an infinite-edit runaway, nothing more.
-    REACTIONS AND DELETES COUNT AS NEITHER (react / deleteStatus / deleteOwn) — no
-    text, so neither a new line nor an edit of one.
+    REACTIONS COUNT AS NEITHER (react / unreact) — no text, so neither a new line
+    nor an edit of one. There are no deletes (operator 2026-10-27).
     NOTHING INBOUND IS COUNTED — that is the inbound half's job (above).
 
     THE STOP PATH IS NEVER GATED — a send carrying bypassLoopGuard gets out even

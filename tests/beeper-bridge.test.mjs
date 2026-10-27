@@ -54,7 +54,7 @@ async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages — each records the CONFIRMED id it created
   let confirmedSeq = 1000;   // the per-chat sequence Beeper assigns; NEVER equal to the pending id
   const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
-  const deletes = [];   // DELETEs to /v1/chats/:id/messages/:msgId (trigger cleanup, e.g. the text→voice mirror)
+  const deletes = [];   // DELETEs to /v1/chats/:id/messages/:msgId — must stay empty: nothing is ever deleted (operator 2026-10-27)
   const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb + the bridge's 🎧 ack)
   const unreactions = []; // DELETEs to /v1/chats/:id/messages/:msgId/reactions/:key (the 🎧 ack's own removal)
   // Fault injection for the 🎧 listening ack: a non-zero status makes the fake REFUSE that half of
@@ -2857,17 +2857,18 @@ describe('beeper bridge — a streamed reply finishes to exactly the frame it wa
     expect(fake.edits.map((e) => e.text)).toEqual(['🌉kg 🤝 don: hola ✅ 💸']);
   });
 
-  // A limb-only turn's placeholder (operator 2026-10-19): deleted by its confirmed id, in the room it opened in.
-  it('delete() removes the placeholder by its confirmed id in its own room; a finish after it edits nothing', async () => {
+  // A limb-only turn's placeholder (operator 2026-10-27, "nadie borra nunca nada"): the handle has no
+  // delete — the placeholder settles by an EDIT, by its confirmed id, in the room it opened in.
+  it('a stream has no delete: a limb-only placeholder is EDITED to ✓ by its confirmed id in its own room, never DELETEd', async () => {
     const chat = CHAT('chat-1');
     const { bridge } = await startBridge();
     const handle = bridge.startStreamMessage('⏳ Thinking…', { chatId: chat });
-    expect(await handle.delete()).toBe(true);
-    const placeholder = fake.posts.find((p) => p.text === '⏳ Thinking…');
-    expect(fake.deletes).toEqual([{ chatID: chat, messageID: placeholder.confirmedID }]);
-    expect(handle.confirmedId).toBe(null);
+    expect(handle.delete).toBeUndefined();
     await handle.finish('✓');
-    expect(fake.edits).toHaveLength(0);
+    const placeholder = fake.posts.find((p) => p.text === '⏳ Thinking…');
+    expect(fake.edits.map((e) => [e.chatID, e.messageID, e.text])).toEqual([[chat, placeholder.confirmedID, '✓']]);
+    expect(handle.confirmedId).toBe(placeholder.confirmedID);
+    expect(fake.deletes).toEqual([]);
   });
 });
 
@@ -3096,8 +3097,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   // 2026-08-10 to never touch the trigger). The above branch's exact counterpart for a quoted
   // TEXT entry instead of a voice one: no model turn, no new content — the quoted words,
   // verbatim, synthesized and sent as audio. Synthesis takes real time, so an immediate ACK
-  // ('🔊 reading…') — OUR OWN message — is posted first and deleted afterward; the trigger
-  // itself is never edited or deleted.
+  // ('🔊 reading…') — OUR OWN message — is posted first and EDITED afterward: to '🔊' above the
+  // audio, or to say it could not be read (operator 2026-10-27: nothing is ever deleted). The
+  // trigger itself is never edited or deleted.
   // Counts calls so a test can assert the quoted text reaches synthesize UNCHANGED.
   const countingSynthesize = (audio = Buffer.from('AUDIO')) => {
     const f = async (spokenText) => { f.calls++; f.lastText = spokenText; return audio; };
@@ -3106,7 +3108,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
   };
 
   // contract 8.4
-  it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, cleans up its own ack (never the trigger), and does NOT wake E', async () => {
+  it('a bare @e reply to a TEXT message synthesizes it VERBATIM, sends it as audio, EDITS its own ack to 🔊 (never the trigger, never a delete), and does NOT wake E', async () => {
     const synthesize = countingSynthesize();
     const doc = transcriptDoc(textLine('tn-audio', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
@@ -3120,9 +3122,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     const mediaPost = await waitFor(() => fake.posts.find((p) => p.attachment));   // the media POST is a SEPARATE call after the upload
     expect(mediaPost).toBeTruthy();                                           // the synthesized audio, sent as media
     expect(mediaPost.replyToMessageID).toBe('tn-audio');                      // …as a reply to the ORIGINAL quoted message (not the ack)
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack IS deletable/deleted
-    expect(fake.edits).toHaveLength(0);
-    expect(fake.deletes.some((d) => d.messageID === 'reply-txt')).toBe(false);   // the TRIGGER is never touched
+    await waitFor(() => fake.edits.length > 0);
+    expect(fake.edits.map((e) => [e.messageID, e.text])).toEqual([[ack.confirmedID, '🔊']]);   // our own ack, EDITED to 🔊 above the audio — the TRIGGER is never touched
+    expect(fake.deletes).toEqual([]);                                         // nothing is ever deleted
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-txt', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-txt'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-txt')).toBe(false);   // the @e reply never reached the persona turn
@@ -3235,8 +3237,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('hello there');
     const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // our own ack deleted …
-    expect(fake.deletes.some((d) => d.messageID === 'reply-bare')).toBe(false);       // … the trigger is never touched
+    await waitFor(() => fake.edits.some((e) => e.messageID === ack.confirmedID && e.text === '🔊'));   // our own ack edited …
+    expect(fake.edits.some((e) => e.messageID === 'reply-bare')).toBe(false);                         // … the trigger is never touched
+    expect(fake.deletes).toEqual([]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-bare', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-bare'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-bare')).toBe(false);
@@ -3319,8 +3322,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(synthesize.calls).toBe(1);
     expect(synthesize.lastText).toBe('this is what E said earlier');   // found via _seenText, not transcript.md
     const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
-    expect(fake.deletes.some((d) => d.messageID === 'reply-own')).toBe(false);   // the trigger is never touched
+    await waitFor(() => fake.edits.some((e) => e.messageID === ack.confirmedID && e.text === '🔊'));
+    expect(fake.edits.some((e) => e.messageID === 'reply-own')).toBe(false);   // the trigger is never touched
+    expect(fake.deletes).toEqual([]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-own')).toBe(false);   // E did NOT wake for it
@@ -3365,7 +3369,7 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(incoming.find((i) => i.from.msgKey === 'reply-miss2').from.atEStart).toBe(true);
   });
 
-  it('synthesis FAILURE (synthesize returns null) → falls through to @e→E; no media sent, trigger not touched, ack cleaned up', async () => {
+  it('synthesis FAILURE (synthesize returns null) → falls through to @e→E; no media sent, trigger not touched, ack edited to say so', async () => {
     const synthesize = async () => null;   // declines, e.g. the worker rejected the request
     const doc = transcriptDoc(textLine('tn-fail', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
@@ -3374,12 +3378,13 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(fake.uploads).toHaveLength(0);
     const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     expect(ack).toBeTruthy();                                                       // ack IS posted before synthesis is attempted …
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));   // … and cleaned up on decline
-    expect(fake.deletes.some((d) => d.messageID === 'reply-synthfail')).toBe(false);   // trigger never touched
+    await waitFor(() => fake.edits.length > 0);
+    expect(fake.edits.map((e) => [e.messageID, e.text])).toEqual([[ack.confirmedID, '🔊 could not read it aloud']]);   // … EDITED to say so on decline; trigger never touched
+    expect(fake.deletes).toEqual([]);
     expect(incoming.find((i) => i.from.msgKey === 'reply-synthfail').from.atEStart).toBe(true);   // fell through, not eaten
   });
 
-  it('synthesis THROWS → falls through to @e→E cleanly (never blocks the normal wake path); ack cleaned up', async () => {
+  it('synthesis THROWS → falls through to @e→E cleanly (never blocks the normal wake path); ack edited to say so', async () => {
     const synthesize = async () => { throw new Error('tts worker unreachable'); };
     const doc = transcriptDoc(textLine('tn-throw', 'hello there'));
     const { incoming } = await startBridge({ readTranscript: async () => doc, synthesize, voice: 'ona' });
@@ -3388,8 +3393,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     expect(fake.uploads).toHaveLength(0);
     const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
     expect(ack).toBeTruthy();
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
-    expect(fake.deletes.some((d) => d.messageID === 'reply-throw')).toBe(false);
+    await waitFor(() => fake.edits.length > 0);
+    expect(fake.edits.map((e) => [e.messageID, e.text])).toEqual([[ack.confirmedID, '🔊 could not read it aloud']]);
+    expect(fake.deletes).toEqual([]);
     expect(incoming.find((i) => i.from.msgKey === 'reply-throw').from.atEStart).toBe(true);
   });
 
@@ -3442,8 +3448,9 @@ describe('stale-twin placeholder landmine — pre-send id floor', () => {
     const mediaPost = await waitFor(() => fake.posts.find((p) => p.attachment));   // the media POST lands a tick after the upload
     expect(mediaPost.replyToMessageID).toBe('tn-fb');                         // audio replies to the ORIGINAL quoted text
     const ack = await waitFor(() => fake.posts.find((p) => p.text === '🔊 reading…'));
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
-    expect(fake.deletes.some((d) => d.messageID === 'reply-fbtxt')).toBe(false);
+    await waitFor(() => fake.edits.some((e) => e.messageID === ack.confirmedID && e.text === '🔊'));
+    expect(fake.edits.some((e) => e.messageID === 'reply-fbtxt')).toBe(false);
+    expect(fake.deletes).toEqual([]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-fbtxt', text: 'plain human line' })] });
     await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-fbtxt'));
     expect(incoming.some((i) => i.from.msgKey === 'reply-fbtxt')).toBe(false);
@@ -4655,7 +4662,7 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
     } finally { await node.close(); }
   });
 
-  it('Favel shape — `e` on a WRITTEN message: the 🔊 reading goes out as audio replying to it, and the ack is cleaned up', BOOTS_A_NODE, async () => {
+  it('Favel shape — `e` on a WRITTEN message: the 🔊 reading goes out as audio replying to it, and the ack is edited to 🔊', BOOTS_A_NODE, async () => {
     const node = await bootKg();
     try {
       upsert(fake, textFrom(I('fv-text-1'), FAVEL_CHAT, 'nos vemos a las cinco', Date.now()));
@@ -4665,8 +4672,9 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
       expect(node.spoken).toEqual(['nos vemos a las cinco']);
       expect(fake.posts.find((p) => p.attachment).replyToMessageID).toBe(I('fv-text-1'));
       const ack = fake.posts.find((p) => p.text === '🔊 reading…');
-      await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
-      expect(fake.deletes.some((d) => d.messageID === I('fv-reply-2'))).toBe(false);
+      await waitFor(() => fake.edits.some((e) => e.messageID === ack.confirmedID && e.text === '🔊'));
+      expect(fake.edits.some((e) => e.messageID === I('fv-reply-2'))).toBe(false);
+      expect(fake.deletes).toEqual([]);
       expect(node.mouth.posts).toEqual([]);
     } finally { await node.close(); }
   });
@@ -4708,7 +4716,8 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
     await waitFor(() => node.lines.some((l) => l.includes(`#${I(`${tag}-reply-mouth`)}`) || l.includes(`↩${I(`${tag}-text-mouth`)}`)));
     await waitFor(() => fake.posts.some((p) => p.attachment));
     const ack = fake.posts.find((p) => p.text === '🔊 reading…');
-    await waitFor(() => fake.deletes.some((d) => d.messageID === ack.confirmedID));
+    await waitFor(() => fake.edits.some((e) => e.messageID === ack.confirmedID && e.text === '🔊'));
+    expect(fake.deletes).toEqual([]);
   }
 
   it('a group BOTH accounts are in — `e` on a WRITTEN message: the 🔊 reading goes out from the ear, replying to the ear\'s copy', BOOTS_A_NODE, async () => {

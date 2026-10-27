@@ -59,7 +59,7 @@ const CONFLICT_MIN_MS = 60_000, CONFLICT_MAX_MS = 15 * 60_000;
 const RETRY_AFTER_MAX_S = 30;
 const NET_RETRY_MS = [1_000, 3_000, 9_000];
 // A repeat changes nothing (at worst refused "not modified"); any other method makes something.
-const IDEMPOTENT = new Set(['editMessageText', 'deleteMessage', 'setMessageReaction', 'getFile', 'closeForumTopic', 'setChatTitle', 'setChatDescription']);
+const IDEMPOTENT = new Set(['editMessageText', 'setMessageReaction', 'getFile', 'closeForumTopic', 'setChatTitle', 'setChatDescription']);
 // Retry rule: any method if the request never left (getaddrinfo, syscall 'connect' incl. net's happy-eyeballs AggregateError = EDW's ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT); after it may have (read ECONNRESET/ETIMEDOUT, UND_ERR_SOCKET) only IDEMPOTENT.
 const unsent = (c) => c?.code === 'UND_ERR_CONNECT_TIMEOUT' || c?.syscall === 'connect' || c?.syscall === 'getaddrinfo'
   || (Array.isArray(c?.errors) && c.errors.length > 0 && c.errors.every(unsent));
@@ -427,7 +427,7 @@ export function startTelegramBridge({
       const r = await readBack({
         text, replyToId, ownerSent: () => authorized, replyWake, readTranscript, chatId, title, network: 'telegram', msgId: msgKey,
         quoted: () => quotedText || null,
-        send: (c, t, o) => send(t, { chatId: c, ...o }), sendMedia, deleteMessage, synthesize, voice,
+        send: (c, t, o) => send(t, { chatId: c, ...o }), sendMedia, editMessage, synthesize, voice,
         onLog: log,
       });
       if (r.done) return;
@@ -555,14 +555,6 @@ export function startTelegramBridge({
       log(`edit #${msgId} in ${chatId} failed — ${e.message}`);
       return false;
     }
-  }
-
-  async function deleteMessage(chatId, msgId) {
-    chatId = current(chatId);
-    const chat = apiChatId(chatId);
-    if (chat == null || msgId == null) return false;
-    try { return !!(await call('deleteMessage', { chat_id: chat, message_id: Number(msgId) })); }
-    catch (e) { log(`delete #${msgId} in ${chatId} failed — ${e.message}`); return false; }
   }
 
   // A bot holds at most one reaction per message: setting replaces it, [] takes it off.
@@ -721,15 +713,6 @@ export function startTelegramBridge({
       handle.lastError = handle.lastError || 'final edit failed';
       await applyEdit(`⚠️ could not deliver this reply — ${handle.lastError}`);
     };
-    handle.delete = async () => {
-      if (finished) return false;
-      if (timer) { clearTimeoutFn(timer); timer = null; }
-      await ready;
-      if (!realId) return false;
-      const ok = await serial(() => deleteMessage(chatId, realId));
-      if (ok) { finished = true; realId = null; }
-      return ok;
-    };
     handle.fail = (e) => { finished = true; handle.lastError = e?.message ?? String(e); log(`stream fail — ${handle.lastError}`); };
     return handle;
   }
@@ -740,7 +723,6 @@ export function startTelegramBridge({
     send,
     async sendAndGetId(text, { chatId } = {}) { return (await send(text, { chatId }))?.messageId ?? null; },
     editMessage,
-    deleteMessage,
     // Telegram's set spells emoji without the U+FE0F presentation selector (❤, not ❤️).
     sendReaction: (chatId, msgId, emoji) => setReaction(chatId, msgId, [{ type: 'emoji', emoji: String(emoji ?? '').replace(/\uFE0F/g, '') }]),
     removeReaction: (chatId, msgId) => setReaction(chatId, msgId, []),

@@ -319,46 +319,48 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚙️ processing commands (/react /reply)`]);
   });
 
-  // VERBOSE OFF (operator 2026-10-06: no "⚙️ processing command" line). Live 2026-10-19 SI+EduWeb:
-  // E's whole answer was a /react 👍 and its ⏳ was edited to "🐶 E: ✓". Ruling: "that leftover is
-  // not needed in the train … evict anyway" — the bridge deletes its own placeholder.
-  it('REPRODUCE: verbose OFF, a LIMB-ONLY /react turn with nothing shown DELETES its placeholder — no ✓ edit', async () => {
+  // VERBOSE OFF (operator 2026-10-06: no "⚙️ processing command" line). Live 2026-10-27 cuigmac:
+  // E's whole answer was `/react #778 😄` and the spine DELETED its ⏳. Ruling (An, #780): "nadie
+  // borra nunca nada, ningún bot, ni el spine" — the placeholder is EDITED to the quiet mark ✓.
+  it('REPRODUCE: verbose OFF, a LIMB-ONLY /react turn with nothing shown EDITS its placeholder to ✓ — never deleted', async () => {
     const bridge = fakeBridge();
     const sender = createSender({ bridge });
     const out = sender.open('!c', { being: 'e' });
     await out.finish({ text: '' }, { surface: false, commands: ['react'], verbose: false });
-    expect(bridge.streams[0].deleted).toBe(true);
-    expect(bridge.streams[0].finals).toEqual([]);
+    expect(bridge.streams[0].deleted).toBe(false);
+    expect(bridge.streams[0].finals).toEqual(['✓']);
     expect(bridge.sent).toHaveLength(0);
   });
 
   // …and the DEFAULT when no `verbose` is passed is quiet (verbose_thinking = off).
-  it('verbose ABSENT: a LIMB-ONLY turn defaults to the quiet resolution (off) — deleted', async () => {
+  it('verbose ABSENT: a LIMB-ONLY turn defaults to the quiet resolution (off) — ✓, never deleted', async () => {
     const bridge = fakeBridge();
     const sender = createSender({ bridge });
     const out = sender.open('!c', { being: 'e' });
     await out.finish({ text: '' }, { surface: false, commands: ['react'] });   // no `verbose` key
-    expect(bridge.streams[0].deleted).toBe(true);
-    expect(bridge.streams[0].finals).toEqual([]);
+    expect(bridge.streams[0].deleted).toBe(false);
+    expect(bridge.streams[0].finals).toEqual(['✓']);
   });
 
-  it('REPRODUCE: on a local MOUTH route the placeholder is deleted in the mouth\'s room, nothing on the ear', async () => {
+  it('REPRODUCE: on a local MOUTH route the placeholder is edited to ✓ in the mouth\'s room, nothing on the ear', async () => {
     const ear = fakeBridge(), mouth = fakeBridge();
     const peerMouth = { route: async () => ({ connection: 'secondary', bridge: mouth, chatId: '!mouth-room' }) };
     const out = createSender({ bridge: ear, peerMouth }).open('!c', { being: 'e' });
     await out.finish({ text: '' }, { surface: false, commands: ['react'] });
     expect(ear.streams).toHaveLength(0);
-    expect(mouth.streams.map((s) => [s.chat, s.deleted, s.finals])).toEqual([['!mouth-room', true, []]]);
+    expect(mouth.streams.map((s) => [s.chat, s.deleted, s.finals])).toEqual([['!mouth-room', false, ['✓']]]);
   });
 
-  it('a delete that fails (false or a throw) settles on ✓ as before, with one log line', async () => {
-    for (const del of [async () => false, async () => { throw new Error('403'); }]) {
+  it('REPRODUCE: the stream\'s delete is never called, whatever it would answer (true, false, a throw) — ✓, no delete log', async () => {
+    for (const answer of [async () => true, async () => false, async () => { throw new Error('403'); }]) {
       const bridge = fakeBridge(), logs = [];
       const out = createSender({ bridge, onLog: (m) => logs.push(m) }).open('!c', { being: 'e' });
-      bridge.streams[0].delete = del;
+      let asked = 0;
+      bridge.streams[0].delete = () => { asked++; return answer(); };
       await out.finish({ text: '' }, { surface: false, commands: ['react'] });
+      expect(asked).toBe(0);
       expect(bridge.streams[0].finals).toEqual(['✓']);
-      expect(logs.filter((l) => l.includes('could not be deleted'))).toHaveLength(1);
+      expect(logs.filter((l) => l.includes('deleted'))).toEqual([]);
     }
   });
 
@@ -370,46 +372,42 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     expect(bridge.streams[0].finals).toEqual(['✓']);
   });
 
-  // Operator 2026-10-19: delete; else edit to ✓; else (past the edit window, or the edit failed) reply ✓ fresh.
+  // Operator 2026-10-27 (nothing is ever deleted): edit to ✓; else (past the edit window, or the edit failed) reply ✓ fresh.
+  // The fake stream keeps a working delete, so a call to it would show as `deleted`.
   describe('withheld fallback chain', () => {
-    const withheld = async ({ minutes = 0, del = async () => false, finish = null, peerMouth = null, reply = { text: '' }, how = { surface: false, commands: ['react'] } } = {}) => {
+    const withheld = async ({ minutes = 0, finish = null, peerMouth = null, reply = { text: '' }, how = { surface: false, commands: ['react'] } } = {}) => {
       let t = 0;
       const ear = fakeBridge();
       const out = createSender({ bridge: ear, peerMouth, now: () => t }).open('!c', { being: 'e', replyTo: 'm1' });
       const room = peerMouth ? (await peerMouth.route()).bridge : ear;
       await new Promise((r) => setImmediate(r));   // a mouth route opens its stream once routed
-      if (del) room.streams[0].delete = del;
       if (finish) room.streams[0].finish = finish;
       t = minutes * 60_000;
       await out.finish(reply, how);
       return { ear };
     };
 
-    it('delete ok → nothing else', async () => {
-      const { ear } = await withheld({ del: null, minutes: 20 });
-      expect(ear.streams.map((s) => [s.deleted, s.finals])).toEqual([[true, []]]);
-      expect(ear.sent).toEqual([]);
-    });
-
-    it('delete fails + editable → the placeholder is edited to ✓, nothing fresh', async () => {
+    it('REPRODUCE: editable → the placeholder is edited to ✓, never deleted, nothing fresh', async () => {
       const { ear } = await withheld({ minutes: 12 });
-      expect(ear.streams.map((s) => s.finals)).toEqual([['✓']]);
+      expect(ear.streams.map((s) => [s.deleted, s.finals])).toEqual([[false, ['✓']]]);
       expect(ear.sent).toEqual([]);
     });
 
-    it('REPRODUCE: delete fails + past the edit window → a fresh ✓ reply quoting the trigger, no edit attempted', async () => {
+    it('REPRODUCE: past the edit window → a fresh ✓ reply quoting the trigger, no edit attempted, never deleted', async () => {
       const { ear } = await withheld({ minutes: 14 });
+      expect(ear.streams.map((s) => s.deleted)).toEqual([false, false]);
       expect(ear.streams[0].finals).toEqual([]);
       expect(ear.streams[1]).toMatchObject({ chat: '!c', init: '✓', finals: ['✓'] });
       expect(ear.streams[1].opts).toMatchObject({ replyTo: 'm1', persona: 'e' });
       expect(ear.sent).toEqual([]);
     });
 
-    it('REPRODUCE: delete fails + the edit throws or is not accepted → a fresh ✓ reply quoting the trigger', async () => {
+    it('REPRODUCE: the edit throws or is not accepted → a fresh ✓ reply quoting the trigger, never deleted', async () => {
       const finishes = [async () => { throw new Error('edit refused'); }, async function (t) { this.finals.push(t); }];
       for (const finish of finishes) {
         const { ear } = await withheld({ finish });
         expect(ear.streams).toHaveLength(2);
+        expect(ear.streams[0].deleted).toBe(false);
         expect(ear.streams[1]).toMatchObject({ chat: '!c', init: '✓', finals: ['✓'] });
         expect(ear.streams[1].opts).toMatchObject({ replyTo: 'm1' });
         expect(ear.sent).toEqual([]);
@@ -420,7 +418,7 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
       const mouth = fakeBridge();
       const peerMouth = { route: async () => ({ connection: 'secondary', bridge: mouth, chatId: '!mouth-room' }) };
       const { ear } = await withheld({ minutes: 14, peerMouth });
-      expect(mouth.streams.map((s) => [s.chat, s.init, s.finals])).toEqual([['!mouth-room', '⏳ Thinking…', []], ['!mouth-room', '✓', ['✓']]]);
+      expect(mouth.streams.map((s) => [s.chat, s.deleted, s.init, s.finals])).toEqual([['!mouth-room', false, '⏳ Thinking…', []], ['!mouth-room', false, '✓', ['✓']]]);
       expect(ear.streams).toEqual([]);
       expect(ear.sent).toEqual([]);
     });

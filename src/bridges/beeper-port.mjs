@@ -169,7 +169,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.startStreamMessage ? real.startStreamMessage(String(init ?? ''), { chatId: chat }) : null;
     },
 
-    // In-place edit-stream. Returns the §2b { update, finish, delete } plus
+    // In-place edit-stream. Returns the §2b { update, finish } plus
     // delivered / lastError passthrough: the sender's fallback-send must send fresh
     // ONLY when the stream did not deliver in place (§7 invariant — "the host
     // skips its fallback send only when the stream reports delivered").
@@ -222,7 +222,6 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return {
         update: (t) => h.update(frame(mark(t, LIVE_FRAME_MARK))),
         finish: (t) => h.finish(frame(mark(t, DONE_MARK))),
-        delete: () => h.delete?.() ?? false,   // the bridge's own placeholder, never a limb (sender.mjs)
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
         get confirmedId() { return h.confirmedId; },
@@ -230,8 +229,8 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       };
     },
 
-    // A — the knee-jerk status message: post it (returns the confirmed id), edit
-    // it, or delete it (the train deletes it once the reply starts streaming).
+    // A — the knee-jerk status message: post it (returns the confirmed id) or edit
+    // it. Never delete it (operator 2026-10-27: nothing is ever deleted).
     //
     // SIGNED like every other send (operator 2026-07-25, "period"; fixed 2026-07-26, HANDOFF C12).
     // This was the one outbound here that skipped the wrap, and its other caller is the ADVICE
@@ -244,12 +243,11 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // The edit REPLACES the text of a status line that postStatus signed — an unsigned edit strips
     // the node signature back off it, so it renders through the same wrap (C13, 2026-07-26).
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, wrapPersona({}, text)); },
-    deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
     // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends; editOwn
     // mutate an existing message (no new send). A media caption + an edit are E speaking →
     // persona-stamped, exactly like send(). react carries no persona text.
-    // No deleteOwn: there is no delete limb (operator 2026-08-24).
+    // No deleteOwn: there is no delete limb (operator 2026-08-24), and no delete at all (2026-10-27).
     react(chat, msgId, emoji) {
       return real.sendReaction?.(chat, msgId, emoji);
     },

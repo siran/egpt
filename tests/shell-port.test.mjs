@@ -314,12 +314,13 @@ describe('shell-port limb', () => {
       expect(committed[0].text).toBe('🐶 egpt: done');
     });
 
-    it('delete() clears the live line with a streaming:false delete frame — commits nothing', () => {
+    it('a stream has no delete: a withheld reply settles on its committed final, never a delete frame (operator 2026-10-27)', () => {
       const { port, sock } = connected();
-      port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' }).delete();
-      const del = frames(sock).find((f) => f.delete);
-      expect(del).toBeTruthy();
-      expect(del.streaming).toBe(false);
+      const stream = port.startStream('main', '⏳', { bodyEmoji: '🐶', label: 'egpt' });
+      expect(stream.delete).toBeUndefined();
+      stream.finish('✓');
+      expect(frames(sock).some((f) => 'delete' in f)).toBe(false);
+      expect(frames(sock).filter((f) => f.streaming === false).map((f) => f.text)).toEqual(['🐶 egpt: ✓']);
     });
 
     it('fail() surfaces an error line over the socket — NOT swallowed', () => {

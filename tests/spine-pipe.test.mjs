@@ -1135,8 +1135,8 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // THE COST of streaming prose only: a TRUE action-only reply (a limb with no words of its
   // own) has no prose, so nothing streams and the placeholder holds "⏳ Thinking…" for the
   // whole turn. That is not a stuck placeholder — the turn still RESOLVES it at finish (here:
-  // the react IS the response, so the placeholder is deleted — the legit-silence path,
-  // UNCHANGED by the demote). Pinned so the "held, then resolved" end state stays honest.
+  // the react IS the response, so the placeholder is edited to what the bridge is doing — the
+  // legit-silence path, UNCHANGED by the demote). Pinned so the "held, then resolved" end state stays honest.
   it('an action-only reply streams NOTHING (placeholder holds ⏳ Thinking…) but still RESOLVES at finish (verbose ON)', async () => {
     const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'], verbose: true });
     await bridge.emit(MSG);
@@ -1150,16 +1150,17 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // THE LIVE BUG (operator 2026-10-06, with E/opus): same action-only /react, but verbose_thinking
   // OFF (the system default). "verbose thinking is off, and yet [the] reaction also appear as a
   // thinking process." The reaction still lands on its target; the placeholder must NOT carry the
-  // "⚙️ processing command" debug line. End-to-end through the real spine + sender: since
-  // 2026-10-19 (live "🐶 E: ✓" in SI+EduWeb) the bridge deletes its ⏳-only placeholder.
-  it('REPRODUCE: verbose OFF, an action-only reply deletes its placeholder — no ✓, no "processing command"', async () => {
+  // "⚙️ processing command" debug line. End-to-end through the real spine + sender — the live
+  // 2026-10-27 incident (E answered only `/react #778 😄`, verbose off, and the spine DELETED its ⏳).
+  // Ruling (An, #780): "nadie borra nunca nada, ningún bot, ni el spine" — the ⏳ is EDITED to ✓.
+  it('REPRODUCE: verbose OFF, an action-only reply EDITS its placeholder to ✓ — never deleted, no "processing command"', async () => {
     const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'], verbose: false });
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].init).toBe('⏳ Thinking…');
     expect(bridge.streams[0].frames).toEqual([]);                 // still never renders the half-typed token
-    expect(bridge.streams[0].deleted).toBe(true);                // the limb is the reply
-    expect(bridge.streams[0].finals).toEqual([]);                // no ✓ edit
+    expect(bridge.streams[0].deleted).toBe(false);               // nothing is ever deleted
+    expect(bridge.streams[0].finals).toEqual(['✓']);             // the quiet limb mark, by an edit
     expect(bridge.sent).toHaveLength(0);
   });
 

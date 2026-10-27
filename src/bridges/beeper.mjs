@@ -1433,11 +1433,10 @@ export async function startBeeperBridge(opts = {}) {
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); noteSendFailure(chatID, e?.message ?? String(e)); return null; }
   }
 
-  // --- edit / delete (Beeper Desktop API: PUT/DELETE a message by its CONFIRMED
-  // id) -------------------------------------------------------------------------
-  // Verified live 2026-06-20: PUT /v1/chats/{c}/messages/{id} {text} edits in place;
-  // DELETE removes. The POST only returns a pendingMessageID — useless for PUT — so
-  // the confirmed id is resolved separately (resolveSentMessageId).
+  // --- edit (Beeper Desktop API: PUT a message by its CONFIRMED id) --------------
+  // Verified live 2026-06-20: PUT /v1/chats/{c}/messages/{id} {text} edits in place.
+  // Nothing is ever deleted (operator 2026-10-27). The POST only returns a pendingMessageID
+  // — useless for PUT — so the confirmed id is resolved separately (resolveSentMessageId).
   async function editMessage(chatID, messageID, text) {
     if (!chatID || !messageID || !text) return false;
     // An edit RE-SENDS the text, so it runs the same `@Nombre` conversion — otherwise a streamed
@@ -1445,11 +1444,6 @@ export async function startBeeperBridge(opts = {}) {
     // placeholder arrives here, not at sendMessage).
     try { await api('PUT', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`, { text: await rosterNamesAsMentions(text, chatID) }); return true; }
     catch (e) { onLog(`beeper: edit failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
-  }
-  async function deleteMessage(chatID, messageID) {
-    if (!chatID || !messageID) return false;
-    try { await api('DELETE', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`); return true; }
-    catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
 
   // --- create a group chat / archive a chat (Beeper Desktop API) — added for /fork + /end
@@ -1504,7 +1498,7 @@ export async function startBeeperBridge(opts = {}) {
   // ARCHIVE: POST /v1/chats/{id}/archive { archived } — the documented archive operation
   // (developers.beeper.com, chats resource; the `archived` boolean is optional and defaults to
   // archiving). One-shot, used by /end to put the fork group away once its chosen message has gone
-  // back. Same guard/try-catch/boolean-return shape as deleteMessage. Not exercised live here.
+  // back. Same guard/try-catch/boolean-return shape as editMessage. Not exercised live here.
   async function archiveChat(chatID, { archived = true } = {}) {
     if (!chatID) return false;
     try { await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/archive`, { archived }); return true; }
@@ -2190,7 +2184,7 @@ export async function startBeeperBridge(opts = {}) {
         text, replyToId, ownerSent: () => !!msg.isSender || isAllowedUser(msg.senderID, acct), replyWake: wake.replyWakeWords,
         readTranscript, chatId: chatID, title: info.title, network: acct, msgId: msg.id,
         quoted: () => _seenText.get(msgKeyOf(chatID, replyToId)),
-        send: sendMessage, sendMedia, deleteMessage, synthesize, voice,
+        send: sendMessage, sendMedia, editMessage, synthesize, voice,
         onLog: (m) => onLog(`beeper: ${m}`),
       });
       if (r.done) return;   // substitution replaces the @e→E routing for this message
@@ -2439,13 +2433,12 @@ export async function startBeeperBridge(opts = {}) {
       if (!r) return null;
       return await r.confirmedId ?? null;
     },
-    // In-place edit / delete by CONFIRMED message id (used by the show-think
+    // In-place edit by CONFIRMED message id (used by the show-think
     // stream; also available to callers that hold a real id).
     editMessage:   (chatId, messageId, text) => editMessage(chatId, messageId, text),
-    deleteMessage: (chatId, messageId)       => deleteMessage(chatId, messageId),
     // CREATE a group chat / ARCHIVE a chat (operator 2026-10-01, /fork + /end). createGroup is
     // POST /v1/chats (the documented create-chat op; returns { success, chatID }); archiveChat is
-    // POST /v1/chats/{id}/archive. Thin wrappers over the closures above, like editMessage/deleteMessage.
+    // POST /v1/chats/{id}/archive. Thin wrappers over the closures above, like editMessage.
     createGroup:   (opts)                    => createGroup(opts),
     archiveChat:   (chatId, opts)            => archiveChat(chatId, opts),
     // Conversation-E limbs (ROADMAP §3): send a reaction / a media file; and the
@@ -2582,17 +2575,6 @@ export async function startBeeperBridge(opts = {}) {
         if (!handle.delivered && cid && realId) {
           await applyEdit(`⚠️ could not deliver this reply${handle.lastError ? ` — ${handle.lastError}` : ''}`).catch(() => {});
         }
-      };
-      // The bridge removing its OWN placeholder, in the room it opened in (a limb-only turn, operator
-      // 2026-10-19). After any edit in flight. false = still there: finish() still works.
-      handle.delete = async () => {
-        if (finished) return false;
-        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
-        await ready;
-        if (!cid || !realId) return false;
-        const ok = await serial(() => deleteMessage(cid, realId));
-        if (ok) { finished = true; realId = null; }
-        return ok;
       };
       handle.fail = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
       return handle;

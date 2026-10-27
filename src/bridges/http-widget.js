@@ -100,13 +100,12 @@ function egptChat(C, base) {
     if (m.seq > since) since = m.seq;
     var k = at[m.id];
     if (k) {
-      if (k.gone || (!m.deleted && (!m.text || m.text === k.text))) return;
-      k.gone = !!m.deleted;
+      if (!m.text || m.text === k.text) return;
       k.text = m.text;
-      chat.updateMessage(m.deleted ? {} : { text: m.text }, k.i);
+      chat.updateMessage({ text: m.text }, k.i);
       return;
     }
-    if (m.deleted || !m.text) return;
+    if (!m.text) return;
     if (m.from === 'visitor' && inflight) { held.push(m); return; }
     chat.addMessage({ role: role(m), text: m.text });
     at[m.id] = { i: chat.getMessages().length - 1, text: m.text };
@@ -157,7 +156,7 @@ function egptChat(C, base) {
   var build = function (messages) {
     var hist = [];
     messages.forEach(function (m) {
-      if (m.deleted || !m.text) return;
+      if (!m.text) return;
       at[m.id] = { i: hist.length, text: m.text };
       hist.push({ role: role(m), text: m.text });
     });

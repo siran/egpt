@@ -577,16 +577,15 @@ export function createShellPort({
   // One outbound frame to the seated editor. Drops (never throws) when no editor holds the seat
   // — a reply with nowhere to go must not crash the spine, same as beeper dropping a send to
   // an unresolvable chat. Carries `streaming` (a live, in-place edit the editor replaces vs a
-  // committed final) and, on a withheld reply, `delete` (clear the live line, commit nothing)
-  // — the shell's edit-in-place primitive, mirroring the beeper limb's startStreamMessage.
+  // committed final) — the shell's edit-in-place primitive, mirroring the beeper limb's
+  // startStreamMessage.
   // Both the plain `send` and the streaming `startStream` render through this single push.
   // `header` is the ONE new optional field (the permanent header line, above): attached only
   // when non-null, so every other caller's frame shape is byte-identical to before.
-  function pushFrame(chatId, text, { streaming = false, delete: del = false, header = null } = {}) {
+  function pushFrame(chatId, text, { streaming = false, header = null } = {}) {
     if (!sock) { onLog('shell: send dropped — editor not connected'); return false; }
     try {
       const frame = { text: String(text), chatId, streaming: !!streaming };
-      if (del) frame.delete = true;
       if (header != null) frame.header = header;
       sock.send(JSON.stringify(frame));
       return true;
@@ -676,7 +675,7 @@ export function createShellPort({
     // surface under two different rules is the hole, not the exemption.
     postStatus(chatId, text) { pushFrame(chatId, wrapPersona({}, String(text)), { streaming: true }); return null; },
     // A STREAMING reply target with the shape createSender consumes off the beeper bridge
-    // (beeper-port.startStream → { update, finish, delete, fail, delivered, lastError }) — now
+    // (beeper-port.startStream → { update, finish, fail, delivered, lastError }) — now
     // rendered through the IDENTICAL machinery (operator 2026-07-25): the ⏳ thinking placeholder
     // and the progressive edits stream live (streaming:true frames the editor replaces in place),
     // and the FULL concentric wrap (persona stamp + agent + bridge signatures) rides EVERY one of
@@ -703,8 +702,6 @@ export function createShellPort({
           const ok = pushFrame(chatId, frame(textOf(reply)), { streaming: false });
           if (ok) _delivered = true; else _lastError = 'shell: editor not connected';
         },
-        // A withheld reply: clear the live line, commit nothing. No text → nothing to sign.
-        delete() { pushFrame(chatId, '', { streaming: false, delete: true }); },
         fail(err) { _lastError = err?.message ?? String(err ?? 'shell stream failed'); pushFrame(chatId, frame(`❌ ${_lastError}`), { streaming: false }); },
         get delivered() { return _delivered; },
         get lastError() { return _lastError; },

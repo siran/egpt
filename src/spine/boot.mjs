@@ -230,7 +230,7 @@ export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
 // placeholder edit there is a no-op). A new port method must be listed here or in the facade
 // test's not-chat-keyed list.
 export const LIMB_ROUTED_METHODS = [
-  'send', 'startStream', 'postStatus', 'editStatus', 'deleteStatus', 'react', 'unreact', 'sendMedia',
+  'send', 'startStream', 'postStatus', 'editStatus', 'react', 'unreact', 'sendMedia',
   'editOwn', 'editMessage', 'wasSentByUs', 'sendFailure', 'chatHasParticipant', 'getChatName',
   'postVerbatim', 'startStreamVerbatim', 'chatRaw', 'listMessagesRaw', 'recentMessages', 'awaitMessage',
   'archiveChat', 'resolveChatId', 'createGroup', 'setChatInfo',

@@ -104,13 +104,12 @@ export function createSpineLink({
     } catch (e) { onLog(`shell-editor: announce failed — ${e?.message ?? e}`); }
   }
 
-  // Spine frame → { text, chatId, streaming[, delete][, header] }. The symmetric read of
+  // Spine frame → { text, chatId, streaming[, header] }. The symmetric read of
   // shell-port's outbound `JSON.stringify({ text, chatId, streaming })`. `streaming`
   // distinguishes a live, in-place edit (the ⏳ thinking train — the app replaces its live
-  // line) from a committed final (streaming:false → commit to the transcript); a `delete`
-  // frame clears the live line and commits nothing (a withheld reply). `header` carries the
+  // line) from a committed final (streaming:false → commit to the transcript). `header` carries the
   // PERMANENT shell header line (boot's computeShellHeader) on an otherwise-empty frame — a
-  // header-only frame has neither text nor delete, so the message handler below must not
+  // header-only frame has no text, so the message handler below must not
   // drop it. A non-JSON line degrades to a committed bare text.
   function parse(raw) {
     const s = (typeof raw === 'string') ? raw : (raw?.toString?.() ?? String(raw));
@@ -118,7 +117,6 @@ export function createSpineLink({
       const j = JSON.parse(s);
       if (j && typeof j === 'object' && typeof j.text === 'string') {
         const m = { text: j.text, chatId: j.chatId ? String(j.chatId) : 'main', streaming: !!j.streaming };
-        if (j.delete) m.delete = true;
         if (j.header != null) m.header = String(j.header);
         return m;
       }
@@ -163,7 +161,7 @@ export function createSpineLink({
       const auth = parseAuthFrame(buf);
       if (auth) { answerChallenge(ws, auth); return; }
       const m = parse(buf);
-      if (!(m.text || m.delete || m.header != null)) return;
+      if (!(m.text || m.header != null)) return;
       if (onMsg) { onMsg(m); return; }             // handler registered → straight through, no queue
       pending.push(m);                              // …not yet: hold it for the flush (see `pending`)
       if (pending.length > PENDING_MAX) pending.shift();
