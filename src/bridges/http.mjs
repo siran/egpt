@@ -8,8 +8,7 @@
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
-//   GET  <path>/<client>/escritorio/                the team's read-only folder browser (escritorio: on; http-admin.mjs):
-//                                                   HTTP Basic, or AyDE's signed link (?t= on the page, Bearer on its calls)
+//   GET  <ayde.path>/                    the EduWeb team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -21,7 +20,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/pro
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
-import { createFolderBrowser, checkStaff } from './http-admin.mjs';
+import { createBrowser, checkUser } from './http-ayde.mjs';
 
 export const HTTP_PREFIX = 'http:';
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
@@ -87,20 +86,9 @@ export function verifyIdentity(token, key, nowMs = Date.now()) {
   if (field(p.user_id)) identity.user_id = field(p.user_id);
   return { identity };
 }
-// AyDE's escritorio link token, signed with the client's escritorio key: { staff } or { why: 'invalid' | 'expired' | 'too long-lived' }.
-const ADMIN_TTL_S = 3600;
-export function verifyAdmin(token, key, nowMs = Date.now()) {
-  const { p, why } = signedPayload(token, key, nowMs);
-  if (why) return { why };
-  const staff = field(p.staff);
-  if (p.role !== 'admin' || !staff) return { why: 'invalid' };
-  if (p.exp * 1000 > nowMs + ADMIN_TTL_S * 1000) return { why: 'too long-lived' };
-  return { staff };
-}
-const ESCRITORIO_MODES = Object.freeze(['off', 'on']);
-const ESCRITORIO_REFUSED = 'Sin acceso: usuario o contraseña incorrectos, o enlace vencido. Inicia sesión de nuevo o abre el enlace otra vez desde AyDE.';
-const ESCRITORIO_LOCKED = 'Demasiados intentos fallidos. Espera 15 minutos.';
-const LOGIN_FAILS = 10, LOGIN_MS = 15 * 60_000;   // failed Basic logins per address in LOGIN_MS → 429 for LOGIN_MS
+const AYDE_REFUSED = (level) => (level === 'team' ? 'Sign in with your ayde user.' : `This needs the ${level} level: sign in with a ${level} user.`);
+const AYDE_LOCKED = 'Too many failed logins. Wait 15 minutes.';
+const LOGIN_FAILS = 10, LOGIN_MS = 15 * 60_000;   // failed ayde logins per address in LOGIN_MS → 429 for LOGIN_MS
 const whoOf = (identity) => (identity ? createHash('sha256').update(JSON.stringify([identity.abrin, identity.username])).digest('hex').slice(0, 16) : null);
 
 // A team topic's name: {abrin} {user_type} {short_name} {username} {title} {sid}; a missing value is
@@ -132,7 +120,6 @@ function clientConfig(name, c = {}) {
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
     idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
     identity: c.identity == null || c.identity === false ? 'off' : IDENTITY_MODES.includes(c.identity) ? c.identity : null,
-    escritorio: c.escritorio == null || c.escritorio === false || c.escritorio === 'off' ? false : c.escritorio === true || c.escritorio === 'on' ? true : null,
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
@@ -152,9 +139,9 @@ export async function startHttpBridge({
   beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   identityKey = () => null,   // (client) → its HMAC key, or null
-  escritorioKey = () => null,     // (client) → its escritorio link's HMAC key, or null
-  escritorioUsers = () => null,   // (client) → its escritorio users file's text, or null; asked on each request
-  conversationsDir = null,    // conversations/http: the folder browser's root
+  ayde = null,                // { path, on }: /ayde, the team's browser of aydeRoot
+  aydeRoot = null,            // EGPT_HOME
+  aydeUsers = () => null,     // () → secrets/ayde.users' text, or null; asked on each request
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -165,12 +152,10 @@ export async function startHttpBridge({
     if (!CLIENT_RE.test(name)) { log(`client '${name}' skipped — a client name is lowercase letters, digits, - and _`); continue; }
     const cc = clientConfig(name, c);
     if (!cc.identity) { log(`${name}: identity '${c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
-    if (cc.escritorio == null) { log(`${name}: escritorio '${c.escritorio}' is not ${ESCRITORIO_MODES.join(' | ')} — off`); cc.escritorio = false; }
     clients.set(name, cc);
   }
-  for (const c of clients.values()) {
-    if (c.escritorio && clients.has(`${c.name}-escritorio`)) { log(`${c.name}: escritorio off — client '${c.name}-escritorio' would share its key file`); c.escritorio = false; }
-  }
+  let aydeBase = ayde && (ayde.on === true || ayde.on === 'on') && aydeRoot ? `/${String(ayde.path ?? '/ayde').replace(/^\/+|\/+$/g, '')}/` : null;
+  if (aydeBase && (aydeBase === '//' || aydeBase.startsWith(base) || base.startsWith(aydeBase))) { log(`ayde off — its path ${aydeBase} overlaps the chatbox's ${base}`); aydeBase = null; }
 
   // sid → { sid, client, lastAt, who, log, subs, posts }; client + lastAt + who persist across restarts, log in its own file.
   // who: a hash of the identity the session started with (abrin + username), null when unsigned.
@@ -283,7 +268,7 @@ export async function startHttpBridge({
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
-  const browser = conversationsDir ? createFolderBrowser({ root: conversationsDir, json, log, now }) : null;
+  const browser = aydeBase ? createBrowser({ root: aydeRoot, json, log, now }) : null;
   const readBody = (req, limit) => new Promise((resolve, reject) => {
     let size = 0, over = false;
     const parts = [];
@@ -425,58 +410,55 @@ export async function startHttpBridge({
     res.on('close', () => hit.s.subs.delete(res));
   }
 
-  // The escritorio (http-admin.mjs): off, no root, or neither a users file nor a key → 404. GET only, no CORS.
-  // In by AyDE's token (the page's ?t=, its calls' Bearer) or HTTP Basic against the users file; else 401
-  // with the Basic challenge. LOGIN_FAILS failed logins from one address: 429 for LOGIN_MS (the token still opens).
-  const logins = new Map();   // `<client> <address>` → { times, until }: its failed Basic logins
-  async function escritorio(c, req, res, url, sub) {
-    const users = c.escritorio && browser ? escritorioUsers(c.name) : null;
-    const key = c.escritorio && browser ? escritorioKey(c.name) : null;
-    if ((!users && !key) || sub.length > 1) return json(res, 404, { error: 'not found' });
+  // /ayde (http-ayde.mjs): off or no users file → 404. GET only, no CORS. HTTP Basic against the users
+  // file; the browser decides the level a request needs and answers 401 in that level's realm.
+  // LOGIN_FAILS failed logins from one address: 429 for LOGIN_MS.
+  const logins = new Map();   // address → { times, until }: its failed logins
+  async function aydeServe(req, res, url, sub) {
+    const users = aydeUsers();
+    if (!users || sub.length > 1) return json(res, 404, { error: 'not found' });
     if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' }, { Allow: 'GET' });
-    if (!sub.length) { res.writeHead(308, { Location: `escritorio/${url.search}` }); return res.end(); }
+    if (!sub.length) { res.writeHead(308, { Location: `${aydeBase.split('/').at(-2)}/${url.search}` }); return res.end(); }
     const call = sub[0] || null;
-    const auth = String(req.headers.authorization ?? '');
-    const token = call ? /^Bearer\s+(\S+)$/i.exec(auth)?.[1] : url.searchParams.get('t');
-    if (token) {
-      const r = key ? verifyAdmin(token, key, now()) : { why: 'no key' };
-      if (!r.why) return browser.serve(c.name, call, req, res, url, r.staff);
-      log(`${c.name}: an escritorio token refused (${r.why})`);
-    }
     const deny = (status, message, headers, more = {}) => {
       if (call) return json(res, status, { error: status === 429 ? 'too many failed logins' : 'unauthorized', message, ...more }, headers);
       res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...headers });
-      return res.end(`<!doctype html><html lang="es"><meta charset="utf-8"><title>Sin acceso</title><p>${message}</p></html>\n`);
+      return res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>ayde</title><p>${message}</p></html>\n`);
     };
-    const addr = addressOf(req), at = `${c.name} ${addr}`, n = now();
-    const rec = logins.get(at) ?? { times: [], until: 0 };
+    const addr = addressOf(req), n = now();
+    const rec = logins.get(addr) ?? { times: [], until: 0 };
     if (rec.until > n) {
       const wait = Math.ceil((rec.until - n) / 1000);
-      return deny(429, ESCRITORIO_LOCKED, { 'Retry-After': String(wait) }, { retry_after_s: wait });
+      return deny(429, AYDE_LOCKED, { 'Retry-After': String(wait) }, { retry_after_s: wait });
     }
-    const basic = /^Basic\s+(\S*)$/i.exec(auth)?.[1];
+    let who = null;
+    const basic = /^Basic\s+(\S*)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
     if (basic != null) {
       const [user, ...rest] = Buffer.from(basic, 'base64').toString('utf8').split(':');
       // Counted before the slow check, so tries sent in parallel count too; a right one clears the count.
       rec.times = [...rec.times.filter((t) => n - t < LOGIN_MS), n];
       const tries = rec.times.length;
       if (tries >= LOGIN_FAILS) rec.until = n + LOGIN_MS;
-      logins.set(at, rec);
-      if (users && await checkStaff(users, user, rest.join(':'))) { logins.delete(at); return browser.serve(c.name, call, req, res, url, user); }
-      log(`${c.name}: escritorio login refused for ${JSON.stringify(field(user))} from ${addr} (${tries}/${LOGIN_FAILS})`);
-      if (tries >= LOGIN_FAILS) log(`${c.name}: ${addr} locked out of the escritorio for ${LOGIN_MS / 60_000} min`);
+      logins.set(addr, rec);
+      const level = await checkUser(users, user, rest.join(':'));
+      if (level) { logins.delete(addr); who = { user, level }; }
+      else {
+        log(`ayde: login refused for ${JSON.stringify(field(user))} from ${addr} (${tries}/${LOGIN_FAILS})`);
+        if (tries >= LOGIN_FAILS) log(`ayde: ${addr} locked out for ${LOGIN_MS / 60_000} min`);
+      }
     }
-    return deny(401, ESCRITORIO_REFUSED, { 'WWW-Authenticate': `Basic realm="escritorio ${c.name}", charset="UTF-8"` });
+    return browser.serve(call, req, res, url, who, (level) => deny(401, AYDE_REFUSED(level), { 'WWW-Authenticate': `Basic realm="ayde ${level}", charset="UTF-8"` }, { level }));
   }
 
   // CORS: an Origin must be on the client's list; an empty list sends no CORS headers (same-origin
   // only — the website's server proxies the path) and refuses every preflight.
   async function serve(req, res) {
     const url = new URL(req.url, 'http://chatbox');
+    if (aydeBase && `${url.pathname}/` === aydeBase) return aydeServe(req, res, url, []);
+    if (aydeBase && url.pathname.startsWith(aydeBase)) return aydeServe(req, res, url, url.pathname.slice(aydeBase.length).split('/'));
     if (!url.pathname.startsWith(base)) return json(res, 404, { error: 'not found' });
     const [name, action, ...more] = url.pathname.slice(base.length).split('/');
     const c = clients.get(name);
-    if (c && action === 'escritorio') return escritorio(c, req, res, url, more);
     if (!c || more.length) return json(res, 404, { error: 'not found' });
     const origin = req.headers.origin;
     const listed = !!origin && c.origins.includes(origin);
@@ -514,7 +496,7 @@ export async function startHttpBridge({
       server.listen(port, bind, () => {
         alive = true;
         server.on('error', (e) => log(`server error — ${e?.message ?? e}`));
-        log(`listening on http://${bind}:${port}${base}<client>/ — clients: ${[...clients.keys()].join(', ') || 'none'}`);
+        log(`listening on http://${bind}:${port}${base}<client>/ — clients: ${[...clients.keys()].join(', ') || 'none'}${aydeBase ? `; ayde at ${aydeBase}` : ''}`);
         resolve(true);
       });
     });

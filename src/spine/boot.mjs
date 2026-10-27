@@ -20,7 +20,7 @@ import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
 import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle } from '../bridges/http.mjs';
-import { escritorioUsersFile } from '../bridges/http-admin.mjs';
+import { AYDE_USERS_FILE } from '../bridges/http-ayde.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
@@ -2225,7 +2225,11 @@ export async function boot({
     const hlog = (m) => log.line?.(`[http] ${m}`);
     if (!Number.isInteger(block.port)) { hlog('limbs.http has no port — not wired'); return null; }
     const chatboxKeyFile = (client) => `chatbox-${client}.key`;
-    const escritorioKeyFile = (client) => `chatbox-${client}-escritorio.key`;
+    if (block.ayde?.on === true || block.ayde?.on === 'on') {
+      const u = readSecret(EGPT_HOME, AYDE_USERS_FILE);
+      if (!u.token) hlog(`limbs.http.ayde is on but ${u.path} is ${u.problem} — /ayde answers 404 (node setup/ayde-user.mjs add <user> <level>)`);
+      else if (u.warn) hlog(`${u.path}: ${u.warn}`);
+    }
     for (const [name, c] of Object.entries(block.clients ?? {})) {
       const being = String(c?.being ?? '');
       if (!isLocalAgent(being, agents()[being])) hlog(`limbs.http.clients.${name}.being '${being}' is not a local agent here — its visitors reach nobody`);
@@ -2234,11 +2238,6 @@ export async function boot({
         const k = readSecret(EGPT_HOME, chatboxKeyFile(name));
         if (!k.token) hlog(`limbs.http.clients.${name}.identity is ${c.identity} but ${k.path} is ${k.problem} — signed visitors are refused`);
         else if (k.warn) hlog(`${k.path}: ${k.warn}`);
-      }
-      if (c?.escritorio === 'on' || c?.escritorio === true) {
-        const u = readSecret(EGPT_HOME, escritorioUsersFile(name)), k = readSecret(EGPT_HOME, escritorioKeyFile(name));
-        if (!u.token && !k.token) hlog(`limbs.http.clients.${name}.escritorio is on but ${u.path} is ${u.problem} and ${k.path} is ${k.problem} — the escritorio answers 404`);
-        for (const s of [u, k]) if (s.warn) hlog(`${s.path}: ${s.warn}`);
       }
     }
     // With a `team_group`, the conversation's topic there, a chat member of it (room-relay.mjs). Made in
@@ -2303,9 +2302,8 @@ export async function boot({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients: block.clients, trustProxy: block.trust_proxy === true, now,
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
-      escritorioKey: (client) => readSecret(EGPT_HOME, escritorioKeyFile(client)).token,
-      escritorioUsers: (client) => readSecret(EGPT_HOME, escritorioUsersFile(client)).token,
-      conversationsDir: join(CONVERSATIONS_ROOT, 'http'),
+      ayde: block.ayde, aydeRoot: EGPT_HOME,
+      aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
       beforeLine,
       onEnd,
       onLog: hlog,

@@ -371,43 +371,54 @@ with a link (a Telegram topic) answers `/split` with its link.
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
 | `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
 
-### The chatbox's escritorio (staff access)
+### `/ayde` — the EduWeb team's browser (staff access)
 
-Each website chatbox visitor's conversation folder is its escritorio. Its data
-drawers are `gavetas/` and its credentials are `.secrets/`. With
-`limbs.http.clients.<client>.escritorio: on`, the team browses those folders
-read-only at:
+With `limbs.http.ayde: { on: true }`, the chatbox limb also serves a read-only
+browser of the node's whole `EGPT_HOME` to the EduWeb team, at:
 
 ```text
-https://<host>/chat/<client>/escritorio/
+https://eduweb.com.ve/ayde/
 ```
 
-The browser asks for a user and a password (HTTP Basic). AyDE's signed link
-(`…/escritorio/?t=<token>`) also opens it; `config-schema.mjs` (`limbs` → `http`)
-has the token and the PHP. Each folder, file and download opened is logged under
-the staff user's name and appended to that conversation's `admin-access.log`.
+The browser asks for a user and a password (HTTP Basic). Each user has a level;
+each level reads everything the lower ones read:
 
-Add, change or remove a staff user on the node. Run it with the node's
-`EGPT_HOME`; on Windows, `setup/escritorio-user.cmd` does the same.
+| Level | Reads |
+|---|---|
+| `team` | `conversations/**`, except any path with a segment starting with `.` (`.secrets/`, `.ssh/`, dotfiles), which it never sees |
+| `devs` | `conversations/**`, hidden entries included |
+| `admin` | everything under `EGPT_HOME` but `secrets/` and `chrome/` (browser profiles: signed-in sessions); YAML/JSON outside `conversations/` (config, `config.readonly.yaml`, `state/`) with token-like values shown as `•••(<length>)` |
+| `root` | everything, `secrets/` and `chrome/` included, as it is |
+
+A path above your level answers 401 in that level's realm (`ayde admin`,
+`ayde root`), so the browser asks for a higher login. The page shows such paths
+greyed. Each folder, file and download opened is logged, and inside a
+conversation also appended to its `admin-access.log`. Nobody can change or
+delete anything; a future delete of core files (`config/`, `state/`,
+`secrets/`) will be root's only.
+
+Add, re-level or remove a user on the node, with the node's `EGPT_HOME`; on
+Windows, `setup/ayde-user.cmd` does the same:
 
 ```text
-node setup/escritorio-user.mjs <client> add <user>      # asks the password twice; again: a new password
-node setup/escritorio-user.mjs <client> remove <user>
-node setup/escritorio-user.mjs <client> list
-printf '%s' "$PASSWORD" | node setup/escritorio-user.mjs <client> add <user>   # scripted
+node setup/ayde-user.mjs add <user> <team|devs|admin|root>   # asks the password twice; again: new password + level
+node setup/ayde-user.mjs set-level <user> <level>
+node setup/ayde-user.mjs remove <user>
+node setup/ayde-user.mjs list                                # user + level only
+printf '%s' "$PASSWORD" | node setup/ayde-user.mjs add <user> <level>   # scripted
 ```
 
-The script writes `secrets/chatbox-<client>-escritorio.users`, never
-`config.yaml`. It never prints a password or a hash. The limb reads the file on
-each request, so a change needs no restart.
+The script writes `secrets/ayde.users`, never `config.yaml`. It never prints a
+password or a hash. The limb reads the file on each request, so a change needs no
+restart.
 
 After 10 failed logins within 15 minutes, that address gets 429 for 15 minutes.
 Behind a proxy, set `limbs.http.trust_proxy: true`; otherwise every login counts
 against the proxy's address.
 
-**HTTPS only:** Basic sends the password with every request. The site's `/chat/`
-proxy must be HTTPS, and the hop from the proxy to the node must stay private
-(EduWeb: Portales → EDW).
+**HTTPS only:** Basic sends the password with every request. The site's proxy
+must be HTTPS, and the hop from the proxy to the node must stay private
+(EduWeb: Portales-new → `edw.egpt.internal:8095`, beside `/chat/`).
 
 ---
 

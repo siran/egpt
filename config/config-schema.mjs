@@ -802,6 +802,9 @@ export const CONFIG_SCHEMA = {
         trust_proxy       default false. true: a visitor's address is the last
                           X-Forwarded-For entry (what the proxy saw); false: the
                           socket's address
+        ayde              { on: false (default) | true, path: /ayde }: the EduWeb team's
+                          read-only browser of EGPT_HOME, served by this limb (below).
+                          A path that overlaps the chatbox's path: off (logged)
         clients:
           <client>:       lowercase letters, digits, - and _
             being             the agent that answers its visitors
@@ -861,10 +864,9 @@ export const CONFIG_SCHEMA = {
                               gets usuario.json (the verified fields + verified_at,
                               never the token) and a one-line usuario.md, before the
                               seed copy.
-            escritorio        off (default) | on: the escritorio, the team's read-only
-                              folder browser (below). On with neither its users file
-                              nor its key file: 404, as off. Any other value: off
-                              (logged).
+            escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
+                              old admin route and AyDE's signed link: limbs.http.ayde
+                              replaces them. Both routes answer 404.
         THE SIGNED IDENTITY. Key: <EGPT_HOME>/secrets/chatbox-<client>.key, its text used
         as is (not decoded), e.g.  openssl rand -base64 32 > <EGPT_HOME>/secrets/chatbox-demoiev.key
         then chmod 600. Read on each signed call (a new key needs no restart). The same text
@@ -882,38 +884,50 @@ export const CONFIG_SCHEMA = {
             . htmlspecialchars($tok) . '" defer></script>';
         json_encode needs UTF-8 strings (utf8_encode a Latin-1 name, else it returns false).
         A page left open past exp gets strings.identity on its next line: reload.
-        THE ESCRITORIO (escritorio: on; src/bridges/http-admin.mjs). GET <path>/<client>/escritorio/
-        (e.g. https://<host>/chat/demoiev/escritorio/; without the last slash: 308 to it). One Spanish
-        page: search by username (part of it; optionally abrin) → the client's conversations from
-        usuario.json, newest transcript first → the folder's tree (gavetas/ and .secrets/ included) →
-        a text file (first 256 KB) or a download. Read-only: any other method is 405. Paths stay inside
-        that conversation's folder (realpath; links out refused). Each tree, view and download is logged,
-        "staff <user> viewed <conversation>/<file>", and appended to <conversation>/admin-access.log.
-        Two ways in, either suffices. Neither: 401 with WWW-Authenticate: Basic realm="escritorio
-        <client>", charset="UTF-8", so the browser asks for a user and a password.
-        HTTP Basic: <EGPT_HOME>/secrets/chatbox-<client>-escritorio.users, one line per staff user,
-          <user>:N=16384,r=8,p=1:<salt base64>:<scrypt hash base64>
-        written by setup/escritorio-user.mjs (below), never config.yaml. Read on each request: a user
-        added or removed needs no restart. <user> is the name in the audit lines. 10 failed logins
-        from one address within 15 min: that address gets 429 for 15 min; each failure is logged with
-        the user and the address, never the password. The address is the one new_sessions counts (see
-        trust_proxy): behind a proxy, set trust_proxy: true, else every login shares the proxy's.
-        HTTPS only: Basic sends the password with every request. The site's /chat/ proxy is HTTPS;
-        the hop from the proxy to the node stays private (EduWeb: Portales → EDW).
-          node setup/escritorio-user.mjs <client> add|remove|list [<user>]   (Windows: escritorio-user.cmd)
-        add asks the password twice (not shown), or reads it from stdin when piped, e.g.
-          printf '%s' "$PASSWORD" | EGPT_HOME=<the node's> node setup/escritorio-user.mjs demoiev add jaime
-        Adding an existing user sets a new password; at least 8 characters. It never prints a
-        password or a hash.
-        AyDE's link: <EGPT_HOME>/secrets/chatbox-<client>-escritorio.key, another key than the visitor
-        one (a leaked visitor key never opens it), for AyDE's server only. Token as the identity's,
-        payload {role: "admin", staff, exp}; exp at most 1 h ahead. The page takes it as ?t=, its calls
-        send it as "Authorization: Bearer". It opens from a locked-out address too. PHP (AyDE):
-          $b64 = function ($s) { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); };
-          $p = $b64(json_encode(['role' => 'admin', 'staff' => $usuario, 'exp' => time() + 1800]));
-          $t = $p . '.' . $b64(hash_hmac('sha256', $p, $escritorioKey, true));
-          echo '<a href="https://<host>/chat/demoiev/escritorio/?t=' . rawurlencode($t)
-            . '" target="_blank" rel="noopener">Conversaciones del chat</a>';
+        AYDE (ayde.on; src/bridges/http-ayde.mjs). GET <ayde.path>/ (e.g.
+        https://eduweb.com.ve/ayde/; without the last slash: 308 to it): the EduWeb team's read-only
+        browser of the whole EGPT_HOME, by level. One English page: the user and level, a folder tree
+        from the user's top (conversations/ for team and devs, EGPT_HOME for admin and root; "Up"
+        climbs), paths above the user's level greyed, a text file (first 256 KB) or a download, and a
+        search by username over conversations/http/*/usuario.json (newest first) as a shortcut.
+        Read-only for every level: any method but GET is 405. A future delete of core files
+        (config/, state/, secrets/) is root's only.
+        Levels, lowest first, each reading all the lower ones read. On the path under EGPT_HOME, the
+        first matching rule decides:
+          secrets/**, chrome/** (browser sessions)     root
+          conversations/** with a segment starting "." devs   (.secrets/, .ssh/, dotfiles: invisible to team)
+          conversations/**                             team
+          everything else (EGPT_HOME itself included)  admin
+        A path above the user's level: 401 with WWW-Authenticate: Basic realm="ayde <the level it
+        needs>", so the browser asks for a login of that level. The rule applies to the path asked
+        and to its real path (links followed); a link out of EGPT_HOME is 404 for everyone.
+        For admin, a .yaml/.yml/.json file outside conversations/ (config/config.yaml, the other
+        config/ files, config.readonly.yaml, state/) is served with every value under a key
+        matching /token|secret|password|key|hash/i, and the rest of a full-line comment naming
+        one, as "•••(<length>)"; comments and layout kept, the download masked too. One that does
+        not parse (or over 4 MB) needs root. Root reads every file as it is.
+        Users: <EGPT_HOME>/secrets/ayde.users, never config.yaml, one line each:
+          <user>:<team|devs|admin|root>:N=16384,r=8,p=1:<salt base64>:<scrypt hash base64>
+        Read on each request: a user added, re-levelled or removed needs no restart. No file: 404.
+          node setup/ayde-user.mjs add <user> <level>        (asks the password twice; again: new password + level)
+          node setup/ayde-user.mjs set-level <user> <level>
+          node setup/ayde-user.mjs remove <user>
+          node setup/ayde-user.mjs list                      (user + level only)
+          printf '%s' "$PASSWORD" | EGPT_HOME=<the node's> node setup/ayde-user.mjs add jaime team
+        Windows: setup/ayde-user.cmd. Passwords: at least 8 characters; never printed, nor hashes.
+        10 failed logins from one address within 15 min: that address gets 429 for 15 min; each
+        failure is logged with the user and the address, never the password. A right login at a
+        level too low is not a failure. The address is the one new_sessions counts (trust_proxy):
+        behind a proxy, set trust_proxy: true, else every login shares the proxy's.
+        Audit: each list, view and download is a log line, "ayde: <user> (<level>) viewed <path>";
+        inside a conversation (conversations/<surface>/<name>/) also appended to its
+        admin-access.log. Each refusal is logged with the level it needed.
+        HTTPS only: Basic sends the password with every request. The site's proxy is HTTPS; the
+        hop from the proxy to the node stays private (EduWeb: Portales-new → edw.egpt.internal:8095,
+        beside /chat/). The proxy passes the Authorization header and the WWW-Authenticate answer
+        as they are (nginx and Apache do by default), e.g.
+          nginx:  location /ayde/ { proxy_pass http://edw.egpt.internal:8095; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+          Apache: ProxyPass /ayde/ http://edw.egpt.internal:8095/ayde/  (mod_proxy adds X-Forwarded-For)
   `,
 
   beeper: `
