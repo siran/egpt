@@ -118,12 +118,29 @@ function egptChat(C, base) {
     es = new EventSource(base + 'events?session=' + encodeURIComponent(token) + '&since=' + since);
     es.onmessage = function (e) { show(JSON.parse(e.data)); };
   };
+  var BACKOFF = [1000, 3000, 9000];
+  var newId = function () {
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    return Array.prototype.map.call(b, function (x) { return (x < 16 ? '0' : '') + x.toString(16); }).join('');
+  };
+  // No answer or a 5xx: the same line again, with the same id (the server keeps one), after BACKOFF[n].
+  var postLine = function (text, id, n) {
+    return fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text, id: id }) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); }, function () { return Promise.reject(0); })
+      .catch(function (status) {
+        if ((status && status < 500) || n >= BACKOFF.length) return Promise.reject(status);
+        return new Promise(function (ok) { setTimeout(ok, BACKOFF[n]); }).then(function () { return postLine(text, id, n + 1); });
+      });
+  };
+  var opening = null;   // a new session's first POST: lines sent meanwhile wait for its token
   var send = function (req) {
     var text = req.messages[req.messages.length - 1].text;
     var i = chat.getMessages().length - 1;
+    var id = newId();
+    var go = function () { return postLine(text, id, 0); };
     inflight++;
-    fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text }) })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    var done = (opening ? opening.then(go) : go())
       .then(function (j) {
         at[j.message.id] = { i: i, text: j.message.text };
         if (j.message.seq > since) since = j.message.seq;
@@ -133,6 +150,7 @@ function egptChat(C, base) {
       })
       .catch(function (status) { sig.onResponse({ error: status === 413 ? S.too_long : status === 429 ? S.too_many : S.error }); })
       .then(function () { if (!--inflight) held.splice(0).forEach(show); });
+    if (!token && !opening) opening = done.then(function () { opening = null; });
   };
 
   // Every property is set before the element renders: a later set re-renders Deep Chat from scratch.
@@ -154,6 +172,8 @@ function egptChat(C, base) {
       listen();
       if (wantFocus) chat.focusInput();
     } };
+    // ⏳ from a sent line until the next message shows (Deep Chat drops it then, or at an error).
+    chat.displayLoadingBubble = true;
     chat.requestBodyLimits = { maxMessages: 1 };
     chat.errorMessages = { displayServiceErrorMessages: true };
     chat.textInput = { characterLimit: C.maxChars, placeholder: { text: S.placeholder }, styles: { text: { fontSize: '16px' } } };
@@ -164,7 +184,7 @@ function egptChat(C, base) {
       shared: { bubble: { maxWidth: '85%' } },
       user: { bubble: { backgroundColor: '#1f6feb', color: '#fff' } },
       ai: { bubble: { backgroundColor: '#fff', color: '#111', border: '1px solid #d0d7de' } },
-    } };
+    }, loading: { message: { html: '⏳' } } };
     body.appendChild(chat);
   };
 

@@ -3,7 +3,7 @@
 // telegram.mjs is, so replies leave through the one sender path.
 // Inside the spine a chat id is `http:<client>-<sid>`; sid is a hash of the session token, so the
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
-//   POST <path>/<client>/messages        {session?, text} → {session, message}
+//   POST <path>/<client>/messages        {session?, text, id?} → {session, message}; a repeated id (a retry) gets the first answer
 //   GET  <path>/<client>/messages?session=&since=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -32,9 +32,13 @@ export const HTTP_STRINGS = Object.freeze({
   unavailable: 'No se pudo abrir el chat. Intenta de nuevo.',
   end: 'Terminar conversación', end_confirm: '¿Terminar esta conversación? El chat empezará de nuevo.', end_yes: 'Sí, terminar', cancel: 'Cancelar',
   ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
+  earlier: '(conversación iniciada antes: {n} mensajes)',   // heads the recap a team topic gets when seated
   intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
 });
 const LOG_MAX = 200;                           // messages a session keeps for replay
+const RECAP_LINES = 5, RECAP_CHARS = 300;
+const RETRY_MS = 10 * 60_000;                  // a POST's id is remembered this long
+const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const PING_MS = 25_000;                        // SSE keep-alive, under common proxy idle timeouts
 const SESSIONS_FILE = 'http-sessions.json';
 const MESSAGES_DIR = 'http-messages';
@@ -62,6 +66,7 @@ function clientConfig(name, c = {}) {
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
     idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
     ended: strings.ended,
+    earlier: strings.earlier,
     widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT })});\n`,
   };
 }
@@ -75,7 +80,7 @@ export async function startHttpBridge({
   addressWithoutAt = true,
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's
   stateDir = null,
-  onNewSession = null,    // ({ client, chatId }), awaited before a new session's first line enters
+  beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
@@ -196,10 +201,18 @@ export async function startHttpBridge({
   };
 
   const opened = new Map();   // `<client> <address>` → when it opened new sessions, within the window
+  const posted = new Map();   // `<client> <id>` → { at, reply }: a retried POST gets the first one's answer
   // Seconds until this session may post again (its window pruned), or 0.
   const rateWait = (c, s, n) => {
     s.posts = s.posts.filter((t) => n - t < c.rateMs);
     return s.posts.length >= c.rateMessages ? Math.ceil((s.posts[0] + c.rateMs - n) / 1000) : 0;
+  };
+  // The panel's settled lines so far, for a team topic seated after them: their count, then the last few.
+  const recapOf = (c, s, { header = true } = {}) => {
+    const said = s.log.filter((m) => m.done && !m.deleted && m.text);
+    if (!said.length) return null;
+    const clip = (t) => ([...t].length > RECAP_CHARS ? `${[...t].slice(0, RECAP_CHARS).join('')}…` : t);
+    return [...(header ? [c.earlier.replaceAll('{n}', String(said.length))] : []), ...said.slice(-RECAP_LINES).map((m) => `${m.from === 'visitor' ? 'visitor' : c.being}: ${clip(m.text)}`)].join('\n');
   };
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
@@ -212,6 +225,8 @@ export async function startHttpBridge({
     const text = stripInvisible(String(body?.text ?? ''));
     if (!text.trim()) return json(res, 400, { error: 'empty message' }, cors);
     if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
+    const key = typeof body?.id === 'string' && ID_RE.test(body.id) ? `${c.name} ${body.id}` : null;
+    if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
     const n = now();
     let token = body?.session, hit = sessionOfToken(c, token);
     if (hit) {
@@ -237,23 +252,25 @@ export async function startHttpBridge({
     s.posts.push(n);
     s.lastAt = n;
     persist();
-    if (hit.isNew) {
-      try { await onNewSession?.({ client: c.name, chatId }); }
-      catch (e) { log(`new session ${c.name}-${sid}: ${e?.message ?? e}`); }
-    }
-    const m = append(s, 'visitor', text, true);
-    const st = mentionStatus(text, wakeWords, { addressWithoutAt });
-    log(`incoming [${c.name}-${sid}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-    deliver(text, {
-      chatId, chatName: `${c.name}-${sid}`, chatType: 'private', network: 'http',
-      userId: chatId, senderName: 'visitor', firstName: 'visitor',
-      isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
-      atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-      // the widget is a reply thread with the client's being: every visitor line addresses it
-      backlog: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
-      msgKey: m.id, msgTs: n,
-    });
-    return json(res, 200, { session: token, message: view(m) }, cors);
+    const reply = (async () => {
+      try { await beforeLine?.({ client: c.name, chatId, isNew: !!hit.isNew, recap: (o) => recapOf(c, s, o) }); }
+      catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
+      const m = append(s, 'visitor', text, true);
+      const st = mentionStatus(text, wakeWords, { addressWithoutAt });
+      log(`incoming [${c.name}-${sid}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
+      deliver(text, {
+        chatId, chatName: `${c.name}-${sid}`, chatType: 'private', network: 'http',
+        userId: chatId, senderName: 'visitor', firstName: 'visitor',
+        isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
+        atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
+        // the widget is a reply thread with the client's being: every visitor line addresses it
+        backlog: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+        msgKey: m.id, msgTs: n,
+      });
+      return { session: token, message: view(m) };
+    })();
+    if (key) { posted.set(key, { at: n, reply }); reply.catch(() => posted.delete(key)); }
+    return json(res, 200, await reply, cors);
   }
 
   // The visitor's "end conversation": the same session, token and conversation; onEnd gives it a
@@ -355,6 +372,7 @@ export async function startHttpBridge({
     for (const s of sessions.values()) for (const res of s.subs) put(res, ': ping\n\n');
     const n = now();
     for (const [key, times] of opened) if (n - times.at(-1) >= windowMs) opened.delete(key);
+    for (const [key, p] of posted) if (n - p.at >= RETRY_MS) posted.delete(key);
   }, PING_MS);
   ping.unref?.();
 

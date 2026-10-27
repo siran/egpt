@@ -779,8 +779,10 @@ export const CONFIG_SCHEMA = {
         is its own conversation: chat id http:<client>-<sid>, folder
         conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
         token itself is never logged). Under <path>/<client>/:
-          POST messages {session?, text} → {session, message}; no or an unknown or
+          POST messages {session?, text, id?} → {session, message}; no or an unknown or
             expired session (session_days idle) starts a new one. application/json only.
+            id (16-64 of A-Za-z0-9_-, the widget's per-line random): a POST repeating
+            an id within 10 min posts nothing and gets the first one's answer (a retry).
           GET messages?session=&since=<seq> → {session, seq, messages}
           GET events?session=&since=<seq>   SSE, each message as posted/edited/settled
           POST end {session} → {ok}         the visitor's "end conversation": same
@@ -815,7 +817,8 @@ export const CONFIG_SCHEMA = {
                               placeholder, send, error, too_long, too_many,
                               end, end_confirm, end_yes, cancel; intro (the panel's first
                               line, again after an end; default none); ended (the
-                              line the team topic gets on an end)
+                              line the team topic gets on an end); earlier (heads the
+                              recap a late topic gets, {n} = the earlier lines)
             session_days      idle days before a session expires (its token then
                               starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)
@@ -831,7 +834,12 @@ export const CONFIG_SCHEMA = {
                               line there reaches the widget and the transcript and
                               wakes the being only when it names it (the session's
                               being is mode: mention; every visitor line addresses
-                              it). The topic's own conversation holds the being mute
+                              it). The topic's own conversation holds the being mute.
+                              The topic is made in the background (a line never waits
+                              on Telegram); lines said before it is seated reach it as
+                              one recap: strings.earlier and the last 5 lines. No topic
+                              (Telegram failed, or team_group added later): the next
+                              line tries again, not within 2 min of a failed try
             team_name         the team's name in the widget, default the title
   `,
 
