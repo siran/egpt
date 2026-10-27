@@ -236,6 +236,68 @@ describe('transcription pipeline (declarative fallback chain)', () => {
   });
 });
 
+// ── A NOTE IS NEVER LOST TO A WARM-UP (EDW, 2026-10-27) ──
+// EDW's only rung is a whisper-server-local (oficina: it adopts the SSH tunnel to a remote resident
+// server; no cli below it). The local server is lazy: the first note to reach it kicks the start and
+// falls through, onto the cli rung that covers the gap. EDW has none, so the first voice note after
+// every spine restart was lost as "no transcript" (4 restarts, 4 lost notes), and every later note
+// transcribed. Now, when nothing below answers, the walk waits for the start and tries the rung once more.
+describe('transcription pipeline — a note is never lost to a warm-up', () => {
+  const OFICINA = { type: 'whisper-server-local', command: '/bin/false', host: '127.0.0.1', port: 18089 };
+  const EDW = { fallback_order: ['oficina'], oficina: OFICINA };
+  const server = { url: 'http://127.0.0.1:18089', isAlive: () => true, stop() {} };
+
+  it('REPRODUCE→FIX: the only rung is a local server: the FIRST note waits for the start and is transcribed, one mark', async () => {
+    let spawns = 0; const events = [];
+    const { pipe } = mk({
+      profile: EDW,
+      startWhisperServer: async () => { spawns++; await tick(); return server; },   // resolves after a tick, like adopting the tunnel
+      makeWhisperServerTranscriber: () => async () => { events.push('local'); return 'LOCAL'; },
+    });
+    const hook = async () => { events.push('up'); return async () => { events.push('down'); }; };
+    expect(await pipe.transcribe('first', {}, () => {}, {}, hook)).toBe('LOCAL');
+    expect(events).toEqual(['up', 'local', 'down']);
+    expect(await pipe.transcribe('second')).toBe('LOCAL');
+    expect(spawns).toBe(1);
+  });
+
+  it('the start FAILS: the first note fails as before (null, the spawn failure logged), and nothing hangs', async () => {
+    let spawns = 0; const logs = [];
+    const { pipe } = mk({
+      profile: EDW,
+      startWhisperServer: async () => { spawns++; await tick(); throw new Error('nothing answers on :18089'); },
+      onLog: (m) => logs.push(m),
+    });
+    expect(await pipe.transcribe('first')).toBe(null);
+    expect(logs.join('\n')).toMatch(/pipeline: local "oficina" spawn failed: nothing answers on :18089/);
+    expect(await pipe.transcribe('second')).toBe(null);           // a failed start stays failed, as today: no respawn
+    expect(spawns).toBe(1);
+  });
+
+  it('a rung below that does NOT answer (the cli declines beside a resident server): the local is waited for and wins', async () => {
+    const { pipe, calls } = mk({
+      profile: { fallback_order: ['oficina', 'cli'], oficina: OFICINA, cli: { type: 'whisper-cli', command: 'wc', model_path: 'm' } },
+      startWhisperServer: async () => { await tick(); return server; },
+      residentServing: () => ({ url: 'http://127.0.0.1:8089' }),
+    });
+    expect(await pipe.transcribe('first')).toBe('LOCAL');
+    expect(calls.cli).toBe(0);
+  });
+
+  // REGRESSION LOCK: where a rung below ANSWERS, the warm-up is never waited for: the cli covers the gap.
+  it('with a cli rung below, the first note lands on cli while the server is still starting', async () => {
+    let ready; const started = new Promise((r) => { ready = r; });
+    const { pipe, calls } = mk({
+      profile: { fallback_order: ['oficina', 'cli'], oficina: OFICINA, cli: { type: 'whisper-cli', command: 'wc', model_path: 'm' } },
+      startWhisperServer: () => started,                         // still pending when the first note is answered
+    });
+    expect(await pipe.transcribe('first')).toBe('CLI');
+    ready(server); await tick();
+    expect(await pipe.transcribe('second')).toBe('LOCAL');
+    expect(calls.cli).toBe(1);
+  });
+});
+
 // ── A 413 REFUSES ONE FILE; IT DOES NOT MEAN THE WORKER IS DOWN (operator 2026-09-16) ──
 // A video over the worker's 32 MB body cap is refused with 413. The breaker used to treat that like
 // any failure and put the worker rung in its 30 s cooldown, so every voice note behind the video
@@ -435,15 +497,16 @@ describe('transcription pipeline — the decode says when it runs on this node',
     expect(m.events).toEqual(['up', 'local', 'cli', 'down']);
   });
 
-  it('a rung that decodes nothing places nothing: an unreachable own worker, a warming local, a declining cli', async () => {
+  it('a rung that decodes nothing places nothing: an unreachable own worker, a local whose start fails, a declining cli', async () => {
     const m = marks();
     const { pipe } = mk({
       profile: { fallback_order: ['worker', 'local', 'cli'], worker: DO.worker, local: { type: 'whisper-server-local', command: 'ws', model: 'm' }, cli: CLI },
       ownTranscriptor: DO_OWN,
       reachable: async () => false,                                          // own worker unreachable → cooldown, no POST
+      startWhisperServer: async () => { throw new Error('no model'); },      // a warming local is waited for; this one never serves
       residentServing: () => ({ url: 'http://127.0.0.1:8089' }),             // the cli declines beside a resident model
     });
-    expect(await pipe.transcribe(file('none.ogg'), {}, () => {}, {}, m.hook)).toBe(null);   // local is only warming
+    expect(await pipe.transcribe(file('none.ogg'), {}, () => {}, {}, m.hook)).toBe(null);
     expect(m.events).toEqual([]);
   });
 
