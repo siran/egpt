@@ -2169,8 +2169,8 @@ describe('beeper bridge — a picker @-mention addresses only when it names the 
 });
 
 // ── A REACTION FROM AN ACCOUNT WE SPEAK THROUGH IS OUR OWN OUTPUT (live, kg, 2026-10-10) ──
-// "eGPT Rodz Lulu An", mode on: E steered the operator's #26445 into its live turn and acked it 📩 then
-// 👀 through the mouth. Both came back on the PRIMARY as reactions by Rodz's lid, read as a human, and
+// "eGPT Rodz Lulu An", mode on: E steered the operator's #26445 into its live turn and acked it ✍️ then
+// 👍 through the mouth. Both came back on the PRIMARY as reactions by Rodz's lid, read as a human, and
 // each queued a turn ("⏳ Queued (1 ahead)…", "(2 ahead)…"). Payloads below are the live ones.
 describe('beeper bridge — a reaction placed by an account this node speaks through wakes nobody', () => {
   const RODZ_LID = '@whatsapp_lid-69433129173200:beeper.local';
@@ -2205,14 +2205,14 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
   const dropped = (logs) => logs.some((l) => /a mouth's own — dropped/.test(l));
 
   // A being's reaction is OUTPUT (operator 2026-10-18): it never re-enters, not even as a record.
-  it('REPRODUCE: the mouth\'s 📩 steer-ack on the operator\'s message never reaches the spine — no turn, no ingestion line', async () => {
+  it('REPRODUCE: the mouth\'s ✍️ steer-ack on the operator\'s message never reaches the spine — no turn, no ingestion line', async () => {
     roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
     const s = onSpine();
     const logs = [];
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed, onLog: (m) => logs.push(m) });
     fake.emit({ type: 'message.upserted', entries: [opMsg()] });
     await waitFor(() => s.brain.calls.length === 1);   // E's turn on #26445 is live
-    fake.emit({ type: 'message.upserted', entries: [reacted(opMsg(), RODZ_LID, '📩')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(opMsg(), RODZ_LID, '✍️')] });
     await waitFor(() => dropped(logs));
     s.release();
     await s.settled();
@@ -2230,7 +2230,7 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
     const msg = opMsg({ id: '10006', senderID: '@whatsapp_lid-1:beeper.local', isSender: false });
     fake.emit({ type: 'message.upserted', entries: [msg] });
     await waitFor(() => s.brain.calls.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@dolly-egpt:beeper.com', '👀')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@dolly-egpt:beeper.com', '👍')] });
     await waitFor(() => dropped(logs));
     expect(s.fed.filter((f) => f.isReaction)).toEqual([]);
     expect(s.opens).toHaveLength(1);

@@ -239,7 +239,7 @@ export const RETAINED_SEAM = '\n\n— ↓ reply —\n\n';
  * resolved without knowing who is replying. It was not passed, and could not have been, while the
  * only mouth was a peer spine — that one is a property of the node.
  *
- * `react()` IS THE ONE PLACEMENT OF A REACTION (2026-09-16), shared by the steer 📩/👀
+ * `react()` IS THE ONE PLACEMENT OF A REACTION (2026-09-16), shared by the steer ✍️/👍
  * (turns.mjs) and the /react limb (reply-actions.mjs). Live on kg the limb reacted on the EAR —
  * `bridge` above — so the 👍 came from the operator's own account while the reply came from the
  * mouth; the steer ack already asked route() first. Moved here from turns.mjs so both ask it:

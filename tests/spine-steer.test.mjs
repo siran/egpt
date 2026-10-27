@@ -95,7 +95,7 @@ function steerableBrain({ allow = 'same_sender', steerTakes = true, hasSeams = t
   if (hasSeams) {
     brain.allowNewInput = async (being, ev) => { allowAsked.push({ being, body: ev.body }); return allow; };
     // `{ ack }` since 2026-09-09, not a bare `true`: the pool hands back the session's later
-    // word on whether the MODEL took the line, and only that places the 👀 (see turns.mjs and
+    // word on whether the MODEL took the line, and only that places the 👍 (see turns.mjs and
     // tests/steer-ack.test.mjs). A fake that answered `true` would be claiming an ingestion it
     // has no evidence for — which is the fault this shape exists to make impossible.
     brain.steer = (being, ev) => { if (!steerTakes) return false; steered.push(ev.body); return { ack: Promise.resolve({ ok: true }) }; };
@@ -175,8 +175,8 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
   // steer must react on the STEERED message itself (its own chatId/msgId), not the one that's
   // already streaming — using the SAME bridge.react primitive the /react limb uses.
   //
-  // TWO REACTIONS SINCE 2026-09-09, in this order and for two different reasons: 📩 the bridge
-  // has it (placed on arrival, true by construction) and 👀 the model took it (placed only once
+  // TWO REACTIONS SINCE 2026-09-09, in this order and for two different reasons: ✍️ the bridge
+  // has it (placed on arrival, true by construction) and 👍 the model took it (placed only once
   // the session's ack says so). See tests/steer-ack.test.mjs for the Joyce fault behind the split.
   it('a successful steer ACKs the steered message with a reaction (not a new placeholder/reply)', async () => {
     const { bridge, sender, brain } = build({ allow: 'any' });
@@ -188,17 +188,17 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     expect(brain.steered).toEqual(['actually do X']);
     await flush();
     expect(bridge.reactions).toEqual([
-      { chatId: CHAT, msgId: 'm2', emoji: '📩' },
-      { chatId: CHAT, msgId: 'm2', emoji: '👀' },
+      { chatId: CHAT, msgId: 'm2', emoji: '✍️' },
+      { chatId: CHAT, msgId: 'm2', emoji: '👍' },
     ]);
     expect(sender.placeholders).toHaveLength(1);          // still no second placeholder
     brain.releaseFirst();
     await Promise.all([p1, p2]);
   });
 
-  // Live 2026-10-18: the 📩's lookup waits for the mouth's copy (up to COPY_WAIT_MS). That wait was
+  // Live 2026-10-18: the ✍️'s lookup waits for the mouth's copy (up to COPY_WAIT_MS). That wait was
   // awaited on the chat's lane, so the next message in the chat queued behind a reaction.
-  it('a 📩 still being placed does not hold the lane: the next message in the chat steers at once', async () => {
+  it('a ✍️ still being placed does not hold the lane: the next message in the chat steers at once', async () => {
     const { bridge, brain } = build({ allow: 'any' }, { reactHangs: true });
     const p1 = bridge.emit(msg('one', 'm1', 'an'));
     await flush();
@@ -207,7 +207,7 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
     bridge.emit(msg('three', 'm3', 'an'));
     await flush();
     expect(brain.steered).toEqual(['two', 'three']);
-    expect(bridge.reactions.map((r) => [r.msgId, r.emoji])).toEqual([['m2', '📩'], ['m3', '📩']]);   // no 👀 before its 📩
+    expect(bridge.reactions.map((r) => [r.msgId, r.emoji])).toEqual([['m2', '✍️'], ['m3', '✍️']]);   // no 👍 before its ✍️
     brain.releaseFirst();
     await p1;
   });
@@ -390,7 +390,7 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
 // THE LIVE FAULT: a group member writes while the ROOM's turn is streaming. Same key, and the
 // sender passes ('any', or the same person under 'same_sender') ⇒ his line is woven in. But a
 // woven message makes its caller produce NOTHING for its conversation — no placeholder, no reply,
-// only a 👀 — and the live turn's single answer is delivered to the LIVE TURN'S origin, the room.
+// only a 👍 — and the live turn's single answer is delivered to the LIVE TURN'S origin, the room.
 // His question is answered where he cannot read it, and all he ever sees is an eye.
 //
 // The operator's ruling: the unit is the PAIR. "Keep the same sender+group: add, different
@@ -411,7 +411,7 @@ describe("spine — a SHARED SCOPE puts two chats on one key; only the live turn
     await flush();
 
     expect(brain.steered).toEqual([]);                    // was ['two'] — woven into the ROOM's turn
-    expect(bridge.reactions).toEqual([]);                 // …and the 👀 was all the group ever saw
+    expect(bridge.reactions).toEqual([]);                 // …and the 👍 was all the group ever saw
     expect(sender.placeholders).toHaveLength(2);
     expect(sender.placeholders[1].chatId).toBe(GROUP);    // a real reply, in the chat that asked
     expect(sender.placeholders[1].opts).toMatchObject({ queued: true, queuedAhead: 1 });
