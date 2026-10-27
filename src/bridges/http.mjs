@@ -6,7 +6,8 @@
 //   POST <path>/<client>/messages        {session?, text} → {session, message}
 //   GET  <path>/<client>/messages?session=&since=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=     SSE: each message as it is posted, edited, settled
-//   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the three above
+//   POST <path>/<client>/end             {session} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
+//   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 import { createServer } from 'node:http';
@@ -24,13 +25,15 @@ const CHAT_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;
 export const httpClientOf = (chatId) => CHAT_RE.exec(String(chatId ?? ''))?.[1] ?? null;
 const CLIENT_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
-export const HTTP_DEFAULTS = Object.freeze({ path: '/chat', maxChars: 4000, rateMessages: 30, rateMinutes: 10, newSessions: 30, newSessionsMinutes: 60 });
+export const HTTP_DEFAULTS = Object.freeze({ path: '/chat', maxChars: 4000, rateMessages: 30, rateMinutes: 10, newSessions: 30, newSessionsMinutes: 60, sessionDays: 365 });
 export const HTTP_STRINGS = Object.freeze({
   title: 'Chat', open: 'Abrir chat', close: 'Cerrar', placeholder: 'Escribe tu mensaje…', send: 'Enviar',
   error: 'No se pudo enviar. Intenta de nuevo.', too_long: 'El mensaje es demasiado largo.', too_many: 'Demasiados mensajes. Espera unos minutos.',
   unavailable: 'No se pudo abrir el chat. Intenta de nuevo.',
+  end: 'Terminar conversación', end_confirm: '¿Terminar esta conversación? El chat empezará de nuevo.', end_yes: 'Sí, terminar', cancel: 'Cancelar',
+  ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
+  intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
 });
-const SESSION_IDLE_MS = 30 * 24 * 3600_000;   // an idle session past this is expired: its token starts a new one
 const LOG_MAX = 200;                           // messages a session keeps for replay
 const PING_MS = 25_000;                        // SSE keep-alive, under common proxy idle timeouts
 const SESSIONS_FILE = 'http-sessions.json';
@@ -57,6 +60,8 @@ function clientConfig(name, c = {}) {
     rateMs: posInt(c.rate?.minutes, HTTP_DEFAULTS.rateMinutes) * 60_000,
     newCount: posInt(c.new_sessions?.count, HTTP_DEFAULTS.newSessions),
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
+    idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
+    ended: strings.ended,
     widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT })});\n`,
   };
 }
@@ -71,6 +76,7 @@ export async function startHttpBridge({
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's
   stateDir = null,
   onNewSession = null,    // ({ client, chatId }), awaited before a new session's first line enters
+  onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -87,7 +93,7 @@ export async function startHttpBridge({
   const sessionsPath = stateDir ? join(stateDir, SESSIONS_FILE) : null;
   const messagesDir = stateDir ? join(stateDir, MESSAGES_DIR) : null;
   const logPath = (sid) => join(messagesDir, `${sid}.json`);
-  const live = (s, n = now()) => !!s && n - s.lastAt < SESSION_IDLE_MS;
+  const live = (s, n = now()) => !!s && n - s.lastAt < (clients.get(s.client)?.idleMs ?? 0);
   const fresh = (client, lastAt, sid, log = []) => ({ sid, client, lastAt, log, subs: new Set(), posts: [] });
   // A reply cut by the restart is settled as it stood.
   const readLog = async (sid) => {
@@ -140,6 +146,7 @@ export async function startHttpBridge({
   const put = (res, chunk) => { if (!res.writableEnded) res.write(chunk); };
   const view = (m) => (m.deleted ? { id: m.id, deleted: true, seq: m.seq } : { id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
   const changed = (s, m) => {
+    if (m.ended) return;   // cleared by an end: a reply still streaming stays out of the fresh panel
     m.seq = nextTick();
     m.id ??= String(m.seq);
     const frame = `id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`;
@@ -189,6 +196,11 @@ export async function startHttpBridge({
   };
 
   const opened = new Map();   // `<client> <address>` → when it opened new sessions, within the window
+  // Seconds until this session may post again (its window pruned), or 0.
+  const rateWait = (c, s, n) => {
+    s.posts = s.posts.filter((t) => n - t < c.rateMs);
+    return s.posts.length >= c.rateMessages ? Math.ceil((s.posts[0] + c.rateMs - n) / 1000) : 0;
+  };
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
   async function post(c, req, res, cors) {
@@ -203,11 +215,8 @@ export async function startHttpBridge({
     const n = now();
     let token = body?.session, hit = sessionOfToken(c, token);
     if (hit) {
-      hit.s.posts = hit.s.posts.filter((t) => n - t < c.rateMs);
-      if (hit.s.posts.length >= c.rateMessages) {
-        const wait = Math.ceil((hit.s.posts[0] + c.rateMs - n) / 1000);
-        return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
-      }
+      const wait = rateWait(c, hit.s, n);
+      if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
     } else {
       const key = `${c.name} ${addressOf(req)}`;
       const times = (opened.get(key) ?? []).filter((t) => n - t < c.newMs);
@@ -245,6 +254,32 @@ export async function startHttpBridge({
       msgKey: m.id, msgTs: n,
     });
     return json(res, 200, { session: token, message: view(m) }, cors);
+  }
+
+  // The visitor's "end conversation": the same session, token and conversation; onEnd gives it a
+  // fresh thread, then the panel's history is cleared. Nothing said since the last end: nothing to do.
+  async function end(c, req, res, cors) {
+    if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return json(res, 415, { error: 'send application/json' }, cors);
+    const raw = await readBody(req, 1024);
+    if (raw == null) return json(res, 413, { error: 'too long' }, cors);
+    let body;
+    try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'not JSON' }, cors); }
+    const hit = sessionOfToken(c, body?.session);
+    if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
+    const { sid, s } = hit;
+    const n = now(), wait = rateWait(c, s, n);
+    if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
+    s.lastAt = n;
+    persist();
+    if (!s.log.length) return json(res, 200, { ok: true }, cors);
+    s.posts.push(n);
+    try { await onEnd?.({ client: c.name, chatId: chatIdOf(c.name, sid), ended: c.ended }); }
+    catch (e) { log(`end ${c.name}-${sid}: ${e?.message ?? e}`); return json(res, 500, { error: 'could not end the conversation' }, cors); }
+    for (const m of s.log) m.ended = true;
+    s.log = [];
+    saveLog(s);
+    log(`${c.name}-${sid}: the visitor ended the conversation`);
+    return json(res, 200, { ok: true }, cors);
   }
 
   const since = (req, url) => Number(req.headers['last-event-id'] ?? url.searchParams.get('since')) || 0;
@@ -287,11 +322,12 @@ export async function startHttpBridge({
     if (route === 'POST messages') return post(c, req, res, cors);
     if (route === 'GET messages') return list(c, req, res, url, cors);
     if (route === 'GET events') return events(c, req, res, url, cors);
+    if (route === 'POST end') return end(c, req, res, cors);
     if (route === 'GET widget.js') {
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'max-age=300', ...cors });
       return res.end(c.widget);
     }
-    const known = ['messages', 'events', 'widget.js'].includes(action);
+    const known = ['messages', 'events', 'end', 'widget.js'].includes(action);
     return json(res, known ? 405 : 404, { error: known ? 'method not allowed' : 'not found' }, cors);
   }
 

@@ -16,7 +16,14 @@ function egptChat(C, base) {
     + '.egc-panel{position:absolute;right:0;bottom:68px;width:360px;height:520px;max-height:calc(100vh - 100px);display:flex;flex-direction:column;background:#f6f8fa;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.25);overflow:hidden}'
     + '.egc-panel[hidden]{display:none}'
     + '.egc-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1f6feb;color:#fff;font-weight:600}'
-    + '.egc-x{background:none;border:0;color:#fff;font-size:22px;cursor:pointer}'
+    + '.egc-head span{flex:1}'
+    + '.egc-x,.egc-end{background:none;border:0;color:#fff;font-size:22px;cursor:pointer}'
+    + '.egc-end{font-size:19px;margin-right:6px}'
+    + '.egc-ask{display:flex;align-items:center;gap:8px;padding:8px 14px;background:#fff8c5;font-size:13px}'
+    + '.egc-ask[hidden]{display:none}'
+    + '.egc-ask span{flex:1}'
+    + '.egc-ask button{border:1px solid #d0d7de;border-radius:6px;padding:4px 10px;background:#fff;cursor:pointer;font:inherit}'
+    + '.egc-ask .egc-yes{background:#b42318;border-color:#b42318;color:#fff}'
     + '.egc-body{flex:1;min-height:0}'
     + '.egc-err{padding:12px;color:#b42318;font-size:13px}'
     + '@media (max-width:480px){.egc-panel{position:fixed;inset:0;width:auto;height:auto;max-height:none;border-radius:0}'
@@ -27,12 +34,18 @@ function egptChat(C, base) {
 
   var root = document.createElement('div');
   root.className = 'egc';
-  root.innerHTML = '<div class="egc-panel" role="dialog" hidden><div class="egc-head"><span></span><button type="button" class="egc-x">×</button></div>'
+  root.innerHTML = '<div class="egc-panel" role="dialog" hidden><div class="egc-head"><span></span><button type="button" class="egc-end">↺</button><button type="button" class="egc-x">×</button></div>'
+    + '<div class="egc-ask" hidden><span></span><button type="button" class="egc-yes"></button><button type="button" class="egc-no"></button></div>'
     + '<div class="egc-err" hidden></div><div class="egc-body"></div></div>'
     + '<button type="button" class="egc-bubble">💬</button>';
   var q = function (sel) { return root.querySelector(sel); };
-  var panel = q('.egc-panel'), err = q('.egc-err'), body = q('.egc-body');
+  var panel = q('.egc-panel'), err = q('.egc-err'), body = q('.egc-body'), ask = q('.egc-ask');
   q('.egc-head span').textContent = S.title;
+  q('.egc-end').title = S.end;
+  q('.egc-end').setAttribute('aria-label', S.end);
+  q('.egc-ask span').textContent = S.end_confirm;
+  q('.egc-yes').textContent = S.end_yes;
+  q('.egc-no').textContent = S.cancel;
   q('.egc-x').setAttribute('aria-label', S.close);
   q('.egc-bubble').setAttribute('aria-label', S.open);
   document.body.appendChild(root);
@@ -132,6 +145,7 @@ function egptChat(C, base) {
     });
     chat = document.createElement('deep-chat');
     chat.history = hist;
+    if (S.intro) chat.introMessage = { text: S.intro };
     // websocket mode: the handler runs once; input stays open while replies arrive at any time.
     chat.connect = { websocket: true, handler: function (_, signals) {
       sig = signals;
@@ -169,6 +183,22 @@ function egptChat(C, base) {
       err.hidden = false;
     });
   };
+  // End: the same token (conversation, team topic) gets a fresh thread; the panel starts over.
+  var end = function () {
+    ask.hidden = true;
+    fetch(base + 'end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token }) })
+      .then(function (r) {
+        if (r.status === 404) { token = null; store(KEY, null); listen(); }
+        else if (!r.ok) return Promise.reject(r.status);
+        at = {};
+        err.hidden = true;
+        chat.clearMessages();
+      })
+      .catch(function () { err.textContent = S.error; err.hidden = false; });
+  };
+  q('.egc-end').onclick = function () { ask.hidden = !(ask.hidden && token && chat && !inflight); };
+  q('.egc-no').onclick = function () { ask.hidden = true; };
+  q('.egc-yes').onclick = end;
   q('.egc-bubble').onclick = function () { open(panel.hidden, true); };
   q('.egc-x').onclick = function () { open(false); };
   try { if (localStorage.getItem(KEY + ':open')) open(true); } catch (e) { /* private mode */ }
