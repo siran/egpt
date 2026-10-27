@@ -86,6 +86,8 @@ limbs:
   #       # new_sessions: { count: 30, minutes: 60 }   # per visitor address
   #       # team_group: -1001234567890  # a Telegram forum group: a topic per session, the team replies there
   #       # team_name: "Equipo"         # the team's name in the widget
+  #       # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}
+  #       # identity: off               # optional | required: a signed user (key: secrets/chatbox-mysite.key)
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

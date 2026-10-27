@@ -503,7 +503,7 @@ describe('widget.js and routing', () => {
     expect(js).toContain('class="egc-ask"');
     expect(js).not.toContain('confirm(');
     expect(js).toContain("fetch(base + 'end', { method: 'POST'");
-    expect(js).toContain('JSON.stringify({ session: token })');
+    expect(js).toContain('JSON.stringify({ session: token, identity: identity })');
     expect(js).toContain('chat.clearMessages()');
     expect(js).toContain(`"end":${JSON.stringify(HTTP_STRINGS.end)}`);
   });
@@ -514,7 +514,7 @@ describe('widget.js and routing', () => {
     expect(js).toContain('chat.displayLoadingBubble = true');
     expect(js).toContain("loading: { message: { html: '⏳' } }");
     expect(js).toContain('var BACKOFF = [1000, 3000, 9000]');
-    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id })');
+    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id, identity: identity })');
     expect(js).toContain('crypto.getRandomValues');
     expect(js).toMatch(/if \(\(status && status < 500\) \|\| n >= BACKOFF\.length\) return Promise\.reject\(status\)/);
   });
