@@ -57,6 +57,12 @@ const EDIT_MIN_MS = 1000;                             // Telegram rate-limits ed
 const RETRY_MIN_MS = 3_000, RETRY_MAX_MS = 60_000;
 const CONFLICT_MIN_MS = 60_000, CONFLICT_MAX_MS = 15 * 60_000;
 const RETRY_AFTER_MAX_S = 30;
+const NET_RETRY_MS = [1_000, 3_000, 9_000];
+// A repeat changes nothing (at worst refused "not modified"); any other method makes something.
+const IDEMPOTENT = new Set(['editMessageText', 'deleteMessage', 'setMessageReaction', 'getFile', 'closeForumTopic', 'setChatTitle', 'setChatDescription']);
+// Retry rule: any method if the request never left (getaddrinfo, syscall 'connect' incl. net's happy-eyeballs AggregateError = EDW's ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT); after it may have (read ECONNRESET/ETIMEDOUT, UND_ERR_SOCKET) only IDEMPOTENT.
+const unsent = (c) => c?.code === 'UND_ERR_CONNECT_TIMEOUT' || c?.syscall === 'connect' || c?.syscall === 'getaddrinfo'
+  || (Array.isArray(c?.errors) && c.errors.length > 0 && c.errors.every(unsent));
 const WAKE_WINDOW_MS = 15 * 60_000;                   // older than this before start (or wake) = backlog, as on Beeper
 const SENT_MAX = 2000;
 const DOWNLOAD_MAX = 20 * 1024 * 1024;                // the Bot API serves files up to 20 MB
@@ -182,7 +188,11 @@ export function startTelegramBridge({
       res = await fetchFn(`${API_BASE}/bot${token}/${method}`, {
         method: 'POST', ...(form ? {} : { headers: { 'Content-Type': 'application/json' } }), body: form ? body : JSON.stringify(body), signal,
       });
-    } catch (e) { throw new Error(scrub(`${e?.message ?? e}${e?.cause?.code ? ` (${e.cause.code})` : ''}`)); }
+    } catch (e) {
+      const err = new Error(scrub(`${e?.message ?? e}${e?.cause?.code ? ` (${e.cause.code})` : ''}`));
+      if (e?.cause?.code) { err.network = true; err.unsent = unsent(e.cause); }   // no HTTP answer
+      throw err;
+    }
     const j = await res.json().catch(() => null);
     if (j?.ok) return j.result;
     const err = new Error(scrub(j?.description ?? `HTTP ${res.status}`));
@@ -191,20 +201,32 @@ export function startTelegramBridge({
     err.migrateTo = j?.parameters?.migrate_to_chat_id ?? null;
     throw err;
   }
+  // No HTTP answer: tried again per the retry rule. getUpdates/getMe call api(): their loops back off on their own.
+  async function attempt(method, body) {
+    for (let i = 0; ; i++) {
+      try { return await api(method, body); }
+      catch (e) {
+        if (!e.network || stopped || i === NET_RETRY_MS.length || !(e.unsent || IDEMPOTENT.has(method))) throw e;
+        log(`${method} got no answer — ${e.message}; retry ${i + 1}/${NET_RETRY_MS.length} in ${NET_RETRY_MS[i] / 1000}s`);
+        await wait(NET_RETRY_MS[i]);
+        if (stopped) throw e;
+      }
+    }
+  }
   // One retry on 429, after the wait Telegram names (when it is short). A chat that became a
   // supergroup is refused with its new id: handed over, and said once more there.
   async function call(method, body) {
-    try { return await api(method, body); }
+    try { return await attempt(method, body); }
     catch (e) {
       if (e.migrateTo != null) {
         const form = body instanceof FormData;
         handOver(TG_PREFIX + (form ? body.get('chat_id') : body.chat_id), TG_PREFIX + e.migrateTo);
         if (form) body.set('chat_id', String(e.migrateTo)); else body = { ...body, chat_id: String(e.migrateTo) };
-        return api(method, body);
+        return attempt(method, body);
       }
       if (e.status !== 429 || !(e.retryAfter <= RETRY_AFTER_MAX_S) || stopped) throw e;
       await wait(e.retryAfter * 1000);
-      return api(method, body);
+      return attempt(method, body);
     }
   }
   // body(t) builds the request around the text t: first as HTML, then as written if Telegram cannot parse it.
@@ -668,7 +690,9 @@ export function startTelegramBridge({
       if (r) realId = r.messageId;
       else handle.lastError = failures.get(chatId) ?? 'placeholder send failed';
     })();
-    const applyEdit = (t) => serial(async () => { await ready; return realId ? editMessage(chatId, realId, t) : false; });
+    // A frame overtaken while an edit was retrying is skipped: only the newest goes out (the final always is).
+    let edits = 0;
+    const applyEdit = (t) => { const n = ++edits; return serial(async () => { await ready; if (n !== edits) return true; return realId ? editMessage(chatId, realId, t) : false; }); };
     handle.update = (t) => {
       if (finished || !t) return;
       latest = t; pending = t;
