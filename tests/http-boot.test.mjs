@@ -282,3 +282,32 @@ describe('limbs.http beside Beeper', () => {
     app.stop();
   });
 });
+
+describe('limbs.http clients.<c>.admin through boot', () => {
+  it('the key is secrets/chatbox-<client>-admin.key and the root is conversations/http; no key: a boot line and 404', async () => {
+    const { createHmac } = await import('node:crypto');
+    const id = 'eduweb-00000000000000aa';
+    const keyFile = join(_HOME, 'secrets', 'chatbox-eduweb-admin.key');
+    await fs.mkdir(convDir(id), { recursive: true });
+    await fs.writeFile(join(convDir(id), 'usuario.json'), JSON.stringify({ abrin: 'IEV', username: 'mlopez' }));
+    try {
+      const body = Buffer.from(JSON.stringify({ role: 'admin', staff: 'jaime', exp: Math.floor(Date.now() / 1000) + 600 })).toString('base64url');
+      const t = `${body}.${createHmac('sha256', 'dummy-admin-key').update(body).digest('base64url')}`;
+      const off = await bootChatbox({ client: { admin: 'on' } });
+      expect(off.lines.some((l) => /^\[http\] limbs\.http\.clients\.eduweb\.admin is on but .*chatbox-eduweb-admin\.key is missing — the folder browser answers 404$/.test(l))).toBe(true);
+      expect((await fetch(`${off.url}admin?t=${t}`)).status).toBe(404);
+      off.app.stop();
+
+      await fs.mkdir(dirname(keyFile), { recursive: true });
+      await fs.writeFile(keyFile, 'dummy-admin-key\n');
+      const on = await bootChatbox({ client: { admin: 'on' } });
+      expect((await fetch(`${on.url}admin?t=${t}`)).status).toBe(200);
+      const found = await fetch(`${on.url}admin/search?q=mlo`, { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.json());
+      expect(found.conversations.map((c) => c.id)).toEqual([id]);
+      on.app.stop();
+    } finally {
+      await fs.rm(keyFile, { force: true });
+      await fs.rm(convDir(id), { recursive: true, force: true });
+    }
+  });
+});

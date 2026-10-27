@@ -8,6 +8,7 @@
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
+//   GET  <path>/<client>/admin?t=<token>            the team's read-only folder browser (admin: on; http-admin.mjs)
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -19,6 +20,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/pro
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
+import { createFolderBrowser } from './http-admin.mjs';
 
 export const HTTP_PREFIX = 'http:';
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
@@ -62,8 +64,8 @@ const FIELD_MAX = 80;
 const field = (v) => ((typeof v === 'string' || typeof v === 'number')
   ? [...stripInvisible(String(v)).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()].slice(0, FIELD_MAX).join('')
   : '');
-// { identity: {abrin, user_type, short_name, username, user_id?} } or { why: 'invalid' | 'expired' }.
-export function verifyIdentity(token, key, nowMs = Date.now()) {
+// A signed token's payload object, unexpired, or { why: 'invalid' | 'expired' }.
+function signedPayload(token, key, nowMs) {
   const m = typeof token === 'string' && token.length <= IDENTITY_MAX ? IDENTITY_RE.exec(token) : null;
   if (!m) return { why: 'invalid' };
   const want = createHmac('sha256', key).update(m[1]).digest();
@@ -73,11 +75,29 @@ export function verifyIdentity(token, key, nowMs = Date.now()) {
   try { p = JSON.parse(Buffer.from(m[1], 'base64url').toString('utf8')); } catch { return { why: 'invalid' }; }
   if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.exp !== 'number' || !Number.isFinite(p.exp)) return { why: 'invalid' };
   if (p.exp * 1000 <= nowMs) return { why: 'expired' };
+  return { p };
+}
+// { identity: {abrin, user_type, short_name, username, user_id?} } or { why: 'invalid' | 'expired' }.
+export function verifyIdentity(token, key, nowMs = Date.now()) {
+  const { p, why } = signedPayload(token, key, nowMs);
+  if (why) return { why };
   const identity = { abrin: field(p.abrin), user_type: field(p.user_type), short_name: field(p.short_name), username: field(p.username) };
   if (!identity.abrin || !identity.username) return { why: 'invalid' };
   if (field(p.user_id)) identity.user_id = field(p.user_id);
   return { identity };
 }
+// The folder browser's token, signed with the client's admin key: { staff } or { why: 'invalid' | 'expired' | 'too long-lived' }.
+const ADMIN_TTL_S = 3600;
+export function verifyAdmin(token, key, nowMs = Date.now()) {
+  const { p, why } = signedPayload(token, key, nowMs);
+  if (why) return { why };
+  const staff = field(p.staff);
+  if (p.role !== 'admin' || !staff) return { why: 'invalid' };
+  if (p.exp * 1000 > nowMs + ADMIN_TTL_S * 1000) return { why: 'too long-lived' };
+  return { staff };
+}
+const ADMIN_MODES = Object.freeze(['off', 'on']);
+const ADMIN_REFUSED = 'Enlace vencido o no válido. Ábrelo de nuevo desde AyDE.';
 const whoOf = (identity) => (identity ? createHash('sha256').update(JSON.stringify([identity.abrin, identity.username])).digest('hex').slice(0, 16) : null);
 
 // A team topic's name: {abrin} {user_type} {short_name} {username} {title} {sid}; a missing value is
@@ -109,6 +129,7 @@ function clientConfig(name, c = {}) {
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
     idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
     identity: c.identity == null || c.identity === false ? 'off' : IDENTITY_MODES.includes(c.identity) ? c.identity : null,
+    admin: c.admin == null || c.admin === false || c.admin === 'off' ? false : c.admin === true || c.admin === 'on' ? true : null,
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
@@ -128,6 +149,8 @@ export async function startHttpBridge({
   beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   identityKey = () => null,   // (client) → its HMAC key, or null
+  adminKey = () => null,      // (client) → its folder browser's HMAC key, or null
+  conversationsDir = null,    // conversations/http: the folder browser's root
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -138,7 +161,11 @@ export async function startHttpBridge({
     if (!CLIENT_RE.test(name)) { log(`client '${name}' skipped — a client name is lowercase letters, digits, - and _`); continue; }
     const cc = clientConfig(name, c);
     if (!cc.identity) { log(`${name}: identity '${c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
+    if (cc.admin == null) { log(`${name}: admin '${c.admin}' is not ${ADMIN_MODES.join(' | ')} — off`); cc.admin = false; }
     clients.set(name, cc);
+  }
+  for (const c of clients.values()) {
+    if (c.admin && clients.has(`${c.name}-admin`)) { log(`${c.name}: admin off — client '${c.name}-admin' would share its key file`); c.admin = false; }
   }
 
   // sid → { sid, client, lastAt, who, log, subs, posts }; client + lastAt + who persist across restarts, log in its own file.
@@ -252,6 +279,7 @@ export async function startHttpBridge({
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
+  const browser = conversationsDir ? createFolderBrowser({ root: conversationsDir, json, log, now }) : null;
   const readBody = (req, limit) => new Promise((resolve, reject) => {
     let size = 0, over = false;
     const parts = [];
@@ -393,6 +421,21 @@ export async function startHttpBridge({
     res.on('close', () => hit.s.subs.delete(res));
   }
 
+  // The folder browser (http-admin.mjs): off, no key or no root → 404. GET only, no CORS. The page
+  // takes its token as ?t=, its calls as "Authorization: Bearer".
+  function admin(c, req, res, url, sub) {
+    const key = c.admin && browser ? adminKey(c.name) : null;
+    if (!key || sub.length > 1) return json(res, 404, { error: 'not found' });
+    if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' }, { Allow: 'GET' });
+    const token = sub.length ? /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1] : url.searchParams.get('t');
+    const r = verifyAdmin(token, key, now());
+    if (!r.why) return browser.serve(c.name, sub[0] ?? null, req, res, url, r.staff);
+    log(`${c.name}: an admin token refused (${r.why})`);
+    if (sub.length) return json(res, 401, { error: `admin ${r.why}`, message: ADMIN_REFUSED });
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+    return res.end(`<!doctype html><html lang="es"><meta charset="utf-8"><title>Sin acceso</title><p>${ADMIN_REFUSED}</p></html>\n`);
+  }
+
   // CORS: an Origin must be on the client's list; an empty list sends no CORS headers (same-origin
   // only — the website's server proxies the path) and refuses every preflight.
   async function serve(req, res) {
@@ -400,6 +443,7 @@ export async function startHttpBridge({
     if (!url.pathname.startsWith(base)) return json(res, 404, { error: 'not found' });
     const [name, action, ...more] = url.pathname.slice(base.length).split('/');
     const c = clients.get(name);
+    if (c && action === 'admin') return admin(c, req, res, url, more);
     if (!c || more.length) return json(res, 404, { error: 'not found' });
     const origin = req.headers.origin;
     const listed = !!origin && c.origins.includes(origin);
