@@ -18,7 +18,7 @@ import { createLagProbe, intakeCap } from './lag-probe.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
-import { startTelegramBridge, readTelegramToken, isTelegramChatId } from '../bridges/telegram.mjs';
+import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
 import { startHttpBridge, isHttpChatId, httpClientOf } from '../bridges/http.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
@@ -2652,7 +2652,12 @@ export async function boot({
   // node-wide outbound ceiling the echo (echoGate, above) and every port send already go
   // through; a note reaching the station counts as an outbound message, never a second budget.
   const radioRelay = createRadioNoteRelay({ resolveConvRoom, getConfig, gate: sendGuard.gate, onLog: (m) => log.line?.(`[radio] ${m}`) });
-  const onMediaSaved = (m) => { radioRelay.noteMedia(m); return media.save(m); };   // a resumed voice note's audio too (background resume)
+  // A topic's first file is saved where its first line runs (commands.forkTopic).
+  const onMediaSaved = async (m) => {   // a resumed voice note's audio too (background resume)
+    radioRelay.noteMedia(m);
+    try { await commands.forkTopic({ surface: surfaceOf(m?.network), chatId: m?.chatID, chatName: m?.chatName }); } catch { /* commands not built yet */ }
+    return media.save(m);
+  };
   bridge.onMedia(onMediaSaved);
 
   // The operator-console LIMB (plans/2607191835-SHELL-LIMB-S1-PLAN.md Phase 1, direction
@@ -3425,6 +3430,7 @@ export async function boot({
       chatRaw:       (chatId)                         => sideChatRaw(chatId),   // the side-group liveness check
       chatTitle:     (chatId)                         => earBridge.getChatName(chatId),
       roomsInside:   (chatId)                         => !!telegramPort?.owns(chatId),   // a topic: everyone in the chat is in it
+      topicParentOf: (chatId)                         => (telegramPort ? topicGroupOf(chatId) : null),
       listMessagesRaw: (chatId, opts = {})            => postBridgeFor(opts.via).listMessagesRaw(chatId, opts),   // /send reads the replied-to message's live text
       // RODZ'S BEEPER USER ID (operator 2026-10-03) — the create needs `@whatsapp_lid-…`, not a
       // +phone (the API rejects it). Resolved from config.beeper.secondary.phone by scanning this

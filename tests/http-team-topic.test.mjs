@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 import { boot } from '../src/spine/boot.mjs';
 import { startTelegramBridge } from '../src/bridges/telegram.mjs';
-import { emptyState, getContact } from '../src/conversations-state.mjs';
+import { emptyState, getContact, ensureContact, recordThread } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
 import { ROOMS_FILE } from '../src/rooms-file.mjs';
 
@@ -98,7 +98,7 @@ function brain(turns) {
 }
 
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
-async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }) {
+async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState() } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   const port = await freeSafeHttpPort();
@@ -106,7 +106,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
   const io = memIo();
   const turns = [];
   const lines = [];
-  let st = emptyState();
+  let st = state;
   const app = await boot({
     readConfig: () => ({
       node_name: 'EDW', user_name: 'John',
@@ -235,6 +235,24 @@ describe('a chatbox client with a team_group', () => {
     expect(n.transcript(slug)).toBe(before);
     expect(n.turns).toHaveLength(1);
     expect((await n.messages(a.session)).filter((m) => m.from === 'being')).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('the team group\'s General chat being a conversation changes nothing: the topic stays the chatbox\'s, not a fork', async () => {
+    let state = ensureContact(emptyState(), 'telegram', `tg:${GROUP}`, { pushedName: 'EduWeb Chatbox' }).state;
+    state = recordThread(state, 'telegram', `tg:${GROUP}`, 'general-thread', '2026-10-01T00:00:00Z', 'ed');
+    const n = await bootTeam(undefined, { state });
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    n.api.updates(inTopic('Hola, soy Ana del equipo'));
+    await vi.waitFor(() => expect(n.transcript(slug)).toContain('Hola, soy Ana del equipo'), { timeout: 5000 });
+    const topic = getContact(n.state(), 'telegram', TOPIC).entry;
+    expect(topic.parent_chat).toBeUndefined();
+    expect(topic.transcript).toBeUndefined();
+    expect(topic.slug).not.toBe(getContact(n.state(), 'telegram', `tg:${GROUP}`).entry.slug);
+    expect(topic.agents.ed).toEqual({ mode: 'mute' });
+    expect(n.turns).toHaveLength(1);
     n.app.stop();
   });
 

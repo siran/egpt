@@ -638,6 +638,7 @@ export function createCommands({
     chatAccountId: async () => null,    // (chatId) -> the accountID the chat lives on
     chatTitle:     async () => null,    // (chatId) -> the chat's display title
     roomsInside:   () => false,         // (chatId) -> a side room made here is inside it (a Telegram topic): nobody to invite
+    topicParentOf: () => null,          // (chatId) -> a Telegram topic's General chat id | null
     chatRaw:       async () => null,    // (chatId) -> the GET /v1/chats/{id} payload (roster) | null when gone
     resolveUserIdByPhone: async () => null,   // (phoneDigits, { accountID }) -> "@whatsapp_lid-…:beeper.local" | null
     awaitMouthMessage: async () => null,   // (test, ms) -> the next raw message Rodz's account receives, in any chat, passing test | null
@@ -3753,6 +3754,28 @@ export function createCommands({
     });
   }
 
+  // A Telegram topic made outside /split (operator 2026-10-25/27: topics always fork): its first event,
+  // with no entry here and its General chat a conversation, registers it as that chat's fork
+  // (registerSplit), before the line is routed. A topic egpt made (/split, a chatbox team topic) has its entry.
+  async function forkTopic(ev) {
+    const parent = forkBridge.topicParentOf?.(ev?.chatId) ?? null;
+    if (!parent || !loadState || !writeState) return;
+    const surface = surfaceOf(ev);
+    const { chatId } = ev;
+    const unclaimed = (state) => !state?.contacts?.[surface]?.[chatId] && !!getContact(state, surface, parent);
+    try {
+      if (!unclaimed(await loadState())) return;
+      await mutateState(writeState, async () => {
+        const state = await loadState();
+        if (!unclaimed(state)) return;
+        const title = ev.chatName || `topic ${chatId.slice(parent.length + 1)}`;
+        const split = await registerSplit(state, surface, chatId, parent, { title, verb: 'topic' });
+        await writeState(split.state);
+        onLog(`topic: ${chatId} "${title}" -> fork of ${parent} in ${split.slug} (transcript-${split.transcript}.md); copied threads for ${split.copied.join(', ') || '(none)'}`);
+      });
+    } catch (e) { onLog(`topic: ${chatId} not forked from ${parent} — ${e?.message ?? e}`); }
+  }
+
   // ── COMMAND ALIASES (operator 2026-10-19): config/commands_alias.yaml, `<alias>: /<handle> <command> [args]` ──
   // A line that STARTS with an alias (any case, whole words, the longest alias first) is that command
   // line plus the rest of the line, read by commandOf like a typed one, so every gate is the command's
@@ -4306,5 +4329,5 @@ export function createCommands({
   // above). `/e`/`/egpt` now carry no special meaning at all and fall through to the generic
   // catch-all like any other unrecognized token.
 
-  return { isCommand, commandOf, hintOf, run, currentRoomOf, startBrowser, chromeClientFor: ensureChrome, browserConversationOf, chatChromeOf, autoSideGroup, linkSideGroup };
+  return { isCommand, commandOf, hintOf, run, currentRoomOf, startBrowser, chromeClientFor: ensureChrome, browserConversationOf, chatChromeOf, autoSideGroup, linkSideGroup, forkTopic };
 }

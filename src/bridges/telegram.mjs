@@ -35,6 +35,8 @@ export const isTelegramChatId = (id) => String(id ?? '').startsWith(TG_PREFIX);
 const apiChatId = (id) => (isTelegramChatId(id) ? String(id).slice(TG_PREFIX.length).split('/')[0] : null);
 const threadOf = (id) => { const t = String(id ?? '').split('/')[1]; return t ? Number(t) : null; };
 const inThread = (id) => (threadOf(id) != null ? { message_thread_id: threadOf(id) } : {});
+// A topic's group (its General chat), `tg:<chat id>`; null for anything that is not a topic.
+export const topicGroupOf = (id) => (isTelegramChatId(id) && threadOf(id) != null ? TG_PREFIX + apiChatId(id) : null);
 // Opens a supergroup's topic for anyone in the group.
 const topicLink = (chat, thread) => `https://t.me/c/${String(chat).replace(/^-100/, '')}/${thread}`;
 // What a chat needs before the bot can make a topic in it (createGroup's reason).
