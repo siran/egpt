@@ -3,6 +3,7 @@
 # EDW on ECS over EC2: cluster edw, a launch template and an Auto Scaling group for its one
 # container instance (Spot unless --on-demand), the task definition and the service edw.
 # Reuses provision.sh's subnet, security group and data volume. Re-running finds what exists.
+# The private zone egpt.internal: the instance points edw.egpt.internal at itself at every boot.
 # The ASG and the service start at 0; ecs-cutover.sh moves EDW over.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/ecs-lib.sh"
@@ -29,8 +30,9 @@ ATTACH='{"Version":"2012-10-17","Statement":[
 {"Sid":"Describe","Effect":"Allow","Action":"ec2:DescribeVolumes","Resource":"*"}]}'
 DEPLOY_CFG='{"maximumPercent":100,"minimumHealthyPercent":0,"deploymentCircuitBreaker":{"enable":true,"rollback":true}}'
 
-user_data() {  # data-volume-id
-  sed -e "s/@VOL@/$1/" -e "s/@CLUSTER@/$CLUSTER/" -e "s/@ATTR@/$ATTR/g" -e "s/@PROJECT@/$PROJECT/" <<'EOF'
+user_data() {  # data-volume-id zone-id
+  sed -e "s/@VOL@/$1/" -e "s/@CLUSTER@/$CLUSTER/" -e "s/@ATTR@/$ATTR/g" -e "s/@PROJECT@/$PROJECT/" \
+    -e "s/@ZONE_ID@/$2/" -e "s/@EDW_DNS@/$EDW_DNS/g" -e "s/@REGION@/$AWS_DEFAULT_REGION/" <<'EOF'
 #!/bin/bash
 # EDW ECS container instance, first boot. Output: /var/log/cloud-init-output.log
 # Docker and the ECS agent start after cloud-init: never start or restart them here.
@@ -73,6 +75,41 @@ mkdir -p /etc/docker
 echo 'preserve_hostname: true' >/etc/cloud/cloud.cfg.d/99-edw-hostname.cfg
 hostnamectl set-hostname edw
 grep -q '[[:space:]]edw$' /etc/hosts || echo '127.0.0.1 edw' >>/etc/hosts
+
+# Every boot: @EDW_DNS@ (private zone, read in EduWeb's production VPC) -> this instance's private IP.
+cat >/usr/local/sbin/edw-dns <<'DNS'
+#!/bin/bash
+# Log: journalctl -u edw-dns (also on the console)
+name=@EDW_DNS@ zone=@ZONE_ID@
+export AWS_DEFAULT_REGION=@REGION@ AWS_PAGER=
+command -v aws >/dev/null || dnf install -y awscli-2 || { echo "edw-dns: no aws cli; $name not updated"; exit 1; }
+for i in $(seq 18); do
+  if tok=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') \
+    && ip=$(curl -sf -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/local-ipv4) \
+    && aws route53 change-resource-record-sets --hosted-zone-id "$zone" --query ChangeInfo.Id --output text --change-batch \
+      '{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{"Name":"'"$name"'","Type":"A","TTL":60,"ResourceRecords":[{"Value":"'"$ip"'"}]}}]}'
+  then echo "edw-dns: $name A $ip"; exit 0; fi
+  echo "edw-dns: try $i/18 failed; again in 10 s"
+  sleep 10
+done
+echo "edw-dns: gave up; $name keeps its old address"
+exit 1
+DNS
+chmod 755 /usr/local/sbin/edw-dns
+cat >/etc/systemd/system/edw-dns.service <<'UNIT'
+[Unit]
+Description=EDW: point @EDW_DNS@ at this instance
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/edw-dns
+StandardOutput=journal+console
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now edw-dns.service || true
 
 if [ ! -f /swapfile ]; then
   dd if=/dev/zero of=/swapfile bs=1M count=4096
@@ -141,7 +178,33 @@ DIGEST=$(ecr_digest edw)
 [ -n "$DIGEST" ] || die "egpt:edw is not in ECR (build-push.sh)"
 log "image    egpt:edw = $DIGEST"
 
-# Instance role: what edw-instance-role has, plus the ECS agent's policy and attaching the data volume.
+# Private zone in EduWeb's production VPC (Portales-new, over the peering); the instance keeps $EDW_DNS current.
+ZID=$(find_zone)
+if [ -n "$ZID" ]; then
+  vpcs=$(q route53 get-hosted-zone --id "$ZID" --query 'VPCs[].VPCId' | tr '\t' ' ')
+  log "zone     $ZONE $ZID (vpcs: $vpcs)"
+  [[ " $vpcs " == *" $ZONE_VPC "* ]] || run aws route53 associate-vpc-with-hosted-zone --hosted-zone-id "$ZID" \
+    --vpc "VPCRegion=$AWS_DEFAULT_REGION,VPCId=$ZONE_VPC" --query ChangeInfo.Status
+  rec=$(q route53 list-resource-record-sets --hosted-zone-id "$ZID" \
+    --query "ResourceRecordSets[?Name=='$EDW_DNS.' && Type=='A'].ResourceRecords[].Value" | tr '\t' ' ')
+  nip=$(q ec2 describe-instances --filters "$TAGF" "Name=tag:Name,Values=$NODE" Name=instance-state-name,Values=running \
+    --query 'Reservations[].Instances[].PrivateIpAddress' | tr '\t' ' ')
+  log "dns      $EDW_DNS A ${rec:-none} (running $NODE: ${nip:-none})"
+else
+  ZID=$(new zone route53 create-hosted-zone --name $ZONE --caller-reference "$PROJECT-$(date +%s)" \
+    --vpc "VPCRegion=$AWS_DEFAULT_REGION,VPCId=$ZONE_VPC" --hosted-zone-config "PrivateZone=true,Comment=$PROJECT" \
+    --query HostedZone.Id)
+  ZID=${ZID#/hostedzone/}
+  run aws route53 change-tags-for-resource --resource-type hostedzone --resource-id "$ZID" \
+    --add-tags "Key=Project,Value=$PROJECT" "Key=Name,Value=$ZONE"
+fi
+# The instance may UPSERT its own A record and nothing else.
+DNS='{"Version":"2012-10-17","Statement":[
+{"Sid":"OwnRecord","Effect":"Allow","Action":"route53:ChangeResourceRecordSets","Resource":"arn:aws:route53:::hostedzone/'$ZID'",
+ "Condition":{"ForAllValues:StringEquals":{"route53:ChangeResourceRecordSetsNormalizedRecordNames":["'$EDW_DNS'"],
+  "route53:ChangeResourceRecordSetsRecordTypes":["A"],"route53:ChangeResourceRecordSetsActions":["UPSERT"]}}}]}'
+
+# Instance role: what edw-instance-role has, plus the ECS agent's policy, attaching the data volume and its DNS record.
 role_new=0
 if iam_has get-role --role-name $ROLE; then
   ours "$(q iam list-role-tags --role-name $ROLE --query "Tags[?Key=='Project'].Value")" "role $ROLE"
@@ -169,6 +232,7 @@ inline() {  # name document: puts the inline policy unless it is already this do
 }
 inline edw-transfer "$TRANSFER"
 inline edw-data-attach "$ATTACH"
+inline edw-dns "$DNS"
 
 prof_new=0 roles=''
 if iam_has get-instance-profile --instance-profile-name $IPROFILE; then
@@ -198,7 +262,7 @@ fi
 AMI=$(q ssm get-parameter --name $AMI_PARAM --query Parameter.Value)
 read -r AMI_NAME ROOTDEV <<<"$(q ec2 describe-images --image-ids "$AMI" --query 'Images[0].[Name,RootDeviceName]')"
 log "ami      $AMI ($AMI_NAME, root $ROOTDEV)"
-user_data "$VOL" >"$TMP/user-data.sh"
+user_data "$VOL" "$ZID" >"$TMP/user-data.sh"
 jq -n --arg ami "$AMI" --arg type "${TYPES[0]}" --arg prof $IPROFILE --arg sg "$SG" --arg rootdev "$ROOTDEV" \
   --argjson gb $ROOT_GB --arg p $PROJECT --arg node $NODE --arg ud "$(base64 -w0 "$TMP/user-data.sh")" '{
   ImageId: $ami,

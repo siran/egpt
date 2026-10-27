@@ -16,6 +16,9 @@ AMI_PARAM=/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 SRV=/srv/egpt
 ATTR=edw-data                # instance attribute, set once $SRV is mounted; the task requires it
 MEM_MIB=1024                 # memoryReservation (soft); t3a.small registers ~1.9 GiB
+ZONE=egpt.internal           # Route 53 private zone, ours; found by name + tag
+EDW_DNS=edw.$ZONE            # A record the instance points at its own private IP at every boot
+ZONE_VPC=vpc-b33403d6        # EduWeb's production VPC: Portales-new proxies the chatbox to $EDW_DNS:8095
 
 # oficina-tunnel sidecar: 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
 # Never exits on its own: waits for its secrets and retries ssh every minute. ECS's restart policy
@@ -37,6 +40,19 @@ trap 'rm -rf "$TMP"' EXIT
 
 find_volume() {
   one volume "$(q ec2 describe-volumes --filters "$TAGF" Name=tag:Name,Values=edw-data --query 'Volumes[].VolumeId')"
+}
+
+find_zone() {  # our private zone $ZONE: its id (Z...), or empty
+  local zs z ids=''
+  zs=$(q route53 list-hosted-zones-by-name --dns-name $ZONE \
+    --query "HostedZones[?Name=='$ZONE.' && Config.PrivateZone].Id") || return
+  for z in $zs; do
+    z=${z#/hostedzone/}
+    ours "$(q route53 list-tags-for-resource --resource-type hostedzone --resource-id "$z" \
+      --query "ResourceTagSet.Tags[?Key=='Project'].Value | [0]")" "private zone $ZONE ($z)"
+    ids+=${ids:+ }$z
+  done
+  one "zone $ZONE" "$ids"
 }
 
 ecr_digest() {  # tag
