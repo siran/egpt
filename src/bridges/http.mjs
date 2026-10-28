@@ -10,6 +10,7 @@
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
 //   GET  <ayde.path>/                    the EduWeb team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
+//   GET  <ayde.path>/logout              401 + a signed-out page whose script overwrites each cached login so the next visit is challenged
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -21,7 +22,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/pro
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
-import { createBrowser, checkUser, LEVELS } from './http-ayde.mjs';
+import { createBrowser, checkUser, LEVELS, RESERVED_USER } from './http-ayde.mjs';
 
 export const HTTP_PREFIX = 'http:';
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
@@ -417,7 +418,8 @@ export async function startHttpBridge({
 
   // /ayde (http-ayde.mjs): off or no users file → 404. GET only, no CORS. HTTP Basic against the users
   // file; the browser decides the level a request needs and answers 401 in that level's realm.
-  // LOGIN_FAILS failed logins from one address: 429 for LOGIN_MS.
+  // LOGIN_FAILS failed logins from one address: 429 for LOGIN_MS. logout comes first: always its 401, never a
+  // failed login, never locked out.
   // A request with X-Forwarded-For or Forwarded is public (the site's proxy always adds one; a forged one
   // only lowers its sender's reach): a right login above aydeCap is 403 (a 401 would prompt again), not a
   // failed login. Only a right password learns that, so a wrong one reveals no level.
@@ -428,6 +430,15 @@ export async function startHttpBridge({
     if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' }, { Allow: 'GET' });
     if (!sub.length) { res.writeHead(308, { Location: `${aydeBase.split('/').at(-2)}/${url.search}` }); return res.end(); }
     const call = sub[0] || null;
+    const basic = /^Basic\s+(\S*)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+    const [user, ...rest] = basic == null ? [] : Buffer.from(basic, 'base64').toString('utf8').split(':');
+    // The sign-out page's overwrite probe (reserved logout user), never a person: never granted, never
+    // counted — so it precedes the lockout and the password check.
+    if (field(user) === RESERVED_USER) {
+      if (call === 'logout' && url.searchParams.has('realm')) return browser.overwrite(res, url.searchParams.get('realm'));
+      return browser.signOut(res, RESERVED_USER);
+    }
+    if (call === 'logout') return browser.signOut(res, field(user));
     const deny = (status, message, headers, more = {}) => {
       if (call) return json(res, status, { error: status === 429 ? 'too many failed logins' : status === 403 ? 'forbidden' : 'unauthorized', message, ...more }, headers);
       res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...headers });
@@ -440,9 +451,7 @@ export async function startHttpBridge({
       return deny(429, AYDE_LOCKED, { 'Retry-After': String(wait) }, { retry_after_s: wait });
     }
     let who = null;
-    const basic = /^Basic\s+(\S*)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
     if (basic != null) {
-      const [user, ...rest] = Buffer.from(basic, 'base64').toString('utf8').split(':');
       // Counted before the slow check, so tries sent in parallel count too; a right one clears the count.
       rec.times = [...rec.times.filter((t) => n - t < LOGIN_MS), n];
       const tries = rec.times.length;

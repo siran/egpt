@@ -13,6 +13,7 @@
   header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; }
   header span { color: var(--muted); }
+  header a { color: var(--accent); }
   main { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(300px, 1.4fr); gap: 16px; padding: 16px; }
   @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
@@ -36,7 +37,7 @@
 </style>
 </head>
 <body>
-<header><h1>ayde</h1><span id="who"></span><span>Read-only · every folder and file opened is logged</span></header>
+<header><h1>ayde</h1><span id="who"></span><a href="logout">Log out</a><span>Read-only · every folder and file opened is logged</span></header>
 <p id="fail" class="warn" hidden></p>
 <main>
   <section>
