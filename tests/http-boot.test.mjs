@@ -319,7 +319,9 @@ describe('limbs.http.ayde through boot', () => {
       const ana = basic('ana', 'clave-de-ana-1');
       expect((await fetch(ayde, ana)).status).toBe(200);
       expect((await fetch(`${ayde}tree`, ana).then((r) => r.json())).entries.map((e) => [e.path, e.chats])).toEqual([[`conversations/http/${id}`, [`http:${id}`]]]);
-      expect((await fetch(`${ayde}search?q=`, ana).then((r) => r.json())).conversations.map((c) => c.path)).toEqual([`conversations/http/${id}`]);
+      const top = await fetch(`${ayde}tree`, ana).then((r) => r.json());
+      expect(top.sections).toEqual([{ id: 'chatbox:eduweb', kind: 'chatbox', label: 'EduWeb' }]);
+      expect(top.entries[0]).toMatchObject({ section: 'chatbox:eduweb', title: 'mlopez', usuario: { abrin: 'IEV', username: 'mlopez' }, preview: null });
       expect((await fetch(`${ayde}tree?p=conversations/http/${other}`, ana)).headers.get('www-authenticate')).toBe('Basic realm="ayde root", charset="UTF-8"');
       expect((await fetch(`${ayde}tree?p=`, ana)).headers.get('www-authenticate')).toBe('Basic realm="ayde root", charset="UTF-8"');
       expect((await fetch(`${ayde}tree?p=secrets`, basic('rob', 'clave-de-rob-1')).then((r) => r.json())).entries.map((e) => e.name)).toContain('ayde.users');
@@ -333,6 +335,33 @@ describe('limbs.http.ayde through boot', () => {
       await fs.rm(usersFile, { force: true });
       await fs.rm(convDir(id), { recursive: true, force: true });
       await fs.rm(convDir('eduweb-00000000000000bb'), { recursive: true, force: true });
+    }
+  });
+
+  it('an anonymous session in the list: its first line from its history under EGPT_HOME/state, else from its transcript as the spine writes it', async () => {
+    const { userLine } = await import('../src/bridges/http-ayde.mjs');
+    const usersFile = join(_HOME, 'secrets', 'ayde.users');
+    await fs.mkdir(dirname(usersFile), { recursive: true });
+    await fs.writeFile(usersFile, `${await userLine('ana', 'team', 'clave-de-ana-1')}\n`);
+    let slug = null;
+    try {
+      const { app, url, io, post, messages, turns } = await bootChatbox({ ayde: { on: true, scope: ['http:eduweb-'] } });
+      const ana = { headers: { Authorization: `Basic ${Buffer.from('ana:clave-de-ana-1').toString('base64')}` } };
+      const list = () => fetch(`${url.replace('/chat/eduweb/', '/ayde/')}tree`, ana).then((r) => r.json());
+      const j = await post({ text: 'hola, quiero una demo' });
+      await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
+      slug = turns[0].cwd.split(/[\\/]/).at(-1);
+      await fs.mkdir(convDir(slug), { recursive: true });   // the test's io keeps the folder in memory
+      const saved = join(_HOME, 'state', 'http-messages', `${slug.split('-').at(-1)}.json`);
+      await vi.waitFor(async () => expect(JSON.parse(await fs.readFile(saved, 'utf8')).some((m) => m.from === 'being' && m.done && /respuesta a/.test(m.text))).toBe(true), { timeout: 5000 });
+      expect((await list()).entries).toEqual([expect.objectContaining({ name: slug, section: 'chatbox:eduweb', title: 'Visitor', usuario: null, preview: 'hola, quiero una demo' })]);
+      await fs.writeFile(join(convDir(slug), 'transcript.md'), io.files.get(join(convDir(slug), 'transcript.md')));
+      await fs.rm(saved);
+      expect((await list()).entries[0].preview).toBe('hola, quiero una demo');
+      app.stop();
+    } finally {
+      await fs.rm(usersFile, { force: true });
+      if (slug) await fs.rm(convDir(slug), { recursive: true, force: true });
     }
   });
 });

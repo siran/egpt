@@ -2,9 +2,10 @@
 // http.mjs checks the login (HTTP Basic against secrets/ayde.users: checkUser) and, on a public request
 // (one through the site's proxy), refuses a user above limbs.http.ayde.public_max_level; under <ayde path>/:
 //   (none)                          the page (http-ayde.html)
-//   search?q=&abrin=                {user, level, conversations: [{id, path, usuario, last}]} newest first (conversations/http/*/usuario.json; below root the scope's)
 //   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder
-//   tree (no p)                     root: EGPT_HOME; below root {user, level, path: '', scope: true, entries: [{name, path, chats, …}]}
+//   tree (no p)                     root: EGPT_HOME; below root the scope's conversations, as tree?scope=1
+//   tree?scope=1                    {user, level, path: '', scope: true, sections: [{id, kind, label}], entries: [{name, path, chats,
+//                                   section, label, kind, title, usuario, preview, last, …}]}: the scope's conversations, any level
 //   file?p=<path>[&download=1]      {path, size, text, truncated} | {path, size, binary} | the bytes
 //   logout[?n=]                     401 + SIGNED_OUT, no challenge (http.mjs, before the lockout); its script overwrites each cached login (Firefox) and reloads to drop them (Chrome)
 //   logout?realm=<level>            with the reserved logout user: 401 in that realm so the browser replaces the credential it cached there
@@ -22,6 +23,8 @@ import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { getContact, slugDir } from '../conversations-state.mjs';
+import { stripFrontMatter } from '../transcript-meta.mjs';
+import { stripInvisible } from '../invisible.mjs';
 
 const PAGE = readFileSync(new URL('./http-ayde.html', import.meta.url), 'utf8');
 // A signed out login means answering 401 — the browser holds the credential and only a refusal makes it
@@ -93,12 +96,18 @@ const SIGNED_OUT = `<!doctype html>
 `;
 const TEXT_MAX = 256 * 1024;
 const LIST_MAX = 2000;
-const FOUND_MAX = 100;
+const HEAD_MAX = 64 * 1024, HISTORY_MAX = 1024 * 1024, PREVIEW_MAX = 80;
+const SESSION_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;   // a chatbox session: client, sid
+const VISITOR_RE = /^visitor@\[[^\]]*\]\.\S+\s+\(\d{1,2}:\d{2}\)(?:\s+#[^\s:]+)?: ?(.*)$/;
+const HEAD_RE = /^(?:\[\s*)?@?[^@\n]+@\[[^\]]*\]\.\S+\s+\(\d{1,2}:\d{2}\)/;
+const TELEGRAM_LABEL = 'Team groups (Telegram)', OTHER_LABEL = 'Other';
 export const AUDIT_FILE = 'admin-access.log';
 // The username the logout page sends to overwrite a cached login; never a real user (ayde-user.mjs refuses it).
 export const RESERVED_USER = 'logout';
 const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id'];
 const clean = (s) => String(s).replace(/[\u0000-\u001f\u007f]/g, '?');
+const oneLine = (s) => stripInvisible(String(s)).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+const clip = (s) => { const cs = [...oneLine(s)]; return cs.length > PREVIEW_MAX ? `${cs.slice(0, PREVIEW_MAX - 1).join('').trimEnd()}…` : cs.join(''); };
 const inside = (dir, p) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : `${dir}${sep}`);
 const rfc5987 = (s) => encodeURIComponent(s).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 
@@ -136,24 +145,32 @@ export async function checkUser(text, user, password) {
   return ok && got && timingSafeEqual(got, want) ? m[2] : null;
 }
 
-export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null }) {
+// clients: [{ name, label }], limbs.http.clients in order; messagesDir: the chatbox's session histories (<sid>.json).
+export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null, clients = [], messagesDir = null }) {
   const ids = Array.isArray(scope) ? scope.filter((e) => typeof e === 'string' && e.trim()).map((e) => e.trim()) : [];
   if (!ids.length) log('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
-  // The scope's folders, [{ parts, chats }] by path: the folder of each registry chat an entry covers.
+  // The scope's folders, [{ parts, chats, title }] by path: the folder of each registry chat an entry covers.
+  // title: its chat's name in the registry (never a /split fork's), else the folder's without its -<datestamp>.
   async function scoped() {
     const state = await registry();
     const byPath = new Map();
     for (const [surface, bucket] of Object.entries(state?.contacts ?? {})) {
       for (const id of Object.keys(bucket ?? {})) {
-        const slug = ids.some((e) => covers(e, id)) && getContact(state, surface, id)?.slug;
-        if (!slug) continue;
+        const hit = ids.some((e) => covers(e, id)) && getContact(state, surface, id);
+        if (!hit?.slug) continue;
         let parts;
-        try { parts = relative(EGPT_HOME, slugDir(surface, slug)).split(sep); } catch { continue; }   // a surface unsafe as a path
+        try { parts = relative(EGPT_HOME, slugDir(surface, hit.slug)).split(sep); } catch { continue; }   // a surface unsafe as a path
         const path = parts.join('/');
-        byPath.set(path, { parts, chats: [...(byPath.get(path)?.chats ?? []), id] });
+        const f = byPath.get(path) ?? { parts, chats: [], names: [] };
+        f.chats.push(id);
+        const name = oneLine(hit.entry?.pushedName ?? '');
+        if (name && !hit.entry?.parent_chat) f.names.push(name);
+        byPath.set(path, f);
       }
     }
-    return [...byPath].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, f]) => f);
+    return [...byPath].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, { parts, chats, names }]) => ({
+      parts, chats, title: names[0] || parts.at(-1).replace(/-\d{10}$/, ''),
+    }));
   }
   const partsOf = (p) => {
     const parts = String(p).split('/').filter(Boolean);
@@ -187,31 +204,65 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
   // The last line said: transcript.md's time, else the folder's.
   const lastOf = async (dir) => (await lstat(join(dir, 'transcript.md')).catch(() => lstat(dir))).mtimeMs;
 
-  // folders: the scope's (below root), else null: every conversations/http/ folder.
-  async function search(q, abrin, folders) {
-    const dir = join(root, 'conversations', 'http');
-    const names = folders
-      ? folders.filter((f) => f.parts.length === 3 && f.parts[0] === 'conversations' && f.parts[1] === 'http').map((f) => f.parts[2])
-      : (await readdir(dir).catch(() => [])).filter((name) => !name.startsWith('.'));
-    const found = [];
-    for (const name of names) {
-      if (!(await lstat(join(dir, name)).catch(() => null))?.isDirectory()) continue;
-      const usuario = await usuarioOf(join(dir, name));
-      if (q && !String(usuario?.username ?? '').toLowerCase().includes(q)) continue;
-      if (abrin && String(usuario?.abrin ?? '').toLowerCase() !== abrin) continue;
-      found.push({ id: name, path: `conversations/http/${name}`, usuario, last: await lastOf(join(dir, name)) });
+  async function headOf(file, n) {
+    const fh = await open(file, 'r');
+    try {
+      const buf = Buffer.alloc(n);
+      return buf.subarray(0, (await fh.read(buf, 0, n, 0)).bytesRead).toString('utf8');
+    } finally { await fh.close(); }
+  }
+  // An anonymous session's first visitor line: its history (<messagesDir>/<sid>.json, never through a
+  // link), else its transcript.md where a team user may read it (inside the scope). Never logged.
+  async function firstSaid(parts, sid, homes) {
+    const file = messagesDir && join(messagesDir, `${sid}.json`);
+    const st = file && await lstat(file).catch(() => null);
+    if (st?.isFile() && st.size <= HISTORY_MAX) {
+      try {
+        const said = JSON.parse(await readFile(file, 'utf8'));
+        const m = Array.isArray(said) && said.find((x) => x?.from === 'visitor' && typeof x.text === 'string' && x.text.trim());
+        if (m) return m.text;
+      } catch { /* unreadable: the transcript */ }
     }
-    return found.sort((a, b) => b.last - a.last).slice(0, FOUND_MAX);
+    const hit = await resolve([...parts, 'transcript.md']);
+    if (!hit || levelOf(hit.parts, homes) !== 'team' || !(await stat(hit.real).catch(() => null))?.isFile()) return null;
+    const lines = stripFrontMatter((await headOf(hit.real, HEAD_MAX)).replace(/\r\n/g, '\n')).split('\n');
+    const at = lines.findIndex((l) => VISITOR_RE.test(l));
+    if (at < 0) return null;
+    const said = [VISITOR_RE.exec(lines[at])[1]];
+    for (const l of lines.slice(at + 1)) { if (!l.trim() || HEAD_RE.test(l)) break; said.push(l); }
+    return said.join(' ');
   }
 
-  // Below root, the top: each scope folder there is, by name, with the chat ids it serves.
-  async function tops(folders) {
-    const out = [];
-    for (const { parts, chats } of folders) {
-      const st = await lstat(join(root, ...parts)).catch(() => null);
-      if (st?.isDirectory()) out.push({ name: parts.at(-1), path: parts.join('/'), chats, dir: true, size: null, mtime: st.mtimeMs, level: 'team' });
+  // The scope's conversations as the page lists them: a section per chatbox client (limbs.http.clients'
+  // order, its label), then the Telegram groups and topics, then any other chat. Entries by path.
+  async function conversations(folders) {
+    const homes = folders.map((f) => f.parts);
+    const entries = [];
+    for (const { parts, chats, title } of folders) {
+      const dir = join(root, ...parts);
+      const st = await lstat(dir).catch(() => null);
+      if (!st?.isDirectory()) continue;
+      const e = { name: parts.at(-1), path: parts.join('/'), chats, dir: true, size: null, mtime: st.mtimeMs, level: 'team', last: await lastOf(dir) };
+      const session = chats.map((id) => SESSION_RE.exec(id)).find(Boolean);
+      if (session) {
+        const usuario = await usuarioOf(dir);
+        const said = usuario ? null : await firstSaid(parts, session[2], homes);
+        entries.push({ ...e, kind: 'chatbox', section: `chatbox:${session[1]}`, title: usuario?.short_name || usuario?.username || 'Visitor', usuario, preview: clip(said ?? '') || null });
+      } else {
+        const kind = chats.every((id) => id.startsWith('tg:')) ? 'telegram' : 'other';
+        entries.push({ ...e, kind, section: kind, title, usuario: null, preview: null });
+      }
     }
-    return out;
+    // A client is in the scope when an entry covers any of its session ids, even before its first session.
+    const reaches = (name) => ids.some((x) => { const p = `http:${name}-`; return x.endsWith('-') ? p.startsWith(x) || x.startsWith(p) : x.startsWith(p); });
+    const sections = clients.filter((c) => reaches(c.name)).map((c) => ({ id: `chatbox:${c.name}`, kind: 'chatbox', label: c.label || c.name }));
+    for (const e of entries) {
+      if (e.kind === 'chatbox' && !sections.some((s) => s.id === e.section)) sections.push({ id: e.section, kind: 'chatbox', label: e.section.slice('chatbox:'.length) });
+    }
+    if (ids.some((x) => x.startsWith('tg:')) || entries.some((e) => e.kind === 'telegram')) sections.push({ id: 'telegram', kind: 'telegram', label: TELEGRAM_LABEL });
+    if (entries.some((e) => e.kind === 'other')) sections.push({ id: 'other', kind: 'other', label: OTHER_LABEL });
+    for (const e of entries) e.label = sections.find((s) => s.id === e.section).label;
+    return { sections, entries };
   }
 
   // One folder; a dot entry is invisible to team.
@@ -269,15 +320,10 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     const homes = folders.map((f) => f.parts);
     const need = asked ? levelOf(asked, homes) : 'team';
     if (rank(need) > rank(who.level)) return denied(need, asked.join('/'));
-    if (call === 'search') {
-      const text = String(q.get('q') ?? '').trim().toLowerCase(), abrin = String(q.get('abrin') ?? '').trim().toLowerCase();
-      log(`ayde: ${clean(`${who.user} (${who.level}) searched ${JSON.stringify(text)}${abrin ? ` abrin ${JSON.stringify(abrin)}` : ''}`)}`);
-      return json(res, 200, { user: who.user, level: who.level, conversations: await search(text, abrin, who.level === 'root' ? null : folders) });
-    }
     if (call !== 'tree' && call !== 'file') return json(res, 404, { error: 'not found' });
-    if (call === 'tree' && !q.has('p') && who.level !== 'root') {
+    if (call === 'tree' && !q.has('p') && (who.level !== 'root' || q.get('scope') === '1')) {
       log(`ayde: ${clean(`${who.user} (${who.level}) listed the scope`)}`);
-      return json(res, 200, { user: who.user, level: who.level, path: '', scope: true, entries: await tops(folders), truncated: false });
+      return json(res, 200, { user: who.user, level: who.level, path: '', scope: true, ...(await conversations(folders)), truncated: false });
     }
     const parts = q.has('p') ? asked : call === 'tree' ? [] : null;
     const hit = parts && await resolve(parts);

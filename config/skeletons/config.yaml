@@ -85,6 +85,7 @@ limbs:
   #       # seed: desks/mysite      # copied once into each new session's folder (relative: under EGPT_HOME)
   #       # allowed_origins: []     # CORS; empty = same-origin only
   #       # title: "Chat"           # strings: { placeholder, send, ... } override the Spanish defaults
+  #       # label: "Marketer — website"   # its section's title in /ayde; default the title
   #       # max_chars: 4000
   #       # rate: { messages: 30, minutes: 10 }   # per session
   #       # new_sessions: { count: 30, minutes: 60 }   # per visitor address
