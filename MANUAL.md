@@ -385,15 +385,25 @@ each level reads everything the lower ones read:
 
 | Level | Reads |
 |---|---|
-| `team` | the scope's conversations (below), except any path with a segment starting with `.` (`.secrets/`, `.ssh/`, dotfiles), which it never sees |
-| `devs` | the scope's conversations, hidden entries included, but a conversation's `.secrets/` (credentials) |
+| `team` | the scope's conversations (below), except any path with a segment starting with `.` (`.secrets/`, `.credentials/`, `.ssh/`, dotfiles), which it never sees |
+| `devs` | the scope's conversations, hidden entries included (`.credentials/`, the being's scoped temporary DB login, too), but a conversation's `.secrets/` (token-level secrets) |
 | `admin` | the same as `devs`; the two differ only in `public_max_level` |
 | `root` | everything under `EGPT_HOME`, as it is: every conversation, `config/`, `state/`, `secrets/`, `chrome/` and conversations' `.secrets/` |
 
-Below root, the browser starts at the list of the scope's conversations: each
-folder by name, with the chat ids it serves. Nobody below root can list
-`conversations/` itself. The scope is `limbs.http.ayde.scope`, a list of chat
-ids:
+The page is one list of the scope's conversations, in sections:
+
+- one per chatbox client, titled by the client's `label` (e.g. `label: "Marketer — website"`
+  under `limbs.http.clients.<client>`), else its `title`, in the config's order;
+- **Team groups (Telegram)**: the scope's groups and topics, by their name;
+- **Other**: any other chat in the scope.
+
+Inside each section, rows sit under **Today** and **Previous**, newest first. A
+signed visitor shows as name, username, school and user type; an anonymous one as
+**Visitor** with the first line they wrote. Chat ids and folder names are in the
+tooltip. The search box above filters every section by name, username, school,
+first line or group. Click a row to open its folder. Root also gets **Everything
+else**: the whole `EGPT_HOME` tree. Nobody below root can list `conversations/`
+itself. The scope is `limbs.http.ayde.scope`, a list of chat ids:
 
 ```yaml
 limbs:

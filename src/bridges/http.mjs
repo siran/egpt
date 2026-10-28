@@ -114,6 +114,7 @@ function clientConfig(name, c = {}) {
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
   return {
     name,
+    label: String(c.label ?? '').trim() || String(c.title ?? '').trim() || name,   // its section in /ayde
     being: c.being ? String(c.being) : null,
     origins: Array.isArray(c.allowed_origins) ? c.allowed_origins.map(String) : [],
     maxChars,
@@ -274,7 +275,10 @@ export async function startHttpBridge({
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
-  const browser = aydeBase ? createBrowser({ root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry }) : null;
+  const browser = aydeBase ? createBrowser({
+    root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir,
+    clients: [...clients.values()].map(({ name, label }) => ({ name, label })),
+  }) : null;
   const readBody = (req, limit) => new Promise((resolve, reject) => {
     let size = 0, over = false;
     const parts = [];

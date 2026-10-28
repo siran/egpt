@@ -822,6 +822,8 @@ export const CONFIG_SCHEMA = {
                               headers and every preflight refused. Non-empty: a
                               request whose Origin is not listed is refused (403)
             title             the panel's title
+            label             its section's title in /ayde (e.g. "Marketer — website",
+                              "Support — EduWeb app"); default the title, else the name
             strings           UI strings (Spanish defaults): open, close,
                               placeholder, send, error, too_long, too_many,
                               end, end_confirm, end_yes, cancel, identity; intro (the panel's first
@@ -892,11 +894,20 @@ export const CONFIG_SCHEMA = {
         A page left open past exp gets strings.identity on its next line: reload.
         AYDE (ayde.on; src/bridges/http-ayde.mjs). GET <ayde.path>/ (e.g.
         https://eduweb.com.ve/ayde/; without the last slash: 308 to it): the EduWeb team's read-only
-        browser of EGPT_HOME, by level. One English page: the user and level, a folder tree from the
-        user's top (root: EGPT_HOME; below root: the scope's conversations, each folder by name with
-        the chat ids it serves; "Up" climbs), paths above the user's level greyed, a text file (first
-        256 KB) or a download, and a search by username over conversations/http/*/usuario.json
-        (newest first; below root only the scope's) as a shortcut.
+        browser of EGPT_HOME, by level. One English page: the user and level, and one list of the
+        scope's conversations (root's too): a section per chatbox client (its label, in
+        limbs.http.clients' order), then "Team groups (Telegram)", then "Other"; in each, Today and
+        Previous, newest first. A row is a person or a group: a signed session's usuario.json (name,
+        username, school, type); an anonymous one "Visitor" and its first line (its history,
+        state/http-messages/<sid>.json, else its transcript; one line, 80 characters, never
+        logged); a Telegram folder its name in conversations.yaml (not a fork's), else the folder's
+        without its -<datestamp>. Chat ids and folders only in the tooltip. One search box filters
+        every section by name, username, school, first line or title. Root also gets "Everything
+        else": the EGPT_HOME tree. A row opens its folder tree ("Up" climbs), paths above the
+        user's level greyed, a text file (first 256 KB) or a download. Dates in the browser's
+        locale and zone, never seconds. API: tree?scope=1 (below root also tree with no p) →
+        {sections: [{id, kind, label}], entries: [{path, chats, section, label, kind, title,
+        usuario, preview, last, …}]}.
         Read-only for every level: any method but GET is 405. A future delete of core files
         (config/, state/, secrets/) is root's only.
         The scope (ayde.scope): what team, devs and admin read, a list of chat ids, e.g.
@@ -912,8 +923,10 @@ export const CONFIG_SCHEMA = {
         by its name. Absent or empty (the default): below root nobody sees a conversation, and boot
         logs that the scope is empty.
         Levels, lowest first, each reading all the lower ones read. On the path under EGPT_HOME:
-          in a scope folder, with a .secrets segment      root   (credentials)
-          in a scope folder, with a segment starting "."  devs   (.ssh/, dotfiles: invisible to team)
+          in a scope folder, with a .secrets segment      root   (token-level secrets)
+          in a scope folder, with a segment starting "."  devs   (.credentials/: the being's scoped
+                                                                  temporary DB login; .ssh/, dotfiles:
+                                                                  invisible to team)
           in a scope folder                               team
           everything else: conversations/ itself, the     root
             other conversations, config/, state/, secrets/, chrome/, EGPT_HOME itself

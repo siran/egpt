@@ -250,6 +250,33 @@ describe('limbs.http.ayde — the levels', () => {
     expect(levels).toMatchObject({ '.secrets': 'root', '.ssh': 'devs', '.tools': 'devs', gavetas: 'team', 'transcript.md': 'team' });
   });
 
+  it('a conversation\'s .credentials/ (the being\'s scoped temporary DB login) is devs\' and above; its .secrets/ stays root\'s', async () => {
+    await mkdir(at('conversations', 'http', A, '.credentials'), { recursive: true });
+    await writeFile(at('conversations', 'http', A, '.credentials', 'db.env'), 'PGUSER=scoped_tmp\n');
+    const { get, api } = await limb();
+    const cred = `conversations/http/${A}/.credentials`, sec = `conversations/http/${A}/.secrets`;
+    expect(levelOf(`${cred}/db.env`.split('/'), [['conversations', 'http', A]])).toBe('devs');
+    for (const [call, p] of [['tree', cred], ['file', `${cred}/db.env`]]) {
+      const r = await get(call, { p }, 'tina');
+      expect(r.status, `${call} ${p}`).toBe(401);
+      expect(r.realm, `${call} ${p}`).toBe(realm('devs'));
+      expect(JSON.stringify(r.body)).not.toContain('scoped_tmp');
+    }
+    const dl = await api('file', { p: `${cred}/db.env`, download: '1' }, 'tina');
+    expect(dl.status).toBe(401);
+    expect(await dl.text()).not.toContain('scoped_tmp');
+    expect((await get('tree', { p: `conversations/http/${A}` }, 'tina')).body.entries.map((e) => e.name)).not.toContain('.credentials');
+    for (const user of ['dev', 'ada', 'rob']) {
+      expect((await get('tree', { p: `conversations/http/${A}` }, user)).body.entries.find((e) => e.name === '.credentials'), user).toMatchObject({ dir: true, level: 'devs' });
+      expect((await get('tree', { p: cred }, user)).body.entries.map((e) => e.name), user).toEqual(['db.env']);
+      expect((await get('file', { p: `${cred}/db.env` }, user)).body.text, user).toBe('PGUSER=scoped_tmp\n');
+    }
+    for (const user of ['tina', 'dev', 'ada']) {
+      for (const [call, p] of [['tree', sec], ['file', `${sec}/db.env`]]) expect((await get(call, { p }, user)).realm, `${user} ${call} ${p}`).toBe(realm('root'));
+    }
+    expect((await get('file', { p: `${sec}/db.env` }, 'rob')).body.text).toBe('PGUSER=dummy\n');
+  });
+
   it('config, state and the rest of EGPT_HOME are root\'s: below root 401 in the root realm, nothing of them in the answer or a download; root reads them as they are', async () => {
     const { get, api } = await limb();
     for (const user of ['tina', 'dev', 'ada']) {
@@ -277,17 +304,16 @@ describe('limbs.http.ayde — the levels', () => {
 });
 
 describe('limbs.http.ayde — the scope', () => {
-  it('no scope (the default) or an empty one: a boot line; below root nothing, an empty top, no search hit, every conversation root\'s; root reads all', async () => {
+  it('no scope (the default) or an empty one: a boot line; below root nothing, an empty list, every conversation root\'s; root reads all', async () => {
     for (const ayde of [{ on: true }, { on: true, scope: [] }]) {
       const { get, lines } = await limb({ ayde });
       expect(lines).toContain('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
       for (const user of ['tina', 'dev', 'ada']) {
-        expect((await get('tree', {}, user)).body, user).toMatchObject({ path: '', scope: true, entries: [] });
-        expect((await get('search', { q: '' }, user)).body.conversations, user).toEqual([]);
+        expect((await get('tree', {}, user)).body, user).toMatchObject({ path: '', scope: true, sections: [], entries: [] });
         for (const p of [`conversations/http/${A}`, `conversations/telegram/${G}`]) expect((await get('tree', { p }, user)).realm, `${user} ${p}`).toBe(realm('root'));
       }
+      expect((await get('tree', { scope: '1' }, 'rob')).body).toMatchObject({ scope: true, sections: [], entries: [] });
       expect((await get('tree', { p: `conversations/http/${A}` }, 'rob')).status).toBe(200);
-      expect((await get('search', { q: '' }, 'rob')).body.conversations).toHaveLength(4);
     }
   });
 
@@ -310,6 +336,125 @@ describe('limbs.http.ayde — the scope', () => {
     expect((await get('file', { p: `conversations/telegram/${R}/transcript.md` }, 'tina')).body.text).toBe('EduWeb\n');
     expect((await get('tree', { p: `conversations/telegram/${G}` }, 'tina')).realm).toBe(realm('root'));
     expect((await get('tree', { p: `conversations/telegram/${U}` }, 'tina')).realm).toBe(realm('root'));
+  });
+});
+
+// The page's one list (tree?scope=1; below root also tree with no p): a section per chatbox client, then
+// the Telegram groups, then the rest; each row a person or a group, not an id.
+describe('limbs.http.ayde — the conversation list', () => {
+  const E = 'acme-00000000000000e5';   // an anonymous acme session
+  const withE = () => registry().replace('  telegram:\n', `    "http:${E}":\n      conversation_path: .egpt/conversations/http/${E}\n  telegram:\n`);
+  const transcript = (id, ...lines) => `---\nname: ${id}\nsurface: http\nslug: ${id}\n---\n\n${lines.join('\n\n')}\n\n`;
+  const said = (who, id, hhmm, n, text) => `${who}@[${id}].http (${hhmm}) #${n}: ${text}`;
+  // a session's history (state/http-messages/<sid>.json), kept by the limb because http-sessions.json lists it
+  const history = async (sessions, logs) => {
+    await mkdir(at('state', 'http-messages'), { recursive: true });
+    await writeFile(at('state', 'http-sessions.json'), JSON.stringify(Object.fromEntries(Object.entries(sessions).map(([sid, client]) => [sid, { client, lastAt: Date.now() }]))));
+    for (const [sid, log] of Object.entries(logs)) await writeFile(at('state', 'http-messages', `${sid}.json`), JSON.stringify(log));
+  };
+  const visitor = (text, seq) => ({ id: String(seq), from: 'visitor', text, done: true, seq });
+  const being = (text, seq) => ({ id: String(seq), from: 'being', text, done: true, seq });
+
+  it('one section per kind in the scope, in order: each chatbox client (limbs.http.clients\' order), Telegram, Other; entries by path with section, label, kind, title, last', async () => {
+    const clients = { zeta: { being: 'ed', label: 'Zeta — support' }, acme: { being: 'ed', title: 'Acme chat' }, beta: { being: 'ed' } };
+    const { get } = await limb({ clients, ayde: { on: true, scope: ['http:acme-', 'http:zeta-', 'http:beta-', TG, '58000@s.whatsapp.net'] } });
+    const b = (await get('tree', {}, 'tina')).body;
+    expect(b).toMatchObject({ user: 'tina', level: 'team', path: '', scope: true });
+    expect(b.sections).toEqual([
+      { id: 'chatbox:zeta', kind: 'chatbox', label: 'Zeta — support' },
+      { id: 'chatbox:acme', kind: 'chatbox', label: 'Acme chat' },
+      { id: 'chatbox:beta', kind: 'chatbox', label: 'beta' },
+      { id: 'telegram', kind: 'telegram', label: 'Team groups (Telegram)' },
+      { id: 'other', kind: 'other', label: 'Other' },
+    ]);
+    expect(b.entries.map((e) => [e.path, e.section, e.label, e.kind, e.title])).toEqual([
+      [`conversations/http/${A}`, 'chatbox:acme', 'Acme chat', 'chatbox', 'María López'],
+      [`conversations/http/${B}`, 'chatbox:acme', 'Acme chat', 'chatbox', 'María López'],
+      [`conversations/http/${C}`, 'chatbox:acme', 'Acme chat', 'chatbox', 'Juan Pérez'],
+      [`conversations/http/${D}`, 'chatbox:zeta', 'Zeta — support', 'chatbox', 'Visitor'],
+      [`conversations/telegram/${G}`, 'telegram', 'Team groups (Telegram)', 'telegram', 'EduWeb'],
+      [`conversations/telegram/${T}`, 'telegram', 'Team groups (Telegram)', 'telegram', 'Soporte'],
+      ['conversations/whatsapp/familia', 'other', 'Other', 'other', 'Familia'],
+    ]);
+    expect(b.entries.find((e) => e.name === A).last).toBe(Date.parse('2026-10-26T10:00:00Z'));
+    expect(b.entries.find((e) => e.name === G).chats).toEqual([TG, `${TG}/42`]);
+  });
+
+  it('a client section\'s label: its label, else its title, else its name; a client in the scope with no session yet: an empty section; a session of an unconfigured client: its name, last', async () => {
+    const clients = { acme: { being: 'ed', title: 'Acme chat', label: 'Acme — website' }, beta: { being: 'ed', title: 'Beta', label: ' ' }, gamma: { being: 'ed' } };
+    const { get } = await limb({ clients, ayde: { on: true, scope: ['http:zeta-', 'http:acme-', 'http:beta-', 'http:gamma-00000000000000ff', 'http:delta'] } });
+    const b = (await get('tree', {}, 'ada')).body;
+    expect(b.sections.map((s) => [s.id, s.label])).toEqual([['chatbox:acme', 'Acme — website'], ['chatbox:beta', 'Beta'], ['chatbox:gamma', 'gamma'], ['chatbox:zeta', 'zeta']]);
+    expect(b.entries.filter((e) => e.section === 'chatbox:beta')).toEqual([]);
+  });
+
+  it('a Telegram row\'s title: its chat\'s name in conversations.yaml (never a /split fork\'s), else the folder\'s without its -<datestamp>', async () => {
+    await writeFile(at('config', 'conversations.yaml'), registry().replace(' # Soporte', '').replace(' # EduWeb\n', '\n'));
+    const { get } = await limb();
+    const titles = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.filter((e) => e.kind === 'telegram').map((e) => [e.name, e.title]));
+    expect(titles).toEqual({ [G]: 'eduweb', [T]: 'eduweb-soporte' });
+  });
+
+  it('a signed session\'s row: its usuario.json (short_name, username, school, user type), no preview', async () => {
+    await writeFile(at('conversations', 'http', C, 'usuario.json'), JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez', verified_at: '2026-10-25T10:00:00Z', token: 'never' }));
+    const { get } = await limb();
+    const rows = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e]));
+    expect(rows[A]).toMatchObject({ kind: 'chatbox', title: 'María López', usuario: { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, preview: null });
+    expect(rows[C]).toMatchObject({ title: 'jperez', usuario: { abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez' }, preview: null });
+    expect(JSON.stringify(rows[C])).not.toMatch(/never|verified_at/);
+  });
+
+  it('an anonymous row: "Visitor" and its first visitor line, one line, clipped at 80, text as it is (the page shows it as text): from its history, else its transcript; never logged', async () => {
+    await writeFile(at('config', 'conversations.yaml'), withE());
+    await mkdir(at('conversations', 'http', E), { recursive: true });
+    await writeFile(at('conversations', 'http', E, 'transcript.md'), transcript(E,
+      said('ed', E, '09:53', 1, '¡Hola! ¿En qué te ayudo?'),
+      `${said('visitor', E, '09:54', 2, 'Hola <img src=x onerror=alert(1)> quiero\u0007 información​ sobre la plataforma para mi colegio, somos 300 alumnos y')}\nnecesitamos un demo`,
+      said('visitor', E, '09:56', 3, 'otra cosa')));
+    await writeFile(at('conversations', 'http', D, 'transcript.md'), transcript(D, said('visitor', D, '10:00', 1, 'del transcript')));
+    await history({ '00000000000000d4': 'zeta' }, { '00000000000000d4': [being('¡Hola!', 1), visitor('  desde el\nhistorial  ', 2), visitor('después', 3)] });
+    const { get, lines } = await limb({ clients: { acme: { being: 'ed' }, zeta: { being: 'ed' } }, stateDir: at('state'), ayde: { on: true, scope: ['http:acme-', 'http:zeta-'] } });
+    const rows = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e]));
+    expect(rows[E]).toMatchObject({ kind: 'chatbox', section: 'chatbox:acme', title: 'Visitor', usuario: null, preview: 'Hola <img src=x onerror=alert(1)> quiero información sobre la plataforma para m…' });
+    expect([...rows[E].preview]).toHaveLength(80);
+    expect(rows[D]).toMatchObject({ title: 'Visitor', usuario: null, preview: 'desde el historial' });
+    expect(lines.join('\n')).not.toMatch(/plataforma|historial|del transcript/);
+    await writeFile(at('conversations', 'http', E, 'transcript.md'), transcript(E, said('ed', E, '09:53', 1, '¡Hola!')));
+    expect((await get('tree', {}, 'tina')).body.entries.find((e) => e.name === E).preview).toBeNull();
+  });
+
+  it('previews never come from outside the scope: not an unscoped session\'s, not through a link to one (transcript or history)', async () => {
+    await writeFile(at('config', 'conversations.yaml'), withE());
+    await writeFile(at('conversations', 'http', D, 'transcript.md'), transcript(D, said('visitor', D, '10:00', 1, 'SECRETO-D del transcript')));
+    await history({ '00000000000000d4': 'zeta', '00000000000000e5': 'acme' }, { '00000000000000d4': [visitor('SECRETO-D del historial', 1)] });
+    await mkdir(at('conversations', 'http', E), { recursive: true });
+    const linked = await symlink(at('conversations', 'http', D, 'transcript.md'), at('conversations', 'http', E, 'transcript.md'), 'file')
+      .then(() => symlink(at('state', 'http-messages', '00000000000000d4.json'), at('state', 'http-messages', '00000000000000e5.json'), 'file')).then(() => true, () => false);
+    const { get, lines } = await limb({ clients: { acme: { being: 'ed' }, zeta: { being: 'ed' } }, stateDir: at('state') });
+    for (const user of Object.keys(USERS)) {
+      const b = (await get('tree', { scope: '1' }, user)).body;
+      expect(JSON.stringify(b), user).not.toContain('SECRETO');
+      expect(b.entries.map((e) => e.name), user).not.toContain(D);
+      expect(b.entries.find((e) => e.name === E), user).toMatchObject({ title: 'Visitor', preview: null });
+    }
+    expect(lines.join('\n')).not.toContain('SECRETO');
+    if (!linked) console.warn('symlinks unavailable: the link half of this test did not run');
+  });
+
+  it('root: tree?scope=1 is the same list as admin\'s, logged the same; tree with no p (or p="") is still EGPT_HOME (the page\'s "Everything else"); below root scope=1 is the same as no p', async () => {
+    const { get, lines } = await limb();
+    const ada = (await get('tree', {}, 'ada')).body, rob = (await get('tree', { scope: '1' }, 'rob')).body;
+    expect(rob).toMatchObject({ user: 'rob', level: 'root', path: '', scope: true, truncated: false });
+    expect(rob.sections).toEqual(ada.sections);
+    expect(rob.entries).toEqual(ada.entries);
+    expect(lines).toContain('ayde: rob (root) listed the scope');
+    for (const params of [{}, { p: '' }]) {
+      const raw = (await get('tree', params, 'rob')).body;
+      expect(raw.scope).toBeUndefined();
+      expect(raw.entries.map((e) => e.name)).toEqual(expect.arrayContaining(['config', 'conversations', 'secrets', 'state']));
+    }
+    expect((await get('tree', { scope: '1' }, 'tina')).body).toEqual((await get('tree', {}, 'tina')).body);
+    expect((await get('tree', { scope: '1', p: 'secrets' }, 'tina')).realm).toBe(realm('root'));
   });
 });
 
@@ -605,7 +750,7 @@ describe('limbs.http.ayde — the public path', () => {
   });
 });
 
-describe('limbs.http.ayde — the page, search and audit', () => {
+describe('limbs.http.ayde — the page and audit', () => {
   it('the page: one self-contained HTML, no external asset, a nonce CSP, no referrer', async () => {
     const { page } = await limb();
     const r = await page('tina');
@@ -622,20 +767,17 @@ describe('limbs.http.ayde — the page, search and audit', () => {
     expect(await (await page('tina')).text()).toContain('<span id="who"></span><a href="logout">Log out</a>');
   });
 
-  it('search: website conversations by username (any case, part of it), optionally abrin; newest first; a shortcut into the tree; below root only inside the scope', async () => {
-    const { get, lines } = await limb();
-    const r = await get('search', { q: 'MLOP' }, 'tina');
-    expect(r.body).toMatchObject({ user: 'tina', level: 'team' });
-    expect(r.body.conversations.map((c) => c.path)).toEqual([`conversations/http/${A}`, `conversations/http/${B}`]);
-    expect(r.body.conversations[0]).toMatchObject({ id: A, usuario: { username: 'mlopez', abrin: 'IEV', short_name: 'María López' } });
-    expect((await get('search', { q: '', abrin: 'csj' }, 'tina')).body.conversations.map((c) => c.id)).toEqual([C]);
-    for (const user of ['tina', 'dev', 'ada']) expect((await get('search', { q: '' }, user)).body.conversations.map((c) => c.id), user).toEqual([A, C, B]);
-    expect((await get('search', { q: '' }, 'rob')).body.conversations.map((c) => c.id)).toEqual([A, C, D, B]);
-    expect(lines).toContain('ayde: tina (team) searched "mlop"');
-    const one = await limb({ ayde: { on: true, scope: [`http:${C}`, TG] } });
-    expect((await one.get('search', { q: 'mlop' }, 'tina')).body.conversations).toEqual([]);
-    expect((await one.get('search', { q: '' }, 'ada')).body.conversations.map((c) => c.id)).toEqual([C]);
-    expect((await one.get('search', { q: 'mlop' }, 'rob')).body.conversations.map((c) => c.id)).toEqual([A, B]);
+  it('the page: one list with one search box, from tree?scope=1; no separate search panel; text only through textContent', async () => {
+    const { page, get } = await limb();
+    const html = await (await page('tina')).text();
+    expect(html).toContain("call('tree', { scope: '1' })");
+    expect(html.match(/<input /g)).toHaveLength(1);
+    expect(html).not.toMatch(/Website conversations|id="found"|call\('search'/);
+    expect(html).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+    expect(html).toContain("['Today', ");
+    expect(html).toContain("['Previous', ");
+    expect(html).not.toMatch(/second: |toLocaleString\(\)/);
+    expect((await get('search', { q: '' }, 'tina')).status).toBe(404);
   });
 
   it('audit: every list, view and download in the log; inside a conversation also its admin-access.log; refusals logged; no contents', async () => {
