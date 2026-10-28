@@ -8,7 +8,8 @@
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
-//   GET  <ayde.path>/                    the EduWeb team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic
+//   GET  <ayde.path>/                    the EduWeb team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
+//                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -20,7 +21,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/pro
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
-import { createBrowser, checkUser } from './http-ayde.mjs';
+import { createBrowser, checkUser, LEVELS } from './http-ayde.mjs';
 
 export const HTTP_PREFIX = 'http:';
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
@@ -88,6 +89,7 @@ export function verifyIdentity(token, key, nowMs = Date.now()) {
 }
 const AYDE_REFUSED = (level) => (level === 'team' ? 'Sign in with your ayde user.' : `This needs the ${level} level: sign in with a ${level} user.`);
 const AYDE_LOCKED = 'Too many failed logins. Wait 15 minutes.';
+const AYDE_INTERNAL = (level) => `The ${level} level opens only from the internal network.`;
 const LOGIN_FAILS = 10, LOGIN_MS = 15 * 60_000;   // failed ayde logins per address in LOGIN_MS → 429 for LOGIN_MS
 const whoOf = (identity) => (identity ? createHash('sha256').update(JSON.stringify([identity.abrin, identity.username])).digest('hex').slice(0, 16) : null);
 
@@ -156,6 +158,8 @@ export async function startHttpBridge({
   }
   let aydeBase = ayde && (ayde.on === true || ayde.on === 'on') && aydeRoot ? `/${String(ayde.path ?? '/ayde').replace(/^\/+|\/+$/g, '')}/` : null;
   if (aydeBase && (aydeBase === '//' || aydeBase.startsWith(base) || base.startsWith(aydeBase))) { log(`ayde off — its path ${aydeBase} overlaps the chatbox's ${base}`); aydeBase = null; }
+  let aydeCap = ayde?.public_max_level ?? 'team';   // the highest level a public request opens
+  if (aydeBase && !LEVELS.includes(aydeCap)) { log(`ayde: public_max_level '${aydeCap}' is not ${LEVELS.join(' | ')} — treated as team`); aydeCap = 'team'; }
 
   // sid → { sid, client, lastAt, who, log, subs, posts }; client + lastAt + who persist across restarts, log in its own file.
   // who: a hash of the identity the session started with (abrin + username), null when unsigned.
@@ -413,6 +417,9 @@ export async function startHttpBridge({
   // /ayde (http-ayde.mjs): off or no users file → 404. GET only, no CORS. HTTP Basic against the users
   // file; the browser decides the level a request needs and answers 401 in that level's realm.
   // LOGIN_FAILS failed logins from one address: 429 for LOGIN_MS.
+  // A request with X-Forwarded-For or Forwarded is public (the site's proxy always adds one; a forged one
+  // only lowers its sender's reach): a right login above aydeCap is 403 (a 401 would prompt again), not a
+  // failed login. Only a right password learns that, so a wrong one reveals no level.
   const logins = new Map();   // address → { times, until }: its failed logins
   async function aydeServe(req, res, url, sub) {
     const users = aydeUsers();
@@ -421,7 +428,7 @@ export async function startHttpBridge({
     if (!sub.length) { res.writeHead(308, { Location: `${aydeBase.split('/').at(-2)}/${url.search}` }); return res.end(); }
     const call = sub[0] || null;
     const deny = (status, message, headers, more = {}) => {
-      if (call) return json(res, status, { error: status === 429 ? 'too many failed logins' : 'unauthorized', message, ...more }, headers);
+      if (call) return json(res, status, { error: status === 429 ? 'too many failed logins' : status === 403 ? 'forbidden' : 'unauthorized', message, ...more }, headers);
       res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...headers });
       return res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>ayde</title><p>${message}</p></html>\n`);
     };
@@ -446,6 +453,10 @@ export async function startHttpBridge({
         log(`ayde: login refused for ${JSON.stringify(field(user))} from ${addr} (${tries}/${LOGIN_FAILS})`);
         if (tries >= LOGIN_FAILS) log(`ayde: ${addr} locked out for ${LOGIN_MS / 60_000} min`);
       }
+    }
+    if (who && (req.headers['x-forwarded-for'] != null || req.headers.forwarded != null) && LEVELS.indexOf(who.level) > LEVELS.indexOf(aydeCap)) {
+      log(`ayde: ${field(who.user)} (${who.level}) refused from ${addr} — the ${who.level} level opens only from the internal network (public_max_level: ${aydeCap})`);
+      return deny(403, AYDE_INTERNAL(who.level), {});
     }
     return browser.serve(call, req, res, url, who, (level) => deny(401, AYDE_REFUSED(level), { 'WWW-Authenticate': `Basic realm="ayde ${level}", charset="UTF-8"` }, { level }));
   }

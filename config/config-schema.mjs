@@ -802,9 +802,12 @@ export const CONFIG_SCHEMA = {
         trust_proxy       default false. true: a visitor's address is the last
                           X-Forwarded-For entry (what the proxy saw); false: the
                           socket's address
-        ayde              { on: false (default) | true, path: /ayde }: the EduWeb team's
-                          read-only browser of EGPT_HOME, served by this limb (below).
-                          A path that overlaps the chatbox's path: off (logged)
+        ayde              { on: false (default) | true, path: /ayde,
+                          public_max_level: team (default) | devs | admin | root }:
+                          the EduWeb team's read-only browser of EGPT_HOME, served by
+                          this limb (below). A path that overlaps the chatbox's path:
+                          off (logged). public_max_level: the highest level a login
+                          opens through the proxy (below); any other value: team (logged)
         clients:
           <client>:       lowercase letters, digits, - and _
             being             the agent that answers its visitors
@@ -895,7 +898,8 @@ export const CONFIG_SCHEMA = {
         Levels, lowest first, each reading all the lower ones read. On the path under EGPT_HOME, the
         first matching rule decides:
           secrets/**, chrome/** (browser sessions)     root
-          conversations/** with a segment starting "." devs   (.secrets/, .ssh/, dotfiles: invisible to team)
+          conversations/**/.secrets/**                 root   (credentials)
+          conversations/** with a segment starting "." devs   (.ssh/, dotfiles: invisible to team)
           conversations/**                             team
           everything else (EGPT_HOME itself included)  admin
         A path above the user's level: 401 with WWW-Authenticate: Basic realm="ayde <the level it
@@ -919,6 +923,13 @@ export const CONFIG_SCHEMA = {
         failure is logged with the user and the address, never the password. A right login at a
         level too low is not a failure. The address is the one new_sessions counts (trust_proxy):
         behind a proxy, set trust_proxy: true, else every login shares the proxy's.
+        From the internet: a request carrying X-Forwarded-For or Forwarded is public (the site's
+        proxy always adds X-Forwarded-For; a forged one only lowers its sender's reach; one without
+        either comes from the private network). On it, a right login above public_max_level
+        (default team) is 403 "The <level> level opens only from the internal network." (not 401:
+        no new prompt), logged with the user, level and address, and not a failed login. A wrong
+        password is 401 as ever, saying nothing of the level. A user at or below it, and every
+        request without either header: as above. nginx: keep the X-Forwarded-For line below.
         Audit: each list, view and download is a log line, "ayde: <user> (<level>) viewed <path>";
         inside a conversation (conversations/<surface>/<name>/) also appended to its
         admin-access.log. Each refusal is logged with the level it needed.

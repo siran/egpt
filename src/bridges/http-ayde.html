@@ -62,9 +62,10 @@
   const join = (dir, name) => (dir ? `${dir}/${name}` : name);
   let top = null;
   // A path above the user's level answers 401 in that level's realm: the browser asks for that login.
+  // 403: a login above public_max_level, from the internet.
   async function call(sub, params) {
     const r = await fetch(`${sub}?${new URLSearchParams(params)}`, { cache: 'no-store' });
-    if (r.status === 401 || r.status === 429) { const b = await r.json().catch(() => ({})); fail(b.message || 'Not allowed.'); throw new Error(String(r.status)); }
+    if (r.status === 401 || r.status === 403 || r.status === 429) { const b = await r.json().catch(() => ({})); fail(b.message || 'Not allowed.'); throw new Error(String(r.status)); }
     if (!r.ok) { fail(r.status === 404 ? 'Not found.' : `Error ${r.status}.`); throw new Error(String(r.status)); }
     $('fail').hidden = true;
     return r.headers.get('content-type')?.includes('json') ? r.json() : r.blob();

@@ -386,9 +386,9 @@ each level reads everything the lower ones read:
 | Level | Reads |
 |---|---|
 | `team` | `conversations/**`, except any path with a segment starting with `.` (`.secrets/`, `.ssh/`, dotfiles), which it never sees |
-| `devs` | `conversations/**`, hidden entries included |
-| `admin` | everything under `EGPT_HOME` but `secrets/` and `chrome/` (browser profiles: signed-in sessions); YAML/JSON outside `conversations/` (config, `config.readonly.yaml`, `state/`) with token-like values shown as `•••(<length>)` |
-| `root` | everything, `secrets/` and `chrome/` included, as it is |
+| `devs` | `conversations/**`, hidden entries included, but a conversation's `.secrets/` (credentials) |
+| `admin` | everything under `EGPT_HOME` but `secrets/`, `chrome/` (browser profiles: signed-in sessions) and conversations' `.secrets/`; YAML/JSON outside `conversations/` (config, `config.readonly.yaml`, `state/`) with token-like values shown as `•••(<length>)` |
+| `root` | everything, `secrets/`, `chrome/` and conversations' `.secrets/` included, as it is |
 
 A path above your level answers 401 in that level's realm (`ayde admin`,
 `ayde root`), so the browser asks for a higher login. The page shows such paths
@@ -415,6 +415,12 @@ restart.
 After 10 failed logins within 15 minutes, that address gets 429 for 15 minutes.
 Behind a proxy, set `limbs.http.trust_proxy: true`; otherwise every login counts
 against the proxy's address.
+
+From the internet (a request through the proxy, which adds `X-Forwarded-For`),
+only users up to `limbs.http.ayde.public_max_level` get in: `team` by default;
+set `devs`, `admin` or `root` to open more. A higher user's right login there
+answers 403 "The <level> level opens only from the internal network." — sign in
+from the internal network instead. It is logged, and it is not a failed login.
 
 **HTTPS only:** Basic sends the password with every request. The site's proxy
 must be HTTPS, and the hop from the proxy to the node must stay private

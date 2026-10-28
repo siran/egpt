@@ -1,11 +1,13 @@
 // http-ayde.mjs — /ayde: the EduWeb team's read-only browser of EGPT_HOME, by level (limbs.http.ayde).
-// http.mjs checks the login (HTTP Basic against secrets/ayde.users: checkUser); under <ayde path>/:
+// http.mjs checks the login (HTTP Basic against secrets/ayde.users: checkUser) and, on a public request
+// (one through the site's proxy), refuses a user above limbs.http.ayde.public_max_level; under <ayde path>/:
 //   (none)                          the page (http-ayde.html)
 //   search?q=&abrin=                {user, level, conversations: [{id, path, usuario, last}]} newest first (conversations/http/*/usuario.json)
 //   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder; no p: the user's top
 //   file?p=<path>[&download=1]      {path, size, text, truncated, masked?} | {path, size, binary} | the bytes
 // Paths are relative to EGPT_HOME and resolve (realpath) inside it. levelOf, on the asked path and on the
 // real one, decides who reads it; above the user's level: refuse(level), a 401 in that level's realm.
+// Under conversations/, a .secrets segment (credentials) is root's, as secrets/ is; another dot segment devs'.
 // Each tree, view and download is a line in the log, and in the conversation's admin-access.log when inside one.
 import { readFileSync, createReadStream, constants } from 'node:fs';
 import { readdir, readFile, realpath, stat, lstat, open } from 'node:fs/promises';
@@ -33,6 +35,7 @@ const rank = (level) => LEVELS.indexOf(level);
 export function levelOf(parts) {
   if (parts[0] === 'secrets' || parts[0] === 'chrome') return 'root';   // chrome/: browser profiles hold signed-in sessions
   if (parts[0] !== 'conversations') return 'admin';
+  if (parts.includes('.secrets')) return 'root';   // credentials
   return parts.some((p) => p.startsWith('.')) ? 'devs' : 'team';
 }
 const topOf = (level) => (rank(level) < rank('admin') ? ['conversations'] : []);
