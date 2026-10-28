@@ -1,15 +1,16 @@
 // http-ayde.test.mjs — /ayde: the EduWeb team's read-only browser of EGPT_HOME on the chatbox limb
 // (limbs.http.ayde). HTTP Basic against secrets/ayde.users, each user with a level: team < devs < admin
-// < root. A path above the user's level is 401 in that level's realm; admin reads config with its
-// token-like values masked; nothing outside EGPT_HOME, nothing written but the audit.
+// < root. Below root a user reads only the scope's conversations (limbs.http.ayde.scope: chat ids, their
+// folders by conversations.yaml); a path above the user's level, or outside the scope, is 401 in that
+// level's realm; nothing outside EGPT_HOME, nothing written but the audit.
 import { describe, it, expect, afterEach, beforeEach, beforeAll } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, utimes, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { startHttpBridge } from '../src/bridges/http.mjs';
 import { userLine, LEVELS, levelOf } from '../src/bridges/http-ayde.mjs';
+import { readState } from '../src/conversations-state.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const USERS = { tina: 'team', dev: 'devs', ada: 'admin', rob: 'root' };
@@ -47,6 +48,31 @@ user_name: John
 const TELEGRAM = '123456789:dummy-telegram-token-not-a-secret';
 
 const A = 'acme-00000000000000a1', B = 'acme-00000000000000b2', C = 'acme-00000000000000c3', D = 'zeta-00000000000000d4';
+// Telegram: the EduWeb group (its /split fork in its folder), a topic in a folder of its own, and an
+// unscoped group whose folder is only named like EduWeb's.
+const TG = 'tg:-1004408163350', OTHER = 'tg:-1009999999999';
+const G = 'eduweb-2610010101', T = 'eduweb-soporte-2610020202', U = 'eduweb-marketer-2610030303';
+const SCOPE = ['http:acme-', TG];
+const httpRows = [A, B, C, D].map((id) => `    "http:${id}":
+      conversation_path: .egpt/conversations/http/${id}`).join('\n');
+const registry = ({ g = G } = {}) => `contacts:
+  http:
+${httpRows}
+  telegram:
+    "${TG}": # EduWeb
+      conversation_path: .egpt/conversations/telegram/${g}
+    "${TG}/42": # SI+EduWeb-an
+      conversation_path: .egpt/conversations/telegram/${g}
+      parent_chat: "${TG}"
+      transcript: SI+EduWeb-an
+    "${TG}/7": # Soporte
+      conversation_path: .egpt/conversations/telegram/${T}
+    "${OTHER}": # Marketer?
+      conversation_path: .egpt/conversations/telegram/${U}
+  whatsapp:
+    "58000@s.whatsapp.net": # Familia
+      conversation_path: .egpt/conversations/whatsapp/familia
+`;
 let home, outside;
 const at = (...p) => join(home, ...p);
 beforeEach(async () => {
@@ -56,7 +82,6 @@ beforeEach(async () => {
   const put = async (path, text) => { await mkdir(join(at(path), '..'), { recursive: true }); await writeFile(at(path), text); };
   await put('config/config.yaml', CONFIG);
   await put('config/agents/ed.json', JSON.stringify({ name: 'ed', apiKey: 'dummy-json-key-KKKK1111', nested: { hash: 'dummy-json-hash-LLLL2222' }, model: 'opus' }, null, 2));
-  await put('config/broken.yaml', 'a: [unclosed\n');
   await put('config.readonly.yaml', 'beeper_token: dummy-readonly-token-MMMM3333\n');
   await put('state/alive.txt', 'alive\n');
   await put('secrets/telegram-main.token', `${TELEGRAM}\n`);
@@ -75,6 +100,12 @@ beforeEach(async () => {
   await conv(D, null, {}, '2026-10-24T10:00:00Z');
   await put('conversations/whatsapp/familia/transcript.md', 'familia\n');
   await put('conversations/whatsapp/familia/.notes.md', 'hidden notes\n');
+  await put(`conversations/telegram/${G}/transcript.md`, 'EduWeb\n');
+  await put(`conversations/telegram/${G}/transcript-SI+EduWeb-an.md`, 'the fork\n');
+  await put(`conversations/telegram/${G}/.notes.md`, 'hidden notes\n');
+  await put(`conversations/telegram/${T}/transcript.md`, 'Soporte\n');
+  await put(`conversations/telegram/${U}/transcript.md`, 'not EduWeb\n');
+  await put('config/conversations.yaml', registry());
 });
 
 const live = [];
@@ -85,11 +116,12 @@ afterEach(async () => {
 });
 
 // user: one of USERS (its right password), a "Basic …" header, or null for none.
-async function limb({ ayde = { on: true }, users = () => USERS_TEXT, ...opts } = {}) {
+async function limb({ ayde = { on: true, scope: SCOPE }, users = () => USERS_TEXT, ...opts } = {}) {
   const port = await freeSafeHttpPort();
   const lines = [];
   const b = await startHttpBridge({
-    port, clients: { acme: { being: 'ed' } }, ayde, aydeRoot: home, aydeUsers: () => users?.() ?? null, onLog: (m) => lines.push(m), ...opts,
+    port, clients: { acme: { being: 'ed' } }, ayde, aydeRoot: home, aydeUsers: () => users?.() ?? null,
+    aydeRegistry: () => readState(at('config', 'conversations.yaml')), onLog: (m) => lines.push(m), ...opts,
   });
   live.push(() => b.stop());
   const root = `http://127.0.0.1:${port}`;
@@ -105,31 +137,39 @@ async function limb({ ayde = { on: true }, users = () => USERS_TEXT, ...opts } =
 }
 
 describe('limbs.http.ayde — the levels', () => {
-  it('levelOf: under conversations/, a .secrets segment is root, another dot segment (.ssh too) devs, the rest team', () => {
-    const of = (p) => levelOf(p.split('/'));
-    expect(of('conversations/x/.secrets/y')).toBe('root');
-    expect(of('conversations/x/.secrets')).toBe('root');
-    expect(of('conversations/http/x/sub/.secrets')).toBe('root');
-    expect(of('conversations/x/.ssh/id_ed25519')).toBe('devs');
-    expect(of('conversations/x/.tools/a')).toBe('devs');
-    expect(of('conversations/x/.secrets.bak/a')).toBe('devs');
-    expect(of('conversations/x/.notes.md')).toBe('devs');
-    expect(of('conversations/x/transcript.md')).toBe('team');
-    expect(of('conversations/http/x/gavetas/notas.md')).toBe('team');
-    expect(of('secrets/x')).toBe('root');
-    expect(of('config/x.yaml')).toBe('admin');
+  it('levelOf: inside a scoped folder a .secrets segment is root, another dot segment (.ssh too) devs, the rest team; outside every scoped folder root', () => {
+    const homes = [['conversations', 'http', A], ['conversations', 'telegram', G]];
+    const of = (p) => levelOf(p.split('/').filter(Boolean), homes);
+    expect(of(`conversations/http/${A}/.secrets/y`)).toBe('root');
+    expect(of(`conversations/http/${A}/.secrets`)).toBe('root');
+    expect(of(`conversations/http/${A}/sub/.secrets`)).toBe('root');
+    expect(of(`conversations/telegram/${G}/.ssh/id_ed25519`)).toBe('devs');
+    expect(of(`conversations/http/${A}/.tools/a`)).toBe('devs');
+    expect(of(`conversations/http/${A}/.secrets.bak/a`)).toBe('devs');
+    expect(of(`conversations/telegram/${G}/.notes.md`)).toBe('devs');
+    expect(of(`conversations/telegram/${G}/transcript.md`)).toBe('team');
+    expect(of(`conversations/http/${A}`)).toBe('team');
+    expect(of(`conversations/http/${A}/gavetas/notas.md`)).toBe('team');
+    for (const p of [`conversations/http/${D}/transcript.md`, `conversations/http/${A}x`, 'conversations/http', 'conversations', '', 'config/x.yaml', 'state/x', 'secrets/x', 'chrome/x']) {
+      expect(of(p), p).toBe('root');
+    }
+    expect(levelOf(['conversations', 'http', A], [])).toBe('root');
   });
 
-  it('each level reads its paths and the lower levels\' paths; above it: 401 in the realm of the level it needs', async () => {
+  it('each level reads its paths and the lower levels\' paths; above it or outside the scope: 401 in the realm of the level it needs', async () => {
     const { get } = await limb();
     const cases = [
-      ['tree', 'conversations', 'team'], ['tree', `conversations/http/${A}`, 'team'], ['file', `conversations/http/${A}/gavetas/notas.md`, 'team'],
-      ['file', 'conversations/whatsapp/familia/transcript.md', 'team'],
+      ['tree', `conversations/http/${A}`, 'team'], ['file', `conversations/http/${A}/gavetas/notas.md`, 'team'],
+      ['tree', `conversations/telegram/${G}`, 'team'], ['file', `conversations/telegram/${G}/transcript-SI+EduWeb-an.md`, 'team'],
+      ['file', `conversations/telegram/${T}/transcript.md`, 'team'],
       ['tree', `conversations/http/${A}/.tools`, 'devs'], ['file', `conversations/http/${A}/.tools/run.sh`, 'devs'],
       ['tree', `conversations/http/${A}/.ssh`, 'devs'], ['file', `conversations/http/${A}/.ssh/id_rsa`, 'devs'],
-      ['file', 'conversations/whatsapp/familia/.notes.md', 'devs'],
+      ['file', `conversations/telegram/${G}/.notes.md`, 'devs'],
       ['tree', `conversations/http/${A}/.secrets`, 'root'], ['file', `conversations/http/${A}/.secrets/db.env`, 'root'],
-      ['tree', '', 'admin'], ['tree', 'config', 'admin'], ['file', 'state/alive.txt', 'admin'], ['file', 'config/config.yaml', 'admin'],
+      ['tree', `conversations/http/${D}`, 'root'], ['file', `conversations/http/${D}/transcript.md`, 'root'],
+      ['tree', `conversations/telegram/${U}`, 'root'], ['file', 'conversations/whatsapp/familia/transcript.md', 'root'],
+      ['tree', 'conversations', 'root'], ['tree', 'conversations/http', 'root'], ['tree', '', 'root'],
+      ['tree', 'config', 'root'], ['file', 'config/config.yaml', 'root'], ['file', 'config.readonly.yaml', 'root'], ['file', 'state/alive.txt', 'root'],
       ['tree', 'secrets', 'root'], ['file', 'secrets/telegram-main.token', 'root'],
       ['tree', 'chrome', 'root'], ['file', 'chrome/profiles/brain/Default/Cookies', 'root'],
     ];
@@ -147,23 +187,53 @@ describe('limbs.http.ayde — the levels', () => {
     }
   }, 60_000);
 
-  it('team never sees a dot entry; devs does; admin sees EGPT_HOME with secrets/ marked root', async () => {
+  it('below root the top is the scope: each folder by name with the chat ids it serves (the fork in its parent\'s, every acme- session); never conversations/ nor an unscoped name', async () => {
+    const { get, lines } = await limb();
+    for (const user of ['tina', 'dev', 'ada']) {
+      const r = await get('tree', {}, user);
+      expect(r.body, user).toMatchObject({ user, level: USERS[user], path: '', scope: true });
+      expect(r.body.entries.map((e) => [e.name, e.path, e.chats, e.dir, e.level]), user).toEqual([
+        [A, `conversations/http/${A}`, [`http:${A}`], true, 'team'],
+        [B, `conversations/http/${B}`, [`http:${B}`], true, 'team'],
+        [C, `conversations/http/${C}`, [`http:${C}`], true, 'team'],
+        [G, `conversations/telegram/${G}`, [TG, `${TG}/42`], true, 'team'],
+        [T, `conversations/telegram/${T}`, [`${TG}/7`], true, 'team'],
+      ]);
+      const text = JSON.stringify(r.body);
+      for (const hidden of [D, U, OTHER, 'familia', 'whatsapp']) expect(text, `${user} ${hidden}`).not.toContain(hidden);
+      for (const p of ['conversations', 'conversations/http', 'conversations/telegram']) {
+        const up = await get('tree', { p }, user);
+        expect(up.realm, `${user} ${p}`).toBe(realm('root'));
+        expect(JSON.stringify(up.body), `${user} ${p}`).not.toMatch(/zeta|marketer|familia/);
+      }
+    }
+    expect(lines.some((l) => /scope is empty/.test(l))).toBe(false);
+    const top = (await get('tree', {}, 'rob')).body;
+    expect(top).toMatchObject({ path: '', level: 'root' });
+    expect(top.scope).toBeUndefined();
+    expect(top.entries.map((e) => e.name)).toEqual(expect.arrayContaining(['config', 'conversations', 'secrets', 'state']));
+    expect((await get('tree', { p: 'conversations/telegram' }, 'rob')).body.entries.map((e) => e.name)).toEqual([G, U, T]);
+  });
+
+  it('team never sees a dot entry; devs and admin do; root lists EGPT_HOME', async () => {
     const { get } = await limb();
     const names = async (user, p) => (await get('tree', { p }, user)).body.entries.map((e) => e.name);
     expect(await names('tina', `conversations/http/${A}`)).toEqual(['admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
-    expect(await names('dev', `conversations/http/${A}`)).toEqual(['.secrets', '.ssh', '.tools', 'admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
-    expect(await names('tina', 'conversations/whatsapp/familia')).toEqual(['admin-access.log', 'transcript.md']);
-    const top = (await get('tree', { p: '' }, 'ada')).body;
-    expect(top).toMatchObject({ user: 'ada', level: 'admin', path: '' });
+    for (const user of ['dev', 'ada']) expect(await names(user, `conversations/http/${A}`), user).toEqual(['.secrets', '.ssh', '.tools', 'admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
+    expect(await names('tina', `conversations/telegram/${G}`)).toEqual(['admin-access.log', 'transcript-SI+EduWeb-an.md', 'transcript.md']);
+    expect(await names('ada', `conversations/telegram/${G}`)).toEqual(['.notes.md', 'admin-access.log', 'transcript-SI+EduWeb-an.md', 'transcript.md']);
+    const top = (await get('tree', { p: '' }, 'rob')).body;
+    expect(top).toMatchObject({ user: 'rob', level: 'root', path: '' });
     expect(top.entries.find((e) => e.name === 'secrets')).toMatchObject({ dir: true, level: 'root' });
-    expect(top.entries.find((e) => e.name === 'config')).toMatchObject({ dir: true, level: 'admin' });
-    expect(top.entries.find((e) => e.name === 'conversations')).toMatchObject({ dir: true, level: 'team' });
+    expect(top.entries.find((e) => e.name === 'conversations')).toMatchObject({ dir: true, level: 'root' });
+    const levels = Object.fromEntries((await get('tree', { p: 'conversations/http' }, 'rob')).body.entries.map((e) => [e.name, e.level]));
+    expect(levels).toEqual({ [A]: 'team', [B]: 'team', [C]: 'team', [D]: 'root' });
   });
 
   it('a conversation\'s .secrets/ is root\'s: below root, 401 in the root realm by its path, by a link into it, or as a download; devs sees it listed as root', async () => {
-    await symlink(at('conversations', 'http', A, '.secrets'), at('conversations', 'whatsapp', 'familia', 'llaves'), 'junction');
+    await symlink(at('conversations', 'http', A, '.secrets'), at('conversations', 'telegram', G, 'llaves'), 'junction');
     const { get, api } = await limb();
-    const sec = `conversations/http/${A}/.secrets`, link = 'conversations/whatsapp/familia/llaves';
+    const sec = `conversations/http/${A}/.secrets`, link = `conversations/telegram/${G}/llaves`;
     for (const user of ['tina', 'dev', 'ada']) {
       for (const [call, p] of [['tree', sec], ['file', `${sec}/db.env`], ['tree', link], ['file', `${link}/db.env`]]) {
         const r = await get(call, { p }, user);
@@ -180,47 +250,22 @@ describe('limbs.http.ayde — the levels', () => {
     expect(levels).toMatchObject({ '.secrets': 'root', '.ssh': 'devs', '.tools': 'devs', gavetas: 'team', 'transcript.md': 'team' });
   });
 
-  it('the tree with no path starts at the user\'s top: conversations for team and devs, EGPT_HOME for admin and root', async () => {
-    const { get } = await limb();
-    expect((await get('tree', {}, 'tina')).body).toMatchObject({ path: 'conversations', level: 'team' });
-    expect((await get('tree', {}, 'dev')).body.path).toBe('conversations');
-    expect((await get('tree', {}, 'ada')).body.path).toBe('');
-    expect((await get('tree', {}, 'rob')).body.path).toBe('');
-  });
-
-  it('admin reads config YAML/JSON (and config.readonly.yaml) masked, comments and the rest kept; root reads them as they are', async () => {
+  it('config, state and the rest of EGPT_HOME are root\'s: below root 401 in the root realm, nothing of them in the answer or a download; root reads them as they are', async () => {
     const { get, api } = await limb();
-    const y = await get('file', { p: 'config/config.yaml' }, 'ada');
-    expect(y.body.masked).toBe(true);
-    const doc = parseYaml(y.body.text);
-    expect(doc.beeper_token).toBe('•••(27)');
-    expect(doc.shell.token).toBe('•••(26)');
-    expect(doc.limbs.beeper.main).toEqual({ account: 'x@example.com', token: '•••(25)' });
-    expect(doc.sandbox_oauth_token).toBe('•••(48)');
-    expect(doc.api_keys).toEqual(['•••(23)', '•••(23)']);
-    expect(doc.user_name).toBe('John');
-    expect(y.body.text).toMatch(/^# eGPT node config$/m);
-    expect(y.body.text).toContain('node_name: EDW            # the node');
-    expect(y.body.text).toMatch(/^# old_token: •••$/m);
-    const j = await get('file', { p: 'config/agents/ed.json' }, 'ada');
-    expect(JSON.parse(j.body.text)).toEqual({ name: 'ed', apiKey: '•••(23)', nested: { hash: '•••(24)' }, model: 'opus' });
-    const ro = await get('file', { p: 'config.readonly.yaml' }, 'ada');
-    expect(ro.body.text).toBe('beeper_token: "•••(29)"\n');
-    const dl = await api('file', { p: 'config/config.yaml', download: '1' }, 'ada');
-    const dlText = await dl.text();
-    expect(dlText).toBe(y.body.text);
-    for (const s of SECRETS) expect(`${y.body.text}${j.body.text}${ro.body.text}${dlText}`, s).not.toContain(s);
-    expect((await get('file', { p: 'config/config.yaml' }, 'rob')).body).toMatchObject({ text: CONFIG, truncated: false });
-    expect((await get('file', { p: 'config/config.yaml' }, 'rob')).body.masked).toBeUndefined();
-    expect((await get('file', { p: `conversations/http/${A}/usuario.json` }, 'ada')).body.masked).toBeUndefined();
-  });
-
-  it('a config file that does not parse cannot be masked: it needs root', async () => {
-    const { get } = await limb();
-    const r = await get('file', { p: 'config/broken.yaml' }, 'ada');
-    expect(r.status).toBe(401);
-    expect(r.realm).toBe(realm('root'));
-    expect((await get('file', { p: 'config/broken.yaml' }, 'rob')).body.text).toBe('a: [unclosed\n');
+    for (const user of ['tina', 'dev', 'ada']) {
+      for (const p of ['config/config.yaml', 'config/agents/ed.json', 'config.readonly.yaml', 'state/alive.txt']) {
+        const r = await get('file', { p }, user);
+        expect(r.status, `${user} ${p}`).toBe(401);
+        expect(r.realm, `${user} ${p}`).toBe(realm('root'));
+        const dl = await api('file', { p, download: '1' }, user);
+        expect(dl.status, `${user} ${p}`).toBe(401);
+        const text = `${JSON.stringify(r.body)}${await dl.text()}`;
+        for (const s of SECRETS) expect(text, `${user} ${p}`).not.toContain(s);
+      }
+    }
+    expect((await get('file', { p: 'config/config.yaml' }, 'rob')).body).toEqual({ path: 'config/config.yaml', size: Buffer.byteLength(CONFIG), text: CONFIG, truncated: false });
+    expect(JSON.parse((await get('file', { p: 'config/agents/ed.json' }, 'rob')).body.text).apiKey).toBe('dummy-json-key-KKKK1111');
+    expect(await (await api('file', { p: 'config.readonly.yaml', download: '1' }, 'rob')).text()).toBe('beeper_token: dummy-readonly-token-MMMM3333\n');
   });
 
   it('root reads secrets/ as it is', async () => {
@@ -228,6 +273,43 @@ describe('limbs.http.ayde — the levels', () => {
     expect((await get('file', { p: 'secrets/telegram-main.token' }, 'rob')).body.text).toBe(`${TELEGRAM}\n`);
     expect(await (await api('file', { p: 'secrets/telegram-main.token', download: '1' }, 'rob')).text()).toBe(`${TELEGRAM}\n`);
     expect((await get('tree', { p: 'secrets' }, 'rob')).body.entries.map((e) => e.name)).toEqual(['telegram-main.token']);
+  });
+});
+
+describe('limbs.http.ayde — the scope', () => {
+  it('no scope (the default) or an empty one: a boot line; below root nothing, an empty top, no search hit, every conversation root\'s; root reads all', async () => {
+    for (const ayde of [{ on: true }, { on: true, scope: [] }]) {
+      const { get, lines } = await limb({ ayde });
+      expect(lines).toContain('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
+      for (const user of ['tina', 'dev', 'ada']) {
+        expect((await get('tree', {}, user)).body, user).toMatchObject({ path: '', scope: true, entries: [] });
+        expect((await get('search', { q: '' }, user)).body.conversations, user).toEqual([]);
+        for (const p of [`conversations/http/${A}`, `conversations/telegram/${G}`]) expect((await get('tree', { p }, user)).realm, `${user} ${p}`).toBe(realm('root'));
+      }
+      expect((await get('tree', { p: `conversations/http/${A}` }, 'rob')).status).toBe(200);
+      expect((await get('search', { q: '' }, 'rob')).body.conversations).toHaveLength(4);
+    }
+  });
+
+  it('a scope entry covers its chat id and that chat\'s topics (<id>/<n>); one ending in "-" is a prefix; anything else that id only', async () => {
+    const { get } = await limb({ ayde: { on: true, scope: [`${TG}/7`, 'tg:-100440816335', `http:${C}`, 'http:zeta', 'http:acme-00000000000000b'] } });
+    expect((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e.chats])).toEqual([[C, [`http:${C}`]], [T, [`${TG}/7`]]]);
+    expect((await get('tree', { p: `conversations/telegram/${G}` }, 'tina')).realm).toBe(realm('root'));
+    expect((await get('tree', { p: `conversations/http/${B}` }, 'tina')).realm).toBe(realm('root'));
+  });
+
+  it('by chat id, never by folder name: a renamed folder keeps its access, a folder named like a scoped one has none', async () => {
+    const { get } = await limb();
+    expect((await get('file', { p: `conversations/telegram/${G}/transcript.md` }, 'tina')).body.text).toBe('EduWeb\n');
+    const R = 'renamed-2610010101';
+    await rename(at('conversations', 'telegram', G), at('conversations', 'telegram', R));
+    await writeFile(at('config', 'conversations.yaml'), registry({ g: R }));
+    const top = (await get('tree', {}, 'tina')).body.entries;
+    expect(top.find((e) => e.name === R)).toMatchObject({ path: `conversations/telegram/${R}`, chats: [TG, `${TG}/42`] });
+    expect(top.map((e) => e.name)).not.toContain(G);
+    expect((await get('file', { p: `conversations/telegram/${R}/transcript.md` }, 'tina')).body.text).toBe('EduWeb\n');
+    expect((await get('tree', { p: `conversations/telegram/${G}` }, 'tina')).realm).toBe(realm('root'));
+    expect((await get('tree', { p: `conversations/telegram/${U}` }, 'tina')).realm).toBe(realm('root'));
   });
 });
 
@@ -242,23 +324,27 @@ describe('limbs.http.ayde — paths stay inside EGPT_HOME', () => {
     expect((await get('tree', { p: 'config/config.yaml' }, 'rob')).status).toBe(404);
   });
 
-  it('a link out of EGPT_HOME is refused for everyone; a link to a higher path needs that path\'s level', async () => {
+  it('a link out of EGPT_HOME is refused for everyone; a link to a higher path, or out of the scope, needs that path\'s level', async () => {
     await symlink(outside, at('conversations', 'http', A, 'gavetas', 'fuera'), 'junction');
     await symlink(at('secrets'), at('conversations', 'http', A, 'gavetas', 'llaves'), 'junction');
-    await symlink(at('conversations', 'http', A, '.tools'), at('conversations', 'whatsapp', 'familia', 'escondido'), 'junction');
+    await symlink(at('conversations', 'http', D), at('conversations', 'http', A, 'gavetas', 'otra'), 'junction');
+    await symlink(at('conversations', 'http', A, '.tools'), at('conversations', 'telegram', G, 'escondido'), 'junction');
     const { get } = await limb();
     for (const user of Object.keys(USERS)) {
       expect((await get('tree', { p: `conversations/http/${A}/gavetas/fuera` }, user)).status, user).toBe(404);
       expect((await get('file', { p: `conversations/http/${A}/gavetas/fuera/secret.txt` }, user)).status, user).toBe(404);
     }
     for (const user of ['tina', 'dev', 'ada']) {
-      const r = await get('file', { p: `conversations/http/${A}/gavetas/llaves/telegram-main.token` }, user);
-      expect(r.status, user).toBe(401);
-      expect(r.realm, user).toBe(realm('root'));
+      for (const p of [`conversations/http/${A}/gavetas/llaves/telegram-main.token`, `conversations/http/${A}/gavetas/otra/transcript.md`]) {
+        const r = await get('file', { p }, user);
+        expect(r.status, `${user} ${p}`).toBe(401);
+        expect(r.realm, `${user} ${p}`).toBe(realm('root'));
+      }
     }
     expect((await get('file', { p: `conversations/http/${A}/gavetas/llaves/telegram-main.token` }, 'rob')).body).toMatchObject({ path: 'secrets/telegram-main.token', text: `${TELEGRAM}\n` });
-    expect((await get('file', { p: 'conversations/whatsapp/familia/escondido/run.sh' }, 'tina')).realm).toBe(realm('devs'));
-    expect((await get('file', { p: 'conversations/whatsapp/familia/escondido/run.sh' }, 'dev')).body.text).toBe('echo dev tool\n');
+    expect((await get('file', { p: `conversations/http/${A}/gavetas/otra/transcript.md` }, 'rob')).body).toMatchObject({ path: `conversations/http/${D}/transcript.md` });
+    expect((await get('file', { p: `conversations/telegram/${G}/escondido/run.sh` }, 'tina')).realm).toBe(realm('devs'));
+    expect((await get('file', { p: `conversations/telegram/${G}/escondido/run.sh` }, 'dev')).body.text).toBe('echo dev tool\n');
     const entries = (await get('tree', { p: `conversations/http/${A}/gavetas` }, 'tina')).body.entries;
     expect(entries.find((e) => e.name === 'llaves')).toMatchObject({ link: true, dir: true });
   });
@@ -302,15 +388,16 @@ describe('limbs.http.ayde — the login', () => {
     expect((await fetch(`${other.root}/eduweb/ayde/`, { headers: { Authorization: basic('tina') } })).status).toBe(200);
   });
 
-  it('no login: 401 in the team realm; a higher path asks in its own realm', async () => {
+  it('no login: 401 in the team realm, whatever the path (nothing about the scope before a login)', async () => {
     const { page, get } = await limb();
     const p = await page(null);
     expect(p.status).toBe(401);
     expect(p.headers.get('www-authenticate')).toBe(realm('team'));
     expect(await p.text()).toMatch(/Sign in with your ayde user/);
     for (const sub of ['search', 'tree']) expect((await get(sub, {}, null)).realm).toBe(realm('team'));
-    expect((await get('file', { p: 'secrets/telegram-main.token' }, null)).realm).toBe(realm('root'));
-    expect((await get('tree', { p: 'config' }, null)).realm).toBe(realm('admin'));
+    for (const path of ['secrets/telegram-main.token', 'config', `conversations/http/${A}`, `conversations/http/${D}`]) {
+      for (const call of ['tree', 'file']) expect((await get(call, { p: path }, null)).realm, `${call} ${path}`).toBe(realm('team'));
+    }
   });
 
   it('a wrong password or unknown user is 401; the right one opens the page, in English, with its level', async () => {
@@ -332,9 +419,10 @@ describe('limbs.http.ayde — the login', () => {
   it('the users file is read on each request: a user added, re-levelled or removed applies without a restart', async () => {
     let text = USERS_TEXT;
     const { get } = await limb({ users: () => text });
-    expect((await get('tree', { p: '' }, 'tina')).status).toBe(401);
-    text = `${await userLine('tina', 'admin', pw('tina'))}\n${await userLine('rob', 'root', pw('rob'))}`;
-    expect((await get('tree', { p: '' }, 'tina')).body.level).toBe('admin');
+    const tools = `conversations/http/${A}/.tools`;
+    expect((await get('tree', { p: tools }, 'tina')).status).toBe(401);
+    text = `${await userLine('tina', 'devs', pw('tina'))}\n${await userLine('rob', 'root', pw('rob'))}`;
+    expect((await get('tree', { p: tools }, 'tina')).body.level).toBe('devs');
     expect((await get('tree', {}, 'dev')).status).toBe(401);
   });
 
@@ -394,7 +482,7 @@ describe('limbs.http.ayde — the public path', () => {
     expect((await get('file', { p: 'secrets/telegram-main.token' }, 'rob', { headers: { Forwarded: 'for=203.0.113.8' } })).status).toBe(403);
     expect(JSON.stringify(await get('file', { p: 'secrets/telegram-main.token' }, 'rob', via()))).not.toContain('dummy-telegram-token');
     expect((await get('file', { p: 'secrets/telegram-main.token' }, 'rob')).body.text).toBe(`${TELEGRAM}\n`);
-    expect((await get('tree', { p: '' }, 'ada')).status).toBe(200);
+    expect((await get('tree', {}, 'ada')).status).toBe(200);
     expect((await page('rob')).status).toBe(200);
   });
 
@@ -414,12 +502,12 @@ describe('limbs.http.ayde — the public path', () => {
   });
 
   it('public_max_level: devs lets devs in from the internet and not admin; an invalid value is logged and taken as team', async () => {
-    const { get } = await limb({ ayde: { on: true, public_max_level: 'devs' } });
+    const { get } = await limb({ ayde: { on: true, scope: SCOPE, public_max_level: 'devs' } });
     expect((await get('file', { p: `conversations/http/${A}/.tools/run.sh` }, 'dev', via())).body.text).toBe('echo dev tool\n');
     expect((await get('tree', {}, 'tina', via())).status).toBe(200);
     expect((await get('tree', {}, 'ada', via())).status).toBe(403);
     expect((await get('tree', {}, 'rob', via())).status).toBe(403);
-    expect((await get('tree', { p: '' }, 'ada')).status).toBe(200);
+    expect((await get('tree', {}, 'ada')).status).toBe(200);
     const bad = await limb({ ayde: { on: true, public_max_level: 'god' } });
     expect(bad.lines).toContain("ayde: public_max_level 'god' is not team | devs | admin | root — treated as team");
     expect((await bad.get('tree', {}, 'dev', via())).status).toBe(403);
@@ -440,15 +528,20 @@ describe('limbs.http.ayde — the page, search and audit', () => {
     expect(html).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
   });
 
-  it('search: website conversations by username (any case, part of it), optionally abrin; newest first; a shortcut into the tree', async () => {
+  it('search: website conversations by username (any case, part of it), optionally abrin; newest first; a shortcut into the tree; below root only inside the scope', async () => {
     const { get, lines } = await limb();
     const r = await get('search', { q: 'MLOP' }, 'tina');
     expect(r.body).toMatchObject({ user: 'tina', level: 'team' });
     expect(r.body.conversations.map((c) => c.path)).toEqual([`conversations/http/${A}`, `conversations/http/${B}`]);
     expect(r.body.conversations[0]).toMatchObject({ id: A, usuario: { username: 'mlopez', abrin: 'IEV', short_name: 'María López' } });
     expect((await get('search', { q: '', abrin: 'csj' }, 'tina')).body.conversations.map((c) => c.id)).toEqual([C]);
-    expect((await get('search', { q: '' }, 'tina')).body.conversations.map((c) => c.id)).toEqual([A, C, D, B]);
+    for (const user of ['tina', 'dev', 'ada']) expect((await get('search', { q: '' }, user)).body.conversations.map((c) => c.id), user).toEqual([A, C, B]);
+    expect((await get('search', { q: '' }, 'rob')).body.conversations.map((c) => c.id)).toEqual([A, C, D, B]);
     expect(lines).toContain('ayde: tina (team) searched "mlop"');
+    const one = await limb({ ayde: { on: true, scope: [`http:${C}`, TG] } });
+    expect((await one.get('search', { q: 'mlop' }, 'tina')).body.conversations).toEqual([]);
+    expect((await one.get('search', { q: '' }, 'ada')).body.conversations.map((c) => c.id)).toEqual([C]);
+    expect((await one.get('search', { q: 'mlop' }, 'rob')).body.conversations.map((c) => c.id)).toEqual([A, B]);
   });
 
   it('audit: every list, view and download in the log; inside a conversation also its admin-access.log; refusals logged; no contents', async () => {
@@ -456,17 +549,21 @@ describe('limbs.http.ayde — the page, search and audit', () => {
     await get('tree', { p: `conversations/http/${A}` }, 'tina');
     await get('file', { p: `conversations/http/${A}/.tools/run.sh` }, 'dev');
     await api('file', { p: `conversations/http/${A}/gavetas/foto.bin`, download: '1' }, 'tina');
-    await get('tree', { p: 'conversations/http' }, 'tina');
-    await get('file', { p: 'config/config.yaml' }, 'ada');
+    await get('tree', { p: 'conversations/http' }, 'rob');
+    await get('file', { p: 'config/config.yaml' }, 'rob');
     await get('file', { p: `conversations/http/${A}/.secrets/db.env` }, 'tina');
+    await get('tree', {}, 'tina');
+    await get('tree', { p: 'conversations/http' }, 'ada');
     const log = await readFile(at('conversations', 'http', A, 'admin-access.log'), 'utf8');
     expect(log).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\S+ tina \\(team\\) listed conversations/http/${A}/$`, 'm'));
     expect(log).toMatch(new RegExp(`dev \\(devs\\) viewed conversations/http/${A}/\\.tools/run\\.sh$`, 'm'));
     expect(log).toMatch(new RegExp(`tina \\(team\\) downloaded conversations/http/${A}/gavetas/foto\\.bin$`, 'm'));
     expect(log.trim().split('\n')).toHaveLength(3);
-    expect(lines).toContain('ayde: tina (team) listed conversations/http/');
-    expect(lines).toContain('ayde: ada (admin) viewed config/config.yaml');
+    expect(lines).toContain('ayde: rob (root) listed conversations/http/');
+    expect(lines).toContain('ayde: rob (root) viewed config/config.yaml');
     expect(lines).toContain(`ayde: tina (team) refused conversations/http/${A}/.secrets/db.env — needs root`);
+    expect(lines).toContain('ayde: tina (team) listed the scope');
+    expect(lines).toContain('ayde: ada (admin) refused conversations/http — needs root');
     expect(existsSync(at('conversations', 'http', 'admin-access.log'))).toBe(false);
     expect(existsSync(at('config', 'admin-access.log'))).toBe(false);
     expect(lines.join('\n')).not.toMatch(/PGUSER|dummy-beeper/);

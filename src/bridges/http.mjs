@@ -141,9 +141,10 @@ export async function startHttpBridge({
   beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   identityKey = () => null,   // (client) → its HMAC key, or null
-  ayde = null,                // { path, on }: /ayde, the team's browser of aydeRoot
+  ayde = null,                // { path, on, public_max_level, scope }: /ayde, the team's browser of aydeRoot
   aydeRoot = null,            // EGPT_HOME
   aydeUsers = () => null,     // () → secrets/ayde.users' text, or null; asked on each request
+  aydeRegistry = async () => null,   // () → the conversations registry (conversations.yaml): ayde.scope's chat ids → folders; asked on each request
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -272,7 +273,7 @@ export async function startHttpBridge({
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
-  const browser = aydeBase ? createBrowser({ root: aydeRoot, json, log, now }) : null;
+  const browser = aydeBase ? createBrowser({ root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry }) : null;
   const readBody = (req, limit) => new Promise((resolve, reject) => {
     let size = 0, over = false;
     const parts = [];

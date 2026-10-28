@@ -2304,6 +2304,7 @@ export async function boot({
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
       ayde: block.ayde, aydeRoot: EGPT_HOME,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
+      aydeRegistry: _loadState,
       beforeLine,
       onEnd,
       onLog: hlog,

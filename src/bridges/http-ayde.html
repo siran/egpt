@@ -61,6 +61,7 @@
   const fail = (text) => { $('fail').textContent = text; $('fail').hidden = false; };
   const join = (dir, name) => (dir ? `${dir}/${name}` : name);
   let top = null;
+  let homes = new Set();   // below root: the scope's folders, whose "Up" is the scope again
   // A path above the user's level answers 401 in that level's realm: the browser asks for that login.
   // 403: a login above public_max_level, from the internet.
   async function call(sub, params) {
@@ -89,7 +90,8 @@
   async function open(path) {
     const b = await call('tree', path == null ? {} : { p: path });
     top = b.path;
-    $('where').textContent = b.path || 'EGPT_HOME';
+    if (b.scope) homes = new Set(b.entries.map((e) => e.path));
+    $('where').textContent = b.scope ? 'Your conversations' : b.path || 'EGPT_HOME';
     $('up').disabled = !b.path;
     $('view').replaceChildren();
     render(b, $('tree'), 0);
@@ -99,7 +101,7 @@
     box.replaceChildren();
     if (!b.entries.length) box.append(el('p', 'Empty folder.', 'muted'));
     for (const e of b.entries) {
-      const path = join(b.path, e.name);
+      const path = e.path ?? join(b.path, e.name);
       const row = el('div', null, LEVELS.indexOf(e.level) > LEVELS.indexOf(b.level) ? 'row above' : 'row');
       row.style.paddingLeft = `${depth * 16}px`;
       if (row.classList.contains('above')) row.title = `Needs the ${e.level} level`;
@@ -118,6 +120,7 @@
         row.append(v, d);
       }
       if (e.link) row.append(el('span', '(link)', 'muted'));
+      if (e.chats) row.append(el('span', e.chats.join(' · '), 'muted'));
       row.append(el('span', `${size(e.size)} ${when(e.mtime)}`, 'size'));
     }
     if (b.truncated) box.append(el('p', 'List cut: too many entries.', 'muted'));
@@ -126,7 +129,6 @@
     const b = await call('file', { p: path });
     const box = $('view');
     box.replaceChildren(el('h2', `${b.path} · ${size(b.size)}`));
-    if (b.masked) box.append(el('p', 'Token-like values are masked (•••).', 'muted'));
     if (b.binary) box.append(el('p', 'Binary file: use “download”.', 'muted'));
     else {
       box.append(el('pre', b.text));
@@ -143,7 +145,7 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
-  $('up').onclick = () => open(top.split('/').slice(0, -1).join('/')).catch(() => {});
+  $('up').onclick = () => { const up = top.split('/').slice(0, -1).join('/'); open(homes.has(top) || !up ? undefined : up).catch(() => {}); };
   $('find').onsubmit = (ev) => { ev.preventDefault(); find().catch(() => {}); };
   open().catch(() => {});
   find().catch(() => {});

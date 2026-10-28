@@ -374,7 +374,7 @@ with a link (a Telegram topic) answers `/split` with its link.
 ### `/ayde` — the EduWeb team's browser (staff access)
 
 With `limbs.http.ayde: { on: true }`, the chatbox limb also serves a read-only
-browser of the node's whole `EGPT_HOME` to the EduWeb team, at:
+browser of the node's `EGPT_HOME` to the EduWeb team, at:
 
 ```text
 https://eduweb.com.ve/ayde/
@@ -385,16 +385,42 @@ each level reads everything the lower ones read:
 
 | Level | Reads |
 |---|---|
-| `team` | `conversations/**`, except any path with a segment starting with `.` (`.secrets/`, `.ssh/`, dotfiles), which it never sees |
-| `devs` | `conversations/**`, hidden entries included, but a conversation's `.secrets/` (credentials) |
-| `admin` | everything under `EGPT_HOME` but `secrets/`, `chrome/` (browser profiles: signed-in sessions) and conversations' `.secrets/`; YAML/JSON outside `conversations/` (config, `config.readonly.yaml`, `state/`) with token-like values shown as `•••(<length>)` |
-| `root` | everything, `secrets/`, `chrome/` and conversations' `.secrets/` included, as it is |
+| `team` | the scope's conversations (below), except any path with a segment starting with `.` (`.secrets/`, `.ssh/`, dotfiles), which it never sees |
+| `devs` | the scope's conversations, hidden entries included, but a conversation's `.secrets/` (credentials) |
+| `admin` | the same as `devs`; the two differ only in `public_max_level` |
+| `root` | everything under `EGPT_HOME`, as it is: every conversation, `config/`, `state/`, `secrets/`, `chrome/` and conversations' `.secrets/` |
 
-A path above your level answers 401 in that level's realm (`ayde admin`,
-`ayde root`), so the browser asks for a higher login. The page shows such paths
-greyed. Each folder, file and download opened is logged, and inside a
-conversation also appended to its `admin-access.log`. Nobody can change or
-delete anything; a future delete of core files (`config/`, `state/`,
+Below root, the browser starts at the list of the scope's conversations: each
+folder by name, with the chat ids it serves. Nobody below root can list
+`conversations/` itself. The scope is `limbs.http.ayde.scope`, a list of chat
+ids:
+
+```yaml
+limbs:
+  http:
+    ayde:
+      on: true
+      scope: ["tg:-1004408163350", "tg:-1004473260995", "tg:-1004311994096", "http:eduweb-", "http:demoiev-"]
+```
+
+Each entry is one of:
+
+| Entry | Covers |
+|---|---|
+| `tg:<group>` | the Telegram group and every topic in it (`tg:<group>/<n>`); a `/split` fork lives in its parent's folder, so it comes with it |
+| ending in `-` | every chat id that starts with it: `http:eduweb-` is every chatbox session of the `eduweb` client |
+| any other chat id | that chat only, e.g. one topic `tg:<group>/<n>` |
+
+The folders come from `config/conversations.yaml` by chat id, on each request,
+never by folder name: a renamed folder keeps its access. With no `scope` (the
+default), nobody below root sees a conversation, and boot logs that the scope
+is empty.
+
+A path above your level, or outside the scope, answers 401 in that level's
+realm (`ayde devs`, `ayde root`), so the browser asks for a higher login. The
+page shows such paths greyed. Each folder, file and download opened is logged,
+and inside a conversation also appended to its `admin-access.log`. Nobody can
+change or delete anything; a future delete of core files (`config/`, `state/`,
 `secrets/`) will be root's only.
 
 Add, re-level or remove a user on the node, with the node's `EGPT_HOME`; on

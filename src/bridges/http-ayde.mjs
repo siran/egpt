@@ -2,26 +2,29 @@
 // http.mjs checks the login (HTTP Basic against secrets/ayde.users: checkUser) and, on a public request
 // (one through the site's proxy), refuses a user above limbs.http.ayde.public_max_level; under <ayde path>/:
 //   (none)                          the page (http-ayde.html)
-//   search?q=&abrin=                {user, level, conversations: [{id, path, usuario, last}]} newest first (conversations/http/*/usuario.json)
-//   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder; no p: the user's top
-//   file?p=<path>[&download=1]      {path, size, text, truncated, masked?} | {path, size, binary} | the bytes
+//   search?q=&abrin=                {user, level, conversations: [{id, path, usuario, last}]} newest first (conversations/http/*/usuario.json; below root the scope's)
+//   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder
+//   tree (no p)                     root: EGPT_HOME; below root {user, level, path: '', scope: true, entries: [{name, path, chats, …}]}
+//   file?p=<path>[&download=1]      {path, size, text, truncated} | {path, size, binary} | the bytes
 // Paths are relative to EGPT_HOME and resolve (realpath) inside it. levelOf, on the asked path and on the
 // real one, decides who reads it; above the user's level: refuse(level), a 401 in that level's realm.
-// Under conversations/, a .secrets segment (credentials) is root's, as secrets/ is; another dot segment devs'.
-// Each tree, view and download is a line in the log, and in the conversation's admin-access.log when inside one.
+// The scope (limbs.http.ayde.scope): chat ids; their folders by conversations.yaml (registry()) are all that
+// team, devs and admin read, everything else is root's. In them a .secrets segment is root's, another dot
+// segment devs'. Each tree, view and download is a line in the log, and in the conversation's
+// admin-access.log when inside one.
 import { readFileSync, createReadStream, constants } from 'node:fs';
 import { readdir, readFile, realpath, stat, lstat, open } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, sep, relative } from 'node:path';
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { parseDocument, visit, isScalar, isCollection, isPair, isAlias } from 'yaml';
+import { EGPT_HOME } from '../egpt-home.mjs';
+import { getContact, slugDir } from '../conversations-state.mjs';
 
 const PAGE = readFileSync(new URL('./http-ayde.html', import.meta.url), 'utf8');
 const TEXT_MAX = 256 * 1024;
 const LIST_MAX = 2000;
 const FOUND_MAX = 100;
-const MASK_MAX = 4 * 1024 * 1024;
 export const AUDIT_FILE = 'admin-access.log';
 const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id'];
 const clean = (s) => String(s).replace(/[\u0000-\u001f\u007f]/g, '?');
@@ -31,14 +34,16 @@ const rfc5987 = (s) => encodeURIComponent(s).replace(/['()*]/g, (ch) => `%${ch.c
 // Lowest first; each level reads all the lower ones read.
 export const LEVELS = Object.freeze(['team', 'devs', 'admin', 'root']);
 const rank = (level) => LEVELS.indexOf(level);
-// Who reads a path (its parts under EGPT_HOME): the first matching rule.
-export function levelOf(parts) {
-  if (parts[0] === 'secrets' || parts[0] === 'chrome') return 'root';   // chrome/: browser profiles hold signed-in sessions
-  if (parts[0] !== 'conversations') return 'admin';
-  if (parts.includes('.secrets')) return 'root';   // credentials
-  return parts.some((p) => p.startsWith('.')) ? 'devs' : 'team';
+// Who reads a path (its parts under EGPT_HOME), given the scope's folders (each its parts).
+export function levelOf(parts, homes) {
+  const home = homes.find((h) => h.length && h.every((x, i) => parts[i] === x));
+  if (!home) return 'root';
+  const sub = parts.slice(home.length);
+  if (sub.includes('.secrets')) return 'root';   // credentials
+  return sub.some((p) => p.startsWith('.')) ? 'devs' : 'team';
 }
-const topOf = (level) => (rank(level) < rank('admin') ? ['conversations'] : []);
+// A scope entry covers its chat id and that chat's sub-chats (<id>/<n>: Telegram topics); one ending in "-" every id it starts.
+const covers = (entry, id) => (entry.endsWith('-') ? id.startsWith(entry) : id === entry || id.startsWith(`${entry}/`));
 
 // The users: secrets/ayde.users, one line each: <user>:<level>:N=<n>,r=<r>,p=<p>:<salt base64>:<scrypt hash base64>.
 export const AYDE_USERS_FILE = 'ayde.users';
@@ -60,26 +65,25 @@ export async function checkUser(text, user, password) {
   return ok && got && timingSafeEqual(got, want) ? m[2] : null;
 }
 
-// YAML/JSON with every value under a key matching SECRET_KEY, and the rest of a full-line comment
-// naming one, as "•••(<length>)"; comments and layout kept. Null when it does not parse.
-const SECRET_KEY = /token|secret|password|key|hash/i;
-const SECRET_COMMENT = /^([ \t]*#.*?[\w.-]*(?:token|secret|password|key|hash)[\w.-]*[ \t]*:[ \t]*)\S.*$/gim;
-export function maskSecrets(text) {
-  const doc = parseDocument(text);
-  if (doc.errors.length) return null;
-  const cuts = new Map();
-  const hide = (node) => {
-    if (isAlias(node)) hide(node.resolve(doc));
-    else if (isScalar(node)) { if (node.value != null && node.range) cuts.set(node.range[0], [node.range[1], String(node.value).length]); }
-    else if (isCollection(node)) for (const it of node.items) hide(isPair(it) ? it.value : it);
-  };
-  visit(doc, { Pair(_, pair) { if (isScalar(pair.key) && SECRET_KEY.test(String(pair.key.value))) { hide(pair.value); return visit.SKIP; } } });
-  let out = text;
-  for (const [a, [b, n]] of [...cuts].sort((x, y) => y[0] - x[0])) out = `${out.slice(0, a)}"•••(${n})"${/\s*$/.exec(out.slice(a, b))[0]}${out.slice(b)}`;
-  return out.replace(SECRET_COMMENT, (_, head) => `${head}•••`);
-}
-
-export function createBrowser({ root, json, log = () => {}, now = () => Date.now() }) {
+export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null }) {
+  const ids = Array.isArray(scope) ? scope.filter((e) => typeof e === 'string' && e.trim()).map((e) => e.trim()) : [];
+  if (!ids.length) log('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
+  // The scope's folders, [{ parts, chats }] by path: the folder of each registry chat an entry covers.
+  async function scoped() {
+    const state = await registry();
+    const byPath = new Map();
+    for (const [surface, bucket] of Object.entries(state?.contacts ?? {})) {
+      for (const id of Object.keys(bucket ?? {})) {
+        const slug = ids.some((e) => covers(e, id)) && getContact(state, surface, id)?.slug;
+        if (!slug) continue;
+        let parts;
+        try { parts = relative(EGPT_HOME, slugDir(surface, slug)).split(sep); } catch { continue; }   // a surface unsafe as a path
+        const path = parts.join('/');
+        byPath.set(path, { parts, chats: [...(byPath.get(path)?.chats ?? []), id] });
+      }
+    }
+    return [...byPath].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, f]) => f);
+  }
   const partsOf = (p) => {
     const parts = String(p).split('/').filter(Boolean);
     return parts.some((x) => x === '.' || x === '..' || /[\\\0:]/.test(x)) ? null : parts;
@@ -112,21 +116,35 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
   // The last line said: transcript.md's time, else the folder's.
   const lastOf = async (dir) => (await lstat(join(dir, 'transcript.md')).catch(() => lstat(dir))).mtimeMs;
 
-  async function search(q, abrin) {
+  // folders: the scope's (below root), else null: every conversations/http/ folder.
+  async function search(q, abrin, folders) {
     const dir = join(root, 'conversations', 'http');
+    const names = folders
+      ? folders.filter((f) => f.parts.length === 3 && f.parts[0] === 'conversations' && f.parts[1] === 'http').map((f) => f.parts[2])
+      : (await readdir(dir).catch(() => [])).filter((name) => !name.startsWith('.'));
     const found = [];
-    for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      if (!e.isDirectory() || e.name.startsWith('.')) continue;
-      const usuario = await usuarioOf(join(dir, e.name));
+    for (const name of names) {
+      if (!(await lstat(join(dir, name)).catch(() => null))?.isDirectory()) continue;
+      const usuario = await usuarioOf(join(dir, name));
       if (q && !String(usuario?.username ?? '').toLowerCase().includes(q)) continue;
       if (abrin && String(usuario?.abrin ?? '').toLowerCase() !== abrin) continue;
-      found.push({ id: e.name, path: `conversations/http/${e.name}`, usuario, last: await lastOf(join(dir, e.name)) });
+      found.push({ id: name, path: `conversations/http/${name}`, usuario, last: await lastOf(join(dir, name)) });
     }
     return found.sort((a, b) => b.last - a.last).slice(0, FOUND_MAX);
   }
 
+  // Below root, the top: each scope folder there is, by name, with the chat ids it serves.
+  async function tops(folders) {
+    const out = [];
+    for (const { parts, chats } of folders) {
+      const st = await lstat(join(root, ...parts)).catch(() => null);
+      if (st?.isDirectory()) out.push({ name: parts.at(-1), path: parts.join('/'), chats, dir: true, size: null, mtime: st.mtimeMs, level: 'team' });
+    }
+    return out;
+  }
+
   // One folder; a dot entry is invisible to team.
-  async function list(hit, who) {
+  async function list(hit, who, homes) {
     const entries = [];
     for (const name of (await readdir(hit.real)).sort()) {
       if (entries.length >= LIST_MAX) break;
@@ -134,7 +152,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
       const st = await lstat(join(hit.real, name)).catch(() => null);
       if (!st) continue;
       const to = st.isSymbolicLink() ? await stat(join(hit.real, name)).catch(() => null) : st;
-      entries.push({ name, dir: !!to?.isDirectory(), size: to?.isFile() ? to.size : null, mtime: st.mtimeMs, level: levelOf([...hit.parts, name]), ...(st.isSymbolicLink() ? { link: true } : {}) });
+      entries.push({ name, dir: !!to?.isDirectory(), size: to?.isFile() ? to.size : null, mtime: st.mtimeMs, level: levelOf([...hit.parts, name], homes), ...(st.isSymbolicLink() ? { link: true } : {}) });
     }
     return { entries, truncated: entries.length >= LIST_MAX };
   }
@@ -149,7 +167,8 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     res.end(PAGE.replace('<script>', `<script nonce="${nonce}">`).replace('<style>', `<style nonce="${nonce}">`));
   }
 
-  // who: { user, level } or null (no valid login); refuse(level) answers 401 in that level's realm.
+  // who: { user, level } or null (no valid login: the team realm, whatever the path); refuse(level) answers
+  // 401 in that level's realm.
   async function serve(call, req, res, url, who, refuse) {
     const q = url.searchParams;
     const asked = (call === 'tree' || call === 'file') && q.has('p') ? partsOf(q.get('p')) : null;
@@ -157,44 +176,44 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
       if (who) log(`ayde: ${clean(`${who.user} (${who.level}) refused ${path}`)} — needs ${need}`);
       return refuse(need);
     };
-    const need = asked ? levelOf(asked) : 'team';
-    if (!who || rank(need) > rank(who.level)) return denied(need, asked?.join('/') ?? call);
+    if (!who) return denied('team', call);
     if (call == null) return page(res);
+    const folders = await scoped();
+    const homes = folders.map((f) => f.parts);
+    const need = asked ? levelOf(asked, homes) : 'team';
+    if (rank(need) > rank(who.level)) return denied(need, asked.join('/'));
     if (call === 'search') {
       const text = String(q.get('q') ?? '').trim().toLowerCase(), abrin = String(q.get('abrin') ?? '').trim().toLowerCase();
       log(`ayde: ${clean(`${who.user} (${who.level}) searched ${JSON.stringify(text)}${abrin ? ` abrin ${JSON.stringify(abrin)}` : ''}`)}`);
-      return json(res, 200, { user: who.user, level: who.level, conversations: await search(text, abrin) });
+      return json(res, 200, { user: who.user, level: who.level, conversations: await search(text, abrin, who.level === 'root' ? null : folders) });
     }
     if (call !== 'tree' && call !== 'file') return json(res, 404, { error: 'not found' });
-    const parts = q.has('p') ? asked : call === 'tree' ? topOf(who.level) : null;
+    if (call === 'tree' && !q.has('p') && who.level !== 'root') {
+      log(`ayde: ${clean(`${who.user} (${who.level}) listed the scope`)}`);
+      return json(res, 200, { user: who.user, level: who.level, path: '', scope: true, entries: await tops(folders), truncated: false });
+    }
+    const parts = q.has('p') ? asked : call === 'tree' ? [] : null;
     const hit = parts && await resolve(parts);
     if (!hit) return json(res, 404, { error: 'not found' });
-    const real = levelOf(hit.parts);
+    const real = levelOf(hit.parts, homes);
     if (rank(real) > rank(who.level)) return denied(real, hit.parts.join('/'));
     const st = await stat(hit.real);
     if (call === 'tree') {
       if (!st.isDirectory()) return json(res, 404, { error: 'not found' });
       await audit(who, hit, 'listed', true);
-      return json(res, 200, { user: who.user, level: who.level, path: hit.parts.join('/'), ...(await list(hit, who)) });
+      return json(res, 200, { user: who.user, level: who.level, path: hit.parts.join('/'), ...(await list(hit, who, homes)) });
     }
     if (!st.isFile()) return json(res, 404, { error: 'not found' });
     const path = hit.parts.join('/');
-    let masked = null;
-    if (who.level === 'admin' && real === 'admin' && /\.(ya?ml|json)$/i.test(path)) {
-      masked = st.size <= MASK_MAX ? maskSecrets(await readFile(hit.real, 'utf8')) : null;
-      if (masked == null) return denied('root', `${path} (cannot mask it)`);
-    }
     const download = q.get('download') === '1';
     await audit(who, hit, download ? 'downloaded' : 'viewed', false);
     if (download) {
-      const body = masked == null ? null : Buffer.from(masked, 'utf8');
       res.writeHead(200, {
-        'Content-Type': 'application/octet-stream', 'Content-Length': String(body?.length ?? st.size), 'Cache-Control': 'no-store',
+        'Content-Type': 'application/octet-stream', 'Content-Length': String(st.size), 'Cache-Control': 'no-store',
         'Content-Disposition': `attachment; filename*=UTF-8''${rfc5987(hit.parts.at(-1))}`, 'X-Content-Type-Options': 'nosniff',
       });
-      return body ? res.end(body) : pipeline(createReadStream(hit.real), res);
+      return pipeline(createReadStream(hit.real), res);
     }
-    if (masked != null) return json(res, 200, { path, size: st.size, text: masked.slice(0, TEXT_MAX), truncated: masked.length > TEXT_MAX, masked: true });
     const fh = await open(hit.real, 'r');
     let buf;
     try {
