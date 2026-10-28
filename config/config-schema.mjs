@@ -803,11 +803,14 @@ export const CONFIG_SCHEMA = {
                           X-Forwarded-For entry (what the proxy saw); false: the
                           socket's address
         ayde              { on: false (default) | true, path: /ayde,
-                          public_max_level: team (default) | devs | admin | root }:
+                          public_max_level: team (default) | devs | admin | root,
+                          scope: [] (default) }:
                           the EduWeb team's read-only browser of EGPT_HOME, served by
                           this limb (below). A path that overlaps the chatbox's path:
                           off (logged). public_max_level: the highest level a login
-                          opens through the proxy (below); any other value: team (logged)
+                          opens through the proxy (below); any other value: team (logged).
+                          scope: the conversations team, devs and admin read, by chat
+                          id (below); absent or empty: none (logged)
         clients:
           <client>:       lowercase letters, digits, - and _
             being             the agent that answers its visitors
@@ -889,27 +892,37 @@ export const CONFIG_SCHEMA = {
         A page left open past exp gets strings.identity on its next line: reload.
         AYDE (ayde.on; src/bridges/http-ayde.mjs). GET <ayde.path>/ (e.g.
         https://eduweb.com.ve/ayde/; without the last slash: 308 to it): the EduWeb team's read-only
-        browser of the whole EGPT_HOME, by level. One English page: the user and level, a folder tree
-        from the user's top (conversations/ for team and devs, EGPT_HOME for admin and root; "Up"
-        climbs), paths above the user's level greyed, a text file (first 256 KB) or a download, and a
-        search by username over conversations/http/*/usuario.json (newest first) as a shortcut.
+        browser of EGPT_HOME, by level. One English page: the user and level, a folder tree from the
+        user's top (root: EGPT_HOME; below root: the scope's conversations, each folder by name with
+        the chat ids it serves; "Up" climbs), paths above the user's level greyed, a text file (first
+        256 KB) or a download, and a search by username over conversations/http/*/usuario.json
+        (newest first; below root only the scope's) as a shortcut.
         Read-only for every level: any method but GET is 405. A future delete of core files
         (config/, state/, secrets/) is root's only.
-        Levels, lowest first, each reading all the lower ones read. On the path under EGPT_HOME, the
-        first matching rule decides:
-          secrets/**, chrome/** (browser sessions)     root
-          conversations/**/.secrets/**                 root   (credentials)
-          conversations/** with a segment starting "." devs   (.ssh/, dotfiles: invisible to team)
-          conversations/**                             team
-          everything else (EGPT_HOME itself included)  admin
-        A path above the user's level: 401 with WWW-Authenticate: Basic realm="ayde <the level it
-        needs>", so the browser asks for a login of that level. The rule applies to the path asked
-        and to its real path (links followed); a link out of EGPT_HOME is 404 for everyone.
-        For admin, a .yaml/.yml/.json file outside conversations/ (config/config.yaml, the other
-        config/ files, config.readonly.yaml, state/) is served with every value under a key
-        matching /token|secret|password|key|hash/i, and the rest of a full-line comment naming
-        one, as "•••(<length>)"; comments and layout kept, the download masked too. One that does
-        not parse (or over 4 MB) needs root. Root reads every file as it is.
+        The scope (ayde.scope): what team, devs and admin read, a list of chat ids, e.g.
+          scope: ["tg:-1004408163350", "tg:-1004473260995", "tg:-1004311994096", "http:eduweb-", "http:demoiev-"]
+        Each entry is one of:
+          tg:<group>     the Telegram group and every topic in it (tg:<group>/<n>); a /split fork
+                         lives in its parent's folder, so it comes with it
+          <prefix>-      every chat id starting with it: http:<client>- is each chatbox session of
+                         that client (conversations/http/<client>-<sid>/)
+          <chat id>      that chat only (one topic tg:<group>/<n>, one session, a Beeper room id)
+        Its folders are found by chat id in config/conversations.yaml (each matching contact's
+        conversation_path), on each request: a renamed folder keeps its access, and no folder is in
+        by its name. Absent or empty (the default): below root nobody sees a conversation, and boot
+        logs that the scope is empty.
+        Levels, lowest first, each reading all the lower ones read. On the path under EGPT_HOME:
+          in a scope folder, with a .secrets segment      root   (credentials)
+          in a scope folder, with a segment starting "."  devs   (.ssh/, dotfiles: invisible to team)
+          in a scope folder                               team
+          everything else: conversations/ itself, the     root
+            other conversations, config/, state/, secrets/, chrome/, EGPT_HOME itself
+        So admin reads what devs reads; the two differ only at public_max_level.
+        A path above the user's level, or outside the scope: 401 with WWW-Authenticate: Basic
+        realm="ayde <the level it needs>" (outside the scope: "ayde root"), so the browser asks for a
+        login of that level. No login at all: realm "ayde team", whatever the path. The rule applies
+        to the path asked and to its real path (links followed); a link out of EGPT_HOME is 404 for
+        everyone. Root reads every file as it is.
         Users: <EGPT_HOME>/secrets/ayde.users, never config.yaml, one line each:
           <user>:<team|devs|admin|root>:N=16384,r=8,p=1:<salt base64>:<scrypt hash base64>
         Read on each request: a user added, re-levelled or removed needs no restart. No file: 404.

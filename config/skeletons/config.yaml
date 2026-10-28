@@ -75,8 +75,10 @@ limbs:
   #   port: 23480                   # REQUIRED; bind defaults to 127.0.0.1 (the website's server proxies the path)
   #   # path: /chat                 # endpoints and widget.js under <path>/<client>/
   #   # trust_proxy: false          # true: the visitor's address is the last X-Forwarded-For entry
-  #   # ayde: { on: false, path: /ayde, public_max_level: team }   # true: the team's read-only EGPT_HOME browser (node setup/ayde-user.mjs add <user> <level>)
+  #   # ayde: { on: false, path: /ayde, public_max_level: team, scope: [] }   # true: the team's read-only EGPT_HOME browser (node setup/ayde-user.mjs add <user> <level>)
   #   #                               # public_max_level: the highest level a login opens through the proxy (X-Forwarded-For): team | devs | admin | root
+  #   #                               # scope: the conversations below root reads, by chat id; none: nothing. Each entry:
+  #   #                               #   tg:<group> (the group + its topics) | <prefix>- (e.g. http:eduweb-: every session) | <chat id> (that chat only)
   #   clients:
   #     mysite:
   #       being: e                  # the agent that answers; any visitor wakes it in its own session
