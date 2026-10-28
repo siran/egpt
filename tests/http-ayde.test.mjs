@@ -458,6 +458,95 @@ describe('limbs.http.ayde — the login', () => {
   });
 });
 
+// Log out: a 401 with no challenge makes the browser drop the login it cached for <ayde path>/ and show
+// the page instead of a prompt.
+describe('limbs.http.ayde — log out', () => {
+  const out = async (base, user, init = {}) => {
+    const r = await fetch(`${base}logout`, { ...init, headers: { ...(user ? { Authorization: user.startsWith('Basic ') ? user : basic(user) } : {}), ...init.headers } });
+    return { status: r.status, realm: r.headers.get('www-authenticate'), type: r.headers.get('content-type'), csp: r.headers.get('content-security-policy'), body: await r.text() };
+  };
+
+  const strip = (body) => body.replace(/ nonce="[^"]+"/g, '');
+  // The realm-overwrite request (reserved 'logout' user + ?realm): the browser replaces the credential it
+  // cached there. Any name may precede the colon; 'logout' is what the page sends.
+  const over = (base, realm, user = 'logout') => fetch(`${base}logout?realm=${realm}`, { headers: { Authorization: basic(user, 'x') } });
+
+  it('logout: 401 with the signed-out page (its overwrite script), no WWW-Authenticate, with or without a login; a line names the user, never the password', async () => {
+    const { base, lines } = await limb();
+    const none = await out(base, null);
+    for (const r of [none, await out(base, 'tina'), await out(base, 'rob'), await out(base, basic('tina', 'wrong-password-x'))]) {
+      expect(r.status).toBe(401);
+      expect(r.realm).toBeNull();
+      expect(r.type).toBe('text/html; charset=utf-8');
+      expect(strip(r.body)).toBe(strip(none.body));
+    }
+    expect(none.body).toMatch(/lang="en"/);
+    expect(none.body).toContain('<h1 id="h">Signed out</h1>');
+    expect(none.body).toContain('<a href="./">Sign in again</a>');
+    expect(none.body).toMatch(/sign in as another user/);
+    // the overwrite script: one XHR per realm with the reserved user, then a check of the return path
+    expect(none.body).toContain("'logout?realm=' + realm");
+    expect(none.body).toContain("fetch('./'");
+    expect(none.body).toContain(`<style nonce="${/'nonce-([^']+)'/.exec(none.csp)[1]}">`);
+    expect(none.body).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
+    expect(lines.filter((l) => /signed out/.test(l))).toEqual(['ayde: tina signed out', 'ayde: rob signed out', 'ayde: tina signed out']);
+    expect(lines.join('\n')).not.toMatch(/password-1|wrong-password/);
+  });
+
+  it('the overwrite (reserved logout user, ?realm): 401 in that realm so the browser replaces its cached login; grants nothing; an unknown realm is team; never counted or logged', async () => {
+    const { base, get, lines } = await limb({ trustProxy: true });
+    for (const level of LEVELS) {
+      const r = await over(base, level);
+      expect(r.status, level).toBe(401);
+      expect(r.headers.get('www-authenticate'), level).toBe(realm(level));
+      expect(await r.text(), level).not.toMatch(/dummy-|PGUSER|private key/);   // nothing from EGPT_HOME
+    }
+    expect((await over(base, 'god')).headers.get('www-authenticate')).toBe(realm('team'));
+    const from = { headers: { 'X-Forwarded-For': '203.0.113.9' } };
+    for (let i = 0; i < 15; i++) expect((await fetch(`${base}logout?realm=root`, { headers: { Authorization: basic('logout', 'x'), ...from.headers } })).status).toBe(401);
+    expect((await get('tree', {}, 'tina', from)).status).toBe(200);   // no lockout
+    expect(lines.filter((l) => /login refused|logout/.test(l))).toEqual([]);
+  });
+
+  it('the reserved logout user is never a real login: on any path 401 (the signed-out page), never granted, never counted', async () => {
+    const { get, base } = await limb();
+    for (const call of ['tree', 'file', 'search']) {
+      const r = await get(call, { p: 'state/alive.txt' }, basic('logout', 'x'));
+      expect(r.status, call).toBe(401);
+      expect(String(r.body), call).toContain('Signed out');   // the page, not data
+    }
+    const { lines } = await limb();
+    for (let i = 0; i < 15; i++) await fetch(`${base}tree`, { headers: { Authorization: basic('logout', 'x') } });
+    expect((await get('tree', {}, 'tina')).status).toBe(200);
+    expect(lines.filter((l) => /login refused/.test(l))).toEqual([]);
+  });
+
+  it('never a failed login: 15 logouts lock nobody out; a locked-out address still gets the page', async () => {
+    const { base, get, lines } = await limb({ trustProxy: true });
+    const from = (ip) => ({ headers: { 'X-Forwarded-For': ip } });
+    for (let i = 0; i < 15; i++) expect((await out(base, basic('tina', 'wrong-password-x'), from('203.0.113.5'))).status).toBe(401);
+    expect((await get('tree', {}, 'tina', from('203.0.113.5'))).status).toBe(200);
+    expect(lines.filter((l) => /login refused/.test(l))).toEqual([]);
+    for (let i = 0; i < 10; i++) await get('tree', {}, basic('tina', 'wrong-password-x'), from('203.0.113.6'));
+    expect((await get('tree', {}, 'tina', from('203.0.113.6'))).status).toBe(429);
+    const locked = await out(base, 'tina', from('203.0.113.6'));
+    expect(locked.status).toBe(401);
+    expect(locked.body).toContain('Signed out');
+  });
+
+  it('a right login keeps working after a logout (the server holds no session); logout/x is 404, POST 405, off 404, another path works', async () => {
+    const { base, get, root } = await limb();
+    await out(base, 'tina');
+    expect((await get('tree', {}, 'tina')).status).toBe(200);
+    expect((await fetch(`${base}logout/x`)).status).toBe(404);
+    expect((await fetch(`${base}logout`, { method: 'POST' })).status).toBe(405);
+    expect((await fetch(`${root}/ayde/logout/`)).status).toBe(404);
+    for (const opts of [{ ayde: null }, { users: null }]) expect((await out((await limb(opts)).base, 'rob')).status).toBe(404);
+    const other = await limb({ ayde: { on: true, path: '/eduweb/ayde' } });
+    expect((await out(`${other.root}/eduweb/ayde/`, 'tina')).status).toBe(401);
+  });
+});
+
 // Through the site's proxy (it always adds X-Forwarded-For) a request is public: a right login above
 // limbs.http.ayde.public_max_level (default team) is 403, not 401 (a 401 would re-prompt forever).
 describe('limbs.http.ayde — the public path', () => {
@@ -526,6 +615,11 @@ describe('limbs.http.ayde — the page, search and audit', () => {
     const html = await r.text();
     expect(html).toContain(`<script nonce="${/'nonce-([^']+)'/.exec(csp)[1]}">`);
     expect(html).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
+  });
+
+  it('the page: a Log out link to <ayde path>/logout beside the user', async () => {
+    const { page } = await limb();
+    expect(await (await page('tina')).text()).toContain('<span id="who"></span><a href="logout">Log out</a>');
   });
 
   it('search: website conversations by username (any case, part of it), optionally abrin; newest first; a shortcut into the tree; below root only inside the scope', async () => {

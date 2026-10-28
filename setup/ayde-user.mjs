@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { readSecret, writeSecret } from '../src/secrets.mjs';
-import { AYDE_USERS_FILE, LEVELS, USER_RE, userLine } from '../src/bridges/http-ayde.mjs';
+import { AYDE_USERS_FILE, LEVELS, USER_RE, RESERVED_USER, userLine } from '../src/bridges/http-ayde.mjs';
 
 const USAGE = `usage: node setup/ayde-user.mjs add <user> <level> | set-level <user> <level> | remove <user> | list   (level: ${LEVELS.join('|')}; add: the password on stdin, or asked)`;
 const PASSWORD_MIN = 8;
@@ -27,6 +27,7 @@ if (!action && tty) action = (await ask('add, set-level, remove or list: ')).tri
 if (!['add', 'set-level', 'remove', 'list'].includes(action)) fail(USAGE);
 if (action !== 'list' && !user && tty) user = (await ask('Username: ')).trim();
 if (action !== 'list' && !USER_RE.test(user ?? '')) fail(user ? `"${user}" is not a username (letters, digits, . _ @ -; at most 64)` : USAGE);
+if (action !== 'list' && user === RESERVED_USER) fail(`"${RESERVED_USER}" is reserved for the sign-out page; pick another name`);
 if ((action === 'add' || action === 'set-level') && !level && tty) level = (await ask(`Level (${LEVELS.join(', ')}): `)).trim();
 if ((action === 'add' || action === 'set-level') && !LEVELS.includes(level)) fail(level ? `"${level}" is not a level (${LEVELS.join(', ')})` : USAGE);
 

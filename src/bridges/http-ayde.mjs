@@ -6,6 +6,8 @@
 //   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder
 //   tree (no p)                     root: EGPT_HOME; below root {user, level, path: '', scope: true, entries: [{name, path, chats, …}]}
 //   file?p=<path>[&download=1]      {path, size, text, truncated} | {path, size, binary} | the bytes
+//   logout[?n=]                     401 + SIGNED_OUT, no challenge (http.mjs, before the lockout); its script overwrites each cached login (Firefox) and reloads to drop them (Chrome)
+//   logout?realm=<level>            with the reserved logout user: 401 in that realm so the browser replaces the credential it cached there
 // Paths are relative to EGPT_HOME and resolve (realpath) inside it. levelOf, on the asked path and on the
 // real one, decides who reads it; above the user's level: refuse(level), a 401 in that level's realm.
 // The scope (limbs.http.ayde.scope): chat ids; their folders by conversations.yaml (registry()) are all that
@@ -22,10 +24,79 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { getContact, slugDir } from '../conversations-state.mjs';
 
 const PAGE = readFileSync(new URL('./http-ayde.html', import.meta.url), 'utf8');
+// A signed out login means answering 401 — the browser holds the credential and only a refusal makes it
+// let go — but a bare 401 lands on the browser's own error page. So the refusal carries this page, and a
+// script overwrites each realm's cached credential with the reserved 'logout' user (granted nothing) so
+// the next visit is challenged again. Firefox keeps a credential until all its windows close; when the
+// overwrite does not take (a follow-up still carries the real user) the page says so instead.
+const SIGNED_OUT = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Signed out · ayde</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #667085; --line: #e3e6ec; --accent: #1f6feb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171c; --card: #1c2027; --ink: #e6e8ec; --muted: #98a2b3; --line: #2c323c; --accent: #58a6ff; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 420px; margin: 10vh auto 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  p { margin: 8px 0 0; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<h1 id="h">Signed out</h1>
+<div id="out">
+<p><a href="./">Sign in again</a></p>
+<p class="muted">You can also sign in as another user: follow the link and enter that user's name and password.</p>
+</div>
+<div id="kept" hidden>
+<p>This browser keeps your login until all its windows close. Close them to sign out, or <a href="./">go back to ayde</a>.</p>
+</div>
+</main>
+<script>
+(() => {
+  var realms = ['team', 'devs', 'admin', 'root'];
+  var dummy = Math.random().toString(36).slice(2);
+  var n = +(new URLSearchParams(location.search).get('n')) || 0;
+  // One request per realm with the reserved 'logout' user: the server answers 401 for that realm. Firefox
+  // replaces the credential it cached there; Chrome ignores a 401 it did not prompt for, so for Chrome each
+  // reload below drops one cached login (Chrome forgets the credential a navigation's 401 refused).
+  function poison(realm) {
+    return new Promise(function (done) {
+      var x = new XMLHttpRequest();
+      x.open('GET', 'logout?realm=' + realm, true, 'logout', dummy);
+      x.withCredentials = true;
+      x.onloadend = done; x.onerror = done;
+      x.send();
+    });
+  }
+  // Does a login still open the console? fetch never shows the browser's own prompt, so a surviving
+  // credential answers 200 and a cleared one 401.
+  function signedIn() {
+    return fetch('./', { cache: 'no-store' }).then(function (r) { return r.status === 200; }, function () { return false; });
+  }
+  Promise.all(realms.map(poison)).then(signedIn).then(function (still) {
+    if (!still) return;                                       // cleared → the page stays "Signed out"
+    if (n < realms.length) { location.replace('logout?n=' + (n + 1)); return; }   // Chrome: drop the next cached login
+    document.getElementById('h').textContent = 'Still signed in';                 // gave up (a browser that keeps it)
+    document.getElementById('out').hidden = true; document.getElementById('kept').hidden = false;
+  });
+})();
+</script>
+</body>
+</html>
+`;
 const TEXT_MAX = 256 * 1024;
 const LIST_MAX = 2000;
 const FOUND_MAX = 100;
 export const AUDIT_FILE = 'admin-access.log';
+// The username the logout page sends to overwrite a cached login; never a real user (ayde-user.mjs refuses it).
+export const RESERVED_USER = 'logout';
 const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id'];
 const clean = (s) => String(s).replace(/[\u0000-\u001f\u007f]/g, '?');
 const inside = (dir, p) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : `${dir}${sep}`);
@@ -157,14 +228,30 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     return { entries, truncated: entries.length >= LIST_MAX };
   }
 
-  function page(res) {
+  function html(res, status, text) {
     const nonce = randomBytes(16).toString('base64');
-    res.writeHead(200, {
+    res.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
     });
-    res.end(PAGE.replace('<script>', `<script nonce="${nonce}">`).replace('<style>', `<style nonce="${nonce}">`));
+    res.end(text.replace('<script>', `<script nonce="${nonce}">`).replace('<style>', `<style nonce="${nonce}">`));
+  }
+  const page = (res) => html(res, 200, PAGE);
+  // The signed-out page. user: the name the request carried, unchecked (no scrypt here, so no lockout to
+  // keep). The reserved logout user is the overwrite's own probe, not a person: no "signed out" line for it.
+  function signOut(res, user) {
+    if (user && user !== RESERVED_USER) log(`ayde: ${clean(user)} signed out`);
+    return html(res, 401, SIGNED_OUT);
+  }
+  // The credential-overwrite request (reserved logout user, a realm): 401 in that realm so the browser
+  // replaces the credential it cached there. Never a login, never counted, grants nothing.
+  function overwrite(res, realm) {
+    res.writeHead(401, {
+      'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store',
+      'WWW-Authenticate': `Basic realm="ayde ${LEVELS.includes(realm) ? realm : 'team'}", charset="UTF-8"`,
+    });
+    res.end('signed out\n');
   }
 
   // who: { user, level } or null (no valid login: the team realm, whatever the path); refuse(level) answers
@@ -224,5 +311,5 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     return json(res, 200, { path, size: st.size, text: buf.toString('utf8'), truncated: st.size > buf.length });
   }
 
-  return { serve };
+  return { serve, signOut, overwrite };
 }

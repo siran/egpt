@@ -60,6 +60,15 @@ describe('setup/ayde-user.mjs', () => {
     }
   });
 
+  it('refuses the reserved "logout" user (the sign-out page uses it), writing nothing', () => {
+    for (const args of [['add', 'logout', 'team'], ['set-level', 'logout', 'root'], ['remove', 'logout']]) {
+      const r = run(args, 'clave-de-logout-1\n');
+      expect(r.status, args.join(' ')).toBe(1);
+      expect(r.stderr, args.join(' ')).toMatch(/"logout" is reserved/);
+    }
+    expect(existsSync(file())).toBe(false);
+  });
+
   it('list with no users file says so', () => {
     const r = run(['list']);
     expect(r.status).toBe(0);

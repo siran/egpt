@@ -423,6 +423,12 @@ and inside a conversation also appended to its `admin-access.log`. Nobody can
 change or delete anything; a future delete of core files (`config/`, `state/`,
 `secrets/`) will be root's only.
 
+**Log out** (beside your name; `/ayde/logout`) answers 401 with no challenge and
+runs a small script that overwrites each cached login with a reserved `logout`
+user (granted nothing), so the next visit asks again. It works in Firefox and
+Chrome. If a browser still holds the login, the page says so ("Still signed in —
+close all windows"). `logout` cannot be a real ayde user.
+
 Add, re-level or remove a user on the node, with the node's `EGPT_HOME`; on
 Windows, `setup/ayde-user.cmd` does the same:
 
