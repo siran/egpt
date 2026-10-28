@@ -23,7 +23,11 @@ import { Room } from '../src/room-core.mjs';
 import { ROOMS_FILE } from '../src/rooms-file.mjs';
 import { HTTP_STRINGS } from '../src/bridges/http.mjs';
 
+// A test ends on its last reply; the chatbox limb's stop then settles once that is in state/http-messages.
+let stopHttp = null;
 afterEach(async () => {
+  await stopHttp?.();
+  stopHttp = null;
   await fs.rm(ROOMS_FILE, { force: true });
   await fs.rm(join(_HOME, 'state'), { recursive: true, force: true });
 });
@@ -140,6 +144,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
     ...(realFs ? {} : { io }), ...(now ? { now } : {}), ingest: false, tickMs: 0,
     log: { line: (s) => lines.push(s) },
   });
+  stopHttp = () => app.httpPort.stop();
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
   const url = `http://127.0.0.1:${port}/chat/eduweb/`;
   const post = (body) => fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
@@ -193,8 +198,9 @@ describe('a chatbox client with a team_group', () => {
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
     expect(getContact(n.state(), 'telegram', TOPIC).entry.agents.ed.mode).toBe('mute');
     // another visitor, another topic
-    await n.post({ text: 'otra visita' });
+    const b = await n.post({ text: 'otra visita' });
     await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(b.session))).toBe(true), { timeout: 5000 });
     n.app.stop();
   });
 
@@ -330,6 +336,7 @@ describe('a chatbox client with a team_group', () => {
       expect(recap).toContain('visitor: dos');
       expect(recap).toContain('visitor: tres');
     }, { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session), 3)).toBe(true), { timeout: 5000 });
     n.app.stop();
   });
 
@@ -429,6 +436,8 @@ describe('a signed visitor (identity)', () => {
     await vi.waitFor(() => expect(n.turns).toHaveLength(3), { timeout: 5000 });
     expect(n.turns[2].cwd).toBe(n.turns[0].cwd);
     expect(n.api.of('createForumTopic')).toHaveLength(2);
+    await vi.waitFor(async () => expect(answered(await n.messages(b.session, signed(ML)))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JP)), 2)).toBe(true), { timeout: 5000 });
     n.app.stop();
   });
 
@@ -455,11 +464,13 @@ describe('a signed visitor (identity)', () => {
 
   it("a long name: the topic's title is cut at Telegram's 128", async () => {
     const n = await bootTeam(client());
-    await n.post({ text: 'hola', identity: signed({ ...JP, short_name: 'Nombre '.repeat(30), username: 'u'.repeat(100) }) });
+    const identity = signed({ ...JP, short_name: 'Nombre '.repeat(30), username: 'u'.repeat(100) });
+    const a = await n.post({ text: 'hola', identity });
     await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(1), { timeout: 5000 });
     const name = n.api.of('createForumTopic')[0].body.name;
     expect(name).toHaveLength(128);
     expect(name).toMatch(/^IEV P Nombre Nombre .*…$/);
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
     n.app.stop();
   });
 });
