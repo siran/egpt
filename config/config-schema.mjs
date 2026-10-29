@@ -15,7 +15,8 @@
 //       getConfig().<key> reads and fails if the v2 spine reads a top-level key
 //       that is not registered here.
 //     - tests/skeletons.test.mjs — fails if config/skeletons/config.yaml sets a
-//       top-level key that is not registered here.
+//       top-level key that is not registered here, or a key here (bar its exempt
+//       list) has no example, set or commented, in config/skeletons/*.yaml.
 //   So: when the spine starts reading a new top-level key, register it here too.
 //
 // SHAPE

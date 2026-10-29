@@ -4,7 +4,7 @@
 // so a skeleton the operator copies always loads. Runs the real loader collect()
 // against the parsed block (no profile touched — all fakes).
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
 import { createHeartbeatLoader } from '../src/spine/heartbeat-loader.mjs';
@@ -216,6 +216,43 @@ describe('config/skeletons/config.yaml', () => {
       expect(existsSync(fileURLToPath(new URL(`../config/skeletons/agents/identities/${cfgn.personality}.md`, import.meta.url))),
         `no shipped identity file for ${cfgn.personality}`).toBe(true);
     }
+  });
+});
+
+// A new install's docs are its skeletons: every top-level key ships an example, set or commented.
+describe('config/skeletons/*.yaml — every CONFIG_SCHEMA key has an example', () => {
+  const SKELETONS_DIR = fileURLToPath(new URL('../config/skeletons/', import.meta.url));
+  const all = readdirSync(SKELETONS_DIR).filter((f) => f.endsWith('.yaml'))
+    .map((f) => readFileSync(`${SKELETONS_DIR}${f}`, 'utf8')).join('\n');
+  const NO_EXAMPLE = {
+    theme: 'unread; --theme flag',
+    show_prompts: 'read by nothing',
+    unix_paths: 'read by nothing',
+    tz_label: 'read by nothing',
+    heartbeat: 'read by nothing',
+    local_llm: 'no spawner reads it',
+    beeper_token: 'superseded by limbs.beeper',
+    echo_priority: 'superseded by peer_priority',
+    rooms: 'read by nothing',
+    emojis: 'read by nothing',
+    room: 'read by nothing',
+    mirror: 'read by nothing',
+    brains: 'read by nothing',
+    tools: 'not wired from config',
+    streaming: 'read by nothing',
+    join: 'retired 2026-10-25',
+    end: 'command doc, no keys',
+  };
+
+  it('every key appears in some skeleton, except the exempt ones', () => {
+    const missing = Object.keys(CONFIG_SCHEMA)
+      .filter((k) => !Object.hasOwn(NO_EXAMPLE, k))
+      .filter((k) => !new RegExp(`^[ \\t#]*${k}:`, 'm').test(all));
+    expect(missing, 'add a commented example to the skeleton it belongs in').toEqual([]);
+  });
+
+  it('every exempt key is still in CONFIG_SCHEMA', () => {
+    expect(Object.keys(NO_EXAMPLE).filter((k) => !Object.hasOwn(CONFIG_SCHEMA, k))).toEqual([]);
   });
 });
 

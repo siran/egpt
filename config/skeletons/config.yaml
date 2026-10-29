@@ -119,6 +119,7 @@ wake_up:
 # co-account nodes collapse to one member, so list them here to complete the HRW
 # candidate set. Omit for a solo node.
 # peer_nodes: [kg, do]
+# node_role: primary              # primary | secondary of a co-account pair (log_to_group audit merge); unset = single node
 
 # egpt_nodes - the eGPT nodes YOU run, and HOW TO REACH each one. OPTIONAL: a
 # single node needs none of this. Read by src/tools/beeper-whoami.mjs (the
@@ -273,6 +274,15 @@ agents:
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
 # carol: { relay_channel: rodz1, to: don.do }
 
+# --- Folder grants and the sandbox token (all optional; unset = none) --------
+# allowed_paths:                  # every being on this node; a being's own entry for the same path wins
+#   C:/Users/you/src: { allowed_tools: [Read, Glob, Grep] }   # read-only; an empty value = full access
+# global_read_paths:              # standing read-only mounts in every sandboxed being's home; re-run setup/provision-sandbox-account.ps1 after a change
+#   - repos: C:/Users/you/src     # mounted as ~/repos
+# outbox_targets:                 # where a room's outbox/ may drain; the room picks one by name (outbox_to:)
+#   my-drive: G:/My Drive/shared
+# sandbox_oauth_token: ""         # Claude token for sandboxed turns; unset = secrets/claude-oauth.token
+
 # --- Owners (who may command this node, and whom its beings answer) ---------
 # Your STABLE ids (jids / phone numbers / Telegram numeric ids, never display
 # names); ids of every network may be mixed here. [] = nobody (the account owner
@@ -398,6 +408,28 @@ networks:
 # echo: true                      # this node may echo (default true)
 # echo_timeout_ms: 5000           # rank N+1 promotes after this much silence
 # echo_max_age_ms: 3600000        # never echo a note older than this (skips resynced backlog)
+# echo_coverage_similarity: 0.6   # a reply whose transcript overlaps ours this much already covers the note
+
+# --- Signature wraps (all default "" = nothing added) ------------------------
+# bridge_signature_open: ""       # outer line above every stamped reply and echo this node posts
+# bridge_signature_close: ""      # outer line below them
+# agent_signature_open: ""        # inner line above a being's reply; agents.<name>.agent_signature_open wins
+# agent_signature_close: ""       # inner line below it
+# transcription_open: ""          # inner line above the echoed transcript
+# transcription_close: ""         # inner line below it
+
+# --- Radio (optional) --------------------------------------------------------
+# radio_service:                  # stations a room may join: /<handle> radio join myradio
+#   myradio:
+#     name: "My radio"
+#     listen_url: https://radio.example.org/
+#     enabled: false              # true = joined rooms' voice notes upload here
+#     endpoint: https://radio.example.org
+#     relay_user: egpt
+#     relay_password: ""
+#     default_speaker: egpt       # for a sender not in the room's radio.hosts
+# radio_blocked_senders: []       # sender ids that may not relay; /radio disable <person> writes it
+# radio_quick_reply_string: "rs"  # reply with just this to put the quoted message on air; "" = off
 
 # --- Everyday knobs (defaults shown) -----------------------------------------
 # turn_timeout_ms: 0             # opt-in per-turn timeout (ms; > 0): the turn fails and its session is evicted. 0/absent = no limit (default)
@@ -426,7 +458,15 @@ networks:
 # stop_phrase: "EGPT STOP"        # the whole message, from an allowed user, in ANY chat → this node writes EGPT_HOME/STOP and stops; "" = off
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
 # log_to_group: "eGPT Admin"      # per-/command audit → this group: one metadata-only line per command ("/<cmd> in <chat> by <sender> → <outcome?>"), NEVER the reply body. May equal or differ from admin_channel; unset = off
+# admin_channel: "eGPT Admin"     # this node's own notices (compaction, ...): a chat name or short room id; unset = daemon log only
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
+# mesh: { timeout_ms: 60000 }     # a relayed mention waits this long, then "<target> did not answer"
+# liveness: { every_ms: 15000 }   # how often a running turn's placeholder is re-edited
+# lag_probe: { threshold_ms: 10000, every_ms: 5000 }   # event-loop lag over threshold -> one line to log_to_group
+# ear_probe: { every: 30m, timeout: 45s, telegram: { token: "BOT_TOKEN", chat_id: -1001234567890 } }   # deaf-Beeper check: a bot posts into a chat Beeper bridges; no token/chat = off
+# media_flood: { count: 5, window_ms: 20000, cooldown_ms: 600000, never_ban: [] }   # mute a sender posting count media within window_ms; count <= 0 = off
+# agents_list: { every_ms: 60000, ban_after: 5, ban_window_ms: 600000 }   # public /agents: one list per chat per every_ms; ban_after 0 = never mute
+# ingest: { show: true, auto: false, ask: "received message, dispatch? reply yes / no" }   # state/ingest /to files: post the line; auto false = an owner's yes dispatches it
 
 # --- Chrome control (optional) -----------------------------------------------
 # The brain Chrome (CDP :9221) and the per-group Chrome pool. WHICH chat uses which Chrome is
@@ -451,3 +491,17 @@ networks:
 #   otp_sources: [gmail, google_voice]   # where the 2FA branch reads the OTP (read + entered inside the limb, never surfaced)
 #   captcha_channel: admin_channel       # CONFIG KEY whose channel the CAPTCHA branch posts to (metadata only)
 #   submit_overrides: {}                 # per-domain fixups: { "example.com": { url: "https://example.com/login", submit: "#signin" } }
+
+# --- /email and /book limbs (a being whose agents.<name>.actions lists them) -
+# email:                          # Amazon SES; the being never picks sender, recipients or subject
+#   from: "eGPT <egpt@example.com>"   # a verified SES sender
+#   to: [team@example.com]        # empty = not-configured
+#   credentials_file: C:\path\ses.credentials   # or aws_access_key_id + aws_secret_access_key here
+#   # region: us-east-1
+#   # subject_prefix: "[eGPT]"
+# book:                           # /book <YYYY-MM-DD> <HH:MM> <summary>: a free slot gets an invitation over email:
+#   ics_url: "SECRET_ICAL_ADDRESS"   # the calendar's secret iCal address
+#   calendar_email: team@example.com # every invitation goes here
+#   # timezone: America/Caracas
+#   # duration_minutes: 30
+#   # working_hours: { days: [mon, tue, wed, thu, fri], start: "08:00", end: "17:00" }
