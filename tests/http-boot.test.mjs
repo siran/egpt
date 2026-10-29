@@ -69,7 +69,8 @@ function brain(turns) {
 }
 
 // withBeeper: a fake Beeper transport beside the chatbox, recording every chat it is asked to post in.
-async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, ayde = null, registry = null } = {}) {
+// edit(cfg): the config's last change before boot; id: the client the helpers' url names.
+async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, ayde = null, registry = null, edit = null, id = 'eduweb' } = {}) {
   const port = await freeSafeHttpPort();
   const io = memIo();
   const turns = [];
@@ -88,6 +89,7 @@ async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, a
   cfg.agents = agents;
   if (ayde) cfg.limbs.http.ayde = ayde;
   if (withBeeper) cfg.limbs.beeper = { main: { account: 'x@example.com', token: 'TOK' } };
+  edit?.(cfg);
   let convState = registry ?? emptyState();
   const app = await boot({
     readConfig: () => cfg,
@@ -99,10 +101,10 @@ async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, a
     io, ingest: false, tickMs: 0,
     log: { line: (s) => lines.push(s) },
   });
-  const url = `http://127.0.0.1:${port}/chat/eduweb/`;
+  const url = `http://127.0.0.1:${port}/chat/${id}/`;
   const post = (body) => fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
   const messages = (session, since = 0) => fetch(`${url}messages?session=${encodeURIComponent(session)}&since=${since}`).then((r) => r.json());
-  return { app, io, turns, lines, url, post, messages, beeper, state: () => convState };
+  return { app, io, turns, lines, port, url, post, messages, beeper, state: () => convState };
 }
 
 // Every `data:` event of an SSE response, as it arrives.
@@ -363,5 +365,82 @@ describe('limbs.http.ayde through boot', () => {
       await fs.rm(usersFile, { force: true });
       if (slug) await fs.rm(convDir(slug), { recursive: true, force: true });
     }
+  });
+});
+
+describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured in its own top-level block', () => {
+  // EDW's shape: no clients:, the chatbox's keys and UI strings flat in its block.
+  const blocks = (more = {}) => (cfg) => {
+    cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['eduweb_marketer'] };
+    cfg.eduweb_marketer = { url: 'eduweb', being: 'ed', title: 'Agente EduWeb', intro: '¡Hola, soy Edu!', ...more };
+  };
+  const widget = (url) => fetch(`${url}widget.js`).then((r) => r.text());
+  const slugOf = (turn) => turn.cwd.split(/[\\/]/).at(-1);
+
+  it('chatboxes alone: /chat/<url>/widget.js has the block\'s title and intro; a visitor reaches its being as http:<url>-<sid>, its desk from the block\'s seed', async () => {
+    const seedDir = join(_HOME, 'seeds', 'eduweb');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(join(seedDir, 'identidad.md'), 'v1');
+    try {
+      const { app, url, post, messages, turns, state, lines } = await bootChatbox({ edit: blocks({ seed: 'seeds/eduweb' }) });
+      const js = await widget(url);
+      expect(js).toContain('"client":"eduweb"');
+      expect(js).toContain('"title":"Agente EduWeb"');
+      expect(js).toContain('"intro":"¡Hola, soy Edu!"');
+      const j = await post({ text: 'hola' });
+      await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
+      expect(settled((await messages(j.session)).messages).text).toMatch(/^🦉 /);
+      const slug = slugOf(turns[0]);
+      expect(slug).toMatch(/^eduweb-[0-9a-f]{16}$/);
+      expect(turns[0].desk).toBe(true);
+      expect(getContact(state(), 'http', `http:${slug}`).entry.agents).toEqual({ ed: expect.objectContaining({ default: true, mode: 'on', allowed_users: ['*'] }) });
+      expect(lines.find((l) => l.startsWith('[http] listening on'))).toMatch(/clients: eduweb$/);
+      expect(lines.join('\n')).not.toMatch(/not a local agent|skipped/);
+      app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
+
+  it('url defaults to the block\'s name', async () => {
+    const { app, url, post, messages, turns } = await bootChatbox({ id: 'demoiev', edit: (cfg) => {
+      cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['demoiev'] };
+      cfg.demoiev = { being: 'ed', title: 'Soporte' };
+    } });
+    expect(await widget(url)).toContain('"client":"demoiev"');
+    const j = await post({ text: 'hola' });
+    await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
+    expect(slugOf(turns[0])).toMatch(/^demoiev-[0-9a-f]{16}$/);
+    app.stop();
+  });
+
+  it('a flat string beats the block\'s strings: map; `identity` stays the mode, its text in strings:', async () => {
+    const { app, url } = await bootChatbox({ edit: blocks({ send: 'Mandar', identity: 'required', strings: { send: 'Enviar ya', placeholder: 'Pregunta', identity: 'Inicia sesión' } }) });
+    const js = await widget(url);
+    expect(js).toContain('"send":"Mandar"');
+    expect(js).toContain('"placeholder":"Pregunta"');
+    expect(js).toContain('"intro":"¡Hola, soy Edu!"');
+    const r = await fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'hola' }) });
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'identity required', message: 'Inicia sesión' });
+    app.stop();
+  });
+
+  it('clients: still serves beside them; the same url in both: the block wins, logged; a name with no block, or not a map, is logged and skipped', async () => {
+    const { app, url, port, post, messages, lines } = await bootChatbox({ edit: (cfg) => {
+      cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['ghost', 'eduweb_marketer', 'flat'], clients: { eduweb: { being: 'egpt', title: 'Viejo' }, acme: { being: 'ed', title: 'Acme' } } };
+      cfg.eduweb_marketer = { url: 'eduweb', being: 'ed', title: 'Agente EduWeb' };
+      cfg.flat = 'not a block';
+    } });
+    const js = await widget(url);
+    expect(js).toContain('"title":"Agente EduWeb"');
+    expect(js).not.toContain('Viejo');
+    expect(await widget(`http://127.0.0.1:${port}/chat/acme/`)).toContain('"title":"Acme"');
+    const j = await post({ text: 'hola' });
+    await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
+    expect(settled((await messages(j.session)).messages).text).toMatch(/^🦉 /);
+    expect(lines.some((l) => /^\[http\] .*limbs\.http\.clients\.eduweb.*eduweb_marketer.*the block wins/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[http\] .*\bghost\b.*skipped/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[http\] .*\bflat\b.*skipped/.test(l))).toBe(true);
+    expect(lines.find((l) => l.startsWith('[http] listening on'))).toMatch(/clients: eduweb, acme$/);
+    app.stop();
   });
 });

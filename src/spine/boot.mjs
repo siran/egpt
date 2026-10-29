@@ -19,7 +19,7 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
-import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle } from '../bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf } from '../bridges/http.mjs';
 import { AYDE_USERS_FILE } from '../bridges/http-ayde.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
@@ -2217,8 +2217,8 @@ export async function boot({
     // beingAccount: the bot is the being's own account, never the operator's, so it may react (sender.mjs makeOutbound).
     return sendGuard.wrap({ ...port, owns: isTelegramChatId, beingAccount: true });
   })();
-  // THE CHATBOX LIMB (limbs.http: bind, port, path, clients): a website's visitors, one conversation
-  // per session (src/bridges/http.mjs). Same port adapter and send guard. Absent ⇒ null.
+  // THE CHATBOX LIMB (limbs.http: bind, port, path, its chatboxes by chatboxesOf): a website's visitors,
+  // one conversation per session (src/bridges/http.mjs). Same port adapter and send guard. Absent ⇒ null.
   const httpPort = await (async () => {
     const block = cfg.limbs?.http;
     if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
@@ -2230,13 +2230,14 @@ export async function boot({
       if (!u.token) hlog(`limbs.http.ayde is on but ${u.path} is ${u.problem} — /ayde answers 404 (node setup/ayde-user.mjs add <user> <level>)`);
       else if (u.warn) hlog(`${u.path}: ${u.warn}`);
     }
-    for (const [name, c] of Object.entries(block.clients ?? {})) {
+    const clients = chatboxesOf(cfg, hlog);
+    for (const [name, c] of Object.entries(clients)) {
       const being = String(c?.being ?? '');
-      if (!isLocalAgent(being, agents()[being])) hlog(`limbs.http.clients.${name}.being '${being}' is not a local agent here — its visitors reach nobody`);
-      if (c?.team_group != null && !telegramPort) hlog(`limbs.http.clients.${name}.team_group is set but this node has no Telegram limb — no team topics`);
+      if (!isLocalAgent(being, agents()[being])) hlog(`chatbox ${name}: being '${being}' is not a local agent here — its visitors reach nobody`);
+      if (c?.team_group != null && !telegramPort) hlog(`chatbox ${name}: team_group is set but this node has no Telegram limb — no team topics`);
       if (['optional', 'required'].includes(c?.identity)) {
         const k = readSecret(EGPT_HOME, chatboxKeyFile(name));
-        if (!k.token) hlog(`limbs.http.clients.${name}.identity is ${c.identity} but ${k.path} is ${k.problem} — signed visitors are refused`);
+        if (!k.token) hlog(`chatbox ${name}: identity is ${c.identity} but ${k.path} is ${k.problem} — signed visitors are refused`);
         else if (k.warn) hlog(`${k.path}: ${k.warn}`);
       }
     }
@@ -2247,7 +2248,7 @@ export async function boot({
     const TOPIC_COOLDOWN_MS = 2 * 60_000;
     const seating = new Map(), failedAt = new Map();
     const seatTeamTopic = (client, chatId, { isNew, recap, identity }) => {
-      const c = block.clients?.[client] ?? {};
+      const c = clients[client] ?? {};
       if (c.team_group == null || !telegramPort || seating.has(chatId)) return;
       if (now() - (failedAt.get(chatId) ?? -Infinity) < TOPIC_COOLDOWN_MS) return;
       const fail = (why) => { failedAt.set(chatId, now()); hlog(`${chatId}: no team topic — ${why}`); };
@@ -2272,7 +2273,7 @@ export async function boot({
     // drawer's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
     // The line never waits on Telegram.
     const beforeLine = async ({ client, chatId, isNew, recap, identity }) => {
-      const c = block.clients?.[client] ?? {};
+      const c = clients[client] ?? {};
       if (isNew && identity) {
         const dir = slugDir('http', fixedSlugFor('http', chatId));
         await mkdir(dir, { recursive: true });
@@ -2300,7 +2301,7 @@ export async function boot({
     };
     const port = await createBeeperBridgePort({
       ...sharedBridgeOpts,
-      bind: block.bind, port: block.port, path: block.path, clients: block.clients, trustProxy: block.trust_proxy === true, now,
+      bind: block.bind, port: block.port, path: block.path, clients, trustProxy: block.trust_proxy === true, now,
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
       ayde: block.ayde, aydeRoot: EGPT_HOME,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
@@ -3030,7 +3031,7 @@ export async function boot({
   // no public commands (commands read it, a line earlier too). With a team topic it is `mention`: the
   // visitor's every line addresses it (http.mjs replyToBeing), the team's only when they name it.
   const strangerSeedOf = (ev) => {
-    const client = ev?.surface === 'http' ? getConfig()?.limbs?.http?.clients?.[httpClientOf(ev.chatId)] : null;
+    const client = ev?.surface === 'http' ? chatboxesOf(getConfig())[httpClientOf(ev.chatId)] : null;
     const chatbox = client?.being;
     if (chatbox) return { agents: { [chatbox]: { ...STRANGER_SEED, ...(client.team_group != null ? { mode: 'mention' } : {}), allowed_users: ['*'] } }, public_commands: [] };
     const b = strangerAgentFor(ev, getConfig()); return b ? { agents: { [b]: { ...STRANGER_SEED } } } : null;

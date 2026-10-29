@@ -52,6 +52,19 @@ describe('config-swap — restart-only keys', () => {
     expect(isRestartKey('warm.idle_ttl')).toBe(false);
     expect(isRestartKey('dispatch.auto_default_mode')).toBe(false);
   });
+
+  it('a top-level chatbox block named by limbs.http.chatboxes binds at boot: restart-only, named by its key; an unrelated top-level block is hot', () => {
+    const boxes = { ...base, limbs: { http: { port: 8095, chatboxes: ['eduweb_marketer'] } }, eduweb_marketer: { url: 'eduweb', being: 'ed', intro: 'Hola' }, notes: { a: 1 } };
+    expect(restartKeysChanged(boxes, { ...boxes, eduweb_marketer: { ...boxes.eduweb_marketer, intro: '¡Hola, soy Edu!' } })).toEqual(['eduweb_marketer']);
+    expect(restartKeysChanged(boxes, { ...boxes, notes: { a: 2 } })).toEqual([]);
+    // a block added by its name, or removed with it: the list (under limbs) and the block
+    const { eduweb_marketer, ...without } = boxes;
+    const named = { ...without, limbs: { http: { port: 8095, chatboxes: [] } } };
+    expect(restartKeysChanged(named, boxes)).toEqual(['limbs', 'eduweb_marketer']);
+    expect(restartKeysChanged(boxes, named)).toEqual(['limbs', 'eduweb_marketer']);
+    // a block no list names is any other key
+    expect(restartKeysChanged(named, { ...named, eduweb_marketer: { being: 'ed' } })).toEqual([]);
+  });
 });
 
 // ── (c)+(d) the warm pool: a changed spawn option reopens that key only, never under background work ──

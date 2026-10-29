@@ -5,6 +5,7 @@
 // service profile — and nothing re-reads them. A key boot starts binding once belongs here.
 import { isDeepStrictEqual } from 'node:util';
 import { LEGACY_BLOCKS } from '../loop-guard.mjs';
+import { chatboxNames } from '../bridges/http.mjs';
 
 // `*` matches any one segment (an agent's map key).
 export const RESTART_KEYS = [
@@ -33,9 +34,11 @@ function expand(pattern, a, b, at = []) {
   return keys.flatMap((k) => expand(rest, isMap(a) ? a[k] : undefined, isMap(b) ? b[k] : undefined, [...at, k]));
 }
 
-/** The restart-only paths whose value differs between two configs, e.g. ['shell', 'agents.h.use']. */
+/** The restart-only paths whose value differs between two configs, e.g. ['shell', 'agents.h.use'].
+ *  The top-level chatbox blocks either one names (limbs.http.chatboxes) bind at boot too. */
 export function restartKeysChanged(prev, next) {
-  return RESTART_KEYS.flatMap((p) => expand(p.split('.'), prev, next)).filter(({ a, b }) => !isDeepStrictEqual(a, b)).map(({ path }) => path);
+  const keys = new Set([...RESTART_KEYS, ...chatboxNames(prev), ...chatboxNames(next)]);
+  return [...keys].flatMap((p) => expand(p.split('.'), prev, next)).filter(({ a, b }) => !isDeepStrictEqual(a, b)).map(({ path }) => path);
 }
 
 /** For the log line: the top-level keys that changed, `agents` broken out per agent. */

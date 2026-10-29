@@ -371,6 +371,47 @@ with a link (a Telegram topic) answers `/split` with its link.
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
 | `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
 
+### Chatboxes (`limbs.http`)
+
+A website chatbox is named under `limbs.http.chatboxes` and configured in its
+own top-level block, further down `config.yaml`:
+
+```yaml
+limbs:
+  http:
+    port: 8095
+    trust_proxy: true
+    chatboxes: [ eduweb_marketer, eduweb_soporte ]   # each one a top-level block below
+
+eduweb_marketer:
+  url: eduweb                 # the id in the URL (/chat/eduweb/widget.js) and the chat ids (http:eduweb-<sid>)
+  being: asesor
+  seed: seeds/eduweb
+  title: "🐶 Agente EduWeb SI"
+  intro: "¡Hola, soy Edu, el súper agente inteligente de EduWeb!"
+  team_name: Equipo EduWeb
+  team_group: -1004473260995
+  label: Marketer — website
+
+eduweb_soporte:
+  url: demoiev
+  being: soporte
+  identity: required
+```
+
+A block holds every chatbox key (`config/config-schema.mjs`, `limbs.http`), and
+its UI strings (`intro`, `send`, `placeholder`, `end`, …) are written beside
+them. A `strings:` map in the block still works; a key written beside it wins.
+`identity` is the mode (`off`, `optional`, `required`); its text goes in
+`strings: { identity: "…" }`. `url` defaults to the block's name. Keep the `url`
+of a chatbox that is already live: its widget's address, its chat ids and its
+conversation folders all use it.
+
+The older form, `limbs.http.clients: { eduweb: { … } }`, still works. If both
+name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
+no block is logged and skipped. A change to a block takes a `/restart`, as any
+change under `limbs` does.
+
 ### `/ayde` — the EduWeb team's browser (staff access)
 
 With `limbs.http.ayde: { on: true }`, the chatbox limb also serves a read-only
@@ -392,8 +433,8 @@ each level reads everything the lower ones read:
 
 The page is one list of the scope's conversations, in sections:
 
-- one per chatbox client, titled by the client's `label` (e.g. `label: "Marketer — website"`
-  under `limbs.http.clients.<client>`), else its `title`, in the config's order;
+- one per chatbox, titled by its `label` (e.g. `label: "Marketer — website"` in its
+  block), else its `title`, in config order (`limbs.http.chatboxes` first, then `clients:`);
 - **Team groups (Telegram)**: the scope's groups and topics, by their name;
 - **Other**: any other chat in the scope.
 

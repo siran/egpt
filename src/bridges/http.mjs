@@ -131,11 +131,41 @@ function clientConfig(name, c = {}) {
   };
 }
 
+// THE CHATBOXES OF A CONFIG, { <client>: its limbs.http.clients-shaped config }: the one reader of
+// limbs.http.clients and limbs.http.chatboxes, what boot serves and reads. limbs.http.chatboxes names
+// top-level blocks, one chatbox each: a clients entry's keys, its UI strings (HTTP_STRINGS) flat beside
+// them, beating a `strings:` map there (`identity` is the mode; its text stays in strings:). Its client,
+// in the URL and the chat ids, is its `url`, default its name. A block beats a clients entry of the
+// same client; a name with no block (a map) is skipped. Both logged.
+const FLAT_STRINGS = Object.keys(HTTP_STRINGS).filter((k) => k !== 'title' && k !== 'identity');
+const isMap = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+export const chatboxNames = (cfg) => (Array.isArray(cfg?.limbs?.http?.chatboxes) ? cfg.limbs.http.chatboxes.map(String) : []);
+export function chatboxesOf(cfg, log = () => {}) {
+  const http = cfg?.limbs?.http;
+  if (http?.chatboxes != null && !Array.isArray(http.chatboxes)) log('limbs.http.chatboxes is not a list of block names — ignored');
+  const out = {}, blockOf = {};
+  for (const name of chatboxNames(cfg)) {
+    if (!isMap(cfg[name])) { log(`limbs.http.chatboxes names ${name}, but there is no ${name}: block — skipped`); continue; }
+    const { url, strings, ...keys } = cfg[name];
+    const client = url == null ? name : String(url);
+    if (blockOf[client]) { log(`the ${name}: block's url '${client}' is the ${blockOf[client]}: block's too — skipped`); continue; }
+    blockOf[client] = name;
+    const own = {}, flat = {};
+    for (const [k, v] of Object.entries(keys)) (FLAT_STRINGS.includes(k) ? flat : own)[k] = v;
+    out[client] = { ...own, strings: { ...(isMap(strings) ? strings : {}), ...flat } };
+  }
+  for (const [client, c] of Object.entries(isMap(http?.clients) ? http.clients : {})) {
+    if (blockOf[client]) log(`limbs.http.clients.${client} and the ${blockOf[client]}: block are both chatbox '${client}' — the block wins`);
+    else out[client] = c;
+  }
+  return out;
+}
+
 export async function startHttpBridge({
   bind = '127.0.0.1',
   port,
   path = HTTP_DEFAULTS.path,
-  clients: clientsCfg = {},
+  clients: clientsCfg = {},   // chatboxesOf(config)
   wakeWords,
   addressWithoutAt = true,
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's

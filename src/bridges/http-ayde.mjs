@@ -145,7 +145,7 @@ export async function checkUser(text, user, password) {
   return ok && got && timingSafeEqual(got, want) ? m[2] : null;
 }
 
-// clients: [{ name, label }], limbs.http.clients in order; messagesDir: the chatbox's session histories (<sid>.json).
+// clients: [{ name, label }], the chatboxes in order (http.mjs chatboxesOf); messagesDir: the chatbox's session histories (<sid>.json).
 export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null, clients = [], messagesDir = null }) {
   const ids = Array.isArray(scope) ? scope.filter((e) => typeof e === 'string' && e.trim()).map((e) => e.trim()) : [];
   if (!ids.length) log('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
@@ -233,7 +233,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     return said.join(' ');
   }
 
-  // The scope's conversations as the page lists them: a section per chatbox client (limbs.http.clients'
+  // The scope's conversations as the page lists them: a section per chatbox client (chatboxesOf's
   // order, its label), then the Telegram groups and topics, then any other chat. Entries by path.
   async function conversations(folders) {
     const homes = folders.map((f) => f.parts);

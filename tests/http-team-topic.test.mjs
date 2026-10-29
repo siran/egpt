@@ -119,7 +119,8 @@ const EDUWEB_TITLE = '{abrin} {user_type} {short_name} ({username})';
 
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
 // realFs: transcripts on disk (under _HOME), where /agents rethread's roll reads them.
-async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false, now } = {}) {
+// block: the client as a top-level block named by limbs.http.chatboxes, not under clients:.
+async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false, now, block = false } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   await fs.writeFile(join(_HOME, 'secrets', 'chatbox-eduweb.key'), `${ID_KEY}\n`);
@@ -133,7 +134,9 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
     readConfig: () => ({
       node_name: 'EDW', user_name: 'John',
       conversation_defaults: { allowed_users: ['owner-1'] },
-      limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { eduweb: { being: 'ed', title: 'EduWeb', ...client } } } },
+      ...(block
+        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['eduweb_marketer'] } }, eduweb_marketer: { url: 'eduweb', being: 'ed', title: 'EduWeb', ...client } }
+        : { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { eduweb: { being: 'ed', title: 'EduWeb', ...client } } } } }),
       agents: AGENTS,
     }),
     startTelegram: (opts) => startTelegramBridge({ ...opts, fetch: api.fetch }),
@@ -201,6 +204,17 @@ describe('a chatbox client with a team_group', () => {
     const b = await n.post({ text: 'otra visita' });
     await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
     await vi.waitFor(async () => expect(answered(await n.messages(b.session))).toBe(true), { timeout: 5000 });
+    n.app.stop();
+  });
+
+  it('a top-level chatbox block (limbs.http.chatboxes) opens and seats its topic as a clients entry does', async () => {
+    const n = await bootTeam(undefined, { block: true });
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body)).toEqual([{ chat_id: String(GROUP), name: `EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}` }]), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
+    expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
     n.app.stop();
   });
 

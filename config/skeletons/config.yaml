@@ -79,20 +79,23 @@ limbs:
   #   #                               # public_max_level: the highest level a login opens through the proxy (X-Forwarded-For): team | devs | admin | root
   #   #                               # scope: the conversations below root reads, by chat id; none: nothing. Each entry:
   #   #                               #   tg:<group> (the group + its topics) | <prefix>- (e.g. http:eduweb-: every session) | <chat id> (that chat only)
-  #   clients:
-  #     mysite:
-  #       being: e                  # the agent that answers; any visitor wakes it in its own session
-  #       # seed: desks/mysite      # copied once into each new session's folder (relative: under EGPT_HOME)
-  #       # allowed_origins: []     # CORS; empty = same-origin only
-  #       # title: "Chat"           # strings: { placeholder, send, ... } override the Spanish defaults
-  #       # label: "Marketer — website"   # its section's title in /ayde; default the title
-  #       # max_chars: 4000
-  #       # rate: { messages: 30, minutes: 10 }   # per session
-  #       # new_sessions: { count: 30, minutes: 60 }   # per visitor address
-  #       # team_group: -1001234567890  # a Telegram forum group: a topic per session, the team replies there
-  #       # team_name: "Equipo"         # the team's name in the widget
-  #       # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}
-  #       # identity: off               # optional | required: a signed user (key: secrets/chatbox-mysite.key)
+  #   chatboxes: [ mysite ]         # each one a top-level block below (mysite:); the older clients: { mysite: {...} } map still works
+
+# mysite:                           # a chatbox named in limbs.http.chatboxes: its keys and its UI strings, flat
+#   # url: mysite                   # its id: /chat/mysite/widget.js, chat ids http:mysite-<sid>; default the block's name
+#   being: e                        # the agent that answers; any visitor wakes it in its own session
+#   # seed: desks/mysite            # copied once into each new session's folder (relative: under EGPT_HOME)
+#   # allowed_origins: []           # CORS; empty = same-origin only
+#   # title: "Chat"
+#   # intro: "¡Hola!"               # the panel's first line; placeholder, send, end, ... (every UI string) override the Spanish defaults here too
+#   # label: "Marketer — website"   # its section's title in /ayde; default the title
+#   # max_chars: 4000
+#   # rate: { messages: 30, minutes: 10 }   # per session
+#   # new_sessions: { count: 30, minutes: 60 }   # per visitor address
+#   # team_group: -1001234567890    # a Telegram forum group: a topic per session, the team replies there
+#   # team_name: "Equipo"           # the team's name in the widget
+#   # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}
+#   # identity: off                 # optional | required: a signed user (key: secrets/chatbox-mysite.key); its text: strings: { identity: "..." }
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

@@ -811,7 +811,36 @@ export const CONFIG_SCHEMA = {
                           opens through the proxy (below); any other value: team (logged).
                           scope: the conversations team, devs and admin read, by chat
                           id (below); absent or empty: none (logged)
-        clients:
+        chatboxes         [<block>, …] (2026-10-29): the node's chatboxes, each one a
+                          top-level block of this file named here (the recommended form):
+                            limbs:
+                              http:
+                                port: 8095
+                                chatboxes: [ eduweb_marketer, eduweb_soporte ]
+                            eduweb_marketer:
+                              url: eduweb
+                              being: asesor
+                              seed: seeds/eduweb
+                              title: "🐶 Agente EduWeb SI"
+                              intro: "¡Hola, soy Edu, el súper agente inteligente de EduWeb!"
+                              team_name: Equipo EduWeb
+                              team_group: -1004473260995
+                              label: Marketer — website
+                            eduweb_soporte:
+                              url: demoiev
+                              being: soporte
+                              identity: required
+                              allowed_origins: [ … ]
+                          A block holds a <client>'s keys (below), its strings written flat
+                          beside them (intro, send, placeholder, …); a strings: map there still
+                          works, a flat key beats it. identity is the mode: its text goes in
+                          strings:. url: the <client>, in the URL (/chat/eduweb/widget.js),
+                          the chat ids (http:eduweb-<sid>), the folders and the key file;
+                          default the block's name. A name with no block (a map): logged and
+                          skipped. A block and a clients entry with the same <client>: the
+                          block wins (logged). The blocks are restart-only, as limbs is.
+                          /ayde lists the blocks in this order, then clients'.
+        clients:          the older form, still read: the same keys, one entry per chatbox
           <client>:       lowercase letters, digits, - and _
             being             the agent that answers its visitors
             seed              a folder (relative: under EGPT_HOME) copied, files and
@@ -896,7 +925,7 @@ export const CONFIG_SCHEMA = {
         https://eduweb.com.ve/ayde/; without the last slash: 308 to it): the EduWeb team's read-only
         browser of EGPT_HOME, by level. One English page: the user and level, and one list of the
         scope's conversations (root's too): a section per chatbox client (its label, in
-        limbs.http.clients' order), then "Team groups (Telegram)", then "Other"; in each, Today and
+        limbs.http.chatboxes' order, then clients'), then "Team groups (Telegram)", then "Other"; in each, Today and
         Previous, newest first. A row is a person or a group: a signed session's usuario.json (name,
         username, school, type); an anonymous one "Visitor" and its first line (its history,
         state/http-messages/<sid>.json, else its transcript; one line, 80 characters, never
