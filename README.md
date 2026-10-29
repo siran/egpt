@@ -27,6 +27,131 @@ the whole product.
 > [`CONTRACTS.md`](CONTRACTS.md) (test-locked behavior), [`ROADMAP.md`](ROADMAP.md)
 > (state + what's next).
 
+## Run eGPT on your laptop (quickstart)
+
+This is the shortest way to get eGPT answering you in a chat on one laptop. Pick
+**A (WhatsApp, through Beeper)** or **B (a Telegram bot)**. You can add the other one later.
+Nothing else in this README is needed for a first run.
+
+### What you need
+
+1. **Node.js 22 or newer.** Check with `node --version`.
+2. **Git**, to download eGPT.
+3. **Claude Code**, installed and signed in on this laptop, so that `claude` works in a terminal.
+   eGPT uses your Claude login. You don't need an API key.
+   Install and sign in: https://code.claude.com/docs/en/setup
+4. **Only for A:** a phone with WhatsApp, and **Beeper Desktop** installed on the laptop.
+   **Only for B:** a Telegram account.
+
+### Install
+
+1. Open a terminal (Windows: **PowerShell**; macOS: **Terminal**) and run:
+
+   ```bash
+   git clone https://github.com/siran/egpt.git
+   cd egpt
+   npm install
+   ```
+
+2. Create your settings file from the template.
+
+   macOS:
+
+   ```bash
+   mkdir -p ~/.egpt/config
+   cp config/skeletons/config.yaml ~/.egpt/config/config.yaml
+   ```
+
+   Windows (PowerShell):
+
+   ```powershell
+   mkdir "$env:USERPROFILE\.egpt\config" -Force
+   copy config\skeletons\config.yaml "$env:USERPROFILE\.egpt\config\config.yaml"
+   ```
+
+3. Open that `config.yaml` in a text editor and change these lines:
+   - `node_name:` a short name for this laptop, e.g. `studio`.
+   - `user_name:` your name.
+   - Under `agents:`, delete the whole `ken:` and `wren:` blocks. Keep only `egpt:`.
+     (`wren` has full access to your computer. A first setup doesn't need it.)
+   - Under `agents:` → `egpt:`, add these lines. Line them up with `handles:`:
+
+     ```yaml
+         conversation_defaults:
+           access_level: regular
+           sandboxed: false
+     ```
+
+     Without these lines eGPT tries to use a Windows sandbox that this quickstart doesn't
+     set up, and it can't answer on a Mac. (To use the sandbox, see `setup/SANDBOX.md`.)
+
+### A. WhatsApp through Beeper (your phone number)
+
+eGPT answers **from your own WhatsApp number**, so your contacts see its replies as coming from you.
+
+1. Open **Beeper Desktop**, sign in, and add your WhatsApp account.
+   Beeper shows a QR code: scan it from WhatsApp on your phone (Settings → Linked devices → Link a device).
+2. In Beeper Desktop go to **Settings → Developer → Desktop API** and copy the token.
+3. In `config.yaml`, under `limbs:` → `beeper:` → `main:`, paste the token in place of
+   `PASTE_YOUR_TOKEN_HERE`, and put your Beeper login email after `account:`.
+4. Keep Beeper Desktop open while eGPT runs.
+
+### B. A Telegram bot
+
+1. In Telegram, open **@BotFather**, send `/newbot`, and follow the steps. It gives you a **bot token**.
+2. Save the token. In the `egpt` folder, run the command below and paste the token when it asks
+   (you won't see it as you paste):
+
+   ```bash
+   node setup/telegram-token.mjs main
+   ```
+
+   Windows: you can also double-click `setup\telegram-token.cmd`.
+   The token is saved to `~/.egpt/secrets/telegram-main.token`, not to `config.yaml`.
+3. In `config.yaml`, under `limbs:`, remove the `#` from these three lines and put your bot's username after `account:`:
+
+   ```yaml
+     telegram:
+       main:
+         account: "my_egpt_bot"
+   ```
+4. Tell eGPT who it may answer. Under `networks:`, change the `telegram:` line to:
+
+   ```yaml
+     telegram: { chat_ids: [], allowed_users: ["YOUR_TELEGRAM_NUMERIC_ID"] }
+   ```
+
+   To find your numeric id, send any message to @userinfobot in Telegram.
+5. **If you're not using A:** put a `#` at the start of the `beeper:` line and of each line under it
+   (`main:`, `account:`, `token:`). eGPT then runs on Telegram only.
+
+### Start eGPT
+
+In the `egpt` folder, run:
+
+```bash
+node egpt-daemon.mjs
+```
+
+Leave this window open. eGPT runs as long as it's open. To stop eGPT, press **Ctrl+C** in this window.
+
+### Check that it works
+
+1. Look at the messages in the terminal window:
+   - A: a line containing `beeper: subscribed to all chats`.
+     If you see `NO TOKEN`, check the token in step A3.
+   - B: a line like `[telegram] 'main' is @my_egpt_bot`.
+     If you see `rejected the token`, run step B2 again.
+2. Send a message that starts with `@e`, for example `@e hello`:
+   - A: send it in WhatsApp, for example in the chat with yourself.
+   - B: send it in a private chat with your bot.
+
+   eGPT answers in the same chat.
+3. Send `/e status`. eGPT replies with a short health report.
+4. Optional, on macOS: run `node setup/verify-install.mjs` in a second terminal. `Exit 0` means all good.
+   On Windows this check also looks for background services that this quickstart doesn't install,
+   so it reports them as missing. That's expected here.
+
 ## Setup
 
 eGPT runs as a background service against a **profile directory** (`EGPT_HOME`,
