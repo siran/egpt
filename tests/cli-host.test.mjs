@@ -93,8 +93,9 @@ describe('a spine restart never ends a claude session', () => {
     expect(two.woken).toEqual([]);
     await two.adoptAll();
     await flush();
-    expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'] }]);
+    expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'], reply: 'the audit is done' }]);
     expect(two.pool.background(KEY)).toEqual([]);
+    expect(claude.controls).toEqual([]);              // the CLI's own turn on it is not interrupted
     expect(claude.killed).toBe(false);
     expect(w.spawns).toHaveLength(1);
   });
@@ -110,7 +111,7 @@ describe('a spine restart never ends a claude session', () => {
     expect(two.pool.background(KEY).map((t) => t.description)).toEqual(['audit']);
     w.spawns[0].child.finishBg();
     await flush();
-    expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'] }]);
+    expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'], reply: 'the audit is done' }]);
   });
 
   it('a turn in flight when the spine died is adopted: its reply reaches the being through the wake', async () => {

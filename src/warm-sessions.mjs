@@ -54,7 +54,7 @@ export function createWarmPool({
   idleTtlByClass = {},
   dispatchTimeoutMs = 600_000,
   injectWhileBusy = true,            // master switch for steer() — weave a mid-turn message into the live turn
-  onBackgroundDone = null,           // (key, { summaries }) — a session's background task finished with no turn in flight
+  onBackgroundDone = null,           // (key, { summaries, reply? }) — a session's background task finished with no turn in flight
   keepWarm = () => false,            // (key) → true: never idle- or LRU-evicted (warm.keep)
   onLog = () => {},
   makeSession,                       // REQUIRED: the warm-session factory (injected)
@@ -110,7 +110,7 @@ export function createWarmPool({
 
   function _backgroundDone(key, info) {
     if (!_s.has(key)) return;
-    onLog(`warm: ${(info?.reply ?? info?.lost) != null ? 'an adopted turn' : 'background work'} finished on ${key} with no turn in flight`);
+    onLog(`warm: ${!info?.summaries && (info?.reply ?? info?.lost) != null ? 'an adopted turn' : 'background work'} finished on ${key} with no turn in flight`);
     try { Promise.resolve(onBackgroundDone(key, info)).catch((err) => onLog(`warm: background wake ${key} failed: ${err?.message ?? err}`)); }
     catch (err) { onLog(`warm: background wake ${key} failed: ${err?.message ?? err}`); }
   }

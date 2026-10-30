@@ -80,7 +80,8 @@ function userLine(text) {
   return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: String(text ?? '') }] } }) + '\n';
 }
 // The CLI's own stop (/agents stop). Measured 2026-10-15 on claude 2.1.301: a control_response,
-// then the turn's `result` as error_during_execution; process and session id survive.
+// then the turn's `result` as error_during_execution; process and session id survive. Its background
+// agents do not (measured 2026-10-30, 2.1.309 — see BACKGROUND WORK below).
 let interruptSeq = 0;
 function interruptLine() {
   return JSON.stringify({ type: 'control_request', request_id: `egpt-interrupt-${++interruptSeq}`, request: { subtype: 'interrupt' } }) + '\n';
@@ -282,11 +283,22 @@ export function createWarmCliSession(options = {}) {
   let closed = false;
   // BACKGROUND WORK (measured 2026-10-15, claude 2.1.301). background_tasks_changed lists the CLI's
   // background tasks; each ends with a task_notification. A turn in flight absorbs it (replayed with
-  // origin.kind 'task-notification'); with none, the CLI starts a turn of its own. That turn is
-  // stopped and reported up (onBackgroundDone) so the spine decides whether to wake the being.
+  // origin.kind 'task-notification'); with none, the CLI starts a turn of its own. That turn runs to
+  // its end and its answer is reported up (onBackgroundDone) so the spine wakes the being to send it.
+  //
+  // IT IS NO LONGER STOPPED (ED, live 2026-10-30: "the background agents I launched all stopped a few
+  // minutes later. It happens every time one of them reports it finished"). Measured 2026-10-30, claude
+  // 2.1.309, two background tasks, the quick one's notification starting the CLI's own turn: the
+  // `interrupt` written on its `init` killed the OTHER, still-running background AGENT 34-41ms later,
+  // ahead of its control_response — task_updated {status:'killed'}, task_notification 'stopped',
+  // background_tasks_changed [] — whether that agent was generating or blocked in a foreground Bash
+  // (that Bash was stopped with it). A background Bash (local_bash) survived it and completed at 90s.
+  // Not interrupted, the other agent ran on and completed at ~100s, and the CLI's own turn ended in 2-3s
+  // with a report ("quick finished … slow is still running"). No gentler stop exists: `send_now: true`
+  // on the interrupt answered send_now 'nothing_waiting' and stopped nothing; `stop_task` stops a task.
   let background = new Map();       // task_id -> { description, since }, still running
   let finished = [];                // completions no turn has taken yet
-  let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started }
+  let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started, summaries }
   let model = null;                 // the model the CLI reports in its `init` event (agent stats)
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
   // env, revoked at close. A boxed session's rides the launcher's -SetEnv and hands none in here.
@@ -362,15 +374,26 @@ export function createWarmCliSession(options = {}) {
     selfTurn = null;
     if (t) { clearTimeout(t.timer); t.end(); }
   }
+  // Not interrupted (see BACKGROUND WORK above): an interrupt here killed every other background agent.
   function startSelfTurn() {
     const t = expectSelfTurn();
     clearTimeout(t.timer);
     t.started = true;
-    const summaries = finished.splice(0);
-    if (typeof options.onBackgroundDone !== 'function') { onLog(`warm-cli: the CLI answers ${summaries.length} finished background task(s) on its own — nobody is listening`); return; }
-    try { proc.stdin.write(interruptLine()); } catch { /* exiting — onClose ends the turn */ }
-    onLog(`warm-cli: background task(s) finished with no turn in flight (${summaries.join('; ')}) — stopped the CLI's own turn, reporting up`);
-    try { options.onBackgroundDone({ summaries }); } catch (e) { onLog(`warm-cli: onBackgroundDone threw: ${e?.message ?? e}`); }
+    t.summaries = finished.splice(0);
+    if (typeof options.onBackgroundDone !== 'function') { onLog(`warm-cli: the CLI answers ${t.summaries.length} finished background task(s) on its own — nobody is listening`); return; }
+    onLog(`warm-cli: background task(s) finished with no turn in flight (${t.summaries.join('; ')}) — the CLI answers on its own, reported up when it ends`);
+  }
+  // Its `result`: the answer is the being's report on the task(s), and it has reached no chat — the
+  // spine hands it to the being to send (`reply`, the adopted turn's path). None (an error, or an empty
+  // result: measured 2.1.309, a second notification queued behind the first gives a 0-turn "" result
+  // and is answered by the next one) — the completion alone, and the being is asked to report.
+  function reportSelfTurn(ev) {
+    const { summaries } = selfTurn;
+    endSelfTurn();
+    if (typeof options.onBackgroundDone !== 'function') return;
+    const reply = ev.subtype === 'success' && ev.is_error !== true && typeof ev.result === 'string' && ev.result.trim() ? ev.result : null;
+    onLog(`warm-cli: the CLI's own turn on ${summaries.join('; ')} ended (${reply == null ? `no answer: ${ev.subtype}` : `${reply.length} chars`}) — reporting up`);
+    try { options.onBackgroundDone(reply == null ? { summaries } : { summaries, reply }); } catch (e) { onLog(`warm-cli: onBackgroundDone threw: ${e?.message ?? e}`); }
   }
 
   function onStdout(chunk) {
@@ -417,10 +440,14 @@ export function createWarmCliSession(options = {}) {
         } else if (ev.subtype === 'task_notification' && background.has(ev.task_id)) finished.push(`${background.get(ev.task_id).description} — ${ev.status ?? 'done'}`);
         else if (ev.subtype === 'init' && !pending && finished.length) startSelfTurn();
       }
-      if (ev.type === 'user' && ev.isReplay === true && ev.origin?.kind === 'task-notification') finished.shift();
+      // Absorbed by a turn — the CLI's own one included, which now runs on and reports it with its own.
+      if (ev.type === 'user' && ev.isReplay === true && ev.origin?.kind === 'task-notification') {
+        const s = finished.shift();
+        if (s && selfTurn?.started && !pending) selfTurn.summaries.push(s);
+      }
       // A subagent's own events (measured 2.1.301): parent_tool_use_id = its Agent call. Not the being's words.
       if (ev.parent_tool_use_id) continue;
-      if (selfTurn?.started && !pending) { if (ev.type === 'result') endSelfTurn(); continue; }
+      if (selfTurn?.started && !pending) { if (ev.type === 'result') reportSelfTurn(ev); continue; }
       // THE INJECTION ACK (operator 2026-09-09 — see the header measurement). `isReplay` marks
       // the CLI echoing back a user line it has just TAKEN, which is the only thing in this
       // stream that says the model got a steered message; the write itself says nothing.
@@ -720,8 +747,9 @@ export function createWarmCliSession(options = {}) {
       proc = null;
     },
     get sessionId() { return sessionId; },
-    // Background tasks still running — the pool will not idle-evict while this is > 0.
-    get background() { return background.size; },
+    // Background tasks still running — the pool will not idle-evict while this is > 0. The CLI's own
+    // turn counts as one while it runs: it is no longer stopped, and an eviction would cut its report.
+    get background() { return background.size + (selfTurn?.started ? 1 : 0); },
     // …and what they are, with when each started (the spine's liveness status and its ask).
     get backgroundTasks() { return [...background].map(([taskId, t]) => ({ taskId, ...t })); },
   };

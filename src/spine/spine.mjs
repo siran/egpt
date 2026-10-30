@@ -561,7 +561,7 @@ export function createSpine({
   const RESTART_DRAIN_NOTICE_MS = 30 * 60_000;   // a long wait is told to the logging group this often
   const RESTART_DRAIN_POLL_MS = 1_000;
   const RESTART_DRAIN_LOG_MS = 30_000;
-  const RESTART_DRAIN_BG_SETTLE_MS = 10_000;   // quiet after background work ends: its wake turn starts within warm-cli's SELF_TURN_START_MS (5 s)
+  const RESTART_DRAIN_BG_SETTLE_MS = 10_000;   // quiet after background work ends: its wake turn starts once the CLI's own turn on it ends (warm-cli; 2-3 s measured 2026-10-30)
   let restartDrain = null;   // { since, lastLog, timer, done, onWait, background, purpose, noticeAt, bgSeenAt } while an /upgrade or /restart waits
   function inFlightTurns() {
     const busy = turns.busy();
@@ -1406,8 +1406,8 @@ export function createSpine({
   }
 
   // A BACKGROUND TASK THE BEING STARTED HAS FINISHED with no turn in flight (operator 2026-10-15:
-  // "the result of the bg agent must wake up E rather than being dropped"). Its warm session stopped
-  // the CLI's own turn on it and reported up (boot: warm onBackgroundDone → brain.convOfKey → here).
+  // "the result of the bg agent must wake up E rather than being dropped"). Its warm session lets
+  // the CLI's own turn on it run, and reports up (boot: warm onBackgroundDone → brain.convOfKey → here).
   // Woken as a turn like any other: STOP, the loop guard (where it counts) and the gate, then the
   // conversation's FIFO and the reply path. false = not woken; else the turn, true when it answered.
   // `line`: liveness's "are they still necessary?" ask rides this same path. A finished task's wake
@@ -1415,14 +1415,20 @@ export function createSpine({
   // `reply`: a turn the daemon held across a spine restart finished after it (src/cli-host.mjs) — its
   // answer never reached the chat, so the being is handed it to send. `lost`: that turn's process
   // ended before it answered (`why`), so the being is handed the message to answer again.
+  // `summaries` WITH a `reply` (ED, live 2026-10-30): that CLI's own turn on a finished task answered it,
+  // and the answer reached no chat. It is no longer stopped — stopping it killed the being's other
+  // background agents — so the being is handed its answer to send, as an adopted turn's is.
   async function wakeOnBackground({ being, surface, chatId, summaries = [], reply = null, lost = null, why = null, line = null }) {
-    const what = reply != null ? 'a reply written across a restart' : lost != null ? 'a turn cut off across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
-    const finished = line == null && reply == null && lost == null;
-    line ??= reply != null
+    const restarted = reply != null && !summaries.length;
+    const what = restarted ? 'a reply written across a restart' : lost != null ? 'a turn cut off across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
+    const finished = line == null && !restarted && lost == null;
+    line ??= restarted
       ? `[egpt] Your last reply was written while the bridge restarted and never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
       : lost != null
         ? `[egpt] The bridge restarted while you were answering, and that process ended before you replied (${why}) — nothing reached the chat. The message was:\n\n${lost}\n\nAnswer it now.`
-        : `[egpt] A background task you started has finished: ${what}. Verify its result and report to the chat.`;
+        : reply != null
+          ? `[egpt] A background task you started has finished: ${what}. You answered its notification, but that answer never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
+          : `[egpt] A background task you started has finished: ${what}. Verify its result and report to the chat.`;
     const ev = { ...(await identity.spineEvent(surface, chatId)), body: line, line, cause: 'background' };   // cause: agent stats' system bucket
     const where = `${being}/${chatId}`;
     if (stopSwitch?.present()) { note(`wake ${where}: STOP file present — not woken`); return false; }
