@@ -201,6 +201,7 @@ export function createSpine({
   log = {},
   tickMs = 0,
   livenessEveryMs,                     // () => ms — every live message's pulse (config liveness.every_ms, read each tick); undefined → liveness.mjs default
+  livenessBackgroundEveryMs,           // () => ms — a chat's unchanged background status, posted again (config liveness.background_every_ms, read each tick); undefined → liveness.mjs default
   // Per-turn timeout, opt-in (config turn_timeout_ms). ≤0/absent = none (operator 2026-10-26).
   // On expiry the turn fails visibly and its warm entry is evicted.
   turnTimeoutMs = 0,
@@ -236,7 +237,7 @@ export function createSpine({
   if (commands) commands = new Proxy(commands, { get: (t, k) => (k === 'run' && typeof t[k] === 'function' ? ordered(t[k].bind(t)) : Reflect.get(t, k)) });
   // LIVENESS (src/spine/liveness.mjs): a running turn and a chat's background work stay visibly
   // alive in the chat; long background work is asked about through the wake path below.
-  const liveness = createLiveness({ sender, allBackground, now: () => clock.now(), everyMs: livenessEveryMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
+  const liveness = createLiveness({ sender, allBackground, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
@@ -642,8 +643,8 @@ export function createSpine({
   }
 
   // /standdown (operator 2026-10-22): background work is not waited for; it ends with this node's
-  // daemon. Each chat whose work ends says so once: its live status becomes the line, or the line is
-  // posted when it has no status.
+  // daemon. Each chat whose work ends says so once: the line is posted as its status was, or said for
+  // the chat when it has none.
   async function noteStoppedBackground() {
     const byChat = new Map();
     for (const b of allBackground?.() ?? []) {
@@ -654,7 +655,7 @@ export function createSpine({
       const { being, chatId } = tasks[0];
       const text = `⏹ background work stopped: ${workOf(tasks, being, labelOf).join('; ')} — eGPT moved to the logged-in session. Ask again if you still need it.`;
       note(`standdown: ${being}/${chatId} — ${text}`);
-      if (liveness.endStatus(chatId, text)) return;
+      if (await liveness.endStatus(chatId, text)) return;
       try { await say?.({ being, chatId, text, what: 'standdown' }); }
       catch (e) { note(`standdown: could not tell ${being}/${chatId} — ${e?.message ?? e}`); }
     }));
@@ -1410,7 +1411,7 @@ export function createSpine({
   // Woken as a turn like any other: STOP, the loop guard (where it counts) and the gate, then the
   // conversation's FIFO and the reply path. false = not woken; else the turn, true when it answered.
   // `line`: liveness's "are they still necessary?" ask rides this same path. A finished task's wake
-  // posts its own placeholder at the bottom; the chat's status runs on (the task drops off on its pulse).
+  // posts its own placeholder at the bottom; the chat's status posts the change on its next pulse.
   // `reply`: a turn the daemon held across a spine restart finished after it (src/cli-host.mjs) — its
   // answer never reached the chat, so the being is handed it to send. `lost`: that turn's process
   // ended before it answered (`why`), so the being is handed the message to answer again.

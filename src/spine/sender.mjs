@@ -96,9 +96,6 @@ export const LIVE_TICKS = ['⤴️', '↪️'];
 export const liveFrame = (base, ms, n = 0) => `${withMark(base)} ${LIVE_TICKS[n % 2]} ${elapsed(ms)}`;
 // What liveFrame appends to its base, as a regex source (stop-guard's status line).
 export const LIVE_TICK_SUFFIX = ` (?:${LIVE_TICKS.join('|')}) \\d+(?:s|m\\d{2}s|h\\d{2}m)`;
-// A liveness status's marker and tick ride its head line, its task list below (operator 2026-10-30: "una
-// por línea, con su bullet"); a reply's frame keeps them at its end.
-const onHead = (s, f) => { const [head, ...rest] = String(s).split('\n'); return [f(head), ...rest].join('\n'); };
 
 // THE MESSAGE IS APPEND-ONLY (operator 2026-08-28: "the message is replaced for a 'final'
 // message, and the in-transit thinking is deleted … sometimes it is writing something and
@@ -383,6 +380,12 @@ const QUOTE_MEMO_MAX = 200;
 export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', peerMouth = null, publicOf = () => false, noticeAdmin = async () => {}, onUndeliverable = () => {}, onLog = () => {}, now = () => Date.now() } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
+  // A being's stamp, as every message it says carries it. The per-AGENT signature WRAP (operator
+  // 2026-07-12): agent_signature_open/close bracket the stamped reply as the INNER layer (the bridge
+  // does the concentric wrap in beeper-port). Resolved per-being here (agent → node → ''); default
+  // empty → nothing added. agent_signature_close is the SOLE agent close now — the historical inline
+  // signature end-marker was removed 2026-07-12.
+  const stampOf = (being) => ({ bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being });
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   const copies = new Map();   // one lookup per message and mouth room, shared by concurrent opens; misses are dropped
   // `chatId` a function → a room made only once the reply has something to post (a side group not made
@@ -484,15 +487,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           get confirmedId() { return sendResult?.confirmedId ?? null; },
         };
       }
-      const bodyEmoji = bodyEmojiOf(being);
-      const label = labelOf(being);
-      // The per-AGENT signature WRAP (operator 2026-07-12): agent_signature_open/close bracket the
-      // stamped reply as the INNER layer (the bridge does the concentric wrap in beeper-port). Resolved
-      // per-being here (agent → node → ''); default empty → nothing added. agent_signature_close is the
-      // SOLE agent close now — the historical inline signature end-marker was removed 2026-07-12.
-      const agentSigOpen = agentSignatureOpenOf(being);
-      const agentSigClose = agentSignatureCloseOf(being);
-      const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose, persona: being };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these; `persona` names the being in the invisible frame (persona-wrap.mjs)
+      const tag = { ...stampOf(being), replyTo };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these; `persona` names the being in the invisible frame (persona-wrap.mjs)
       // WHOSE STAMP A PEER-SAID REPLY CARRIES: THIS node's, the BRAIN's (operator 2026-09-05, "if
       // an receives 'e hi' if Rodz is present let him reply as the king"). A routed reply used to
       // cross the wire as bare text and be posted bare, because the mouth posts VERBATIM by
@@ -591,7 +586,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // The text the placeholder opens with. A QUEUED one differs from THINKING and, via `ahead`,
       // from every other queued one, which is what keeps two coexisting placeholders resolvable to
       // their own message ids (see QUEUED).
-      const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : status ? onHead(status, withMark) : THINKING);
+      const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : status ? withMark(status) : THINKING);
       // A STREAM ON A CONNECTION THIS NODE HOLDS — this being's own by default, and also the LAST
       // RESORT the peer stream falls back to when it can neither stream nor speak through the peer
       // (peer-mouth.startPeerStream, tier 3), which is why it is a factory rather than an inline
@@ -679,8 +674,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           if (ended || !stream) return true;
           if (!editable()) return false;
           if (label && status) status = label;
-          const n = pulses++;
-          push(status && !shown() ? onHead(status, (h) => liveFrame(h, ms, n)) : liveFrame(shown() || placeholderText(), ms, n));
+          push(liveFrame(shown() || placeholderText(), ms, pulses++));
           return true;
         },
         // Settle a status, on `text` or its last frame. Never a fallback send.
@@ -809,6 +803,22 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
         get confirmedId() { return fallbackResult ? (fallbackResult?.confirmedId ?? null) : (stream?.confirmedId ?? null); },
         get confirmedIn() { return fallbackResult ? null : streamMouth; },
       };
+    },
+    // A background status (src/spine/liveness.mjs): said ONCE, whole — no placeholder, never edited
+    // (operator 2026-10-30: "en lugar de editar los mensajes, puedes solo publicar el estatus"). Stamped
+    // as `being`, through the one placement for a line said in one go (makeOutbound `say`), replying to
+    // `replyTo` as the voice attach does: its key read off the room it lives in (`replyIn`: a local
+    // mouth's, else this chat's own connection). A being on the plain path (auto, public) shows no
+    // status, as it shows no placeholder. Returns whether it landed.
+    async post(chatId, text, { being = null, replyTo = null, replyIn = null, auto = false } = {}) {
+      if (auto || publicOf(being) === true) return false;
+      const room = typeof chatId === 'function' ? await chatId() : chatId;
+      if (!room) { onLog(`sender: ${being ?? '?'} — its room could not be made, no status posted`); return false; }
+      const tag = stampOf(being);
+      const o = outbound(being, room);
+      const ok = await o.say(async (on, at, id) => { const r = await on.send?.(at, text, { ...tag, replyTo: id }); return !(r?.blocked || r == null); }, { msgId: replyIn ? null : replyTo, keyOf: replyTo == null ? null : o.keyOf(replyTo, 'status', replyIn), text, tag, what: 'status' });
+      if (!ok) onLog(`status ${being ?? '?'}/${room}: not delivered`);
+      return ok;
     },
   };
   return sender;
