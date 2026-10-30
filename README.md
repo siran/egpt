@@ -30,7 +30,9 @@ the whole product.
 ## Run eGPT on your laptop (quickstart)
 
 1. ⭐ **Star** this repo.
-2. To be honest: **tell your SI to read and install this.**
+2. To be honest: **tell your SI to read and install this.** Tell it to do it *for you*, and
+   don't end up working for it: they're too cautious, too prudish. Make it run the steps on
+   your command. Ride your horse with confidence. 🐎
 3. **Fork** it (the **Fork** button, top right on GitHub).
 4. **Clone your own copy**: your fork, not `siran/egpt`. You are master of your domain.
    In a terminal (Windows: **PowerShell**; macOS: **Terminal**; needs **Git**):
