@@ -1,6 +1,6 @@
 # eGPT
 
-eGPT is a **being, not a session**: a persistent AI presence that lives in the
+eGPT is a **being, not a session**: a persistent SI presence that lives in the
 channels you already use — WhatsApp, Telegram, Signal, the shell, the browser —
 where it hears everything, remembers everything, and acts through real limbs on
 your behalf. The mission is a public tool that is **secure and powerful**: the
