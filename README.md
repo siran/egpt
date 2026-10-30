@@ -29,6 +29,18 @@ the whole product.
 
 ## Run eGPT on your laptop (quickstart)
 
+1. ⭐ **Star** this repo.
+2. **Fork** it (the **Fork** button, top right on GitHub).
+3. **Clone your own copy**: your fork, not `siran/egpt`. You are master of your domain.
+   In a terminal (Windows: **PowerShell**; macOS: **Terminal**; needs **Git**):
+
+   ```bash
+   git clone git@github.com:<you>/egpt.git
+   cd egpt
+   ```
+
+   No SSH key on GitHub? Use `https://github.com/<you>/egpt.git` instead.
+
 This is the shortest way to get eGPT answering you in a chat on one laptop. Pick
 **A (WhatsApp, through Beeper)** or **B (a Telegram bot)**. You can add the other one later.
 Nothing else in this README is needed for a first run.
@@ -45,11 +57,9 @@ Nothing else in this README is needed for a first run.
 
 ### Install
 
-1. Open a terminal (Windows: **PowerShell**; macOS: **Terminal**) and run:
+1. In your clone (the `egpt` folder), run:
 
    ```bash
-   git clone https://github.com/siran/egpt.git
-   cd egpt
    npm install
    ```
 
