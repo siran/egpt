@@ -652,7 +652,7 @@ export function createSpine({
     }
     await Promise.all([...byChat.values()].map(async (tasks) => {
       const { being, chatId } = tasks[0];
-      const text = `⏹ background work stopped: ${workOf(tasks, being, labelOf)} — eGPT moved to the logged-in session. Ask again if you still need it.`;
+      const text = `⏹ background work stopped: ${workOf(tasks, being, labelOf).join('; ')} — eGPT moved to the logged-in session. Ask again if you still need it.`;
       note(`standdown: ${being}/${chatId} — ${text}`);
       if (liveness.endStatus(chatId, text)) return;
       try { await say?.({ being, chatId, text, what: 'standdown' }); }

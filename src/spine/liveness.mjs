@@ -27,7 +27,7 @@ const STILL_THINKING = `${LIVE_FRAME_MARK} still thinking…`;
 // `being`'s own — the being the line is posted as, whose stamp already says whose it is.
 export function workOf(tasks, being, labelOf) {
   const own = tasks.every((t) => t.being === being);
-  return tasks.map((t) => (own ? t.description : `${labelOf(t.being)} — ${t.description}`)).join('; ');
+  return tasks.map((t) => (own ? t.description : `${labelOf(t.being)} — ${t.description}`));
 }
 
 // `allBackground`: () => [{ being, surface, chatId, description, since }] — every live background task, in
@@ -38,7 +38,9 @@ export function createLiveness({ sender, allBackground = null, now, everyMs = ()
   const chatNames = new Map(); // chatId → the chat's name, for the logging-group line
   const names = (tasks) => tasks.map((t) => t.description).join('; ');
   const age = (tasks, t) => t - Math.min(...tasks.map((x) => x.since ?? t));
-  const working = (what) => `⚙️ working in background: ${what}`;
+  // the chat's status lists its tasks one per line (operator 2026-10-30: "una por línea, con su bullet"); log lines join them
+  const listed = (what) => what.map((x) => `\n• ${x}`).join('');
+  const working = (what) => `⚙️ working in background:${listed(what)}`;
   const open = (e, label) => sender.open(e.chat, { being: e.being, status: label, auto: e.auto, origin: e.ev.chatId, ...e.reply });
   const end = (out, text = null) => Promise.resolve(out?.end?.(text)).catch((err) => note(`liveness: could not settle a status — ${err?.message ?? err}`));
 
@@ -92,7 +94,7 @@ export function createLiveness({ sender, allBackground = null, now, everyMs = ()
         // one quiet tick: a wake may be on its way — and none while a turn runs here: it may start more
         if (!s.quiet || [...turns].some((x) => x.ev.chatId === chatId)) { s.quiet = true; continue; }
         bg.delete(chatId);
-        end(s.out, `✓ background work ended: ${s.what}`);
+        end(s.out, `✓ background work ended:${listed(s.what)}`);
         continue;
       }
       s.quiet = false;
@@ -124,7 +126,7 @@ export function createLiveness({ sender, allBackground = null, now, everyMs = ()
       const s = { being: x.being, ev: x.ev, chat: x.chat, auto: x.auto, last: now(), what: workOf(tasks, x.being, labelOf), quiet: false, reply, asks: new Map() };
       s.out = open(s, working(s.what));
       bg.set(chatId, s);
-      note(`liveness: ${x.being}/${chatId} — background task(s) ${s.what} still running, status opened`);
+      note(`liveness: ${x.being}/${chatId} — background task(s) ${s.what.join('; ')} still running, status opened`);
     },
     // A /standdown ended the chat's work: its status ends on `text`. False: it had none.
     endStatus(chatId, text) {

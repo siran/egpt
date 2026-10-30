@@ -137,7 +137,7 @@ describe('on mode, a non-human line — no placeholder up front', () => {
   it('a silent turn that leaves background work still opens the ⚙️ status', async () => {
     const b = build({ reply: '…', tasks: [{ description: 'Crawl the site', since: 1 }] });
     await b.bridge.emit(msg('alguien sabe?', BEING));
-    expect(b.bridge.streams.map((s) => s.init)).toEqual(['⚙️ working in background: Crawl the site ⏳']);
+    expect(b.bridge.streams.map((s) => s.init)).toEqual(['⚙️ working in background: ⏳\n• Crawl the site']);
     expect(b.bridge.sent).toEqual([]);
   });
 

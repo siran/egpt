@@ -141,7 +141,7 @@ describe('boot — a background task\'s completion wakes the being where it last
     });
     expect(spy.streams).toHaveLength(2);
     expect(spy.streams[1].chatId).toBe(CHAT);
-    expect(spy.streams[1].init).toContain('⚙️ working in background: Run the audit ⏳');
+    expect(spy.streams[1].init).toContain('⚙️ working in background: ⏳\n• Run the audit');
 
     sessions[0].backgroundTasks = [];
     sessions[0].opts.onBackgroundDone?.({ summaries: ['Run the audit — completed'] });

@@ -113,6 +113,16 @@ describe('liveness — a running turn', () => {
     expect(ph.frames).toHaveLength(6);                               // nothing after the turn ended
   });
 
+  it("(a) a multi-line reply's frame keeps the ⏳ and the tick at its end — only a background status frames its head line", async () => {
+    const b = build();
+    b.bridge.emit(mention('@e long job'));
+    await flush();
+    const ph = b.bridge.streams[0];
+    b.brain.calls[0].onPartial('Two things:\n• the audit\n• the crawl');
+    at(15 * sec); b.spine.tick();
+    expect(ph.frames).toEqual(['Two things:\n• the audit\n• the crawl ⏳', 'Two things:\n• the audit\n• the crawl ⏳ ⤴️ 15s']);
+  });
+
   it('(a) the cadence is config-driven (liveness.every_ms → livenessEveryMs)', async () => {
     const b = build({ livenessEveryMs: () => 20 * sec });
     b.bridge.emit(mention('@e long job'));
@@ -292,11 +302,11 @@ describe('liveness — background work with no turn in flight', () => {
     expect(b.bridge.streams).toHaveLength(2);
     const st = b.bridge.streams[1];
     expect(st.chat).toBe(CHAT);
-    expect(st.init).toBe('⚙️ working in background: Run the audit ⏳');
+    expect(st.init).toBe('⚙️ working in background: ⏳\n• Run the audit');
     expect(st.opts).toMatchObject({ bodyEmoji: '🐶', persona: 'egpt', replyTo: b.bridge.streams[0].confirmedId });
 
     at(4 * min + 5 * sec); b.spine.tick();
-    expect(st.frames).toEqual(['⚙️ working in background: Run the audit ⏳ ⤴️ 4m00s']);
+    expect(st.frames).toEqual(['⚙️ working in background: ⏳ ⤴️ 4m00s\n• Run the audit']);
 
     b.brain.tasks = [];
     const woke = b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, summaries: ['Run the audit — completed'] });
@@ -311,7 +321,7 @@ describe('liveness — background work with no turn in flight', () => {
     at(5 * min); b.spine.tick();                                      // one quiet tick
     at(6 * min); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• Run the audit']);
     expect(b.bridge.streams).toHaveLength(3);
   });
 
@@ -324,7 +334,7 @@ describe('liveness — background work with no turn in flight', () => {
     expect(st.finals).toEqual([]);                                    // one quiet tick: a wake may be on its way
     at(2 * min); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• Run the audit']);
     b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, summaries: ['x'] });
     await flush();
     expect(b.bridge.streams).toHaveLength(3);                         // a fresh placeholder, not the ended status
@@ -336,17 +346,17 @@ describe('liveness — background work with no turn in flight', () => {
     const st = b.bridge.streams[1];
     for (let t = 5 * sec; t <= 60 * sec; t += 5 * sec) { at(t); b.spine.tick(); }
     expect(st.frames).toEqual([
-      '⚙️ working in background: Run the audit ⏳ ⤴️ 10s',
-      '⚙️ working in background: Run the audit ⏳ ↪️ 25s',
-      '⚙️ working in background: Run the audit ⏳ ⤴️ 40s',
-      '⚙️ working in background: Run the audit ⏳ ↪️ 55s',
+      '⚙️ working in background: ⏳ ⤴️ 10s\n• Run the audit',
+      '⚙️ working in background: ⏳ ↪️ 25s\n• Run the audit',
+      '⚙️ working in background: ⏳ ⤴️ 40s\n• Run the audit',
+      '⚙️ working in background: ⏳ ↪️ 55s\n• Run the audit',
     ]);
     b.brain.tasks = [];
     for (let t = 65 * sec; t <= 85 * sec; t += 5 * sec) { at(t); b.spine.tick(); }
     expect(st.finals).toEqual([]);                                    // quiet at 1m15s: a wake may be on its way
     at(90 * sec); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• Run the audit']);
   });
 
   it('(b) config liveness.every_ms sets the background cadence too', async () => {
@@ -355,9 +365,9 @@ describe('liveness — background work with no turn in flight', () => {
     const st = b.bridge.streams[1];
     for (let t = 5 * sec; t <= 60 * sec; t += 5 * sec) { at(t); b.spine.tick(); }
     expect(st.frames).toEqual([
-      '⚙️ working in background: Run the audit ⏳ ⤴️ 15s',
-      '⚙️ working in background: Run the audit ⏳ ↪️ 35s',
-      '⚙️ working in background: Run the audit ⏳ ⤴️ 55s',
+      '⚙️ working in background: ⏳ ⤴️ 15s\n• Run the audit',
+      '⚙️ working in background: ⏳ ↪️ 35s\n• Run the audit',
+      '⚙️ working in background: ⏳ ⤴️ 55s\n• Run the audit',
     ]);
   });
 
@@ -401,7 +411,7 @@ describe('liveness — background work with no turn in flight', () => {
     await done;
     await flush();
     const st = b.bridge.streams[1];
-    expect(st.init).toBe('⚙️ working in background: Run the audit ⏳');
+    expect(st.init).toBe('⚙️ working in background: ⏳\n• Run the audit');
     expect(st.opts.replyTo).toBeNull();
   });
 
@@ -480,11 +490,33 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     await twoBeings(b);
     expect(statuses(b)).toHaveLength(1);
     const st = statuses(b)[0];
-    expect(st.init).toBe('⚙️ working in background: Run the audit ⏳');   // opened by E's turn, as E: its own work needs no label
+    expect(st.init).toBe('⚙️ working in background: ⏳\n• Run the audit');   // opened by E's turn, as E: its own work needs no label
     expect(st.opts).toMatchObject({ persona: 'egpt', replyTo: b.bridge.streams[0].confirmedId });
     at(1 * min); b.spine.tick();
-    expect(st.frames).toEqual(['⚙️ working in background: E — Run the audit; leo — Crawl the site ⏳ ⤴️ 55s']);
+    expect(st.frames).toEqual(['⚙️ working in background: ⏳ ⤴️ 55s\n• E — Run the audit\n• leo — Crawl the site']);
     expect(statuses(b)).toHaveLength(1);
+  });
+
+  // operator 2026-10-30: "una por línea, con su bullet"
+  it('the status lists one task per line, each with its bullet — the ⏳ and the tick on the head line — and ends listing them the same', async () => {
+    const b = build();
+    const done = b.bridge.emit(mention('@e run the audit, and leo the crawl'));
+    await flush();
+    b.brain.tasks = [{ description: 'Run the audit', since: T0 + 5 * sec }, { being: 'leo', description: 'Crawl the site', since: T0 + 5 * sec }];
+    b.brain.calls[0].release('both started');
+    await done;
+    await flush();
+    const st = statuses(b)[0];
+    expect(st.init).toBe('⚙️ working in background: ⏳\n• E — Run the audit\n• leo — Crawl the site');
+    at(4 * min + 5 * sec); b.spine.tick();
+    expect(st.frames).toEqual(['⚙️ working in background: ⏳ ⤴️ 4m00s\n• E — Run the audit\n• leo — Crawl the site']);
+    expect(isLiveStreamFrame(editAction({ targetId: '1', oldText: st.init, newText: st.frames[0] }))).toBe(true);
+    b.brain.tasks = [];
+    at(5 * min); b.spine.tick();                                      // one quiet tick
+    at(6 * min); b.spine.tick();
+    await flush();
+    expect(st.finals).toEqual(['✓ background work ended:\n• E — Run the audit\n• leo — Crawl the site']);
+    expect(b.notes.join('\n')).toContain('background task(s) E — Run the audit; leo — Crawl the site still running, status opened');   // the log line stays one line
   });
 
   it("a queue: a finished task's wake does not end the status; the next task shows in the SAME message", async () => {
@@ -504,7 +536,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     await woke;
     await flush();
     at(3 * min); b.spine.tick();
-    expect(st.frames.at(-1)).toBe('⚙️ working in background: Queue 08: Factuwin home test ⏳ ⤴️ 1m00s');
+    expect(st.frames.at(-1)).toBe('⚙️ working in background: ⏳ ⤴️ 1m00s\n• Queue 08: Factuwin home test');
     b.brain.tasks = [];
     const last = wake(b, 'egpt', 'Queue 08: Factuwin home test — completed');
     await flush();
@@ -514,7 +546,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     expect(st.finals).toEqual([]);                                    // one quiet tick
     at(5 * min); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: Queue 08: Factuwin home test']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• Queue 08: Factuwin home test']);
     expect(statuses(b)).toHaveLength(1);                              // one message for the whole queue
   });
 
@@ -530,7 +562,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     await woke;
     await flush();
     at(1 * min); b.spine.tick();
-    expect(st.frames).toEqual(['⚙️ working in background: leo — Crawl the site ⏳ ⤴️ 50s']);   // still E's message: leo's work is labelled
+    expect(st.frames).toEqual(['⚙️ working in background: ⏳ ⤴️ 50s\n• leo — Crawl the site']);   // still E's message: leo's work is labelled
     b.brain.tasks = [];
     const woke2 = wake(b, 'leo', 'Crawl the site — completed');
     await flush();
@@ -540,7 +572,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     at(2 * min); b.spine.tick();
     at(3 * min); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: leo — Crawl the site']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• leo — Crawl the site']);
     expect(statuses(b)).toHaveLength(1);
   });
 
@@ -556,7 +588,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     at(1 * min); b.spine.tick();
     at(2 * min); b.spine.tick();
     await flush();
-    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+    expect(st.finals).toEqual(['✓ background work ended:\n• Run the audit']);
   });
 
   it("/standdown: the chat's ONE status ends on the line, naming every being's stopped work; nothing else is posted", async () => {

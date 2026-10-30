@@ -96,6 +96,9 @@ export const LIVE_TICKS = ['⤴️', '↪️'];
 export const liveFrame = (base, ms, n = 0) => `${withMark(base)} ${LIVE_TICKS[n % 2]} ${elapsed(ms)}`;
 // What liveFrame appends to its base, as a regex source (stop-guard's status line).
 export const LIVE_TICK_SUFFIX = ` (?:${LIVE_TICKS.join('|')}) \\d+(?:s|m\\d{2}s|h\\d{2}m)`;
+// A liveness status's marker and tick ride its head line, its task list below (operator 2026-10-30: "una
+// por línea, con su bullet"); a reply's frame keeps them at its end.
+const onHead = (s, f) => { const [head, ...rest] = String(s).split('\n'); return [f(head), ...rest].join('\n'); };
 
 // THE MESSAGE IS APPEND-ONLY (operator 2026-08-28: "the message is replaced for a 'final'
 // message, and the in-transit thinking is deleted … sometimes it is writing something and
@@ -588,7 +591,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       // The text the placeholder opens with. A QUEUED one differs from THINKING and, via `ahead`,
       // from every other queued one, which is what keeps two coexisting placeholders resolvable to
       // their own message ids (see QUEUED).
-      const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : status ? withMark(status) : THINKING);
+      const placeholderText = () => ((queued && !activated) ? QUEUED(queuedAhead) : status ? onHead(status, withMark) : THINKING);
       // A STREAM ON A CONNECTION THIS NODE HOLDS — this being's own by default, and also the LAST
       // RESORT the peer stream falls back to when it can neither stream nor speak through the peer
       // (peer-mouth.startPeerStream, tier 3), which is why it is a factory rather than an inline
@@ -676,7 +679,8 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           if (ended || !stream) return true;
           if (!editable()) return false;
           if (label && status) status = label;
-          push(liveFrame(shown() || placeholderText(), ms, pulses++));
+          const n = pulses++;
+          push(status && !shown() ? onHead(status, (h) => liveFrame(h, ms, n)) : liveFrame(shown() || placeholderText(), ms, n));
           return true;
         },
         // Settle a status, on `text` or its last frame. Never a fallback send.
