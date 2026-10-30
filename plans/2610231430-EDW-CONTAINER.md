@@ -703,3 +703,21 @@ Open questions: E's name/handle; where E talks (a Telegram group with the IT sta
     - A looped 22 s clip at 1280 hallucinated "Lark", so ED must recheck real long notes.
     - Detection with auto costs ~23 s and ignores -ac (measured), which is moot with es.
   - egpt's whisper-server engine doesn't send audio_ctx yet: dispatched (feat/server-audio-ctx). Then ED switches oficina from the CLI wrapper to a resident whisper-server (-mc 0 -sns, 127.0.0.1:8089).
+
+## 10-30 ~15:15 Caracas — EDW out of memory → t3a.medium
+- **Cause:** on the 2 GB t3a.small, 7 claude sessions (100–200 MB each: ED's topics, leo, chatbox beings, the hourly `novedades` beat) put 1.9 GB in swap, load 13–18, Telegram connect timeouts and a 491 s beat.
+- **ED switched the instance in place to t3a.large;** the ECS agent then refused to register ("instance type does not match the registered instance type") and egpt stayed down.
+- **Recovery, by the orchestrator, at An's call ("t3a.medium is more appropriate"):**
+  1. suspend ASG HealthCheck/ReplaceUnhealthy/AZRebalance;
+  2. deregister the container instance;
+  3. stop → t3a.medium → start;
+  4. clear /var/lib/ecs/data → the agent re-registered;
+  5. resume the ASG.
+
+  The task was up at 19:13 UTC: 3.85 GB RAM, no swap, load 0.5.
+- **Follow-ups:**
+  - LT v4 is the default (t3a.medium; 0078ddfe TYPES); the resize steps are in docker/aws/README.md;
+  - warm.max is 3 on EDW (set during the crisis; can go back to 4–6 on 4 GB);
+  - ED was told (#2465);
+  - the sidecar loop fix (edw:3) is still to deploy.
+- **Cost:** t3a.medium on-demand ≈ $27/mo; the EDW SP covers $0.0118/h of it.
