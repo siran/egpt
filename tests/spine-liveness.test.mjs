@@ -544,6 +544,21 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     expect(statuses(b)).toHaveLength(1);
   });
 
+  it("a finished task the CLI's own turn answered with a bare '…': nobody is woken, and the status settles as after any wake", async () => {
+    const b = build();
+    await dispatch(b, '@e run the audit in the background', 'm1', { description: 'Run the audit', since: T0 + 5 * sec }, 0);
+    const st = statuses(b)[0];
+    b.brain.tasks = [];
+    expect(await b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, summaries: ['Run the audit — completed'], reply: '…' })).toBe(true);
+    await flush();
+    expect(b.brain.calls).toHaveLength(1);                            // no wake turn
+    expect(b.bridge.streams).toHaveLength(2);                         // no wake placeholder
+    at(1 * min); b.spine.tick();
+    at(2 * min); b.spine.tick();
+    await flush();
+    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+  });
+
   it("/standdown: the chat's ONE status ends on the line, naming every being's stopped work; nothing else is posted", async () => {
     const b = build();
     await twoBeings(b);

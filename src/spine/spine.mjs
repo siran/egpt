@@ -1420,6 +1420,9 @@ export function createSpine({
   async function wakeOnBackground({ being, surface, chatId, summaries = [], reply = null, lost = null, why = null, line = null }) {
     const restarted = reply != null && !summaries.length;
     const what = restarted ? 'a reply written across a restart' : lost != null ? 'a turn cut off across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
+    // That CLI's own answer is a bare polite silence ('…', live 2026-10-30): there is nothing to send, so
+    // no turn is spent sending it — answered, the status left to its pulse as after any finished wake.
+    if (summaries.length && reply != null && isDeliberateSilence(reply)) { note(`wake ${being}/${chatId}: ${what} — its own turn answered it with silence — not woken`); return true; }
     line ??= restarted
       ? `[egpt] Your last reply was written while the bridge restarted and never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
       : lost != null

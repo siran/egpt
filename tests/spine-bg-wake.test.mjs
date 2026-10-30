@@ -184,6 +184,17 @@ describe('spine — a background task\'s result wakes the being', () => {
     expect(b.sender.placeholders[0].finished).toEqual({ text: 'report-1', surface: true });
   });
 
+  it('the CLI\'s own answer is a bare polite silence (live 2026-10-30, 3×): the being is NOT woken — answered, nothing to send', async () => {
+    for (const reply of ['…', '...', '  … \n']) {
+      const brain = stubBrain();
+      const b = build({ brain, mode: 'mention' });
+      expect(await b.spine.wakeOnBackground({ ...DONE, reply })).toBe(true);
+      expect(brain.calls).toHaveLength(0);
+      expect(b.sender.placeholders).toHaveLength(0);
+      expect(b.notes.some((n) => /answered it with silence — not woken/.test(n))).toBe(true);
+    }
+  });
+
   it('an adopted turn\'s reply (no task named) keeps its restart wording', async () => {
     const brain = stubBrain();
     const b = build({ brain, mode: 'mention' });
