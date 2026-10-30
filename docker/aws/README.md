@@ -151,3 +151,11 @@ The task's second container, `oficina-tunnel` (same image, not essential, egpt-h
 - AmazonEC2ContainerServiceforEC2Role (on edw-ecs-role) is account-wide: it can register into or deregister from any cluster, and pull any ECR image. Only root on the ECS instance holds it, because of the metadata guard. EduWeb's cluster is Fargate-only (10-24).
 - The instance role can only get and delete objects under `egpt-edw-transfer-<account>/migrate/`.
 - Teardown is not scripted. Delete by tag `Project=egpt-edw`. The data volume outlives the instance on purpose.
+
+### Resizing EDW in place (learned 2026-10-30)
+Changing the instance type of the running instance (stop, modify, start) leaves the ECS agent refusing to start: "The current instance type does not match the registered instance type", and the egpt task never comes back. The steps that worked:
+1. `aws autoscaling suspend-processes --auto-scaling-group-name edw-ecs-asg --scaling-processes HealthCheck ReplaceUnhealthy AZRebalance`
+2. `aws ecs deregister-container-instance --cluster edw --container-instance <arn> --force`
+3. Stop the instance, `modify-instance-attribute --instance-type`, start it (it keeps its private IP and the edw-data volume).
+4. On the host: `systemctl stop ecs; rm -rf /var/lib/ecs/data/*; systemctl start ecs`, so the agent registers as a new container instance.
+5. `aws autoscaling resume-processes …` (the same three), then set `TYPES` in ecs/ecs-lib.sh and run `ecs-provision.sh --on-demand --apply`, so the launch template matches.
