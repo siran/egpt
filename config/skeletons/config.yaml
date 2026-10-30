@@ -461,7 +461,7 @@ networks:
 # admin_channel: "eGPT Admin"     # this node's own notices (compaction, ...): a chat name or short room id; unset = daemon log only
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
 # mesh: { timeout_ms: 60000 }     # a relayed mention waits this long, then "<target> did not answer"
-# liveness: { every_ms: 15000 }   # how often a running turn's placeholder is re-edited
+# liveness: { every_ms: 15000, background_every_ms: 600000 }   # how often a running turn's placeholder is re-edited; how often an unchanged background status is posted again (a change posts at once)
 # lag_probe: { threshold_ms: 10000, every_ms: 5000 }   # event-loop lag over threshold -> one line to log_to_group
 # ear_probe: { every: 30m, timeout: 45s, telegram: { token: "BOT_TOKEN", chat_id: -1001234567890 } }   # deaf-Beeper check: a bot posts into a chat Beeper bridges; no token/chat = off
 # media_flood: { count: 5, window_ms: 20000, cooldown_ms: 600000, never_ban: [] }   # mute a sender posting count media within window_ms; count <= 0 = off

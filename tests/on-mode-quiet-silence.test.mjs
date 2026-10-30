@@ -134,11 +134,12 @@ describe('on mode, a non-human line — no placeholder up front', () => {
     expect(b.bridge.sent).toEqual([]);
   });
 
-  it('a silent turn that leaves background work still opens the ⚙️ status', async () => {
+  it('a silent turn that leaves background work still posts the ⚙️ status — unquoted: the silence posted nothing to quote', async () => {
     const b = build({ reply: '…', tasks: [{ description: 'Crawl the site', since: 1 }] });
     await b.bridge.emit(msg('alguien sabe?', BEING));
-    expect(b.bridge.streams.map((s) => s.init)).toEqual(['⚙️ working in background: ⏳\n• Crawl the site']);
-    expect(b.bridge.sent).toEqual([]);
+    await new Promise((r) => setImmediate(r));
+    expect(b.bridge.streams).toEqual([]);
+    expect(b.bridge.sent).toMatchObject([{ chat: '!g', text: '⚙️ background work (1):\n• Crawl the site · 0s', opts: { persona: 'egpt', replyTo: null } }]);
   });
 
   it("REPRODUCE: addressed makes no difference — a node-signed '@e …' silence posts nothing", async () => {

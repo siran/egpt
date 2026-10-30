@@ -13,7 +13,7 @@ import { join, basename, extname, isAbsolute } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 
 import { createSpine } from './spine.mjs';
-import { LIVENESS_EVERY_MS } from './liveness.mjs';
+import { LIVENESS_EVERY_MS, LIVENESS_BACKGROUND_EVERY_MS } from './liveness.mjs';
 import { createLagProbe, intakeCap } from './lag-probe.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
@@ -3758,6 +3758,7 @@ export async function boot({
   // The liveness pulse (config liveness.every_ms) rides the tick too.
   const { finestMs } = await heartbeatLoader.collect();
   const livenessEveryMs = () => (cfg.liveness?.every_ms > 0 ? cfg.liveness.every_ms : LIVENESS_EVERY_MS);   // read each liveness tick; the tick itself is sized at boot
+  const livenessBackgroundEveryMs = () => (cfg.liveness?.background_every_ms > 0 ? cfg.liveness.background_every_ms : LIVENESS_BACKGROUND_EVERY_MS);   // a chat's unchanged background status, posted again; read each liveness tick
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs, livenessEveryMs())) : tickMs;
 
   // The SINGLE guard (C7.7, plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3), ONE guard with TWO
@@ -3883,7 +3884,7 @@ export async function boot({
   await ingestAsks.load();
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
