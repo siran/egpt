@@ -24,7 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { createTurns } from './turns.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { INTAKE_LANES } from './lag-probe.mjs';
-import { createLiveness } from './liveness.mjs';
+import { createLiveness, workOf } from './liveness.mjs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
 // fourth local copy of `bridgeOf(being) ?? bridge`.
 import { makeOutbound, elapsed } from './sender.mjs';
@@ -234,9 +234,9 @@ export function createSpine({
   const inCommandOrder = makeSerialByKey();
   const ordered = (fn) => (...a) => inCommandOrder('commands', () => fn(...a));
   if (commands) commands = new Proxy(commands, { get: (t, k) => (k === 'run' && typeof t[k] === 'function' ? ordered(t[k].bind(t)) : Reflect.get(t, k)) });
-  // LIVENESS (src/spine/liveness.mjs): a running turn and a being's background work stay visibly
+  // LIVENESS (src/spine/liveness.mjs): a running turn and a chat's background work stay visibly
   // alive in the chat; long background work is asked about through the wake path below.
-  const liveness = createLiveness({ sender, brain, now: () => clock.now(), everyMs: livenessEveryMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
+  const liveness = createLiveness({ sender, allBackground, now: () => clock.now(), everyMs: livenessEveryMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
@@ -642,20 +642,19 @@ export function createSpine({
   }
 
   // /standdown (operator 2026-10-22): background work is not waited for; it ends with this node's
-  // daemon. Each being whose work ends says so once where it ran: its live status becomes the line,
-  // or the line is posted when it has no status.
+  // daemon. Each chat whose work ends says so once: its live status becomes the line, or the line is
+  // posted when it has no status.
   async function noteStoppedBackground() {
     const byChat = new Map();
     for (const b of allBackground?.() ?? []) {
-      const k = `${b.being} ${b.chatId}`;
-      if (!byChat.has(k)) byChat.set(k, []);
-      byChat.get(k).push(b);
+      if (!byChat.has(b.chatId)) byChat.set(b.chatId, []);
+      byChat.get(b.chatId).push(b);
     }
     await Promise.all([...byChat.values()].map(async (tasks) => {
       const { being, chatId } = tasks[0];
-      const text = `⏹ background work stopped: ${tasks.map((t) => t.description).join('; ')} — eGPT moved to the logged-in session. Ask again if you still need it.`;
+      const text = `⏹ background work stopped: ${workOf(tasks, being, labelOf)} — eGPT moved to the logged-in session. Ask again if you still need it.`;
       note(`standdown: ${being}/${chatId} — ${text}`);
-      if (liveness.endStatus(being, chatId, text)) return;
+      if (liveness.endStatus(chatId, text)) return;
       try { await say?.({ being, chatId, text, what: 'standdown' }); }
       catch (e) { note(`standdown: could not tell ${being}/${chatId} — ${e?.message ?? e}`); }
     }));
@@ -1411,7 +1410,7 @@ export function createSpine({
   // Woken as a turn like any other: STOP, the loop guard (where it counts) and the gate, then the
   // conversation's FIFO and the reply path. false = not woken; else the turn, true when it answered.
   // `line`: liveness's "are they still necessary?" ask rides this same path. A finished task's wake
-  // ends the being's status message ✓ and posts its own placeholder at the bottom.
+  // posts its own placeholder at the bottom; the chat's status runs on (the task drops off on its pulse).
   // `reply`: a turn the daemon held across a spine restart finished after it (src/cli-host.mjs) — its
   // answer never reached the chat, so the being is handed it to send. `lost`: that turn's process
   // ended before it answered (`why`), so the being is handed the message to answer again.
@@ -1421,7 +1420,6 @@ export function createSpine({
   async function wakeOnBackground({ being, surface, chatId, summaries = [], reply = null, lost = null, why = null, line = null }) {
     const restarted = reply != null && !summaries.length;
     const what = restarted ? 'a reply written across a restart' : lost != null ? 'a turn cut off across a restart' : summaries.length ? summaries.join('; ') : 'a background task';
-    const finished = line == null && !restarted && lost == null;
     line ??= restarted
       ? `[egpt] Your last reply was written while the bridge restarted and never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
       : lost != null
@@ -1439,7 +1437,6 @@ export function createSpine({
     if (guard) await guardCountNonHuman(ev, channel, true);
     const { key: turnKey, pinned } = await turns.keyOf(being, ev);
     note(`wake ${where}: ${what}`);
-    if (finished) liveness.endStatus(being, chatId, `✓ background work done: ${what}`);
     return openAndRunReply({ to: being, ev, d, turnKey, pinned });
   }
   // The being's own thread continuing — gated as a reply to it, so mute/off/paused still hold.

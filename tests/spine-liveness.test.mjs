@@ -3,8 +3,8 @@
 // model if they're still necessary. if unresponsiveness then post in egpt logging group."
 //
 // The chat shows a being is alive: its running turn's ⏳ placeholder is re-edited with the elapsed
-// time; while background work runs with no turn in flight ONE status message per being per chat
-// does the same, ended ✓ when the wake starts (the wake posts its own placeholder). WhatsApp refuses
+// time; while background work runs ONE status message per chat does the same, kept across wakes (each
+// wake posts its own placeholder) and ended ✓ once the work is gone. WhatsApp refuses
 // edits ~15 min after the post, so nothing is edited past LIVE_EDIT_MS: a fresh status takes over
 // the animation and a late reply is sent fresh. All of it rides the spine's tick (STOP-first) and
 // THE reply path (sender.open), with the real sender over a fake bridge here.
@@ -33,7 +33,7 @@ function fakeBridge() {
   };
 }
 
-// A brain whose turns stay open until released; `tasks` is what its warm session reports running.
+// A brain whose turns stay open until released; `tasks` is what its warm sessions report running.
 function heldBrain() {
   const calls = [];
   const brain = {
@@ -44,7 +44,6 @@ function heldBrain() {
       calls.push({ being, ev, onPartial, release: (text = `reply-${calls.length}`) => release({ text, sessionId: 's1' }) });
       return p;
     },
-    background: () => brain.tasks,
   };
   return brain;
 }
@@ -55,24 +54,27 @@ function build({ stop = { present: false }, mouth = null, livenessEveryMs, publi
   const bridge = fakeBridge();
   const brain = heldBrain();
   const peerMouth = mouth ? { route: async () => ({ bridge: mouth, chatId: 'mouth-room', connection: 'rodz' }) } : null;
-  const logged = [], streamed = [], notes = [], group = [];
+  const logged = [], streamed = [], notes = [], group = [], said = [];
   const spine = createSpine({
     bridge, brain, livenessEveryMs,
+    // every warm session's live tasks with the conversation each would wake in (boot: the pool's)
+    allBackground: () => brain.tasks.map((t) => ({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, ...t })),
+    say: async (o) => { said.push(o); return true; },
     identity: { build: (m) => ({ ...m, line: m.body }), spineEvent: async (surface, chatId) => ({ surface, chatId }) },
-    router: { resolve: () => ({ being: 'egpt', mention: { atEStart: true, atEAnywhere: true } }) },
+    router: { resolve: (ev) => ({ being: /^@leo\b/.test(ev.body) ? 'leo' : 'egpt', mention: { atEStart: true, atEAnywhere: true } }) },
     gating: { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: (d) => d.mayReply },
     sender: createSender({ bridge, peerMouth, publicOf, bodyEmojiOf: () => '🐶', labelOf: () => 'E' }),
     transcript: { async log(ev, reply) { logged.push(reply ? reply.text : ev.body); }, logStream(ev, before, after) { streamed.push(after); } },
     heartbeats: { runDue() {} },
     stopSwitch: { present: () => stop.present, pull: async () => {} },
     logToGroup: async (text) => { group.push(text); return true; },
-    labelOf: () => 'E',
+    labelOf: (being) => (being === 'leo' ? 'leo' : 'E'),
     clock: { now: () => Date.now() },
     turnTimeoutMs: 0,
     log: { line: (s) => notes.push(s) },
   });
   spine.start();
-  return { spine, bridge, brain, logged, streamed, notes, group };
+  return { spine, bridge, brain, logged, streamed, notes, group, said };
 }
 
 const mention = (body, msgId = 'm1') => ({ surface: 'whatsapp', node: 'wa', chatId: CHAT, chatName: 'fam', senderId: 'u', senderName: 'An', msgId, ts: T0, body, kind: 'text', raw: {} });
@@ -284,7 +286,7 @@ describe('liveness — background work with no turn in flight', () => {
     await flush();
   }
 
-  it('(b) ONE status message opens when the dispatching turn ends and animates; the wake ends it ✓ and posts its own placeholder', async () => {
+  it('(b) ONE status message opens when the dispatching turn ends and animates; the wake posts its own placeholder and the status ends ✓ once the work is gone', async () => {
     const b = build();
     await dispatchBackground(b);
     expect(b.bridge.streams).toHaveLength(2);
@@ -299,14 +301,18 @@ describe('liveness — background work with no turn in flight', () => {
     b.brain.tasks = [];
     const woke = b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, summaries: ['Run the audit — completed'] });
     await flush();
-    expect(st.finals).toEqual(['✓ background work done: Run the audit — completed']);
+    expect(st.finals).toEqual([]);                                    // the wake does not end it
     expect(b.bridge.streams).toHaveLength(3);                         // the wake's own fresh placeholder, at the bottom
     const wake = b.bridge.streams[2];
     expect(wake.init).toBe(THINKING);
     b.brain.calls[1].release('the audit is clean');
     await woke;
     expect(wake.finals).toEqual(['the audit is clean']);
-    expect(st.finals).toHaveLength(1);
+    at(5 * min); b.spine.tick();                                      // one quiet tick
+    at(6 * min); b.spine.tick();
+    await flush();
+    expect(st.finals).toEqual(['✓ background work ended: Run the audit']);
+    expect(b.bridge.streams).toHaveLength(3);
   });
 
   it('(b) background work gone with no wake: the status is ended ✓ (after one quiet tick); a later wake posts its own placeholder', async () => {
@@ -446,6 +452,114 @@ describe('liveness — background work with no turn in flight', () => {
     stop.present = true;
     at(5 * min); b.spine.tick();
     expect(b.bridge.streams[1].frames).toEqual([]);
+  });
+});
+
+// ONE STATUS PER CHAT (operator 2026-10-30: "Background jobs suddenly post update messages... each
+// one its own message. Wouldn't it be better to group these jobs by chat? Updates every minute, or
+// when they finish."). Every finished task's wake used to end the status ✓ and the next turn opened a
+// new one; two beings in a chat had two. Now the chat has one, edited on the tick across wakes.
+describe('liveness — ONE background status per chat, kept across wakes', () => {
+  const statuses = (b) => b.bridge.streams.filter((s) => s.init.startsWith('⚙️'));
+  async function dispatch(b, body, msgId, task, n) {
+    const done = b.bridge.emit(mention(body, msgId));
+    await flush();
+    b.brain.tasks = [...b.brain.tasks, task];
+    b.brain.calls[n].release(`started ${task.description}`);
+    await done;
+    await flush();
+  }
+  async function twoBeings(b) {
+    await dispatch(b, '@e run the audit in the background', 'm1', { description: 'Run the audit', since: T0 + 5 * sec }, 0);
+    await dispatch(b, '@leo crawl the site', 'm2', { being: 'leo', description: 'Crawl the site', since: T0 + 10 * sec }, 1);
+  }
+  const wake = (b, being, summary) => b.spine.wakeOnBackground({ being, surface: 'whatsapp', chatId: CHAT, summaries: [summary] });
+
+  it('two beings with background work in one chat → ONE status message, listing both, each labelled by its being', async () => {
+    const b = build();
+    await twoBeings(b);
+    expect(statuses(b)).toHaveLength(1);
+    const st = statuses(b)[0];
+    expect(st.init).toBe('⚙️ working in background: Run the audit ⏳');   // opened by E's turn, as E: its own work needs no label
+    expect(st.opts).toMatchObject({ persona: 'egpt', replyTo: b.bridge.streams[0].confirmedId });
+    at(1 * min); b.spine.tick();
+    expect(st.frames).toEqual(['⚙️ working in background: E — Run the audit; leo — Crawl the site ⏳ ⤴️ 55s']);
+    expect(statuses(b)).toHaveLength(1);
+  });
+
+  it("a queue: a finished task's wake does not end the status; the next task shows in the SAME message", async () => {
+    const b = build();
+    await dispatch(b, '@e run the queue in the background', 'm1', { description: 'Queue 07: Factuwin office test', since: T0 + 5 * sec }, 0);
+    const st = statuses(b)[0];
+    b.brain.tasks = [];
+    const woke = wake(b, 'egpt', 'Queue 07: Factuwin office test — completed');
+    await flush();
+    expect(st.finals).toEqual([]);                                    // the wake no longer ends it
+    expect(b.bridge.streams.at(-1).init).toBe(THINKING);              // the wake's own placeholder
+    at(1 * min); b.spine.tick();
+    at(2 * min); b.spine.tick();                                      // quiet, but the wake turn is still running here
+    expect(st.finals).toEqual([]);
+    b.brain.tasks = [{ description: 'Queue 08: Factuwin home test', since: T0 + 2 * min }];   // the wake starts the next one
+    b.brain.calls[1].release('07 passed; 08 started');
+    await woke;
+    await flush();
+    at(3 * min); b.spine.tick();
+    expect(st.frames.at(-1)).toBe('⚙️ working in background: Queue 08: Factuwin home test ⏳ ⤴️ 1m00s');
+    b.brain.tasks = [];
+    const last = wake(b, 'egpt', 'Queue 08: Factuwin home test — completed');
+    await flush();
+    b.brain.calls[2].release('08 passed');
+    await last;
+    at(4 * min); b.spine.tick();
+    expect(st.finals).toEqual([]);                                    // one quiet tick
+    at(5 * min); b.spine.tick();
+    await flush();
+    expect(st.finals).toEqual(['✓ background work ended: Queue 08: Factuwin home test']);
+    expect(statuses(b)).toHaveLength(1);                              // one message for the whole queue
+  });
+
+  it("one being's task finishes and its wake starts: the status runs on while another being's work remains, and ends ✓ when the last is gone", async () => {
+    const b = build();
+    await twoBeings(b);
+    const st = statuses(b)[0];
+    b.brain.tasks = b.brain.tasks.filter((t) => t.being === 'leo');
+    const woke = wake(b, 'egpt', 'Run the audit — completed');
+    await flush();
+    expect(st.finals).toEqual([]);
+    b.brain.calls[2].release('the audit is clean');
+    await woke;
+    await flush();
+    at(1 * min); b.spine.tick();
+    expect(st.frames).toEqual(['⚙️ working in background: leo — Crawl the site ⏳ ⤴️ 50s']);   // still E's message: leo's work is labelled
+    b.brain.tasks = [];
+    const woke2 = wake(b, 'leo', 'Crawl the site — completed');
+    await flush();
+    expect(st.finals).toEqual([]);
+    b.brain.calls[3].release('crawled: 40 pages');
+    await woke2;
+    at(2 * min); b.spine.tick();
+    at(3 * min); b.spine.tick();
+    await flush();
+    expect(st.finals).toEqual(['✓ background work ended: leo — Crawl the site']);
+    expect(statuses(b)).toHaveLength(1);
+  });
+
+  it("/standdown: the chat's ONE status ends on the line, naming every being's stopped work; nothing else is posted", async () => {
+    const b = build();
+    await twoBeings(b);
+    await b.spine.noteStoppedBackground();
+    await flush();
+    expect(statuses(b)).toHaveLength(1);
+    expect(statuses(b)[0].finals).toEqual(['⏹ background work stopped: E — Run the audit; leo — Crawl the site — eGPT moved to the logged-in session. Ask again if you still need it.']);
+    expect(b.said).toEqual([]);
+  });
+
+  it('/standdown in a chat with no status: the line is said ONCE for the chat', async () => {
+    const b = build({ stop: { present: true } });                    // STOP when the work started: no status opened
+    await twoBeings(b);
+    expect(statuses(b)).toEqual([]);
+    await b.spine.noteStoppedBackground();
+    expect(b.said).toEqual([{ being: 'egpt', chatId: CHAT, what: 'standdown', text: '⏹ background work stopped: E — Run the audit; leo — Crawl the site — eGPT moved to the logged-in session. Ask again if you still need it.' }]);
   });
 });
 

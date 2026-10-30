@@ -1628,15 +1628,6 @@ export function createBrainPool({
       return parseWarmBlock(resolveConfig(slugDir(surface, slug))).keep;
     },
 
-    // The background tasks still running on this conversation's warm session ([{ description, since }]),
-    // and only where a finished one would wake (convOfKey) — so one being's work shows in one chat.
-    background(being, ev) {
-      const conv = `${being}:${ev?.surface}:${ev?.chatId}`;
-      const k = lastKeyByConv.get(conv);
-      if (!k || newestConvOf(k) !== conv) return [];
-      return pool.background?.(k) ?? [];
-    },
-
     // /agents compact|stop — the same lookup evict() uses. warmKey: null when it never ran here.
     warmKey(being, ev) {
       return lastKeyByConv.get(`${being}:${ev?.surface}:${ev?.chatId}`) ?? null;

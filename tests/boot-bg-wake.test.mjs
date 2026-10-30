@@ -109,9 +109,10 @@ describe('boot — a background task\'s completion wakes the being where it last
   });
 
   // Liveness (operator 2026-10-15): the turn that left background work running opens ONE status
-  // message in the chat (brainpool.background → pool.background → the session's task list); the
-  // wake ends it ✓ and answers in its own fresh placeholder at the bottom of the chat.
-  it('the dispatching turn leaves ONE status message; the wake ends it ✓ and posts its own placeholder', async () => {
+  // message in the chat (spine allBackground → boot liveBackground → the session's task list); the
+  // wake answers in its own fresh placeholder at the bottom of the chat and leaves the status to the
+  // tick (operator 2026-10-30: one status per chat, kept across wakes).
+  it('the dispatching turn leaves ONE status message; the wake posts its own placeholder and does not end it', async () => {
     const { start, built } = fakeTransport();
     const sessions = [];
     let convState = seedOn();
@@ -146,8 +147,7 @@ describe('boot — a background task\'s completion wakes the being where it last
     sessions[0].opts.onBackgroundDone?.({ summaries: ['Run the audit — completed'] });
     await vi.waitFor(() => expect(spy.streams[2]?.finals).toHaveLength(1), { timeout: 5000 });
     expect(spy.streams).toHaveLength(3);
-    expect(spy.streams[1].finals).toHaveLength(1);
-    expect(spy.streams[1].finals[0]).toContain('✓ background work done: Run the audit — completed');
+    expect(spy.streams[1].finals).toEqual([]);
     expect(spy.streams[2].chatId).toBe(CHAT);
     expect(spy.streams[2].finals[0]).toContain('A background task you started has finished: Run the audit — completed');
     app.stop();

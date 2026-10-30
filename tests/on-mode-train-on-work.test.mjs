@@ -46,7 +46,6 @@ function build({ mode = 'on', work, steers = false } = {}) {
   const brain = {
     calls: [], steered: [],
     async turn(being, ev, onPartial) { brain.calls.push(ev); return work(onPartial); },
-    background: () => [],
     ...(steers ? { allowNewInput: async () => 'any', steer: async (being, ev) => { brain.steered.push(ev.body); return true; } } : {}),
   };
   const transcript = { async log() {} };

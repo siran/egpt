@@ -54,7 +54,6 @@ function build({ mode = 'on', reply = 'ok', partials = [], tasks = [] } = {}) {
   const brain = {
     calls: [], tasks,
     async turn(being, ev, onPartial) { this.calls.push({ being, ev, open: bridge.streams.map((s) => s.init) }); for (const p of partials) (Array.isArray(p) ? onPartial?.(...p) : onPartial?.(p)); return { text: reply, sessionId: 's' }; },
-    background() { return brain.tasks; },
   };
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, reply: r }); } };
   const notes = [];
@@ -63,6 +62,7 @@ function build({ mode = 'on', reply = 'ok', partials = [], tasks = [] } = {}) {
   const spine = createSpine({
     ...(timers ? { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout, turnTimeoutMs: 0 } : {}),
     bridge, brain, transcript, defaultBeing: 'egpt',
+    allBackground: () => brain.tasks.map((t) => ({ being: 'egpt', surface: 'whatsapp', chatId: '!g', ...t })),
     sender: createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'E', onLog }),
     actions: createReplyActions({ bridge, peerMouth: MOUTH_HOLDS, bodyEmojiOf: () => '🐶', labelOf: () => 'E', onLog }),
     router: createRouter({ getAgents: () => agents, getConfig: () => config, defaultBeing: 'egpt' }),
