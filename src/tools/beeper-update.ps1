@@ -31,6 +31,7 @@
 #   -CloseAppOnly [-WaitSec n]        only close the open app (WM_CLOSE, then n s, default 30, for it
 #                                     to quit); {quit:true} or the close-app refusal, nothing else touched
 #   -RelaunchApp                      relaunch the app even though it is not running now (eGPT closed it first)
+#   -Installer <exe> -Sha512 <b64>    install this file (eGPT's own download), not the pending folder's
 #   -StateFile <json>                 plan from a recorded state, not this machine (tests); implies -DryRun
 #
 # ASCII ONLY, deliberately: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI, so a single
@@ -47,6 +48,8 @@ param(
   [switch] $NoElevate,
   [switch] $Pause,
   [string] $StateFile,
+  [string] $Installer,
+  [string] $Sha512,
   # Carried through a UAC prompt, which may log in as another account.
   [string] $LocalAppData = $env:LOCALAPPDATA,
   [string] $AppData = $env:APPDATA,
@@ -81,6 +84,16 @@ function Get-Sha512Base64([string] $Path) {
   return [Convert]::ToBase64String($bytes)
 }
 
+# $s.pending for an installer: the version from its file name.
+function Get-Pending([string] $File, [string] $Sha, [bool] $AdminRequired) {
+  return [ordered]@{
+    installer     = $File
+    version       = $(if ((Split-Path $File -Leaf) -match '(\d+\.\d+\.\d+(\.\d+)?)') { $matches[1] } else { $null })
+    adminRequired = $AdminRequired
+    sha512Ok      = ((Test-Path $File) -and $Sha -and (Get-Sha512Base64 $File) -eq $Sha)
+  }
+}
+
 # Everything the plan depends on, read without changing anything. -StateFile supplies the same shape.
 function Read-MachineState {
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -94,15 +107,9 @@ function Read-MachineState {
     appRunning = [bool](Get-CimInstance Win32_Process -Filter "Name='Beeper.exe'" | Where-Object { $_.SessionId -ne 0 })
   }
   $infoPath = Join-Path $pendingDir 'update-info.json'
-  if (Test-Path $infoPath) {
+  if (-not $Installer -and (Test-Path $infoPath)) {
     $info = Get-Content $infoPath -Raw | ConvertFrom-Json
-    $file = Join-Path $pendingDir $info.fileName
-    $s.pending = [ordered]@{
-      installer     = $file
-      version       = $(if ($info.fileName -match '(\d+\.\d+\.\d+(\.\d+)?)') { $matches[1] } else { $null })
-      adminRequired = [bool]$info.isAdminRightsRequired
-      sha512Ok      = ((Test-Path $file) -and $info.sha512 -and (Get-Sha512Base64 $file) -eq $info.sha512)
-    }
+    $s.pending = Get-Pending (Join-Path $pendingDir $info.fileName) $info.sha512 ([bool]$info.isAdminRightsRequired)
   }
   return $s
 }
@@ -141,12 +148,14 @@ if ($CloseAppOnly) {
 
 if ($StateFile) { $DryRun = $true; $state = Get-Content $StateFile -Raw | ConvertFrom-Json }
 else { $state = Read-MachineState }
+if ($Installer) { $state.pending = Get-Pending $Installer $Sha512 $false }
 $plan = Get-UpdatePlan $state
 
 if (-not $plan.ok) {
   if (-not $DryRun -and -not $NoElevate -and -not $state.elevated -and $plan.step -in @('permission', 'admin-rights')) {
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-LocalAppData', "`"$LocalAppData`"", '-AppData', "`"$AppData`"", '-EgptHome', "`"$EgptHome`"")
     foreach ($k in 'RestartOnly', 'Force', 'NoRelaunchGui', 'RelaunchApp', 'Pause') { if (Get-Variable $k -ValueOnly) { $a += "-$k" } }
+    if ($Installer) { $a += @('-Installer', "`"$Installer`"", '-Sha512', $Sha512) }
     Say "$($plan.error) - elevating..."
     Start-Process powershell -Verb RunAs -ArgumentList $a
     return

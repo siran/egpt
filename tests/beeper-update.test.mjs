@@ -1,14 +1,17 @@
 // beeper-update.test.mjs — /update beeper and the Beeper update check (src/tools/beeper-update.mjs),
 // driven through fakes; the .ps1 plan and the service-permission SDDL on win32 (touching nothing).
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import {
   autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine, startLine,
   peerUpdating, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
+  runToolDry, runTool,
 } from '../src/tools/beeper-update.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { lifecycleExit } from '../src/spine/ingest.mjs';
@@ -102,7 +105,7 @@ describe('detection — the states, from structured facts only', () => {
     const owners = { 23373: 'tok-primary', 23374: 'tok-secondary' };
     const fetchImpl = async (url, opts = {}) => {
       const u = new URL(url);
-      if (u.hostname === 'api.beeper.com') return { status: 200, json: async () => ({ version: '4.3.209', pub_date: '2026-10-15T11:58:08+00:00' }) };
+      if (u.hostname === 'api.beeper.com') return { status: 200, json: async () => ({ version: '4.3.209', url: 'https://example.invalid/Beeper%20x64%204.3.209.exe', sha512: 'c2hh', download_size: 1, pub_date: '2026-10-15T11:58:08+00:00' }) };
       const port = Number(u.port);
       if (![23373, 23374, 23375].includes(port)) throw new Error('ECONNREFUSED');
       if (u.pathname === '/v1/info') return { status: 200, json: async () => ({ app: { version: '4.3.176' }, server: { port } }) };
@@ -113,7 +116,7 @@ describe('detection — the states, from structured facts only', () => {
     const d = await detect(cfg, { fetchImpl, installedVersion: async () => '4.3.176', localAppData: lad });
     expect(d.installed).toBe('4.3.176');
     expect(d.pending).toEqual({ fileName: 'Beeper x64 4.3.209.exe', version: '4.3.209', adminRequired: false });
-    expect(d.latest).toEqual({ version: '4.3.209', date: '2026-10-15T11:58:08+00:00' });
+    expect(d.latest).toEqual({ version: '4.3.209', date: '2026-10-15T11:58:08+00:00', url: 'https://example.invalid/Beeper%20x64%204.3.209.exe', sha512: 'c2hh' });
     expect(d.running).toEqual([
       { name: 'primary', port: 23373, version: '4.3.176' },
       { name: 'secondary', port: 23374, version: '4.3.176' },
@@ -134,20 +137,23 @@ describe('detection — the states, from structured facts only', () => {
   it('the status lines say the state in words', () => {
     const blocked = REVE(); blocked.pending.adminRequired = true;
     expect(statusLine('kg', blocked)).toMatch(/^kg · Beeper 4\.3\.176 · 4\.3\.209 downloaded, blocked: needs admin rights · running /);
-    expect(statusLine('kg', { installed: '4.3.176', pending: null, running: [], latest: { version: '4.3.209' } })).toBe('kg · Beeper 4.3.176 · 4.3.209 available, not downloaded yet');
+    const avail = { installed: '4.3.176', pending: null, running: [], latest: { version: '4.3.209' } };
+    expect(statusLine('kg', avail, 'available', '/e update beeper')).toBe('kg · Beeper 4.3.176 · 4.3.209 available — /e update beeper downloads and installs it');
+    expect(statusLine('kg', avail)).toBe('kg · Beeper 4.3.176 · 4.3.209 available — /update beeper downloads and installs it');
   });
 });
 
 // A service on fakes: every seam records into `calls`, in order.
-function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null, runs = [] } = {}) {
-  const calls = [], posts = [], edits = [], lines = [];
+function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null, runs = [], fetchImpl = async () => { throw new Error('no network in tests'); } } = {}) {
+  const calls = [], posts = [], edits = [], lines = [], tool = [];
   let drained = null;
   const cfg = { node_name: node, beeper: { auto_update: { windows: { method } } } };
   const u = createBeeperUpdate({
-    getConfig: () => cfg, platform, home, repoRoot: 'C:\\egpt',
+    getConfig: () => cfg, platform, home, repoRoot: 'C:\\egpt', fetchImpl,
     detect: async () => { calls.push('detect'); return det(); },
-    dryRun: async (o) => { calls.push(`dryRun${o.restartOnly ? ':restartOnly' : ''}`); return plan; },
+    dryRun: async (o) => { calls.push(`dryRun${o.restartOnly ? ':restartOnly' : ''}`); tool.push({ dryRun: true, ...o }); return plan; },
     run: async (o) => {
+      tool.push(o);
       calls.push(`run${o.restartOnly ? ':restartOnly' : ''}${o.closeAppOnly ? `:closeAppOnly:${o.waitSec}` : ''}${o.relaunchApp ? ':relaunchApp' : ''}`);
       if (runThrows) throw runThrows;
       const next = runs.shift();
@@ -164,7 +170,7 @@ function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result
     now: () => 0,
     onLog: (m) => lines.push(m),
   });
-  return { u, calls, posts, edits, lines, home, runDrain: async () => { await drained?.(); for (let i = 0; i < 5; i++) await flush(); } };
+  return { u, calls, posts, edits, lines, home, tool, runDrain: async () => { await drained?.(); for (let i = 0; i < 5; i++) await flush(); } };
 }
 
 describe('the notice — ONE line per newly downloaded version, per node', () => {
@@ -255,6 +261,12 @@ describe('/<handle> update beeper — the command', () => {
     await cmds.run(ev);
     expect(n).toBe(1);
     expect(sent).toEqual(['kg · Beeper 4.3.209 · up to date']);
+  });
+
+  it('a progress line (the download starting) reaches the same chat before the reply', async () => {
+    const { cmds, sent, typed } = cmdHarness({ update: async (say) => { await say('⬇ downloading'); return 'the reply'; } });
+    await cmds.run(typed('/e update beeper'));
+    expect(sent).toEqual(['⬇ downloading', 'the reply']);
   });
 
   it('another node\'s handle runs nothing here', async () => {
@@ -461,6 +473,114 @@ describe('/update beeper — the flow', () => {
   });
 });
 
+// kg on 2026-10-30: 4.3.229 installed and running, the feed offers 4.3.264, Beeper's own updater never
+// downloaded it (and empties its pending folder, so eGPT keeps its download in its own).
+const BYTES = Buffer.from('fake installer bytes');
+const b64 = (buf) => createHash('sha512').update(buf).digest('base64');
+const FILE = 'Beeper x64 4.3.264.exe';
+const KG = () => ({
+  installed: '4.3.229', pending: null,
+  running: [{ name: 'primary', port: 23373, version: '4.3.229' }, { name: 'secondary', port: 23374, version: '4.3.229' }],
+  latest: { version: '4.3.264', date: null, url: `https://example.invalid/builds/${encodeURIComponent(FILE)}`, sha512: b64(BYTES) },
+});
+const serving = (bytes, fetched = []) => async (url) => { fetched.push(String(url)); return new Response(bytes, { status: 200, headers: { 'content-length': String(235 * 2 ** 20) } }); };
+
+describe('/update beeper — available: eGPT downloads the feed\'s installer itself', () => {
+  const dlDir = (home) => join(home, 'state', 'beeper-update');
+
+  it('downloads into state/beeper-update, says so once, then plans and runs the tool on THAT installer', async () => {
+    const fetched = [], said = [];
+    const r = rig({ detect: KG, fetchImpl: serving(BYTES, fetched) });
+    const reply = await r.u.update((t) => { said.push(t); });
+    const path = join(dlDir(r.home), FILE);
+    expect(fetched).toEqual([KG().latest.url]);
+    expect(readFileSync(path)).toEqual(BYTES);
+    expect(readdirSync(dlDir(r.home))).toEqual([FILE]);   // no temp name left behind
+    expect(said).toEqual(['⬇ kg · Beeper 4.3.229 → 4.3.264: downloading the installer (235 MB) first']);
+    expect(reply).toMatch(/^⏳ kg · Beeper 4\.3\.229 → 4\.3\.264: restarting Beeper for the update once turns finish/);
+    expect(r.calls).toEqual(['detect', 'dryRun', 'drain']);
+    await r.runDrain();
+    expect(r.tool).toEqual([
+      { dryRun: true, restartOnly: false, installer: path, sha512: b64(BYTES) },
+      { restartOnly: false, relaunchApp: false, installer: path, sha512: b64(BYTES) },
+    ]);
+    expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.229 → 4.3.264 · restarted in 72 s · primary ✓ · secondary ✓');
+  });
+
+  it('a sha512 mismatch: the download is deleted, ONE refusal line, nothing else runs', async () => {
+    const said = [];
+    const r = rig({ detect: KG, fetchImpl: serving(Buffer.from('tampered')) });
+    expect(await r.u.update((t) => { said.push(t); })).toBe('kg · Beeper 4.3.264 not downloaded: the download does not match the feed\'s sha512 — deleted');
+    expect(said).toHaveLength(1);
+    expect(readdirSync(dlDir(r.home))).toEqual([]);
+    expect(r.calls).toEqual(['detect']);
+    expect(r.u.busy()).toBe(false);
+  });
+
+  it('a complete file whose sha512 already matches is reused: no fetch, no download line', async () => {
+    const said = [];
+    const r = rig({ detect: KG, fetchImpl: async () => { throw new Error('must not fetch'); } });
+    mkdirSync(dlDir(r.home), { recursive: true });
+    writeFileSync(join(dlDir(r.home), FILE), BYTES);
+    expect(await r.u.update((t) => { said.push(t); })).toMatch(/^⏳ kg · Beeper 4\.3\.229 → 4\.3\.264/);
+    expect(said).toEqual([]);
+    expect(r.tool[0]).toEqual({ dryRun: true, restartOnly: false, installer: join(dlDir(r.home), FILE), sha512: b64(BYTES) });
+  });
+
+  it('a file that does not match (cut short) is downloaded again', async () => {
+    const fetched = [];
+    const r = rig({ detect: KG, fetchImpl: serving(BYTES, fetched) });
+    mkdirSync(dlDir(r.home), { recursive: true });
+    writeFileSync(join(dlDir(r.home), FILE), BYTES.subarray(0, 4));
+    expect(await r.u.update()).toMatch(/^⏳ /);
+    expect(fetched).toHaveLength(1);
+    expect(readFileSync(join(dlDir(r.home), FILE))).toEqual(BYTES);
+  });
+
+  it('a second /update beeper while it downloads is refused as under way', async () => {
+    let open;
+    const gate = new Promise((res) => { open = res; });
+    const r = rig({ detect: KG, fetchImpl: async () => { await gate; return new Response(BYTES); } });
+    const first = r.u.update();
+    await flush();
+    expect(await r.u.update()).toBe('kg · a Beeper update is already under way');
+    open();
+    expect(await first).toMatch(/^⏳ /);
+  });
+
+  it('a feed without an installer url and sha512: one line, nothing fetched', async () => {
+    const r = rig({ detect: () => ({ ...KG(), latest: { version: '4.3.264', date: null, url: null, sha512: null } }) });
+    expect(await r.u.update()).toBe('kg · Beeper 4.3.264 not downloaded: the update feed names no installer url and sha512');
+    expect(r.calls).toEqual(['detect']);
+  });
+
+  it('downloaded (Beeper\'s own pending file) is today\'s path: no fetch, no -Installer', async () => {
+    const r = rig({ fetchImpl: async () => { throw new Error('must not fetch'); } });
+    await r.u.update();
+    await r.runDrain();
+    expect(r.tool.map((o) => o.installer)).toEqual([undefined, undefined]);
+  });
+
+  it('the tool gets -Installer <path> -Sha512 <b64>, dry run and real run alike', async () => {
+    const argvs = [];
+    const spawn = (exe, args) => {
+      argvs.push(args);
+      const c = new EventEmitter();
+      c.stdout = new EventEmitter();
+      c.kill = () => {};
+      setTimeout(() => { c.stdout.emit('data', '{"ok":true}\n'); c.emit('exit', 0); c.emit('close', 0); }, 0);
+      return c;
+    };
+    const home = tmp(), exe = join(home, FILE);
+    await runToolDry({ repoRoot: ROOT, home, installer: exe, sha512: 'abc=', spawn });
+    await runTool({ repoRoot: ROOT, home, relaunchApp: true, installer: exe, sha512: 'abc=', spawn, readFileImpl: async () => '{"ok":true}' });
+    await runToolDry({ repoRoot: ROOT, home, spawn });
+    expect(argvs[0].slice(-5)).toEqual(['-DryRun', '-Installer', exe, '-Sha512', 'abc=']);
+    expect(argvs[1].slice(-5)).toEqual(['-RelaunchApp', '-Installer', exe, '-Sha512', 'abc=']);
+    expect(argvs[2]).not.toContain('-Installer');
+  });
+});
+
 describe('the Beeper handover hold — /beeper-hold on|off through the ingest box', () => {
   const restarts = (calls) => calls.filter((c) => c.startsWith('beeperRestart'));
 
@@ -660,6 +780,21 @@ describe.skipIf(process.platform !== 'win32')('beeper-update.ps1 -DryRun on a re
 
   it('-RestartOnly needs no download', { timeout: 30_000 }, () => {
     expect(plan(state({ installed: '4.3.209', pending: null }), ['-RestartOnly'])).toMatchObject({ ok: true, install: false, from: '4.3.209', to: '4.3.209' });
+  });
+
+  it('-Installer/-Sha512: that file is the download in place of the pending one; every refusal still applies', { timeout: 60_000 }, () => {
+    const dir = tmp();
+    const exe = join(dir, FILE);
+    writeFileSync(exe, BYTES);
+    const own = (sha, f = exe) => ['-Installer', f, '-Sha512', sha];
+    // the recorded pending (needs admin) is replaced: version from the file name, adminRequired false
+    const blocked = { installer: 'x.exe', version: '4.3.209', adminRequired: true, sha512Ok: true };
+    expect(plan(state({ installed: '4.3.229', pending: blocked }), own(b64(BYTES)))).toEqual({ ok: true, dryRun: true, flow: 'services', from: '4.3.229', to: '4.3.264', install: true, stop: ['egpt-beeper-primary', 'egpt-beeper-secondary'], closeApp: true, start: ['egpt-beeper-primary', 'egpt-beeper-secondary'], relaunchApp: true });
+    expect(plan(state({ installed: '4.3.229', pending: null }), own(b64(Buffer.from('other'))))).toMatchObject({ ok: false, step: 'sha512' });
+    expect(plan(state({ installed: '4.3.229', pending: null }), own(b64(BYTES), join(dir, 'Beeper x64 4.3.265.exe')))).toMatchObject({ ok: false, step: 'sha512' });
+    expect(plan(state({ installed: '4.3.264', pending: null }), own(b64(BYTES)))).toMatchObject({ ok: false, step: 'nothing-to-install' });
+    expect(plan(state({ installed: '4.3.229', pending: null, system: true }), own(b64(BYTES)))).toMatchObject({ ok: false, step: 'identity' });
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

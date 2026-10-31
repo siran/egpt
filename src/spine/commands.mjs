@@ -1074,7 +1074,7 @@ export function createCommands({
     if (updateMatch) {
       const target = updateMatch[1].trim().toLowerCase();
       const usage = `usage: ${hintOf('update beeper', ev)} — install the Beeper update this node downloaded (eGPT itself: ${hintOf('upgrade', ev)})`;
-      await send?.(ev.chatId, target !== 'beeper' ? usage : beeperUpdate ? await beeperUpdate.update() : 'Beeper updates are not wired on this node');
+      await send?.(ev.chatId, target !== 'beeper' ? usage : beeperUpdate ? await beeperUpdate.update((t) => send?.(ev.chatId, t)) : 'Beeper updates are not wired on this node');
       return;
     }
 
