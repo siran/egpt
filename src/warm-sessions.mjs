@@ -365,6 +365,8 @@ export function createWarmPool({
 
   function has(key) { return _s.has(key); }
   function background(key) { return _s.get(key)?.session.backgroundTasks ?? []; }
+  // How `key`'s finished background task `taskId` ended, as its CLI said it (src/warm-cli-session.mjs), or null.
+  function outcome(key, taskId) { return _s.get(key)?.session.backgroundOutcome?.(taskId) ?? null; }
   function busy(key) { return _s.get(key)?.busy === true; }
   // Runs on `key` not yet settled (in flight + queued). A run's caller resumes already uncounted.
   function pending(key) { return _s.get(key)?.runs ?? 0; }
@@ -372,5 +374,5 @@ export function createWarmPool({
   function close() { for (const k of [..._s.keys()]) _evict(k, 'pool close'); }
   function stats() { return { size: _s.size, max, keys: [..._s.keys()] }; }
 
-  return { run, adopt, steer, interrupt, has, busy, pending, background, evict, close, stats };
+  return { run, adopt, steer, interrupt, has, busy, pending, background, outcome, evict, close, stats };
 }

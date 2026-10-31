@@ -860,7 +860,7 @@ describe('warm-cli-session — a background task finishes', () => {
         endSelf({ type: 'result', subtype: 'success', result: 'self report', origin: ORIGIN, session_id: 'sess-1' });
       };
     };
-    return { spawn, lines, written, finishBg, finishBgUnseen, tasks };
+    return { spawn, lines, written, finishBg, finishBgUnseen, tasks, out };
   }
   const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); };
 
@@ -992,6 +992,53 @@ describe('warm-cli-session — a background task finishes', () => {
     f.finishBg({ initLater: true });
     expect((await s.turn('Q')).text).toBe('echo:Q');
     expect(f.lines.some((o) => o.type === 'control_request')).toBe(false);
+    s.close();
+  });
+
+  // An #2944, 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
+  // debe ser estructural, no pongas al SI a determinar el error cuando falla el proceso". Shapes from
+  // claude 2.1.309: task_notification { status completed|failed|stopped, summary, reason? }; task_updated
+  // { patch: { status completed|failed|killed, error? } } just before it.
+  it('how a finished task ended is the CLI\'s own verdict: completed bare; failed with its reason, else its summary — one line, redacted, capped', async () => {
+    const f = backgroundClaude();
+    const s = createWarmCliSession({ spawn: f.spawn, onBackgroundDone: () => {} });
+    await s.turn('START TWO');
+    expect(s.backgroundOutcome('b1')).toBe(null);
+    f.finishBg();
+    await settle();
+    expect(s.backgroundOutcome('b1')).toEqual({ status: 'completed', message: null, at: expect.any(Number) });
+    f.tasks([{ task_id: 'b2', task_type: 'local_agent', description: 'Crawl the site' }, { task_id: 'b3', task_type: 'local_bash', description: 'Run the lint' }]);
+    f.out({ type: 'system', subtype: 'task_updated', task_id: 'b3', patch: { status: 'failed' } });
+    f.out({ type: 'system', subtype: 'task_notification', task_id: 'b3', status: 'failed', summary: `Background command "Run the lint"\n  failed (exit code 1): API_TOKEN=s3cr3t ${'x'.repeat(300)}` });
+    f.out({ type: 'system', subtype: 'task_notification', task_id: 'b2', status: 'failed', summary: 'Agent failed', reason: 'API Error: 529 overloaded' });
+    f.tasks([]);
+    const lint = s.backgroundOutcome('b3');
+    expect(lint.status).toBe('failed');
+    expect(lint.message).toMatch(/^Background command "Run the lint" failed \(exit code 1\): API_TOKEN=\*\*\* x+…$/);
+    expect(lint.message).toHaveLength(200);
+    expect(lint.message).not.toContain('s3cr3t');
+    expect(s.backgroundOutcome('b2')).toMatchObject({ status: 'failed', message: 'API Error: 529 overloaded' });
+    expect(s.backgroundTasks).toEqual([]);
+    s.close();
+  });
+
+  it('no notification follows: the task_updated status stands — killed is stopped, failed keeps its error; the last 50 are kept', async () => {
+    const f = backgroundClaude();
+    const s = createWarmCliSession({ spawn: f.spawn });
+    await s.turn('START TWO');
+    f.out({ type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'failed', error: 'spawn ENOENT' } });
+    f.out({ type: 'system', subtype: 'task_updated', task_id: 'b2', patch: { status: 'killed' } });
+    f.tasks([]);
+    expect(s.backgroundOutcome('b1')).toMatchObject({ status: 'failed', message: 'spawn ENOENT' });
+    expect(s.backgroundOutcome('b2')).toMatchObject({ status: 'stopped', message: null });
+    const many = Array.from({ length: 50 }, (_, i) => ({ task_id: `m${i}`, task_type: 'local_bash', description: `job ${i}` }));
+    f.tasks(many);
+    for (const t of many) f.out({ type: 'system', subtype: 'task_updated', task_id: t.task_id, patch: { status: 'completed' } });
+    f.tasks([]);
+    expect(s.backgroundOutcome('b1')).toBe(null);
+    expect(s.backgroundOutcome('b2')).toBe(null);
+    expect(s.backgroundOutcome('m0')).toMatchObject({ status: 'completed' });
+    expect(s.backgroundOutcome('m49')).toMatchObject({ status: 'completed' });
     s.close();
   });
 });

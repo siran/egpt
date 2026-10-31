@@ -13,7 +13,7 @@ import { join, basename, extname, isAbsolute } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 
 import { createSpine } from './spine.mjs';
-import { LIVENESS_EVERY_MS } from './liveness.mjs';
+import { LIVENESS_EVERY_MS, LIVENESS_BACKGROUND_EVERY_MS } from './liveness.mjs';
 import { createLagProbe, intakeCap } from './lag-probe.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
@@ -3372,7 +3372,10 @@ export async function boot({
     return m || (r === false && m === false ? false : null);
   };
   // Every warm session's live background tasks, with the conversation each would wake in.
-  const liveBackground = () => pool.stats().keys.flatMap((k) => pool.background(k).map((t) => ({ ...(brain.convOfKey(k) ?? { being: '?', chatId: k }), ...t })));
+  const convOfWarm = (k) => brain.convOfKey(k) ?? { being: '?', chatId: k };
+  const liveBackground = () => pool.stats().keys.flatMap((k) => pool.background(k).map((t) => ({ ...convOfWarm(k), ...t })));
+  // …and how a finished one ended, as its session's CLI said it (An #2944) — read from that conversation's keys.
+  const backgroundOutcome = ({ being, chatId, taskId }) => pool.stats().keys.filter((k) => convOfWarm(k).being === being && convOfWarm(k).chatId === chatId).map((k) => pool.outcome(k, taskId)).find(Boolean) ?? null;
   // What this node is handling, in state/background.json (src/spine/background.mjs). Real-node only (tests: backgroundFile).
   const background = (ingest || backgroundFile) ? createBackgroundRegistry({ path: backgroundFile ?? join(EGPT_HOME, 'state', 'background.json'), node: node_name, liveAgents: liveBackground, now, onLog: (m) => log.line?.(`[background] ${m}`) }) : null;
   await background?.load();
@@ -3759,6 +3762,7 @@ export async function boot({
   // The liveness pulse (config liveness.every_ms) rides the tick too.
   const { finestMs } = await heartbeatLoader.collect();
   const livenessEveryMs = () => (cfg.liveness?.every_ms > 0 ? cfg.liveness.every_ms : LIVENESS_EVERY_MS);   // read each liveness tick; the tick itself is sized at boot
+  const livenessBackgroundEveryMs = () => (cfg.liveness?.background_every_ms > 0 ? cfg.liveness.background_every_ms : LIVENESS_BACKGROUND_EVERY_MS);   // a chat's unchanged background status, posted again; read each liveness tick
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs, livenessEveryMs())) : tickMs;
 
   // The SINGLE guard (C7.7, plans/260722-COMMAND-SURFACE-ROADMAP.md phase 3), ONE guard with TWO
@@ -3879,12 +3883,13 @@ export async function boot({
   // backgroundWork: what a restart drain waits for. Held by the daemon, it survives a spine restart, so
   // there is nothing to wait for; spawned by this spine (no daemon host), it dies with it.
   // allBackground: all of it, whoever holds it — what a /standdown ends (the daemon ends its sessions).
+  // backgroundOutcome: how a finished task ended — what the chat's status marks it (✓ ✗ ⏹, ◦ not known).
   // The ingest box's open questions (ingest.auto false), kept across restarts (ingestTo, below).
   const ingestAsks = createIngestAsks({ path: join(EGPT_HOME, 'state', 'ingest-asks.json'), io, onLog: (m) => log.line?.(`[ingest] ${m}`) });
   await ingestAsks.load();
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

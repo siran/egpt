@@ -51,10 +51,10 @@ function memIo() {
 function fakeTransport() {
   const built = [];
   const start = async (opts) => {
-    const spy = { opts, onIncoming: opts.onIncoming, streams: [] };
+    const spy = { opts, onIncoming: opts.onIncoming, streams: [], sent: [] };
     built.push(spy);
     return {
-      async send() { return { ok: true }; },
+      async send(...args) { spy.sent.push(args); return { ok: true }; },
       startStreamMessage(init, o) {
         const h = { init, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
         spy.streams.push(h); return h;
@@ -108,11 +108,11 @@ describe('boot — a background task\'s completion wakes the being where it last
     app.stop();
   });
 
-  // Liveness (operator 2026-10-15): the turn that left background work running opens ONE status
-  // message in the chat (spine allBackground → boot liveBackground → the session's task list); the
-  // wake answers in its own fresh placeholder at the bottom of the chat and leaves the status to the
-  // tick (operator 2026-10-30: one status per chat, kept across wakes).
-  it('the dispatching turn leaves ONE status message; the wake posts its own placeholder and does not end it', async () => {
+  // Liveness (operator 2026-10-15): the turn that left background work running POSTS the chat's ONE
+  // status (spine allBackground → boot liveBackground → the session's task list) — one send, never
+  // edited (operator 2026-10-30); the wake answers in its own fresh placeholder at the bottom of the
+  // chat and leaves the status to the tick.
+  it('the dispatching turn posts ONE status message; the wake posts its own placeholder', async () => {
     const { start, built } = fakeTransport();
     const sessions = [];
     let convState = seedOn();
@@ -139,17 +139,61 @@ describe('boot — a background task\'s completion wakes the being where it last
     await spy.onIncoming('hola E, run the audit in the background', {
       chatId: CHAT, chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
     });
-    expect(spy.streams).toHaveLength(2);
-    expect(spy.streams[1].chatId).toBe(CHAT);
-    expect(spy.streams[1].init).toContain('⚙️ working in background: ⏳\n• Run the audit');
+    const statuses = () => spy.sent.map(([text]) => String(text)).filter((t) => t.includes('⚙️'));
+    await vi.waitFor(() => expect(statuses()).toHaveLength(1));
+    expect(statuses()[0]).toContain('⚙️ background work (1):\n• Run the audit · ');
+    expect(spy.streams).toHaveLength(1);                              // the turn's own placeholder: the status is no stream
 
     sessions[0].backgroundTasks = [];
     sessions[0].opts.onBackgroundDone?.({ summaries: ['Run the audit — completed'] });
-    await vi.waitFor(() => expect(spy.streams[2]?.finals).toHaveLength(1), { timeout: 5000 });
-    expect(spy.streams).toHaveLength(3);
-    expect(spy.streams[1].finals).toEqual([]);
-    expect(spy.streams[2].chatId).toBe(CHAT);
-    expect(spy.streams[2].finals[0]).toContain('A background task you started has finished: Run the audit — completed');
+    await vi.waitFor(() => expect(spy.streams[1]?.finals).toHaveLength(1), { timeout: 5000 });
+    expect(spy.streams).toHaveLength(2);
+    expect(spy.streams[1].chatId).toBe(CHAT);
+    expect(spy.streams[1].finals[0]).toContain('A background task you started has finished: Run the audit — completed');
+    expect(statuses()).toHaveLength(1);
+    app.stop();
+  });
+
+  // An #2944 (2026-10-31): a finished task is marked as its session's CLI said it ended — boot reads it from
+  // the pool (pool.outcome → session.backgroundOutcome) of the conversation the task ran in.
+  it("a failed task's line is ✗ with the CLI's own message, read from its warm session", async () => {
+    const { start, built } = fakeTransport();
+    const sessions = [];
+    let convState = seedOn();
+    let t = Date.UTC(2026, 9, 15, 14, 5);
+    const app = await boot({
+      readConfig: CONFIG,
+      startBridge: start,
+      makeSession: (opts) => {
+        const s = {
+          opts, sessionId: opts.sessionId ?? 'sess-1', backgroundTasks: [], outcomes: {},
+          async turn(m) { if (/in the background/.test(m)) this.backgroundTasks = [{ taskId: 'b1', description: 'Run the audit', since: t }]; return { text: `↩ ${m}`, sessionId: this.sessionId }; },
+          backgroundOutcome(taskId) { return this.outcomes[taskId] ?? null; },
+          close() {},
+        };
+        sessions.push(s);
+        return s;
+      },
+      probeEndpoint: async () => ({ ok: false, status: 0 }),
+      loadState: async () => convState,
+      writeState: async (s) => { convState = s; },
+      io: memIo(), ingest: false, tickMs: 0,
+      now: () => t,
+      log: { line: () => {} },
+    });
+    const spy = built[0];
+    await spy.onIncoming('hola E, run the audit in the background', {
+      chatId: CHAT, chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
+    });
+    const statuses = () => spy.sent.map(([text]) => String(text)).filter((x) => x.includes('background work'));
+    await vi.waitFor(() => expect(statuses()).toHaveLength(1));
+
+    sessions[0].backgroundTasks = [];
+    sessions[0].outcomes.b1 = { status: 'failed', message: 'Background command "Run the audit" failed (exit code 2)' };
+    t += 60_000; app.spine.tick();                                    // gone: one quiet pulse
+    t += 60_000; app.spine.tick();
+    await vi.waitFor(() => expect(statuses()).toHaveLength(2));
+    expect(statuses()[1]).toContain('⚠️ background work ended:\n✗ Run the audit · 1m00s — Background command "Run the audit" failed (exit code 2)');
     app.stop();
   });
 });
