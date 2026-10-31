@@ -3265,9 +3265,13 @@ export function createCommands({
     return Object.values(agents).some((b) => b && typeof b === 'object' && b.threadId != null);
   };
 
-  // `/split`'s <name> (the rest of the line, it fills {name} in the group title); none → a
-  // random one (randomName).
-  const forkNameOf = (body) => /^\/split\b[ \t]*(.*)$/i.exec(String(body ?? '').trim())?.[1].trim() || randomName();
+  // `/split [invite] [<name>]`: `invite` brings the chat's members in (2026-10-31); <name> (the rest
+  // of the line) fills {name} in the group title, none → a random one (randomName).
+  const splitArgsOf = (body) => {
+    const rest = /^\/split\b[ \t]*(.*)$/i.exec(String(body ?? '').trim())?.[1].trim() ?? '';
+    const invite = /^invite(?:\s+(.*))?$/i.exec(rest);
+    return { invite: !!invite, name: (invite ? invite[1]?.trim() : rest) || randomName() };
+  };
 
   // config.split.placeholder, with the built-in fallback so a command never edits to an empty string.
   const placeholderOf = (block, dflt) => (block && typeof block.placeholder === 'string' && block.placeholder.trim()) ? block.placeholder : dflt;
@@ -3509,10 +3513,11 @@ export function createCommands({
       await send?.(ev.chatId, '/split: I can\'t add you to a group from this account.');
       return 'refused — the sender id cannot be invited';
     }
-    const plan = await sideGroupPlan(ev, '/split');
+    const { invite, name } = splitArgsOf(ev.body);
+    const plan = await sideGroupPlan(ev, '/split', { everyone: invite && !forkBridge.roomsInside?.(ev.chatId) });
     if (!plan) return;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
-    const title = groupTitleOf(cTitle, forkNameOf(ev.body));
+    const title = groupTitleOf(cTitle, name);
 
     // ── mutations begin ──
     // (a) CREATE the group (sideGroupPlan). SHORT id: the new entry + parent_chat must key by the form
@@ -3524,7 +3529,7 @@ export function createCommands({
     const placeholder = fill(placeholderOf(cfg().split, link ? SPLIT_LINK_DEFAULT : SPLIT_PLACEHOLDER_DEFAULT), { link });
     // (b)+(c) its own conversation, each resident's thread copied (registerSplit).
     state = await loadState();
-    const split = await registerSplit(state, surface, splitChatId, ev.chatId, { title, verb: '/split' });
+    const split = await registerSplit(state, surface, splitChatId, ev.chatId, { title, verb: '/split', openTo: ev.commandBeing });
     await writeState(split.state);
     // (d) EDIT the operator's /split message into the placeholder marker — not anyone else's message
     //     (not ours to edit; the new group's opener is their answer). A room with a link (a topic) is
@@ -3541,7 +3546,9 @@ export function createCommands({
   const THREAD_FIELDS = new Set(['threadId', 'threadCreatedAt', 'identityInjectedAt', 'compactionWelcome']);
   // A /split group's fork, on the creator (/split) and on the other node (linkSideGroup):
   // → { state, slug, transcript, copied }; the caller writes the state.
-  async function registerSplit(state, surface, splitChatId, parentChatId, { title, verb }) {
+  // `openTo`: the being /split was typed to — anyone in the group may call it there (2026-10-31),
+  // unless it runs at access_level all.
+  async function registerSplit(state, surface, splitChatId, parentChatId, { title, verb, openTo = null }) {
     // (b) REGISTER the group as a FORK (operator 2026-10-26: "/split gives the context and folder with
     //     all previous files"): the parent's folder, its own transcript-<key>.md, parent_chat for /send+/end.
     const base = sanitizeSlug(title) || 'fork';
@@ -3560,6 +3567,11 @@ export function createCommands({
     for (const [being, block] of Object.entries(origEntry?.agents ?? {})) {
       const settings = Object.fromEntries(Object.entries(block ?? {}).filter(([k]) => !THREAD_FIELDS.has(k)));
       if (Object.keys(settings).length) state = patchBeing(state, surface, splitChatId, being, settings);
+    }
+    if (openTo) {
+      const level = getBeing(state, surface, splitChatId, openTo)?.accessLevel ?? cfg().agents?.[openTo]?.conversation_defaults?.access_level ?? 'sandbox';
+      if (level !== 'all') state = patchBeing(state, surface, splitChatId, openTo, { allowed_users: ['*'] });
+      else onLog(`${verb}: ${openTo} runs at access_level all — the split keeps its allowed_users`);
     }
     const residents = residentsOf(origEntry)
       .map((being) => [being, getBeing(state, surface, parentChatId, being)?.threadId ?? null])
@@ -3689,6 +3701,20 @@ export function createCommands({
     if (['true', 'yes', 'on', '1'].includes(s.toLowerCase())) return true;
     return ['false', 'no', 'off', '0', ''].includes(s.toLowerCase()) ? false : s;
   };
+  // THE TUNNEL (operator 2026-10-31): while the chat has an open /split (its own entry, parent_chat
+  // this chat; /end drops it), every reply here goes to the most recent one, through its mouth. Not a
+  // Telegram topic (everyone is already in it), not a group that is gone.
+  async function openSplitOf(state, surface, ev) {
+    const bucket = state.contacts[surface];
+    const parents = new Set([ev.chatId, getContact(state, surface, ev.chatId)?.jid]);
+    const splits = Object.keys(bucket).filter((id) => !bucket[id]?.aliasOf && parents.has(bucket[id]?.parent_chat) && !forkBridge.topicParentOf?.(id));
+    for (const id of splits.reverse()) {
+      const alive = forkBridge.chatRaw ? await superChannelAlive(id, { chatRaw: forkBridge.chatRaw, config: cfg() }) : null;
+      if (alive !== false) return id;
+      onLog(`tunnel: ${id} (a split of ${ev.chatName || ev.chatId}) is gone — not replying there`);
+    }
+    return null;
+  }
   const autoCreating = new Map();   // surface+chatId → the create in flight, so one reply makes one group
   async function autoSideGroup(ev, { create = true } = {}) {
     if (!loadState || !writeState) return null;
@@ -3697,6 +3723,8 @@ export function createCommands({
     try { state = await loadState(); } catch { return null; }
     const own = state?.contacts?.[surface]?.[ev.chatId];
     if (!own || own.aliasOf) return null;
+    const split = await openSplitOf(state, surface, ev);
+    if (split) return { chatId: split, tunnel: true };
     const setting = replyInSideGroupOf(own.reply_in_side_group);
     if (!setting) return null;
     const room = Object.keys(state.contacts[surface]).find((id) => state.contacts[surface][id]?.aliasOf === ev.chatId && state.contacts[surface][id].automatic === true) ?? null;
@@ -3738,6 +3766,7 @@ export function createCommands({
     const surface = surfaceOf(ev);
     const chatId = shortChatId(ev.chatId);
     if (shortChatId(c.group) !== chatId) return;
+    if (c.kind === 'tunnel') return;   // a tunnelled reply, not an opener
     if (!SIDE_KINDS.has(c.kind)) { onLog(`side group: ${chatId} names an unknown kind "${c.kind}" — not linked`); return; }
     // Why this node does not link it ('' = it already holds it), or null to link.
     const refusal = (state) => {

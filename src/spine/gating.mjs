@@ -68,7 +68,8 @@ export async function superChannelAlive(chatId, { chatRaw, config = {} }) {
 
 // sideGroupFor(ev, { create }) → the chat a reply here goes to instead (a chat id, or a function that
 // makes it, for sender.open to call), false = withhold it, null = in place (commands.autoSideGroup:
-// reply_in_side_group, operator 2026-10-18). Absent → always in place.
+// reply_in_side_group, operator 2026-10-18). { chatId, tunnel: true } = the chat's open /split
+// (2026-10-31): the decision says `tunnel`. Absent → always in place.
 // seedOf(ev) → { agents: { <being>: block }, … } a brand-new conversation is seeded with (boot: the stranger rule), or null.
 export function createGating({ getConfig = () => ({}), loadState = null, seedOf = null, sideGroupFor = null } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -92,16 +93,17 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     const allowed = replyAllowed(mode, mention ?? {});
     let mayReply = !denied && mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
     // Not asked for a backlog read or the operator's own line in an auto chat: no reply follows either.
-    let replyChatId = null;
+    let replyChatId = null, tunnel = false;
     if (mayReply && sideGroupFor && !ev.backlog && !(mode === 'auto' && ev.isSender)) {
       let at = null;
       // An addressed reply makes the group now; an unaddressed one (on/auto) once it has something to post.
       try { at = await sideGroupFor(ev, { create: replyAllowed('mention', mention ?? {}) }); } catch { at = false; }
       if (at === false) mayReply = false;
+      else if (at?.chatId) { replyChatId = at.chatId; tunnel = at.tunnel === true; }
       else if (at) replyChatId = at;
     }
     const quiet = bot && c.dispatch?.bot_quiet !== false;
-    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(quiet ? { quiet } : {}) };
+    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}) };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an

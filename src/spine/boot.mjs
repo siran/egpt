@@ -3040,7 +3040,7 @@ export async function boot({
   // --- services (each DI-wired; none closes over another) ---
   const services = {
     identity: createIdentity({ now, timeZone: transcriptTimeZone, loadState: _loadState }),
-    // sideGroupFor: a reply in a side_group.automatic chat goes to its SI+ group (commands, below; decide runs once the spine exists).
+    // sideGroupFor: a reply goes to the chat's open /split, else (reply_in_side_group) its SI+ group (commands, below; decide runs once the spine exists).
     gating: createGating({ getConfig, loadState: _loadState, seedOf: strangerSeedOf, sideGroupFor: (ev, o) => commands.autoSideGroup?.(ev, o) }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's

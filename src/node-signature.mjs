@@ -118,6 +118,8 @@ export function renderNodeSignature(text) {
 //   '/<group> <origin> <kind> <transcript>'
 // group = the primary account's id for it; origin = the conversation it came from; kind = join | split |
 // automatic; transcript = the alias's transcript key, URI-encoded (join/automatic only).
+// kind tunnel (2026-10-31): a reply the origin's being posted into the origin's open split; the 4th field is
+// `speaker`, the name the split's record gives it (spine.mjs tunnelCanary, identity.mjs).
 // Read back too: '/<group>' (a /join or /split opener before 2026-10-19: no origin, so nothing to link)
 // and '/<group> <origin>' (an automatic one). Same TAGS codec; its interior leads with '/', which a
 // node name never does, so decodeNodeSignature reads the node frame alone and renderNodeSignature
@@ -131,7 +133,8 @@ export function encodeChatCanary(canary) {
   const c = canary && typeof canary === 'object' ? canary : { group: canary };
   const group = String(c.group ?? '').trim();
   if (!group) return '';
-  const fields = c.origin ? [group, c.origin, c.kind ?? 'automatic', ...(c.transcript ? [encodeURIComponent(c.transcript)] : [])] : [group];
+  const fourth = c.kind === 'tunnel' ? c.speaker : c.transcript;
+  const fields = c.origin ? [group, c.origin, c.kind ?? 'automatic', ...(fourth ? [encodeURIComponent(fourth)] : [])] : [group];
   let out = '';
   for (const ch of `${CANARY_LEAD}${fields.join(' ')}`) {
     const code = ch.codePointAt(0);
@@ -146,9 +149,10 @@ export function decodeChatCanary(text) {
     let interior = '';
     for (const ch of f.slice(TAG_BEGIN.length, -TAG_CANCEL.length)) interior += String.fromCodePoint(ch.codePointAt(0) - TAG_BASE);
     if (!interior.startsWith(CANARY_LEAD)) continue;
-    const [group, origin, kind, transcript] = interior.slice(CANARY_LEAD.length).split(' ');
+    const [group, origin, kind, fourth] = interior.slice(CANARY_LEAD.length).split(' ');
     if (!group) return null;
-    return { group, origin: origin || null, kind: kind || (origin ? 'automatic' : null), transcript: uriDecoded(transcript) };
+    if (kind === 'tunnel') return { group, origin: origin || null, kind, speaker: uriDecoded(fourth) };
+    return { group, origin: origin || null, kind: kind || (origin ? 'automatic' : null), transcript: uriDecoded(fourth) };
   }
   return null;
 }

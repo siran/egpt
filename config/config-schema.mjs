@@ -3602,12 +3602,20 @@ export const CONFIG_SCHEMA = {
   `,
 
   split: `
-    /split — the REAL-FORK side-group (operator 2026-10-03). "/<handle> split [<name>]" (e.g.
+    /split — the REAL-FORK side-group (operator 2026-10-03). "/<handle> split [invite] [<name>]" (e.g.
     "/e split viaje"; the handle's node runs it) creates a private
     group backed by a NEW conversation (its own folder/entry, NOT an alias) whose resident beings'
     threads are COPIED from this chat so it DIVERGES. Anyone in a group chat may run it (2026-10-18):
     the primary account creates it, inviting the secondary (Rodz) and that person; the operator's own
-    split invites Rodz alone; no secondary → just that person. The two accounts' phones come from
+    split invites Rodz alone; no secondary → just that person. "invite" (2026-10-31) also invites every
+    member of the chat ("/e split invite fulvio" in a 1:1 with Fulvio: Rodz + Fulvio). In the split,
+    anyone may call the being it was typed to (its allowed_users there: ['*']; not for access_level all).
+    THE TUNNEL (2026-10-31): while the chat has an open split, a being called in the chat answers on the
+    chat's own thread and rules, but its reply is posted in the split (the most recent one), by its
+    mouth; nothing goes into the chat. The split records it as that being's ("E from [<chat>]"), so the
+    split's own being reads it as the original's, not its own. "/<handle> end" in the split closes it
+    and replies come back to the chat; an open split wins over reply_in_side_group. Not a Telegram topic.
+    The two accounts' phones come from
     beeper.primary.phone / beeper.secondary.phone. On Telegram (2026-10-25) it is a TOPIC of the
     group, tg:<chat>/<thread>, which everyone in the group can open: the group needs Topics on and the
     bot an admin with "Manage topics", else the command says so; the answer is the topic's link, and

@@ -424,9 +424,10 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
     // `replyKey`: replyTo's cross-account key ({ msgKey, timestamp }) when the caller holds it (the
     // inbound event's own) — the mouth is told it as is, with no list read to compute it.
     // `hideSilence`: an 'on' turn — a partial that may still be its '…' silence is never shown (operator 2026-10-18).
+    // `canary`: a frame every send of this reply carries (persona-wrap.mjs) — a tunnelled reply's origin (spine.mjs).
     open(chatId, opts = {}) {
       if (typeof chatId === 'function') return later(chatId, opts);
-      let { being = null, replyTo = null, replyIn = undefined, replyKey = null, queued = false, queuedAhead = 0, auto = false, ambient = false, hideSilence = false, origin = null, status = null } = opts;
+      let { being = null, replyTo = null, replyIn = undefined, replyKey = null, queued = false, queuedAhead = 0, auto = false, ambient = false, hideSilence = false, origin = null, status = null, canary = null } = opts;
       const { bridge: bridgeForThisBeing, route: peerRoute, keyOf } = outbound(being, chatId);
       // ROUTED-TARGET FALLBACK (never a silent drop): a send the sending account can't place on the
       // routed room (a super/alias room it isn't a member of → resolveChatId null → DROPPED) re-sends
@@ -478,7 +479,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           async finish(reply, { surface = true, commands = null } = {}) {
             const t = textOf(reply);
             if (surface && isPublic && reply?.failed) { await notice(`model error: ${String(reply.error ?? '').trim().slice(0, 300)}`); return; }   // the CLI's error, not the being's words
-            if (surface && t.trim()) { sendResult = await deliverHere(t, isPublic ? { replyTo, persona: being } : { replyTo }); return; }   // plain text: no bodyEmoji/label, no end-marker
+            if (surface && t.trim()) { sendResult = await deliverHere(t, isPublic ? { replyTo, persona: being } : { replyTo, ...(canary ? { canary } : {}) }); return; }   // plain text: no bodyEmoji/label, no end-marker
             // withheld / empty → post nothing; a public being's empty turn is an admin notice
             if (surface) await notice(noReplyMark());
             else if (!t.trim() && !commands?.length) await notice(BRIDGE_SILENCE);
@@ -487,7 +488,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           get confirmedId() { return sendResult?.confirmedId ?? null; },
         };
       }
-      const tag = { ...stampOf(being), replyTo };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these; `persona` names the being in the invisible frame (persona-wrap.mjs)
+      const tag = { ...stampOf(being), replyTo, ...(canary ? { canary } : {}) };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these; `persona` names the being in the invisible frame (persona-wrap.mjs)
       // WHOSE STAMP A PEER-SAID REPLY CARRIES: THIS node's, the BRAIN's (operator 2026-09-05, "if
       // an receives 'e hi' if Rodz is present let him reply as the king"). A routed reply used to
       // cross the wire as bare text and be posted bare, because the mouth posts VERBATIM by

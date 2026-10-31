@@ -467,7 +467,7 @@ export function createSpine({
     const at = d.replyChatId ?? null;                 // the chat's automatic SI+ group (see openAndRunReply)
     const replyTo = at ? null : (ev.msgId ?? null);   // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
-    const out = sender.open(at ?? ev.chatId, { being: to, replyTo, auto: true, origin: at ? null : ev.chatId });
+    const out = sender.open(at ?? ev.chatId, { being: to, replyTo, auto: true, origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });
     // `trigger` (operator 2026-09-11) — the handle-stripped dispatch line of the message that
     // armed this dwell. It is the BASE only when the drained cycle came back empty (a burst with
     // lines prompts with those verbatim), and each of those lines was already stripped on its way
@@ -1380,6 +1380,8 @@ export function createSpine({
   // A turn's later outputs (voice, limbs) go where its reply went: the side group, made now if the reply
   // did not make it, else ev's chat. null = the side group could not be made.
   const replyChatOf = async (d, ev) => (typeof d.replyChatId === 'function' ? (await d.replyChatId()) || null : (d.replyChatId ?? ev.chatId));
+  // A reply tunnelled into the chat's open /split names where it came from in its frames; the split's record says so (identity.mjs).
+  const tunnelCanary = (d, to, ev) => (d.tunnel ? { group: d.replyChatId, origin: ev.chatId, kind: 'tunnel', speaker: `${labelOf(to)} from [${ev.chatName || ev.chatId}]` } : null);
 
   // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
   // Returns the turn's completion promise.
@@ -1403,7 +1405,7 @@ export function createSpine({
     // opens at arrival, addressed or not (operator 2026-10-18). A quiet turn (a bot's line, dispatch.bot_quiet) is
     // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
     const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
-    const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId });
+    const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });
     return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient }));
   }
 

@@ -226,8 +226,8 @@ describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the reques
 
   it('no group is ever looked up by its title: /split, the automatic group, /send', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }), created: [SIDE_FULL, '!side3:beeper.local'] });
+    expect(await h.cmds.autoSideGroup(inOrigin('e, hola'))).toBe(SIDE);   // before the split: an open split takes the replies (2026-10-31)
     await typed(h, inOrigin('/e split viaje'));
-    expect(await h.cmds.autoSideGroup(inOrigin('e, hola'))).toBe(shortChatId('!side3:beeper.local'));
     await typed(h, { chatId: SIDE, surface: 'whatsapp', chatName: 'x', senderId: LULU, senderName: 'Lulu', msgId: 's1', body: '/e send', replyToId: 'q1', raw: { chatType: 'group' } });
     expect(h.calls.create).toHaveLength(2);
     expect(h.calls.post.map((p) => [p.chatId, p.via])).toEqual([[SIDE, 'primary'], [shortChatId('!side3:beeper.local'), 'primary'], [ORIGIN, 'secondary']]);
