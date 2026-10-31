@@ -45,6 +45,9 @@ import { createSender } from '../src/spine/sender.mjs';
 // ends drifted. Used only to PROVE the 1:1 below really is a chat the participant key refuses.
 import { crossAccountChatKey, crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
+import { createCliHost, connectCliHost, CLI_HOST_ENV } from '../src/cli-host.mjs';
+import { createWarmCliSession } from '../src/warm-cli-session.mjs';
+import { ipcPair, fakeClaude } from './fake-claude-cli.mjs';
 
 let boot, emptyState, ensureContact, aliasContact, getContact, recordThread;
 beforeAll(async () => {
@@ -1064,6 +1067,45 @@ describe('a scheduled send with NO arrival since boot: the chat is placed at reg
       expect(byConnection.primary.streams).toEqual([]);
       app.stop();
     }
+  });
+});
+
+// ── A BACKGROUND WAKE AFTER A RESTART, before anything arrived in the chat (2026-10-30) ──────────
+// kg, eGPT Admin, 10-22/10-27/10-29: the new spine adopted the daemon-held session, its task finished,
+// and the wake went out on 'secondary' addressed by the ear's room id → 404 "Chat not found".
+describe('a background wake with NO arrival since boot: the chat is placed before the being is woken', () => {
+  const realKill = process.kill;
+  beforeAll(() => { vi.spyOn(process, 'kill').mockImplementation((pid, sig) => (sig === 0 && pid >= 7100 && pid < 7200 ? true : realKill.call(process, pid, sig))); });
+  afterAll(() => { process.kill.mockRestore?.(); });
+
+  it('the wake is said by the MOUTH in its own room — never on secondary with the ear\'s id', async () => {
+    const claudes = [];
+    const host = createCliHost({ log: () => {}, setPriority: () => {}, spawn: () => { const c = fakeClaude(7100 + claudes.length); claudes.push(c); setImmediate(() => c.emit('spawn')); return c; } });
+    const hosted = () => {
+      const pair = ipcPair();
+      host.attach(pair.daemonSide);
+      const makeSession = (o) => { if (!o.spawn) throw new Error('not hosted'); return createWarmCliSession({ ...o, cwd: undefined }); };
+      return { pair, extra: { cliHost: connectCliHost(pair.spineSide, { [CLI_HOST_ENV]: '1' }), makeSession, reapPort: () => 0 } };
+    };
+
+    const a = hosted();
+    const one = await bootWith(KG(), a.extra);
+    await deliver(one.byConnection.primary, BOTH_AS_PRIMARY, 'e, bg: run the audit');
+    await waitFor(() => one.byConnection.secondary.streams.some((h) => h.finals.length));
+    one.app.stop();
+    a.pair.drop();
+    claudes[0].finishBg();
+
+    const b = hosted();
+    const two = await bootWith(KG(), { ...b.extra, state: one.state(), io: one.io });
+    const woke = (s) => s.streams.filter((h) => h.finals.some((f) => f.includes('A background task you started has finished')));
+    await waitFor(() => woke(two.byConnection.secondary).length + woke(two.byConnection.primary).length > 0, { timeoutMs: 5000 });
+
+    expect(woke(two.byConnection.secondary).map((h) => h.chatId)).toEqual([BOTH_AS_SECONDARY]);
+    expect(two.replies().filter((r) => r.chatId === BOTH_AS_PRIMARY)).toEqual([]);
+    expect(two.lines).toContain(`[wake] egpt: ${BOTH_AS_PRIMARY} is a chat on 'primary' — recorded, so its sends start there`);
+    two.app.stop();
+    b.pair.drop();
   });
 });
 

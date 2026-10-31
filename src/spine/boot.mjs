@@ -3016,9 +3016,10 @@ export async function boot({
     idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
     idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 },
     // A background task a being started finished with no turn in flight: wake it where that key last ran.
-    onBackgroundDone: (key, info) => {
+    onBackgroundDone: async (key, info) => {
       const conv = brain.convOfKey(key);
       if (!conv) { log.line?.(`[warm] ${key}: background task finished, but no conversation ran on that key — nobody to wake`); return; }
+      if (spineLate) await placeChat(conv.chatId, `[wake] ${conv.being}`);   // nothing may have arrived in it since boot
       return spineLate?.wakeOnBackground({ ...conv, ...info });
     },
     keepWarm: (key) => brain.keepsWarm(key),
@@ -3577,7 +3578,7 @@ export async function boot({
     if (r == null) return { outcome: 'not-supported', detail: `this chat's bridge cannot change a group's ${a.what} (Telegram groups only)` };
     return r.ok ? { outcome: 'set' } : { outcome: 'failed', detail: r.reason };
   };
-  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: (r) => spineLate?.wakeOnBackground(r), onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: async (r) => { if (spineLate) await placeChat(r.chatId, `[wake] ${r.being}`); return spineLate?.wakeOnBackground(r); }, onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's
