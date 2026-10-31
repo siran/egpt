@@ -944,6 +944,31 @@ describe('warm-cli-session — a background task finishes', () => {
     s.close();
   });
 
+  // An #2971, 2026-10-31: "are you listing parent and child process in the same level? in that case why not
+  // nest?". claude 2.1.309: parent_task_id — the live background agent that launched the task; ambient — "not
+  // activity … hosts should exclude them from activity indicators" (liveness does; this session keeps them).
+  it('keeps the agent that launched each task and the CLI\'s ambient mark — an ambient task is still its task: counted, ended with an outcome', async () => {
+    const f = backgroundClaude();
+    const s = createWarmCliSession({ spawn: f.spawn });
+    await s.turn('hi');
+    f.tasks([
+      { task_id: 'a1', task_type: 'local_agent', description: 'Factuwin tests on AWS Windows' },
+      { task_id: 'b1', task_type: 'local_bash', description: 'Queue menu calibration job', parent_task_id: 'a1' },
+      { task_id: 'w1', task_type: 'monitor_mcp', description: 'Watch the job log', parent_task_id: 'a1', ambient: true },
+    ]);
+    expect(s.backgroundTasks).toEqual([
+      { taskId: 'a1', description: 'Factuwin tests on AWS Windows', since: expect.any(Number) },
+      { taskId: 'b1', description: 'Queue menu calibration job', since: expect.any(Number), parentTaskId: 'a1' },
+      { taskId: 'w1', description: 'Watch the job log', since: expect.any(Number), parentTaskId: 'a1', ambient: true },
+    ]);
+    expect(s.background).toBe(3);                     // not evictable while the watcher runs: closing it would kill it
+    f.out({ type: 'system', subtype: 'task_updated', task_id: 'w1', patch: { status: 'completed' } });
+    f.tasks([{ task_id: 'a1', task_type: 'local_agent', description: 'Factuwin tests on AWS Windows' }, { task_id: 'b1', task_type: 'local_bash', description: 'Queue menu calibration job', parent_task_id: 'a1' }]);
+    expect(s.backgroundOutcome('w1')).toMatchObject({ status: 'completed' });
+    expect(s.background).toBe(2);
+    s.close();
+  });
+
   it('a turn in flight ABSORBS the completion — no report, no stop, the turn answers as usual', async () => {
     const f = backgroundClaude();
     const done = [];

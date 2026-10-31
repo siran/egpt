@@ -279,10 +279,11 @@ describe('background agents — mirrored from the warm pool', () => {
     reg.reconcile();
     await reg.flush();
     expect(readReg(dir).agents).toEqual([{ being: 'wren', surface: 'whatsapp', chatId: '!rodz', taskId: 'b1', description: 'Crawl the docs', since: new Date(T(15, 0)).toISOString() }]);
-    live = [task(), task({ taskId: 'b2', description: 'Audit', since: T(15, 30) })];
+    live = [task(), task({ taskId: 'b2', parentTaskId: 'b1', description: 'Audit', since: T(15, 30) })];
     reg.sync();
     await reg.flush();
     expect(readReg(dir).agents.map((a) => a.taskId)).toEqual(['b1', 'b2']);
+    expect(readReg(dir).agents.map((a) => a.parentTaskId)).toEqual([undefined, 'b1']);   // the agent that launched it (An #2971)
     live = [task({ taskId: 'b2', description: 'Audit', since: T(15, 30) })];
     reg.sync();
     await reg.flush();

@@ -665,6 +665,86 @@ describe('liveness — a finished task is marked as its session\'s CLI said it e
   });
 });
 
+// An #2971, 2026-10-31: "the task list is confusing: are you listing parent and child process in the same
+// level? in that case why not nest?". The live case: ED's background agent and the two background Bash tasks
+// it ran, listed flat. claude 2.1.309 names the live agent that launched a task (parent_task_id), and marks
+// the tasks that are not activity (ambient: "hosts should exclude them from activity indicators").
+describe('liveness — a task a background agent launched is listed under it', () => {
+  const AGENT = { taskId: 'ae02d2d4edb413bc7', description: 'Factuwin tests on AWS Windows', since: T0 - 72 * min };
+  const QUEUE = { taskId: 'bbsv9o3jx', parentTaskId: AGENT.taskId, description: 'Queue menu calibration job', since: T0 - 9 * min };
+  const WAIT = { taskId: 'bs2650ese', parentTaskId: AGENT.taskId, description: 'Wait for E2-a job completion', since: T0 - 40 * sec };
+  // The turn that launched `tasks` ends; `ended`: taskId → how the CLI said it ended (else completed).
+  async function launched(tasks, ended = {}) {
+    const b = build({ backgroundOutcome: (t) => ended[t.taskId] ?? { status: 'completed', message: null } });
+    const done = b.bridge.emit(mention('@e run the Factuwin tests on AWS'));
+    await flush();
+    b.brain.tasks = tasks;
+    b.brain.calls[0].release('started them');
+    await done;
+    await flush();
+    return b;
+  }
+  const finish = async (b, taskIds, t) => { b.brain.tasks = b.brain.tasks.filter((x) => !taskIds.includes(x.taskId)); at(t); b.spine.tick(); await flush(); };
+
+  it('THE LIVE CASE: the agent\'s two Bash tasks are listed under it, └, each timed; the count is every running task', async () => {
+    const b = await launched([AGENT, QUEUE, WAIT]);
+    expect(posts(b)).toEqual(['⚙️ background work (3):\n• Factuwin tests on AWS Windows · 1h12m\n  └ Queue menu calibration job · 9m00s\n  └ Wait for E2-a job completion · 40s']);
+  });
+
+  it('a finished task stays under its running agent, marked as its CLI said it ended', async () => {
+    const b = await launched([AGENT, QUEUE, WAIT], { [WAIT.taskId]: { status: 'failed', message: 'job E2-a: exit code 2' } });
+    await finish(b, [QUEUE.taskId], 1 * min);
+    await finish(b, [WAIT.taskId], 2 * min);
+    expect(posts(b).slice(1)).toEqual([
+      '⚙️ background work (2):\n• Factuwin tests on AWS Windows · 1h13m\n  └ Wait for E2-a job completion · 1m40s\n  └ ✓ Queue menu calibration job · 10m00s',
+      '⚙️ background work (1):\n• Factuwin tests on AWS Windows · 1h14m\n  └ ✗ Wait for E2-a job completion · 2m40s — job E2-a: exit code 2',
+    ]);
+  });
+
+  it('the last post nests what finished together', async () => {
+    const b = await launched([AGENT, QUEUE, WAIT]);
+    await finish(b, [AGENT.taskId, QUEUE.taskId, WAIT.taskId], 3 * min);   // one quiet pulse
+    await finish(b, [], 3 * min + 15 * sec);
+    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ Factuwin tests on AWS Windows · 1h15m\n  └ ✓ Queue menu calibration job · 12m00s\n  └ ✓ Wait for E2-a job completion · 3m40s']);
+  });
+
+  it('a task whose agent is not in the post stands on its own: an agent not listed at all, or one that finished in an earlier post', async () => {
+    const STRAY = { taskId: 'bx1', parentTaskId: 'a-gone', description: 'Tail the build log', since: T0 - 5 * min };
+    const b = await launched([AGENT, QUEUE, WAIT, STRAY]);
+    await finish(b, [AGENT.taskId], 1 * min);                         // the agent ends in this post: its tasks still under it
+    await finish(b, [QUEUE.taskId], 2 * min);                         // …and is gone from the next one
+    expect(posts(b)).toEqual([
+      '⚙️ background work (4):\n• Factuwin tests on AWS Windows · 1h12m\n  └ Queue menu calibration job · 9m00s\n  └ Wait for E2-a job completion · 40s\n• Tail the build log · 5m00s',
+      '⚙️ background work (3):\n• Tail the build log · 6m00s\n✓ Factuwin tests on AWS Windows · 1h13m\n  └ Queue menu calibration job · 10m00s\n  └ Wait for E2-a job completion · 1m40s',
+      '⚙️ background work (2):\n• Wait for E2-a job completion · 2m40s\n• Tail the build log · 7m00s\n✓ Queue menu calibration job · 11m00s',
+    ]);
+  });
+
+  it('an agent an agent launched: two levels, in whatever order the CLI lists them — labelled line by line when not all the poster\'s', async () => {
+    const BUILD = { taskId: 'a2', parentTaskId: AGENT.taskId, description: 'Build the installer', since: T0 - 30 * min };
+    const UPLOAD = { taskId: 'b9', parentTaskId: 'a2', description: 'Upload to S3', since: T0 - 2 * min };
+    const LINT = { being: 'leo', taskId: 'b7', description: 'Lint the repo', since: T0 - 1 * min };
+    const b = await launched([UPLOAD, LINT, AGENT, BUILD]);
+    await finish(b, [UPLOAD.taskId], 1 * min);
+    expect(posts(b)).toEqual([
+      '⚙️ background work (4):\n• leo — Lint the repo · 1m00s\n• E — Factuwin tests on AWS Windows · 1h12m\n  └ E — Build the installer · 30m00s\n    └ E — Upload to S3 · 2m00s',
+      '⚙️ background work (3):\n• leo — Lint the repo · 2m00s\n• E — Factuwin tests on AWS Windows · 1h13m\n  └ E — Build the installer · 31m00s\n    └ ✓ E — Upload to S3 · 3m00s',
+    ]);
+  });
+
+  it('the CLI\'s ambient tasks are in no status: not listed, not counted, and they keep none going', async () => {
+    const WATCH = { taskId: 'w1', parentTaskId: AGENT.taskId, description: 'Watch the job log', since: T0 - 9 * min, ambient: true };
+    const INBOX = { taskId: 'm1', description: 'Monitor the inbox', since: T0 - 3 * min, ambient: true };
+    const b = await launched([AGENT, WATCH, INBOX]);
+    await finish(b, [AGENT.taskId], 1 * min);                         // the watchers run on: one quiet pulse…
+    await finish(b, [], 1 * min + 15 * sec);                          // …and the last post
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Factuwin tests on AWS Windows · 1h12m', '✓ background work done:\n✓ Factuwin tests on AWS Windows · 1h13m']);
+    const quiet = await launched([INBOX]);
+    await ticks(quiet, 2 * min, 3 * min);
+    expect(posts(quiet)).toEqual([]);                                 // a turn leaving only ambient tasks posts nothing
+  });
+});
+
 describe('liveness — long background work is ASKED about, never evicted', () => {
   async function longBackground(b) {
     const done = b.bridge.emit(mention('@e start the crawl'));
