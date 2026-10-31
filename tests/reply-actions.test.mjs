@@ -1,7 +1,7 @@
 // Conversation-E LIMBS (ROADMAP §3) — the emitted-action surface E drives from
 // inside its own reply: parse (pure) + execute (confined, fail-closed).
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseReplyActions, partialProse, createReplyActions } from '../src/spine/reply-actions.mjs';
@@ -685,5 +685,85 @@ describe('createReplyActions.execute — a limb rides the connection that HOLDS 
     await a.execute(a.parse('/reply #9 hola', EV).run, [], EV, { being: 'e' });
     expect(only.calls.send).toEqual([{ chat: EV.chatId, text: 'hola', opts: { replyTo: '9', bodyEmoji: '🐶', label: 'e', persona: 'e' } }]);
     expect(never.calls.send).toEqual([]);
+  });
+});
+
+// WHATSAPP REJECTS WAV (live 10-12..10-31: every /media of a .wav → 500 MediaRejectedError, on both
+// accounts). To a WhatsApp chat a .wav leaves as Opus/ogg, made in a temp dir with the node's ffmpeg.
+describe('/media of a .wav to a WhatsApp chat', () => {
+  const room = (...names) => { const dir = mkdtempSync(join(tmpdir(), 'egpt-limb-wav-')); for (const n of names) writeFileSync(join(dir, n), 'bytes'); return dir; };
+  const capture = () => {
+    const b = fakeBridge();
+    b.sendMedia = (chat, path, opts) => { b.calls.media.push({ chat, path, opts, there: existsSync(path) }); return true; };
+    return b;
+  };
+  const stub = (seen) => async (ffmpeg, input, output) => { seen.push({ ffmpeg, input, output }); writeFileSync(output, 'ogg'); };
+  const mk = (bridge, dir, over = {}) => createReplyActions({ bridge, peerMouth: MOUTH_HOLDS, resolveConvDir: async () => dir, ffmpegCommand: '/opt/ffmpeg', ...over });
+  const send = (a, line, ev = EV) => a.execute(a.parse(line, ev).run, [], ev, { being: 'e' });
+
+  it('REPRODUCE: the bridge gets an .ogg made in a temp dir, never the .wav, and the temp file is gone after', async () => {
+    const dir = room('saludo.wav');
+    const b = capture();
+    const seen = [];
+    const { ran } = await send(mk(b, dir, { transcode: stub(seen) }), '/media saludo.wav hola');
+    expect(b.calls.media).toHaveLength(1);
+    const sent = b.calls.media[0];
+    expect(sent.path).toMatch(/saludo\.ogg$/);
+    expect(sent).toMatchObject({ chat: EV.chatId, there: true, opts: { caption: 'hola' } });
+    expect(sent.path.startsWith(dir)).toBe(false);
+    expect(existsSync(sent.path)).toBe(false);
+    expect(readdirSync(dir)).toEqual(['saludo.wav']);
+    expect(seen).toEqual([{ ffmpeg: '/opt/ffmpeg', input: join(dir, 'saludo.wav'), output: sent.path }]);
+    expect(ran.map((x) => x.type)).toEqual(['media']);
+  });
+
+  it('no ffmpeg_command: nothing is sent, and the log and the loss report say why', async () => {
+    const dir = room('saludo.wav');
+    const b = capture();
+    const logs = [], lost = [];
+    const a = mk(b, dir, { ffmpegCommand: undefined, onLog: (m) => logs.push(m), onUndeliverable: async (o) => lost.push(o) });
+    const { ran } = await send(a, '/media saludo.wav');
+    expect(b.calls.media).toEqual([]);
+    expect(ran).toEqual([]);
+    expect(logs).toEqual(['media: send failed "saludo.wav" — WhatsApp rejects .wav; no ffmpeg_command to convert it']);
+    expect(lost).toEqual([{ being: 'e', chatId: EV.chatId, what: '/media saludo.wav', reason: 'WhatsApp rejects .wav; no ffmpeg_command to convert it' }]);
+  });
+
+  it('a failed transcode: nothing is sent, ffmpeg\'s reason is logged, and no temp file is left', async () => {
+    const dir = room('saludo.wav');
+    const b = capture();
+    const logs = [];
+    let made = null;
+    const transcode = async (_f, _i, output) => {
+      made = output;
+      writeFileSync(output, 'partial');
+      throw Object.assign(new Error('Command failed: ffmpeg …'), { stderr: 'saludo.wav: Invalid data found when processing input\n' });
+    };
+    const { ran } = await send(mk(b, dir, { transcode, onLog: (m) => logs.push(m) }), '/media saludo.wav');
+    expect(b.calls.media).toEqual([]);
+    expect(ran).toEqual([]);
+    expect(logs).toEqual(['media: send failed "saludo.wav" — WhatsApp rejects .wav; could not convert it: saludo.wav: Invalid data found when processing input']);
+    expect(existsSync(made)).toBe(false);
+  });
+
+  it('.ogg, .mp3, .m4a, images, video and pdf go through unchanged, with no transcode', async () => {
+    const names = ['a.ogg', 'b.mp3', 'c.m4a', 'd.png', 'e.jpg', 'f.mp4', 'g.pdf'];
+    const dir = room(...names);
+    const b = capture();
+    const seen = [];
+    const a = mk(b, dir, { transcode: stub(seen) });
+    for (const n of names) await send(a, `/media ${n}`);
+    expect(seen).toEqual([]);
+    expect(b.calls.media.map((m) => m.path)).toEqual(names.map((n) => join(dir, n)));
+  });
+
+  it('a .wav to a Telegram chat goes as it is (the rejection is WhatsApp\'s)', async () => {
+    const dir = room('saludo.wav');
+    const b = capture();
+    const seen = [];
+    const tg = { ...EV, surface: 'telegram' };
+    await send(mk(b, dir, { transcode: stub(seen) }), '/media saludo.wav', tg);
+    expect(seen).toEqual([]);
+    expect(b.calls.media.map((m) => m.path)).toEqual([join(dir, 'saludo.wav')]);
   });
 });

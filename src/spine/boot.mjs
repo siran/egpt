@@ -3578,7 +3578,7 @@ export async function boot({
     if (r == null) return { outcome: 'not-supported', detail: `this chat's bridge cannot change a group's ${a.what} (Telegram groups only)` };
     return r.ok ? { outcome: 'set' } : { outcome: 'failed', detail: r.reason };
   };
-  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: async (r) => { if (spineLate) await placeChat(r.chatId, `[wake] ${r.being}`); return spineLate?.wakeOnBackground(r); }, onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: async (r) => { if (spineLate) await placeChat(r.chatId, `[wake] ${r.being}`); return spineLate?.wakeOnBackground(r); }, onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), ffmpegCommand: tx.cliCfg.ffmpeg_command, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's

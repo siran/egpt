@@ -56,6 +56,16 @@ async function fileExists(p) {
   try { await stat(p); return true; } catch { return false; }
 }
 
+// Any audio ffmpeg reads → Opus/ogg, which WhatsApp accepts. voip tunes for speech; off for music.
+export function transcodeToOpus(ffmpegCommand, input, output, { bitrate = '64k', voip = false, run = execFileAsync } = {}) {
+  return run(ffmpegCommand, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', input,
+    '-c:a', 'libopus', '-b:a', bitrate, ...(voip ? ['-application', 'voip'] : []),
+    output,
+  ]);
+}
+
 // Real piper render + ffmpeg transcode. Writes a UTF-8-no-BOM temp text file (piper
 // takes --input-file, not stdin — stdin decodes via the process code page and mangles
 // non-ASCII on Windows), spawns piper, checks BOTH exit code AND that the WAV actually
@@ -78,12 +88,7 @@ export async function synthesizeWithPiper(text, { pythonPath, modelPath, ffmpegC
       '--output-file', wavPath,
     ]);
     if (!(await fileExists(wavPath))) throw new Error('piper produced no output file');
-    await run(ffmpegCommand, [
-      '-hide_banner', '-loglevel', 'error', '-y',
-      '-i', wavPath,
-      '-c:a', 'libopus', '-b:a', '24k', '-application', 'voip',
-      oggPath,
-    ]);
+    await transcodeToOpus(ffmpegCommand, wavPath, oggPath, { bitrate: '24k', voip: true, run });
     return await readFile(oggPath);
   } finally {
     for (const p of [txtPath, wavPath, oggPath]) { try { await unlink(p); } catch { /* tmp cleanup is best-effort */ } }

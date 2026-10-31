@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  startSynthesizerServer, synthesizeViaEndpoint,
+  startSynthesizerServer, synthesizeViaEndpoint, transcodeToOpus,
 } from '../src/tools/synthesizer.mjs';
 import { signAudio } from '../src/tools/transcriptor.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
@@ -126,5 +126,19 @@ describe('synthesizeViaEndpoint (main-spine client side)', () => {
     await expect(
       synthesizeViaEndpoint('hi', 'es_MX-claude-high', { endpoint: 'http://127.0.0.1:9', keyB64: KEY, timeoutMs: 500 })
     ).rejects.toThrow();
+  });
+});
+
+describe('transcodeToOpus — the one ffmpeg → Opus/ogg call', () => {
+  it('music by default (libopus 64k, no voip); the synthesizer asks for voip at 24k', async () => {
+    const calls = [];
+    const run = async (cmd, args) => { calls.push([cmd, args]); };
+    await transcodeToOpus('/opt/ffmpeg', 'in.wav', 'out.ogg', { run });
+    await transcodeToOpus('/opt/ffmpeg', 'in.wav', 'out.ogg', { bitrate: '24k', voip: true, run });
+    const head = ['-hide_banner', '-loglevel', 'error', '-y', '-i', 'in.wav', '-c:a', 'libopus', '-b:a'];
+    expect(calls).toEqual([
+      ['/opt/ffmpeg', [...head, '64k', 'out.ogg']],
+      ['/opt/ffmpeg', [...head, '24k', '-application', 'voip', 'out.ogg']],
+    ]);
   });
 });
