@@ -6,7 +6,8 @@
 // time. WhatsApp refuses edits ~15 min after the post, so nothing is edited past LIVE_EDIT_MS: a
 // fresh status takes over the animation and a late reply is sent fresh. While background work runs,
 // ONE status per chat is POSTED — a new message when its task list changes, else every
-// liveness.background_every_ms — never edited. All of it rides the spine's tick (STOP-first) and
+// liveness.background_every_ms — never edited; a finished task is marked as its session's CLI said it
+// ended (An #2944): ✓ ✗ ⏹, ◦ not known. All of it rides the spine's tick (STOP-first) and
 // THE reply path (sender.open / sender.post), with the real sender over a fake bridge here.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
@@ -50,7 +51,7 @@ function heldBrain() {
 
 // `mouth`: the chat is said by a second connection on this node (boot's local mouth): every reply,
 // placeholder and status goes out from ITS bridge in ITS room — never from the ear (`bridge`).
-function build({ stop = { present: false }, mouth = null, livenessEveryMs, livenessBackgroundEveryMs, publicOf } = {}) {
+function build({ stop = { present: false }, mouth = null, livenessEveryMs, livenessBackgroundEveryMs, publicOf, backgroundOutcome = () => ({ status: 'completed', message: null }) } = {}) {
   const bridge = fakeBridge();
   const brain = heldBrain();
   const peerMouth = mouth ? { route: async () => ({ bridge: mouth, chatId: 'mouth-room', connection: 'rodz' }) } : null;
@@ -59,6 +60,8 @@ function build({ stop = { present: false }, mouth = null, livenessEveryMs, liven
     bridge, brain, livenessEveryMs, livenessBackgroundEveryMs,
     // every warm session's live tasks with the conversation each would wake in (boot: the pool's)
     allBackground: () => brain.tasks.map((t) => ({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, ...t })),
+    // how a finished one ended, as its session's CLI said it (boot: the pool's) — completed, unless a test says otherwise
+    backgroundOutcome,
     say: async (o) => { said.push(o); return true; },
     identity: { build: (m) => ({ ...m, line: m.body }), spineEvent: async (surface, chatId) => ({ surface, chatId }) },
     router: { resolve: (ev) => ({ being: /^@leo\b/.test(ev.body) ? 'leo' : 'egpt', mention: { atEStart: true, atEAnywhere: true } }) },
@@ -596,6 +599,69 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     expect(b.bridge.sent).toEqual([]);
     await b.spine.noteStoppedBackground();
     expect(b.said).toEqual([{ being: 'egpt', chatId: CHAT, what: 'standdown', text: '⏹ background work stopped: E — Run the audit; leo — Crawl the site — eGPT moved to the logged-in session. Ask again if you still need it.' }]);
+  });
+});
+
+// An #2944, 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
+// debe ser estructural, no pongas al SI a determinar el error cuando falla el proceso".
+describe('liveness — a finished task is marked as its session\'s CLI said it ended', () => {
+  const FAILED = { status: 'failed', message: 'Background command "npm run lint" failed (exit code 1)' };
+  // E's audit (b1) and leo's lint (b2) running; `ended`: taskId → how the CLI said it ended. `asked` gets each lookup.
+  async function auditAndLint(ended, asked = []) {
+    const b = build({ backgroundOutcome: (t) => { asked.push(t); return ended[t.taskId] ?? null; } });
+    const done = b.bridge.emit(mention('@e run the audit, and leo the lint'));
+    await flush();
+    b.brain.tasks = [{ taskId: 'b1', description: 'Run the audit', since: T0 }, { being: 'leo', taskId: 'b2', description: 'Lint the repo', since: T0 + 20 * sec }];
+    b.brain.calls[0].release('both started');
+    await done;
+    await flush();
+    return b;
+  }
+  const finish = async (b, taskIds, t) => { b.brain.tasks = b.brain.tasks.filter((x) => !taskIds.includes(x.taskId)); at(t); b.spine.tick(); await flush(); };
+
+  it("a failed task is ✗ with the CLI's own message, beside the running ones — read once, as it leaves the list", async () => {
+    const asked = [];
+    const b = await auditAndLint({ b2: FAILED }, asked);
+    await finish(b, ['b2'], 1 * min);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (1):\n• E — Run the audit · 1m00s\n✗ leo — Lint the repo · 40s — Background command "npm run lint" failed (exit code 1)']);
+    expect(asked).toEqual([{ being: 'leo', chatId: CHAT, taskId: 'b2' }]);
+    await ticks(b, 1 * min + 15 * sec, 2 * min);
+    expect(asked).toHaveLength(1);
+  });
+
+  it('the last post: "✓ … done" only if all it lists completed; a failure among them → "⚠️ background work ended:"', async () => {
+    const b = await auditAndLint({ b1: { status: 'completed', message: null }, b2: FAILED });
+    await finish(b, ['b1', 'b2'], 1 * min);                           // one quiet pulse
+    await finish(b, [], 2 * min);
+    expect(posts(b).slice(1)).toEqual(['⚠️ background work ended:\n✓ E — Run the audit · 1m00s\n✗ leo — Lint the repo · 40s — Background command "npm run lint" failed (exit code 1)']);
+    const ok = await auditAndLint({ b1: { status: 'completed', message: null }, b2: { status: 'completed', message: null } });
+    await finish(ok, ['b1', 'b2'], 3 * min);
+    await finish(ok, [], 4 * min);
+    expect(posts(ok).slice(1)).toEqual(['✓ background work done:\n✓ E — Run the audit · 3m00s\n✓ leo — Lint the repo · 2m40s']);
+  });
+
+  it('a stopped task is ⏹ "stopped" — no error, no ⚠️, and not "done"', async () => {
+    const b = await auditAndLint({ b1: { status: 'completed', message: null }, b2: { status: 'stopped', message: 'Lint the repo' } });
+    await finish(b, ['b1', 'b2'], 1 * min);
+    await finish(b, [], 2 * min);
+    expect(posts(b).slice(1)).toEqual(['background work ended:\n✓ E — Run the audit · 1m00s\n⏹ leo — Lint the repo · 40s — stopped']);
+  });
+
+  it('how it ended is not known (its session is gone, or none wired) → ◦, never a ✓ it cannot see', async () => {
+    const b = await auditAndLint({ b1: { status: 'completed', message: null } });
+    await finish(b, ['b2'], 1 * min);
+    expect(posts(b).at(-1)).toBe('⚙️ background work (1):\n• E — Run the audit · 1m00s\n◦ leo — Lint the repo · 40s');
+    const none = build({ backgroundOutcome: null });
+    const done = none.bridge.emit(mention('@e run the audit in the background'));
+    await flush();
+    none.brain.tasks = [{ taskId: 'b1', description: 'Run the audit', since: T0 + 2 * min }];
+    at(2 * min);
+    none.brain.calls[0].release('started it');
+    await done;
+    await flush();
+    await finish(none, ['b1'], 3 * min);
+    await finish(none, [], 4 * min);
+    expect(posts(none)).toEqual(['⚙️ background work (1):\n• Run the audit · 0s', 'background work ended:\n◦ Run the audit · 1m00s']);
   });
 });
 

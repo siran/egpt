@@ -153,4 +153,47 @@ describe('boot — a background task\'s completion wakes the being where it last
     expect(statuses()).toHaveLength(1);
     app.stop();
   });
+
+  // An #2944 (2026-10-31): a finished task is marked as its session's CLI said it ended — boot reads it from
+  // the pool (pool.outcome → session.backgroundOutcome) of the conversation the task ran in.
+  it("a failed task's line is ✗ with the CLI's own message, read from its warm session", async () => {
+    const { start, built } = fakeTransport();
+    const sessions = [];
+    let convState = seedOn();
+    let t = Date.UTC(2026, 9, 15, 14, 5);
+    const app = await boot({
+      readConfig: CONFIG,
+      startBridge: start,
+      makeSession: (opts) => {
+        const s = {
+          opts, sessionId: opts.sessionId ?? 'sess-1', backgroundTasks: [], outcomes: {},
+          async turn(m) { if (/in the background/.test(m)) this.backgroundTasks = [{ taskId: 'b1', description: 'Run the audit', since: t }]; return { text: `↩ ${m}`, sessionId: this.sessionId }; },
+          backgroundOutcome(taskId) { return this.outcomes[taskId] ?? null; },
+          close() {},
+        };
+        sessions.push(s);
+        return s;
+      },
+      probeEndpoint: async () => ({ ok: false, status: 0 }),
+      loadState: async () => convState,
+      writeState: async (s) => { convState = s; },
+      io: memIo(), ingest: false, tickMs: 0,
+      now: () => t,
+      log: { line: () => {} },
+    });
+    const spy = built[0];
+    await spy.onIncoming('hola E, run the audit in the background', {
+      chatId: CHAT, chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
+    });
+    const statuses = () => spy.sent.map(([text]) => String(text)).filter((x) => x.includes('background work'));
+    await vi.waitFor(() => expect(statuses()).toHaveLength(1));
+
+    sessions[0].backgroundTasks = [];
+    sessions[0].outcomes.b1 = { status: 'failed', message: 'Background command "Run the audit" failed (exit code 2)' };
+    t += 60_000; app.spine.tick();                                    // gone: one quiet pulse
+    t += 60_000; app.spine.tick();
+    await vi.waitFor(() => expect(statuses()).toHaveLength(2));
+    expect(statuses()[1]).toContain('⚠️ background work ended:\n✗ Run the audit · 1m00s — Background command "Run the audit" failed (exit code 2)');
+    app.stop();
+  });
 });

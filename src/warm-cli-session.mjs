@@ -8,7 +8,7 @@
 // the process is kept RESIDENT instead of re-spawned per turn.
 //
 // Interface = what `src/warm-sessions.mjs` (createWarmPool) expects of a session:
-//   turn(message, onUpdate) -> { text, sessionId, usage?, model?, bgStarted? }  ·  inject(message) -> bool  ·  interrupt()  ·  close()  ·  background  ·  backgroundTasks
+//   turn(message, onUpdate) -> { text, sessionId, usage?, model?, bgStarted? }  ·  inject(message) -> bool  ·  interrupt()  ·  close()  ·  background  ·  backgroundTasks  ·  backgroundOutcome(taskId)
 //   · reconfigure(changes) · reconfigurable · orphan (an `adopt`ed process: src/cli-host.mjs)
 // The pool owns lazy-warm, idle-evict (the residency/reap policy), LRU, and
 // per-key serialization, so this primitive only manages ONE process running ONE
@@ -151,6 +151,13 @@ const SELF_TURN_START_MS = 5_000;
 // A written turn is answered on stdout within seconds (its replay, init; a cold boxed spawn + --resume
 // measured ~13s on kg). Nothing at all past this: nobody reads the pipe — the pool retries once, fresh.
 const FIRST_EVENT_MS = 120_000;
+
+// How finished background tasks ended (`outcomes` below): the last this many are kept, each message one
+// line of at most OUTCOME_MAX chars.
+const OUTCOMES_KEPT = 50;
+const OUTCOME_MAX = 200;
+// The CLI's end states: task_notification says completed|failed|stopped, its task_updated killed for stopped.
+const ENDED = { completed: 'completed', failed: 'failed', stopped: 'stopped', killed: 'stopped' };
 
 // 60 chars. The rendered text is a WhatsApp reply, and an agentic turn emits DOZENS of
 // tool calls — the budget is paid once per call, so it is a signpost ("which file? which
@@ -298,6 +305,7 @@ export function createWarmCliSession(options = {}) {
   // on the interrupt answered send_now 'nothing_waiting' and stopped nothing; `stop_task` stops a task.
   let background = new Map();       // task_id -> { description, since }, still running
   let finished = [];                // completions no turn has taken yet
+  const outcomes = new Map();       // task_id -> { status, message, at }: how each ended, the last OUTCOMES_KEPT
   let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started, summaries }
   let model = null;                 // the model the CLI reports in its `init` event (agent stats)
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
@@ -374,6 +382,20 @@ export function createWarmCliSession(options = {}) {
     selfTurn = null;
     if (t) { clearTimeout(t.timer); t.end(); }
   }
+  // HOW A BACKGROUND TASK ENDED IS THE CLI'S OWN VERDICT (An #2944, 2026-10-31: "si termina en error (muy
+  // raro) debería mostrar una X y el mensaje de error? esto debe ser estructural, no pongas al SI a
+  // determinar el error cuando falla el proceso"). task_notification carries it (status; its summary,
+  // sometimes a reason); the task_updated just before it is kept in case none follows. Anything but
+  // completed keeps what the CLI said: one line, redacted, capped — collapsed, redacted, truncated, as
+  // renderToolUse does.
+  function taskEnded(taskId, status, said) {
+    let message = status === 'completed' ? '' : redactSecrets(String(said ?? '').replace(/\s+/g, ' ').trim());
+    if (message.length > OUTCOME_MAX) message = message.slice(0, OUTCOME_MAX - 1) + '…';
+    outcomes.delete(taskId);
+    outcomes.set(taskId, { status, message: message || null, at: Date.now() });
+    if (outcomes.size > OUTCOMES_KEPT) outcomes.delete(outcomes.keys().next().value);
+  }
+
   // Not interrupted (see BACKGROUND WORK above): an interrupt here killed every other background agent.
   function startSelfTurn() {
     const t = expectSelfTurn();
@@ -439,6 +461,8 @@ export function createWarmCliSession(options = {}) {
           background = new Map(tasks.map((t) => [t.task_id, background.get(t.task_id) ?? { description: t.description || t.task_id, since: Date.now() }]));
         } else if (ev.subtype === 'task_notification' && background.has(ev.task_id)) finished.push(`${background.get(ev.task_id).description} — ${ev.status ?? 'done'}`);
         else if (ev.subtype === 'init' && !pending && finished.length) startSelfTurn();
+        if (ev.subtype === 'task_notification' && background.has(ev.task_id) && ENDED[ev.status]) taskEnded(ev.task_id, ENDED[ev.status], ev.reason || ev.summary);
+        else if (ev.subtype === 'task_updated' && background.has(ev.task_id) && ENDED[ev.patch?.status]) taskEnded(ev.task_id, ENDED[ev.patch.status], ev.patch.error);
       }
       // Absorbed by a turn — the CLI's own one included, which now runs on and reports it with its own.
       if (ev.type === 'user' && ev.isReplay === true && ev.origin?.kind === 'task-notification') {
@@ -752,5 +776,7 @@ export function createWarmCliSession(options = {}) {
     get background() { return background.size + (selfTurn?.started ? 1 : 0); },
     // …and what they are, with when each started (the spine's liveness status and its ask).
     get backgroundTasks() { return [...background].map(([taskId, t]) => ({ taskId, ...t })); },
+    // …and how a finished one ended, as the CLI said it: { status: completed|failed|stopped, message, at }, or null.
+    backgroundOutcome(taskId) { return outcomes.get(taskId) ?? null; },
   };
 }
