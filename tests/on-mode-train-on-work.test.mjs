@@ -2,7 +2,8 @@
 // after "help me pay paypal…" ran ~37 s with nothing visible and a steered "e" opened nothing
 // either): on its first tool use, after AMBIENT_OPEN_MS of running, or when a human line is
 // steered in. A quick tool-free silence still posts nothing. Ambient = a NON-HUMAN line (22:10):
-// a human's opens its ⏳ on arrival.
+// a human's opens its ⏳ on arrival. Built with dispatch.bot_quiet: false — under the default a
+// non-human line's train never opens before its end (tests/mode-bot-quiet.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createRouter } from '../src/spine/router.mjs';
@@ -41,7 +42,7 @@ function streamingBridge() {
 // `work(onPartial)` is the brain's turn body; `steers` turns on allow_new_input 'any'.
 function build({ mode = 'on', work, steers = false } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents };   // An (u-1) owns the node
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { bot_quiet: false } };   // An (u-1) owns the node
   const bridge = streamingBridge();
   const brain = {
     calls: [], steered: [],

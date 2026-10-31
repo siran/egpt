@@ -323,6 +323,8 @@ networks:
 #                                   # accum gates exactly like mention AND prompts each turn with what was said since that
 #                                   # agent's LAST turn. on/auto here = every agent answers everything everywhere (boot warns).
 #   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
+#   bot_quiet: true                 # a turn another being/node's line triggered: no ⏳ train, posted once whole,
+#                                   # its '…' never shown (only logged). false = shown like a human's. Humans unaffected.
 #   address_without_at: true        # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
 #                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 

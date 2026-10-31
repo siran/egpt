@@ -515,6 +515,23 @@ export const CONFIG_SCHEMA = {
         <mode> <handle>. There is no default agent (2026-10-22): "on" or "auto"
         here means every agent answers every line in every chat the node
         hears — boot warns about it.
+      bot_quiet
+        Boolean. DEFAULT: true
+        A turn a BOT's line triggered — another being or node: a node-signed
+        line ("💸<do>"), a room member's reply; the provenance test the loop
+        guard uses (src/stop-guard.mjs isHumanTurn) — stays quiet
+        (operator 2026-10-31):
+          true   no "⏳ Thinking…" train opens for it, in any mode — not on a
+                 tool use, not after ten seconds, not on streamed text; the
+                 reply is posted once, whole, when the turn ends. Its "…" is
+                 never shown (no "…", no "✓"), only recorded in transcript.md
+                 as "(not surfaced) …". A bot's line steered into a live turn
+                 gets no ✍️/👍.
+          false  as before: in 'on' the train opens once the being works (a tool
+                 use, ten seconds, text; operator 2026-10-18), elsewhere at once,
+                 and a "…" in mention/mention-direct/accum is posted.
+        A HUMAN's turn is untouched either way. Read live (src/spine/gating.mjs
+        decide/surfaces).
       address_without_at
         Boolean. DEFAULT: true
         May a BARE handle OPENING a message address its agent — "d hola",

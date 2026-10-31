@@ -4,8 +4,8 @@
 // mode→decision LOGIC is the kept, test-locked auto-mode.mjs; this service only
 // resolves WHICH mode/policy applies and packages the per-message decision:
 //
-//   decide(being, ev, mention?, { denied? }) -> { mode, receives, mayReply }   (ONE conv-state read)
-//   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'-'...' silence cosmetic
+//   decide(being, ev, mention?, { denied?, bot? }) -> { mode, receives, mayReply, quiet? }   (ONE conv-state read)
+//   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'/quiet '...' silence cosmetic
 //
 // `mode` resolves down ONE chain, most specific first (operator 2026-07-25):
 //   config.yaml         closed_chats.<surface>.<id>   'off' for every being (closed-chats.mjs)
@@ -78,7 +78,9 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // is mentioned for ITS gate, not @e's); default to ev.mention for direct callers.
   // `denied` is the router's allowed_users answer for this target (router.resolve): a denied
   // sender is recorded but runs no turn, in any mode.
-  async function decide(being, ev, mention = ev.mention, { denied = false } = {}) {
+  // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
+  // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
+  async function decide(being, ev, mention = ev.mention, { denied = false, bot = false } = {}) {
     const c = cfg();
     let state = null;
     if (loadState) { try { state = await loadState(); } catch { state = null; } }
@@ -98,7 +100,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
       if (at === false) mayReply = false;
       else if (at) replyChatId = at;
     }
-    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}) };
+    const quiet = bot && c.dispatch?.bot_quiet !== false;
+    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(quiet ? { quiet } : {}) };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an
@@ -106,8 +109,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // not surfaced). Every other mode is already fully decided by mayReply.
   function surfaces(decision, replyText) {
     if (!decision?.mayReply) return false;
-    // 'auto' gates like 'on' — its free-post silence ('…') is likewise recorded, not surfaced.
-    return !((decision.mode === 'on' || decision.mode === 'auto') && isSilenceReply(replyText));
+    // 'auto' gates like 'on' — its free-post silence ('…') is likewise recorded, not surfaced. So is a quiet turn's, in any mode.
+    return !((decision.mode === 'on' || decision.mode === 'auto' || decision.quiet) && isSilenceReply(replyText));
   }
 
   return { decide, surfaces };

@@ -665,8 +665,9 @@ describe('every mode replies in the side group; a turn that stays silent makes n
     expect(b.bridge.sent).toEqual([]);
   });
 
-  // A human's turn arms no 10 s timer (its ⏳ is not deferred); a non-human's does. Neither makes the group.
-  for (const [who, over, armed, init] of [['a human', {}, 0, THINKING], ['another being', { fromMember: { id: 'claude', kind: 'brain' } }, 1, 'Listo']]) {
+  // A human's turn arms no 10 s timer (its ⏳ is not deferred); nor does a non-human's under dispatch.bot_quiet
+  // (it opens only at its end). Neither makes the group.
+  for (const [who, over, armed, init] of [['a human', {}, 0, THINKING], ['another being', { fromMember: { id: 'claude', kind: 'brain' } }, 0, 'Listo']]) {
     it(`on, ${who}, not addressed, it works first (a tool use, the 10 s): nothing is made or posted until its first text`, async () => {
       const h = harness({ state: seedState({ entry: AUTOMATIC }) });
       const timers = fakeTimers();

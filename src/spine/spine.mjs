@@ -805,7 +805,7 @@ export function createSpine({
   async function gateOf(target, ev) {
     const to = gateAs(target, null);
     const mention = target.mention ?? ev.mention;
-    return { target, meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(to, ev, mention, { denied: !!target.denied }) };
+    return { target, meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(to, ev, mention, { denied: !!target.denied, bot: !humanTurn(ev) }) };
   }
   // The targets whose gate receives the line, and whether the line is RECORDED at all: the router's
   // answer for the beings here, or any target receiving it ('off' for all → not received, C4).
@@ -1272,7 +1272,7 @@ export function createSpine({
       // written rather than the event: warm-cli-session.inject records `rec.text` as the exact
       // string it puts on stdin and matches the `--replay-user-messages` echo against THAT, so it
       // acks the stripped line without knowing anything changed.
-      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev) })) return;
+      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev), ack: !d.quiet })) return;
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
       // (operator: "mentions should always be replied to the message" — now EVERY reply,
@@ -1400,8 +1400,9 @@ export function createSpine({
     const ahead = bumpTrain(turnKey);
     // replyIn null: replyTo is this chat's own id — a local mouth quotes its own copy (sender quoteIn).
     // ambient: an 'on' turn on a non-human line opens no ⏳ — a silence then posts nothing. A human's
-    // opens at arrival, addressed or not (operator 2026-10-18).
-    const ambient = d.mode === 'on' && !humanTurn(ev);
+    // opens at arrival, addressed or not (operator 2026-10-18). A quiet turn (a bot's line, dispatch.bot_quiet) is
+    // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
+    const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId });
     return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient }));
   }
@@ -1472,7 +1473,7 @@ export function createSpine({
       turns.setLive(turnKey, { senderId: ev.senderId ?? null, chatId: ev.chatId ?? null, out });
       out.activate?.();                                 // queued → live the moment its turn starts
       live = liveness.turnStarted({ out, being: to, ev, chat: d.replyChatId ?? ev.chatId, auto: d.mode === 'auto' });
-      if (ambient) opening = setTimeoutFn(() => out.begin?.(), AMBIENT_OPEN_MS);   // the train opens if the turn runs this long
+      if (ambient && !d.quiet) opening = setTimeoutFn(() => out.begin?.(), AMBIENT_OPEN_MS);   // the train opens if the turn runs this long
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
       // draining either way advances the baseline the next turn's cycle starts from.
@@ -1581,10 +1582,11 @@ export function createSpine({
       // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
       let streamed = '';
       const onPartial = (partial, use) => {
-        if (use?.tool) return out.begin?.();           // the being used a tool: an ambient turn opens its train
+        if (use?.tool) return d.quiet ? undefined : out.begin?.();   // the being used a tool: an ambient turn opens its train
         const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
         transcript.logStream?.(ev, streamed, raw, { being: to });
         streamed = raw;
+        if (d.quiet) return;                           // quiet: recorded, never shown — the reply posts whole at finish
         return out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
       };
       const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
