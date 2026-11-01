@@ -236,6 +236,19 @@ export function renderToolUse(block) {
   return s ? `${name}(${s})` : `${name}()`;
 }
 
+// A background task's description, as every status, ask, registry and listing names it, is ONE short line
+// (An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así"). The CLI describes a
+// background Bash with no `description` by its whole command: the status posted a heredoc line by line, code
+// and any secret in it with it. Its first non-empty line — collapsed, redacted, capped, as renderToolUse
+// does — ending "…" when anything was left out; none → the task id.
+const DESCRIPTION_MAX = 80;
+function describeTask(t) {
+  const lines = String(t.description ?? '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!lines.length) return t.task_id;
+  const s = redactSecrets(lines[0]);
+  return s.length > DESCRIPTION_MAX || lines.length > 1 ? s.slice(0, DESCRIPTION_MAX - 1) + '…' : s;
+}
+
 // verboseThinking rendering (operator 2026-08-29, wren's "see your full chain of thought"
 // request over WhatsApp: "tool use can be only like Bash()"). One assistant event's content
 // blocks -> pushed onto pending.verboseBlocks, arrival order preserved across the WHOLE turn
@@ -313,7 +326,7 @@ export function createWarmCliSession(options = {}) {
   // indicators"). Kept here, not dropped: an ambient task is the CLI's task all the same — while it runs
   // the pool must not evict its process, and its notification and end are read like any (the CLI's own
   // turn, its outcome). Only the activity shown leaves it out: liveness's status (src/spine/liveness.mjs).
-  const taskOf = (t, since) => ({ description: t.description || t.task_id, since, ...(t.parent_task_id ? { parentTaskId: t.parent_task_id } : {}), ...(t.ambient === true ? { ambient: true } : {}) });
+  const taskOf = (t, since) => ({ description: describeTask(t), since, ...(t.parent_task_id ? { parentTaskId: t.parent_task_id } : {}), ...(t.ambient === true ? { ambient: true } : {}) });
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
   // env, revoked at close. A boxed session's rides the launcher's -SetEnv and hands none in here.
   const link = typeof options.beingLink?.mint === 'function' ? options.beingLink.mint() : null;

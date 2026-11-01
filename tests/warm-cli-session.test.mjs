@@ -969,6 +969,40 @@ describe('warm-cli-session — a background task finishes', () => {
     s.close();
   });
 
+  // An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así". A background Bash with no
+  // `description` is described by the CLI as its whole command: the status posted a heredoc, line by line.
+  const HEREDOC = `\n  cd /home/egpt/.egpt/conversations/telegram/EduWeb-2610240312/desktop/gestion-docente/e4;  python3 - <<'PY'\np='aws/job-boleta.ps1'; s=open(p,encoding='utf-8').read()\nold="Foto 'boleta-1' | Out-Null"\nPY`;
+  const HEREDOC_LINE = 'cd /home/egpt/.egpt/conversations/telegram/EduWeb-2610240312/desktop/gestion-do…';
+  it('a task\'s description is ONE short line — its first, collapsed, redacted, cut at 80 with … — or its id; a finished one\'s summary too', async () => {
+    const f = backgroundClaude();
+    const done = [];
+    const s = createWarmCliSession({ spawn: f.spawn, onBackgroundDone: (i) => done.push(i) });
+    await s.turn('hi');
+    f.tasks([
+      { task_id: 'b1', task_type: 'local_bash', description: HEREDOC },
+      { task_id: 'b2', task_type: 'local_bash', description: 'curl -u leo:hunter2 https://radio.test/api\necho ok' },
+      { task_id: 'b3', task_type: 'local_bash', description: ' \n\t' },
+      { task_id: 'b4', task_type: 'local_bash' },
+      { task_id: 'a1', task_type: 'local_agent', description: 'Crawl the site' },
+    ]);
+    expect(s.backgroundTasks.map((t) => t.description)).toEqual([HEREDOC_LINE, 'curl -u *** https://radio.test/api…', 'b3', 'b4', 'Crawl the site']);
+    expect(HEREDOC_LINE).toHaveLength(80);
+    f.finishBg();
+    await settle();
+    expect(done).toEqual([{ summaries: [`${HEREDOC_LINE} — completed`], reply: 'self report' }]);
+    s.close();
+  });
+
+  it('…and an adopted session\'s (the daemon held it across a spine restart, its tasks as the CLI listed them)', () => {
+    const f = backgroundClaude();
+    const s = createWarmCliSession({ adopt: { proc: f.spawn(), sessionId: 'sess-1', background: [{ task_id: 'b1', description: HEREDOC, since: 1234 }, { task_id: 'b2', description: 'export GH_TOKEN=ghp_abcdefgh12345678\ngh pr list', parent_task_id: 'b1', since: 1235 }] } });
+    expect(s.backgroundTasks).toEqual([
+      { taskId: 'b1', description: HEREDOC_LINE, since: 1234 },
+      { taskId: 'b2', description: 'export GH_TOKEN=***…', since: 1235, parentTaskId: 'b1' },
+    ]);
+    s.close();
+  });
+
   it('a turn in flight ABSORBS the completion — no report, no stop, the turn answers as usual', async () => {
     const f = backgroundClaude();
     const done = [];

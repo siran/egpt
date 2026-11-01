@@ -14,6 +14,8 @@ import { createSpine } from '../src/spine/spine.mjs';
 import { createSender, THINKING, LIVE_EDIT_MS } from '../src/spine/sender.mjs';
 import { ASK_AFTER_MS, ASK_ANSWER_MS, LIVENESS_EVERY_MS, LIVENESS_BACKGROUND_EVERY_MS } from '../src/spine/liveness.mjs';
 import { editAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
+import { createWarmCliSession } from '../src/warm-cli-session.mjs';
+import { EventEmitter } from 'node:events';
 
 const T0 = Date.UTC(2026, 9, 15, 12, 0, 0);
 const CHAT = 'chat-A@g.us';
@@ -313,6 +315,22 @@ describe('liveness — background work is POSTED, never edited', () => {
     expect(b.bridge.sent[0]).toMatchObject({ chat: CHAT, opts: { bodyEmoji: '🐶', label: 'E', persona: 'egpt', replyTo: b.bridge.streams[0].confirmedId } });
     expect(b.bridge.streams).toHaveLength(1);                         // the turn's own placeholder: a status is no stream
     expect(b.notes.join('\n')).toContain('egpt/chat-A@g.us — background task(s) Run the audit still running, status posted');
+  });
+
+  // An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así" — a background Bash described
+  // by its whole command was posted as a heredoc, line by line. Its session keeps it one line (warm-cli-session).
+  it("(b) a task the CLI described by a whole heredoc command is ONE line in the status, as its session keeps it", async () => {
+    const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: { write() {}, end() {} }, kill() {} });
+    const session = createWarmCliSession({ adopt: { proc, background: [{ task_id: 'b1', description: "cd /srv/e4; python3 - <<'PY'\np='aws/job-boleta.ps1'; s=open(p).read()\nPY", since: T0 }] } });
+    const b = build();
+    const done = b.bridge.emit(mention('@e run the audit in the background'));
+    await flush();
+    b.brain.tasks = session.backgroundTasks.map(({ description, since }) => ({ description, since }));
+    b.brain.calls[0].release('started it');
+    await done;
+    await flush();
+    expect(posts(b)).toEqual(["⚙️ background work (1):\n• cd /srv/e4; python3 - <<'PY'… · 0s"]);
+    session.close();
   });
 
   it('(b) a change — a task appears or finishes — is posted at the next pulse; several in one pulse make ONE message, the finished ones ✓', async () => {
