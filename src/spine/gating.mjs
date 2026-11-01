@@ -78,7 +78,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // explicitly by the loop (it's the ROUTED being's mention — a sibling routed by its own @name
   // is mentioned for ITS gate, not @e's); default to ev.mention for direct callers.
   // `denied` is the router's allowed_users answer for this target (router.resolve): a denied
-  // sender is recorded but runs no turn, in any mode.
+  // sender is recorded but runs no turn, in any mode. So is a reaction to a bot's post — one this account
+  // sent, or any node signed (the bridge's replyToBot/replyToNode) (operator 2026-11-01).
   // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
   // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
@@ -92,7 +93,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     const { mode } = resolveMode(bv, being, c);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
-    let mayReply = !denied && mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
+    const onBotPost = ev.kind === 'reaction' && (!!ev.mention?.replyToBot || ev.replyToNode != null);
+    let mayReply = !denied && !onBotPost && mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
     // Not asked for a backlog read or the operator's own line in an auto chat: no reply follows either.
     let replyChatId = null, tunnel = false;
     if (mayReply && sideGroupFor && !ev.backlog && !(mode === 'auto' && ev.isSender)) {

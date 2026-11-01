@@ -96,14 +96,15 @@ describe('a reply wakes the being that signed the quoted post (kg, E on)', () =>
     expect(woke(s)).toEqual(['egpt']);
   });
 
-  it("a reaction to don's post wakes nobody here; one to E's post wakes E", async () => {
+  it("a reaction to don's post wakes nobody here; one to E's post neither (operator 2026-11-01)", async () => {
     const a = buildSpine('on');
     await a.spine.handleInbound(reaction({ node: 'do', being: 'don' }));
     expect(woke(a)).toEqual([]);
     expect(a.transcript.logged).toHaveLength(1);
     const b = buildSpine('on');
     await b.spine.handleInbound(reaction({ node: 'kg', being: 'egpt' }));
-    expect(woke(b)).toEqual(['egpt']);
+    expect(woke(b)).toEqual([]);
+    expect(b.transcript.logged).toHaveLength(1);
   });
 
   it("'off' still does not receive a reply to don's post", async () => {

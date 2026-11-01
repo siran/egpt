@@ -1,7 +1,8 @@
 // A PERSON'S REACTION IS INPUT (operator 2026-10-18): it "obeys the same rules as all messages,
-// meaning mention|accum|mute|on|off". A reaction gates exactly as a text reply to the same message:
-// it wakes by the reply-to-being attribute (beeper.mjs sets it as for a text reply), never by words
-// in the quoted snippet. A being's own reaction never gets here (dropped at the bridge).
+// meaning mention|accum|mute|on|off". A reaction gates exactly as a text reply to the same message,
+// never by words in the quoted snippet. A being's own reaction never gets here (dropped at the bridge).
+// …EXCEPT ON A BOT'S POST (operator 2026-11-01): a reaction to one of ours (sent by this account, or
+// node-signed by any node) is recorded and invokes no being, in any mode.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -57,10 +58,11 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
   });
 
   // contract 6.4
-  it('mention: a reaction to the BEING\'s post wakes it, as a reply to that post does', async () => {
+  it('mention: a reply to the BEING\'s post wakes it; a reaction to that post is recorded only', async () => {
     const { reaction, text } = await both('mention', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing));
     expect(text.brain.calls.map((c) => c.being)).toEqual(['egpt']);
-    expect(reaction.brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    expect(reaction.brain.calls).toEqual([]);
+    expect(reaction.recorded).toEqual(['reaction']);
   });
 
   it('REPRODUCE mention: a handle inside the QUOTED snippet addresses nobody — a reply "👍" to it wakes nobody either', async () => {
@@ -71,8 +73,8 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
     expect(reaction.recorded).toEqual(['reaction']);
   });
 
-  it('accum: same gate as mention — the being\'s post wakes it, anyone else\'s does not', async () => {
-    expect((await both('accum', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing))).reaction.brain.calls.map((c) => c.being)).toEqual(['egpt']);
+  it('accum: same gate as mention — a reaction wakes no one, on the being\'s post or anyone else\'s', async () => {
+    expect((await both('accum', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing))).reaction.brain.calls).toEqual([]);
     const { reaction, text } = await both('accum', reactionTo('hola'), textReply('👍'));
     expect(text.brain.calls).toEqual([]);
     expect(reaction.brain.calls).toEqual([]);
@@ -81,13 +83,11 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
 
   // The being's post was sent by THIS account (a one-account node, or the ear's own fallback). A
   // reaction's msgId is its TARGET, so "did we send it" said echo and swallowed the person's ❤️.
-  it("REPRODUCE: a reaction to a post THIS account sent is still a person's — mention wakes as a reply does; on wakes", async () => {
+  it("REPRODUCE: a reaction to a post THIS account sent is still a person's — recorded, not echo; a reply to it wakes", async () => {
     const sent = ['m1'];
     const m = await both('mention', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing), { sent });
     expect(m.text.brain.calls.map((c) => c.being)).toEqual(['egpt']);
-    expect(m.reaction.brain.calls.map((c) => c.being)).toEqual(['egpt']);
-    const on = await both('on', reactionTo('🐶 e: listo', toBeing), textReply('👍', toBeing), { sent });
-    expect(on.reaction.brain.calls.map((c) => c.being).sort()).toEqual(['egpt', 'wren']);
+    expect(m.reaction.recorded).toEqual(['reaction']);
   });
 
   // contract 6.4
@@ -98,6 +98,33 @@ describe('a person\'s reaction gates like a text reply to the same message', () 
     const off = build('off'); await off.bridge.emit(reactionTo('🐶 e: listo', toBeing));
     expect(off.brain.calls).toEqual([]);
     expect(off.recorded).toEqual([]);
+  });
+});
+
+describe('a person\'s reaction to a BOT\'s post invokes nobody (operator 2026-11-01)', () => {
+  it("REPRODUCE on: a human 👍 on E's post runs no turn, and is recorded", async () => {
+    const s = build('on');
+    await s.bridge.emit(reactionTo('🐶 E: listo', toBeing));
+    expect(s.brain.calls).toEqual([]);
+    expect(s.opens).toEqual([]);
+    expect(s.recorded).toEqual(['reaction']);
+  });
+
+  it('REPRODUCE on: one on a post this account sent (no frame read) likewise; one on another node\'s signed post stays as it was', async () => {
+    const mine = build('on');
+    await mine.bridge.emit(reactionTo('listo', { replyToBot: true }));
+    expect(mine.brain.calls).toEqual([]);
+    expect(mine.recorded).toEqual(['reaction']);
+    const peer = build('on');
+    await peer.bridge.emit(reactionTo('🐶 don: listo', { replyToNode: 'do' }));
+    expect(peer.brain.calls).toEqual([]);
+    expect(peer.recorded).toEqual(['reaction']);
+  });
+
+  it("regression lock on: a human 👍 on a human's message wakes every being on there, as today", async () => {
+    const s = build('on');
+    await s.bridge.emit(reactionTo('hola'));
+    expect(s.brain.calls.map((c) => `${c.being}/${c.kind}`).sort()).toEqual(['egpt/reaction', 'wren/reaction']);
   });
 });
 
