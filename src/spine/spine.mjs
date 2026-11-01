@@ -1272,7 +1272,7 @@ export function createSpine({
       // written rather than the event: warm-cli-session.inject records `rec.text` as the exact
       // string it puts on stdin and matches the `--replay-user-messages` echo against THAT, so it
       // acks the stripped line without knowing anything changed.
-      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev), ack: !d.quiet })) return;
+      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev) && !d.quiet, ack: !d.quiet })) return;
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
       // (operator: "mentions should always be replied to the message" — now EVERY reply,
@@ -1402,7 +1402,7 @@ export function createSpine({
     const ahead = bumpTrain(turnKey);
     // replyIn null: replyTo is this chat's own id — a local mouth quotes its own copy (sender quoteIn).
     // ambient: an 'on' turn on a non-human line opens no ⏳ — a silence then posts nothing. A human's
-    // opens at arrival, addressed or not (operator 2026-10-18). A quiet turn (a bot's line, dispatch.bot_quiet) is
+    // opens at arrival, addressed or not (operator 2026-10-18). A quiet turn (a bot's line, dispatch.bot_quiet; a tunnelled one) is
     // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
     const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });
@@ -1712,10 +1712,11 @@ export function createSpine({
       if (parsed && hadActions) {
         try {
           // A reply routed to the side group takes its limbs there too: none acts in the origin.
+          // A tunnelled one's sends carry the reply's canary (tunnelCanary).
           const at = await replyChatOf(d, ev);
           if (!at) throw new Error('its side group could not be made — no limb run');
           const limbEv = at === ev.chatId ? ev : { ...ev, chatId: at };
-          const { ran = [] } = (await actions.execute(parsed.run, parsed.stripped, limbEv, { being: to })) ?? {};
+          const { ran = [] } = (await actions.execute(parsed.run, parsed.stripped, limbEv, { being: to, canary: tunnelCanary(d, to, ev) })) ?? {};
           for (const a of ran) await transcript.logAction?.(ev, a, { being: to });
         } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); }
       }

@@ -81,6 +81,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // sender is recorded but runs no turn, in any mode.
   // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
+  // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
   async function decide(being, ev, mention = ev.mention, { denied = false, bot = false } = {}) {
     const c = cfg();
     let state = null;
@@ -102,7 +103,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
       else if (at?.chatId) { replyChatId = at.chatId; tunnel = at.tunnel === true; }
       else if (at) replyChatId = at;
     }
-    const quiet = bot && c.dispatch?.bot_quiet !== false;
+    const quiet = tunnel || (bot && c.dispatch?.bot_quiet !== false);
     return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}) };
   }
 

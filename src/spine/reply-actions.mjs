@@ -509,7 +509,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     }
   }
 
-  async function runMedia(a, ev, being) {
+  async function runMedia(a, ev, being, canary) {
     const f = confinedFile(await resolveConvDir(ev), a.path);
     if (!f.ok) { onLog(`media: ${f.reason} (${ev.surface}/${ev.chatId})`); return false; }
     // No target, so nothing to key: whoever says this being's lines in this chat posts it (sender.mjs makeOutbound `say`).
@@ -523,7 +523,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     }
     const abs = ogg?.path ?? f.path;
     try {
-      const ok = await out.say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being }), { what: 'media' });
+      const ok = await out.say((on, room) => on.sendMedia?.(room, abs, { caption: a.caption, bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being, ...(canary ? { canary } : {}) }), { what: 'media' });
       if (!ok) { onLog(`media: send failed "${a.path}"`); await lost(out, ev, being, `/media ${a.path}`); }
       return !!ok;
     } finally {
@@ -553,9 +553,12 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
   // Returns whether the limb LANDED. The SAME truthiness every branch already logged on, promoted
   // to a return value (operator 2026-09-01) so the caller can record in the transcript what the
   // limb DID rather than what was merely attempted — see execute's `ran`.
-  async function runOne(a, ev, being) {
+  // `canary`: the turn's tunnel canary (spine.mjs tunnelCanary) — its sends carry it; its ids name the origin's messages.
+  async function runOne(a, ev, being, canary) {
     switch (a.type) {
       case 'react': {
+        // A tunnelled turn reads the origin's thread: its target is there, and a being reacts there for no one (operator 2026-11-01).
+        if (canary?.kind === 'tunnel') { onLog(`react: ${a.emoji} → #${a.targetId} not placed — a tunnelled turn, the target is in ${canary.origin}`); return false; }
         // The target is named by the EAR's id, so the key is read off the ear's own copy — and only
         // when a mouth is actually going to place it (sender.mjs makeOutbound `react`).
         const out = outbound(being, ev.chatId);
@@ -577,7 +580,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         // whoever says this being's lines in this chat — quoting ITS OWN copy of the target
         // (sender.mjs makeOutbound `say`).
         const out = outbound(being, ev.chatId);
-        const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being };
+        const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being, ...(canary ? { canary } : {}) };
         const send = async (on, room, replyTo) => { const r = await on.send?.(room, a.text, { replyTo, ...tag }); return !(r?.blocked || r == null); };
         const ok = await out.say(send, { msgId: a.targetId, keyOf: out.keyOf(a.targetId, 'reply'), text: a.text, tag });
         if (!ok) { onLog(`reply: → #${a.targetId} not delivered`); await lost(out, ev, being, `/reply #${a.targetId}`); }
@@ -592,7 +595,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         if (!ok) onLog(`ask: not delivered (no advice channel or post failed): ${JSON.stringify(String(a.question).slice(0, 120))}`);
         return !!ok;
       }
-      case 'media': return runMedia(a, ev, being);
+      case 'media': return runMedia(a, ev, being, canary);
       case 'book':
       case 'email':
       case 'group': return runGated(a, ev, being);
@@ -604,7 +607,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         const out = outbound(being, ev.chatId);
         const edit = async (on, room, id) => {
           if (id == null || !(await on.wasSentByUs?.(room, id))) { onLog(`edit: #${a.targetId} is not one of our messages — rejected (fail-closed)`); return false; }
-          const ok = await on.editOwn?.(room, id, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being });
+          const ok = await on.editOwn?.(room, id, a.text, { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), persona: being, ...(canary ? { canary } : {}) });
           if (!ok) onLog(`edit: #${a.targetId} failed`);
           return !!ok;
         };
@@ -629,11 +632,11 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
      * someone else's message, a /media file that isn't there all log and stay OUT of `ran`.
      * Additive — every existing caller ignored the (previously undefined) return value.
      */
-    async execute(run = [], stripped = [], ev = {}, { being = null } = {}) {
+    async execute(run = [], stripped = [], ev = {}, { being = null, canary = null } = {}) {
       for (const s of stripped) onLog(`stripped malformed action (${s.reason}): ${JSON.stringify(String(s.raw).slice(0, 120))}`);
       const ran = [];
       for (const a of run) {
-        try { if (await runOne(a, ev, being)) ran.push(a); }
+        try { if (await runOne(a, ev, being, canary)) ran.push(a); }
         catch (e) { onLog(`action ${a?.type} failed: ${e?.message ?? e}`); }
       }
       return { ran };

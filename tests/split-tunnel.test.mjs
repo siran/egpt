@@ -20,7 +20,8 @@ import { rmSync } from 'node:fs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
-import { createSender } from '../src/spine/sender.mjs';
+import { createSender, THINKING } from '../src/spine/sender.mjs';
+import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createRouter } from '../src/spine/router.mjs';
 import { ensureContact, recordThread, getContact, patchContact, forkContact, serialize, parse } from '../src/conversations-state.mjs';
@@ -95,11 +96,12 @@ async function typed(h, ev) {
 }
 
 function streamingBridge() {
-  const streams = [], sent = [];
+  const streams = [], sent = [], reactions = [];
   return {
-    streams, sent,
+    streams, sent, reactions,
     onMessage() {}, stop() {}, wasSentByUs: () => false,
     send(chat, text, opts) { sent.push({ chat, text, opts }); return { ok: true, confirmedId: `${chat}#s${sent.length}` }; },
+    react(chat, msgId, emoji) { reactions.push({ chat, msgId, emoji }); return true; },
     startStream(chat, init, opts) {
       const s = { chat, init, opts, finals: [], delivered: false, confirmedId: `${chat}#${streams.length + 1}`, update() {}, async finish(t) { s.finals.push(t); s.delivered = true; } };
       streams.push(s);
@@ -110,7 +112,8 @@ function streamingBridge() {
 const labelOf = (b) => (b === 'e' ? 'E' : String(b));
 // The real spine, gating (its side-group seam on the real commands), router (reading the state),
 // identity and sender; a transcript that keeps each chat's lines, read back for accum.
-function buildSpine(h, { replies = {}, timers = null } = {}) {
+// `limbs`: wire the reply actions (a mouth that holds every chat, so a /react is placed).
+function buildSpine(h, { replies = {}, timers = null, limbs = false } = {}) {
   const files = new Map();
   const add = (chatId, line) => files.set(chatId, [...(files.get(chatId) ?? []), line]);
   const transcript = {
@@ -120,8 +123,10 @@ function buildSpine(h, { replies = {}, timers = null } = {}) {
   };
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, chatId: ev.chatId, line: ev.line }); return { text: replies[ev.chatId] ?? 'ok', being }; } };
   const bridge = streamingBridge();
+  const logs = [];
+  const actions = limbs ? createReplyActions({ bridge, peerMouth: { route: async () => null, mouthIsElsewhere: () => false }, bodyEmojiOf: () => '🐶', labelOf, onLog: (m) => logs.push(m) }) : undefined;
   const spine = createSpine({
-    bridge, brain, identity: createIdentity({ now: () => 1000 }),
+    bridge, brain, actions, identity: createIdentity({ now: () => 1000 }),
     router: createRouter({ getAgents: () => h.config.agents, getConfig: () => h.config, loadState: async () => h.getState() }),
     gating: createGating({ getConfig: () => h.config, loadState: async () => h.getState(), sideGroupFor: (ev, o) => h.cmds.autoSideGroup(ev, o) }),
     commands: h.cmds, sender: createSender({ bridge, labelOf }), transcript, heartbeats: { runDue() {} },
@@ -132,7 +137,7 @@ function buildSpine(h, { replies = {}, timers = null } = {}) {
     ...(timers ? { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout } : {}),
   });
   const opened = () => [...bridge.streams.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null, canary: s.opts?.canary ?? null })), ...bridge.sent.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null, canary: s.opts?.canary ?? null }))];
-  return { spine, brain, bridge, files, opened, chats: () => opened().map((o) => o.chatId) };
+  return { spine, brain, bridge, files, logs, opened, chats: () => opened().map((o) => o.chatId) };
 }
 const from = (over = {}) => ({ network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LULU, senderName: 'Lulu', isSender: false, ...over });
 let n = 0;
@@ -382,5 +387,93 @@ describe('/<handle> split invite [<name>] also invites the members of X', () => 
       await typed(h, ev);
       expect(h.calls.create.map((c) => [c.title, c.participantIDs])).toEqual([[`SI+${TITLE}-${title}`, ids]]);
     }
+  });
+});
+
+// ── 5. a tunnelled turn is quiet, and all it says is X's E's (operator 2026-11-01) ────────────────
+// Live, S 10:41–10:46: every E turn in X opened "🐶 E: ⏳ Thinking…" in S, ending "✓" or "…"; a /reply
+// went to S recorded as Rodz (split-E took it as its own words); a /react aimed at X's message.
+describe('a tunnelled turn is quiet: only real content reaches the split, and it is X\'s E\'s', () => {
+  const onChat = () => harness({ config: cfg({ mode: 'on' }) });
+  const said = (b) => b.bridge.streams.map((s) => [s.chat, s.init, s.finals]);
+  const lastId = () => `k${n}`;   // the msgKey `say` just gave X's line
+
+  it('REPRODUCE: a reply that is \'…\' posts nothing in S and never opens a ⏳', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { replies: { [ORIGIN]: '…' } });
+    await say(b.spine, 'jaja');
+    expect(b.brain.calls.map((c) => c.chatId)).toEqual([ORIGIN]);
+    expect(said(b)).toEqual([]);
+    expect(b.bridge.sent).toEqual([]);
+  });
+
+  it('REPRODUCE: a turn that only reacts posts nothing in S, and no reaction is placed', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { limbs: true });
+    b.brain.turn = async (being, ev) => { b.brain.calls.push({ chatId: ev.chatId }); return { text: `/react #${ev.msgId} 👍`, being }; };
+    await say(b.spine, 'e prueba');
+    expect(said(b)).toEqual([]);
+    expect(b.bridge.sent).toEqual([]);
+    expect(b.bridge.reactions).toEqual([]);
+    expect(b.logs.filter((l) => l.includes('tunnel'))).toHaveLength(1);
+  });
+
+  it('REPRODUCE: a /reply is recorded in S under "E from [X]"', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { limbs: true });
+    b.brain.turn = async (being, ev) => ({ text: `/reply #${ev.msgId} Sí, todavía me llegan`, being });
+    await say(b.spine, 'e aún respondes?');
+    expect(said(b)).toEqual([]);
+    expect(b.bridge.sent.map((s) => [s.chat, s.text])).toEqual([[SPLIT, 'Sí, todavía me llegan']]);
+    expect(b.bridge.sent[0].opts.canary).toEqual({ group: SPLIT, origin: ORIGIN, kind: 'tunnel', speaker: SPEAKER });
+    await rodzPosts(b.spine, b.bridge.sent[0], 'Sí, todavía me llegan');
+    expect(b.files.get(SPLIT).at(-1).startsWith(`${SPEAKER}@[${SPLIT_TITLE}]`)).toBe(true);
+  });
+
+  it('real content is posted once, whole, in S — no ⏳ first', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { replies: { [ORIGIN]: 'el sábado' } });
+    await say(b.spine, 'cuándo es el viaje?');
+    expect(said(b)).toEqual([[SPLIT, 'el sábado', ['el sábado']]]);
+  });
+
+  it('a human\'s line steered into the live tunnelled turn opens no ⏳ in S and gets no ✍️ in X', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { limbs: true });
+    let open;
+    const held = new Promise((r) => { open = r; });
+    Object.assign(b.brain, { allowNewInput: async () => 'any', steer: async () => true, turn: async (being) => { await held; return { text: 'listo', being }; } });
+    const first = say(b.spine, 'e revisa esto');
+    await new Promise((r) => setTimeout(r, 0));
+    await say(b.spine, 'e y esto también');
+    expect(said(b)).toEqual([]);
+    expect(b.bridge.reactions).toEqual([]);
+    open();
+    await first;
+    expect(said(b)).toEqual([[SPLIT, 'listo', ['listo']]]);
+  });
+
+  it('regression lock: no split — a human\'s line in an \'on\' chat opens its ⏳ in X as today', async () => {
+    const b = buildSpine(onChat(), { replies: { [ORIGIN]: '…' } });
+    await say(b.spine, 'jaja');
+    expect(said(b)).toEqual([[ORIGIN, THINKING, ['✓']]]);
+  });
+
+  it('regression lock: split-E\'s own turn in S opens its ⏳ there, unmarked, and its /react is placed', async () => {
+    const h = onChat();
+    await typed(h, inOrigin('/e split viaje'));
+    const b = buildSpine(h, { replies: { [SPLIT]: '…' } });
+    await say(b.spine, 'jaja', inSplit());
+    expect(said(b)).toEqual([[SPLIT, THINKING, ['✓']]]);
+    expect(b.opened().map((o) => o.canary)).toEqual([null]);
+    const r = buildSpine(h, { limbs: true });
+    r.brain.turn = async (being, ev) => ({ text: `/react #${ev.msgId} 👍`, being });
+    await say(r.spine, 'e prueba', inSplit());
+    expect(r.bridge.reactions).toEqual([{ chat: SPLIT, msgId: lastId(), emoji: '👍' }]);
   });
 });
