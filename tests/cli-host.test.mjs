@@ -114,6 +114,24 @@ describe('a spine restart never ends a claude session', () => {
     expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'], reply: 'the audit is done' }]);
   });
 
+  it('(b) a task still running at the reconnect keeps the agent that launched it and the CLI\'s ambient mark (An #2971)', async () => {
+    const w = world();
+    const one = w.spine();
+    await run(one, 'bg: run the audit');
+    const tasks = [{ task_id: 'b1', description: 'audit' }, { task_id: 'b2', description: 'audit step', parent_task_id: 'b1' }, { task_id: 'w1', description: 'watch the log', ambient: true }];
+    w.spawns[0].child.stdout.emit('data', `${JSON.stringify({ type: 'system', subtype: 'background_tasks_changed', session_id: 'sess-1', tasks })}\n`);
+    await flush();
+    one.pair.drop();
+    const two = w.spine();
+    await two.adoptAll();
+    await flush();
+    expect(two.pool.background(KEY)).toEqual([
+      { taskId: 'b1', description: 'audit', since: expect.any(Number) },
+      { taskId: 'b2', description: 'audit step', since: expect.any(Number), parentTaskId: 'b1' },
+      { taskId: 'w1', description: 'watch the log', since: expect.any(Number), ambient: true },
+    ]);
+  });
+
   it('a turn in flight when the spine died is adopted: its reply reaches the being through the wake', async () => {
     const w = world();
     const one = w.spine();

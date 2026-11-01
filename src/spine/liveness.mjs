@@ -21,7 +21,10 @@
 //     later one. A finished task's wake answers in its own placeholder. Once the chat has no work left
 //     (one quiet pulse, and no turn running there: a wake may start more), a last post lists what
 //     finished — "done" only if all of it completed, else "ended", ⚠️ if any failed; a /standdown's line
-//     is posted instead.
+//     is posted instead. A task a listed agent launched is listed under it, └, as deep as they go (An #2971,
+//     2026-10-31: "are you listing parent and child process in the same level? in that case why not nest?");
+//     one whose agent is not in the post stands on its own. The CLI's ambient tasks (watchers — "not
+//     activity", its own doc) are in no status and keep none going.
 //   · background running ASK_AFTER_MS: the being is asked through the wake path whether it is still
 //     needed; no answer → one line to the logging group. Nothing is evicted or killed here.
 import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
@@ -43,7 +46,7 @@ export function workOf(tasks, being, labelOf) {
   return tasks.map((t) => (own ? t.description : `${labelOf(t.being)} — ${t.description}`));
 }
 
-// `allBackground`: () => [{ being, surface, chatId, taskId, description, since }] — every live background task,
+// `allBackground`: () => [{ being, surface, chatId, taskId, parentTaskId?, ambient?, description, since }] — every live background task,
 // in the chat a finished one would wake (boot: the pool's). `outcomeOf`: ({ being, chatId, taskId }) =>
 // { status, message } | null — how a finished one ended, as its session's CLI said it (boot: the pool's).
 export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, stopped = () => false, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
@@ -56,6 +59,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   const end = (out, text = null) => Promise.resolve(out?.end?.(text)).catch((err) => note(`liveness: could not settle a status — ${err?.message ?? err}`));
   // A task, across pulses: the session's own id where it has one.
   const keyOf = (x) => `${x.being}\0${x.taskId ?? x.description}\0${x.since}`;
+  // The work a status lists: not the CLI's ambient tasks — its doc: "hosts should exclude them from activity indicators".
+  const working = () => (allBackground?.() ?? []).filter((x) => !x.ambient);
   // Said once, whole, as the chat's status being, a reply to its turn's message.
   const say = (s, text) => Promise.resolve()
     .then(() => sender.post(s.chat, text, { being: s.being, auto: s.auto, ...s.reply }))
@@ -63,12 +68,20 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   // …and after a finished one, what the CLI said of its failure, or that it was stopped.
   const why = (o) => (o?.status === 'failed' && o.message ? ` — ${o.message}` : o?.status === 'stopped' ? ' — stopped' : '');
   // The chat's status: its running tasks •, those finished since the last post marked as each ended (ENDED),
-  // each with its elapsed time, one per line (operator 2026-10-30: "una por línea, con su bullet"). The last
-  // says "done" only if all of it completed (An #2944).
+  // each with its elapsed time, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
+  // the listed agent that launched it, └ (An #2971). The count is every running task, nested ones included.
+  // The last says "done" only if all of it completed (An #2944).
   function post(s, running, t) {
     const listed = [...running, ...s.done];
     const what = workOf(listed, s.being, labelOf);
-    const lines = listed.map((x, i) => `\n${i < running.length ? '•' : ENDED[x.outcome?.status] ?? '◦'} ${what[i]} · ${elapsed((x.ended ?? t) - x.since)}${why(x.outcome)}`);
+    const parentOf = (x) => (x.parentTaskId ? listed.find((p) => p.being === x.being && p.taskId === x.parentTaskId) : undefined);
+    const line = (x, depth) => {
+      const i = listed.indexOf(x);
+      const mark = i < running.length ? (depth ? '' : '• ') : `${ENDED[x.outcome?.status] ?? '◦'} `;
+      const under = listed.filter((c) => parentOf(c) === x).map((c) => line(c, depth + 1)).join('');
+      return `\n${depth ? `${'  '.repeat(depth)}└ ` : ''}${mark}${what[i]} · ${elapsed((x.ended ?? t) - x.since)}${why(x.outcome)}${under}`;
+    };
+    const lines = listed.filter((x) => !parentOf(x)).map((x) => line(x, 0));
     const ok = s.done.every((x) => x.outcome?.status === 'completed'), failed = s.done.some((x) => x.outcome?.status === 'failed');
     const head = running.length ? `⚙️ background work (${running.length}):` : ok ? '✓ background work done:' : `${failed ? '⚠️ ' : ''}background work ended:`;
     s.posted = t;
@@ -120,13 +133,13 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     for (const [chatId, s] of bg) {
       if (t - s.last < every) continue;
       s.last = t;
-      all ??= allBackground?.() ?? [];
+      all ??= working();
       const tasks = all.filter((x) => x.chatId === chatId);
       const live = new Set(tasks.map(keyOf));
       let changed = false;
       // gone from the list: how it ended is read now — the CLI said it before it dropped the task
       for (const [k, x] of s.seen) if (!live.has(k)) { s.seen.delete(k); s.done.push({ ...x, ended: t, outcome: outcomeOf?.({ being: x.being, chatId, taskId: x.taskId }) ?? null }); changed = true; }
-      for (const x of tasks) if (!s.seen.has(keyOf(x))) { s.seen.set(keyOf(x), { being: x.being, taskId: x.taskId, description: x.description, since: x.since ?? t }); changed = true; }
+      for (const x of tasks) if (!s.seen.has(keyOf(x))) { s.seen.set(keyOf(x), { being: x.being, taskId: x.taskId, parentTaskId: x.parentTaskId, description: x.description, since: x.since ?? t }); changed = true; }
       if (!tasks.length) {
         // one quiet pulse: a wake may be on its way — and none while a turn runs here: it may start more
         if (!s.quiet || [...turns].some((x) => x.ev.chatId === chatId)) { s.quiet = true; continue; }
@@ -157,11 +170,11 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
       if (x.status) end(x.status, `✓ ${elapsed(t - x.since)}`);
       const chatId = x.ev.chatId;
       if (bg.has(chatId) || stopped()) return;
-      const tasks = (allBackground?.() ?? []).filter((task) => task.chatId === chatId);
+      const tasks = working().filter((task) => task.chatId === chatId);
       if (!tasks.length) return;
       const reply = { replyTo: x.out?.confirmedId ?? null, replyIn: x.out?.confirmedIn ?? null };   // the turn's own message, where it was said
       const s = { being: x.being, ev: x.ev, chat: x.chat, auto: x.auto, reply, last: t, posted: t, seen: new Map(), done: [], quiet: false, asks: new Map() };
-      for (const task of tasks) s.seen.set(keyOf(task), { being: task.being, taskId: task.taskId, description: task.description, since: task.since ?? t });
+      for (const task of tasks) s.seen.set(keyOf(task), { being: task.being, taskId: task.taskId, parentTaskId: task.parentTaskId, description: task.description, since: task.since ?? t });
       bg.set(chatId, s);
       post(s, tasks.map((task) => s.seen.get(keyOf(task))), t);
       note(`liveness: ${x.being}/${chatId} — background task(s) ${workOf(tasks, x.being, labelOf).join('; ')} still running, status posted`);

@@ -120,7 +120,7 @@ export function createCliHost({ spawn = nodeSpawn, setPriority, log = () => {}, 
     const replay = rec.buffer.map((b) => `${b.line}\n`).join('');
     const reply = {
       t: 'cli:reply', id, pid: rec.child.pid, sessionId: rec.sessionId, model: rec.model,
-      background: rec.tasks.map((t) => ({ task_id: t.task_id, description: t.description, since: rec.since.get(t.task_id) ?? Date.now() })),
+      background: rec.tasks.map((t) => ({ task_id: t.task_id, description: t.description, parent_task_id: t.parent_task_id, ambient: t.ambient, since: rec.since.get(t.task_id) ?? Date.now() })),
       orphan: rec.openAtDetach ? { opener: rec.opener } : null,
       stderr: rec.stderr, replay, dropped: rec.dropped,
     };

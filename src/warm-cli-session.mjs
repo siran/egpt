@@ -236,6 +236,19 @@ export function renderToolUse(block) {
   return s ? `${name}(${s})` : `${name}()`;
 }
 
+// A background task's description, as every status, ask, registry and listing names it, is ONE short line
+// (An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así"). The CLI describes a
+// background Bash with no `description` by its whole command: the status posted a heredoc line by line, code
+// and any secret in it with it. Its first non-empty line — collapsed, redacted, capped, as renderToolUse
+// does — ending "…" when anything was left out; none → the task id.
+const DESCRIPTION_MAX = 80;
+function describeTask(t) {
+  const lines = String(t.description ?? '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!lines.length) return t.task_id;
+  const s = redactSecrets(lines[0]);
+  return s.length > DESCRIPTION_MAX || lines.length > 1 ? s.slice(0, DESCRIPTION_MAX - 1) + '…' : s;
+}
+
 // verboseThinking rendering (operator 2026-08-29, wren's "see your full chain of thought"
 // request over WhatsApp: "tool use can be only like Bash()"). One assistant event's content
 // blocks -> pushed onto pending.verboseBlocks, arrival order preserved across the WHOLE turn
@@ -303,11 +316,17 @@ export function createWarmCliSession(options = {}) {
   // Not interrupted, the other agent ran on and completed at ~100s, and the CLI's own turn ended in 2-3s
   // with a report ("quick finished … slow is still running"). No gentler stop exists: `send_now: true`
   // on the interrupt answered send_now 'nothing_waiting' and stopped nothing; `stop_task` stops a task.
-  let background = new Map();       // task_id -> { description, since }, still running
+  let background = new Map();       // task_id -> { description, since, parentTaskId?, ambient? }, still running
   let finished = [];                // completions no turn has taken yet
   const outcomes = new Map();       // task_id -> { status, message, at }: how each ended, the last OUTCOMES_KEPT
   let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started, summaries }
   let model = null;                 // the model the CLI reports in its `init` event (agent stats)
+  // A listed task as kept: the live background agent that launched it (parent_task_id; the status nests
+  // it, An #2971), and `ambient` (the CLI's doc: "not activity … hosts should exclude them from activity
+  // indicators"). Kept here, not dropped: an ambient task is the CLI's task all the same — while it runs
+  // the pool must not evict its process, and its notification and end are read like any (the CLI's own
+  // turn, its outcome). Only the activity shown leaves it out: liveness's status (src/spine/liveness.mjs).
+  const taskOf = (t, since) => ({ description: describeTask(t), since, ...(t.parent_task_id ? { parentTaskId: t.parent_task_id } : {}), ...(t.ambient === true ? { ambient: true } : {}) });
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
   // env, revoked at close. A boxed session's rides the launcher's -SetEnv and hands none in here.
   const link = typeof options.beingLink?.mint === 'function' ? options.beingLink.mint() : null;
@@ -458,7 +477,7 @@ export function createWarmCliSession(options = {}) {
         if (ev.subtype === 'background_tasks_changed') {
           const tasks = Array.isArray(ev.tasks) ? ev.tasks : [];
           if (pending) pending.bgStarted = (pending.bgStarted ?? 0) + tasks.filter((t) => !background.has(t.task_id)).length;
-          background = new Map(tasks.map((t) => [t.task_id, background.get(t.task_id) ?? { description: t.description || t.task_id, since: Date.now() }]));
+          background = new Map(tasks.map((t) => [t.task_id, background.get(t.task_id) ?? taskOf(t, Date.now())]));
         } else if (ev.subtype === 'task_notification' && background.has(ev.task_id)) finished.push(`${background.get(ev.task_id).description} — ${ev.status ?? 'done'}`);
         else if (ev.subtype === 'init' && !pending && finished.length) startSelfTurn();
         if (ev.subtype === 'task_notification' && background.has(ev.task_id) && ENDED[ev.status]) taskEnded(ev.task_id, ENDED[ev.status], ev.reason || ev.summary);
@@ -666,7 +685,7 @@ export function createWarmCliSession(options = {}) {
     const a = options.adopt;
     sessionId = a.sessionId ?? sessionId;
     model = a.model ?? null;
-    background = new Map((a.background ?? []).map((t) => [t.task_id, { description: t.description || t.task_id, since: t.since }]));
+    background = new Map((a.background ?? []).map((t) => [t.task_id, taskOf(t, t.since)]));
     // A turn the previous spine was waiting on: its result is still this conversation's reply.
     if (a.orphan) {
       const opener = String(a.orphan.opener ?? '');
@@ -774,7 +793,8 @@ export function createWarmCliSession(options = {}) {
     // Background tasks still running — the pool will not idle-evict while this is > 0. The CLI's own
     // turn counts as one while it runs: it is no longer stopped, and an eviction would cut its report.
     get background() { return background.size + (selfTurn?.started ? 1 : 0); },
-    // …and what they are, with when each started (the spine's liveness status and its ask).
+    // …and what they are, with when each started (the spine's liveness status and its ask), the agent that
+    // launched each (parentTaskId) and whether it is ambient, where the CLI says so.
     get backgroundTasks() { return [...background].map(([taskId, t]) => ({ taskId, ...t })); },
     // …and how a finished one ended, as the CLI said it: { status: completed|failed|stopped, message, at }, or null.
     backgroundOutcome(taskId) { return outcomes.get(taskId) ?? null; },
