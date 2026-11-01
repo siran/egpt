@@ -3702,12 +3702,14 @@ export function createCommands({
     return ['false', 'no', 'off', '0', ''].includes(s.toLowerCase()) ? false : s;
   };
   // THE TUNNEL (operator 2026-10-31): while the chat has an open /split (its own entry, parent_chat
-  // this chat; /end drops it), every reply here goes to the most recent one, through its mouth. Not a
-  // Telegram topic (everyone is already in it), not a group that is gone.
+  // this chat; /end drops it) that tunnels, every reply here goes to the most recent one, through its
+  // mouth. Not a Telegram topic (everyone is already in it), not a group that is gone.
+  // Whether it tunnels (2026-11-01): the entry's split.tunnel, else config.yaml split.tunnel, else no.
+  const tunnelsOf = (entry) => (typeof entry?.split?.tunnel === 'boolean' ? entry.split.tunnel : cfg().split?.tunnel === true);
   async function openSplitOf(state, surface, ev) {
     const bucket = state.contacts[surface];
     const parents = new Set([ev.chatId, getContact(state, surface, ev.chatId)?.jid]);
-    const splits = Object.keys(bucket).filter((id) => !bucket[id]?.aliasOf && parents.has(bucket[id]?.parent_chat) && !forkBridge.topicParentOf?.(id));
+    const splits = Object.keys(bucket).filter((id) => !bucket[id]?.aliasOf && parents.has(bucket[id]?.parent_chat) && tunnelsOf(bucket[id]) && !forkBridge.topicParentOf?.(id));
     for (const id of splits.reverse()) {
       const alive = forkBridge.chatRaw ? await superChannelAlive(id, { chatRaw: forkBridge.chatRaw, config: cfg() }) : null;
       if (alive !== false) return id;

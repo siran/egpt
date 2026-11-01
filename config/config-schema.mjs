@@ -3615,6 +3615,7 @@ export const CONFIG_SCHEMA = {
     mouth; nothing goes into the chat. The split records it as that being's ("E from [<chat>]"), so the
     split's own being reads it as the original's, not its own. "/<handle> end" in the split closes it
     and replies come back to the chat; an open split wins over reply_in_side_group. Not a Telegram topic.
+    Only a split whose tunnel (below) resolves true does this.
     The two accounts' phones come from
     beeper.primary.phone / beeper.secondary.phone. On Telegram (2026-10-25) it is a TOPIC of the
     group, tg:<chat>/<thread>, which everyone in the group can open: the group needs Topics on and the
@@ -3632,6 +3633,8 @@ export const CONFIG_SCHEMA = {
                    A template: {group} = the parent chat's title, {handle} = the handle the command
                    was typed to. Unset → a small built-in
                    default.
+      tunnel:      true|false (2026-11-01): does a split take its parent's replies. Its own conversations.yaml
+                   entry's split: { tunnel } wins over this config.yaml split.tunnel; neither set → false.
 
     ALIASES (operator 2026-10-19) — config/commands_alias.yaml, not a config.yaml key (skeleton:
     config/skeletons/commands_alias.yaml). A map of alias → "/<handle> <command> [args]", for ANY

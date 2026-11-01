@@ -51,6 +51,10 @@ contacts:
       # true/yes/on → "SI+<title>", any other text → that title
       #reply_in_side_group: on
 
+      # on a /split's own entry: while it is open, replies to its parent_chat are posted here
+      # (config-schema split); default config.yaml split.tunnel, else false
+      #split: { tunnel: true }
+
       # commands anyone here may run; replaces config.yaml public_commands, [] = none
       #public_commands: [join, split, send, end]
 

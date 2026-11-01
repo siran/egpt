@@ -23,7 +23,7 @@ import { createSpine } from '../src/spine/spine.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createRouter } from '../src/spine/router.mjs';
-import { ensureContact, recordThread, getContact, patchContact } from '../src/conversations-state.mjs';
+import { ensureContact, recordThread, getContact, patchContact, forkContact, serialize, parse } from '../src/conversations-state.mjs';
 import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { encodeNodeSignature, encodeChatCanary, decodeChatCanary } from '../src/node-signature.mjs';
 import { makeWrapPersona } from '../src/bridges/persona-wrap.mjs';
@@ -47,9 +47,11 @@ const SPEAKER = `E from [${TITLE}]`;
 
 const OPEN = { e: { handles: ['e'], conversation_defaults: { allowed_users: ['*'] } } };   // E answers anyone
 const OWNERS = { e: { handles: ['e'] } };                                                   // E answers its owners only
-const cfg = ({ agents = OPEN, mode = 'mention' } = {}) => ({
+// `tunnel`: config.yaml split.tunnel (on here unless a test says otherwise; null = unset).
+const cfg = ({ agents = OPEN, mode = 'mention', tunnel = true } = {}) => ({
   beeper: { primary: { phone: AN }, secondary: { phone: RODZ } },
   node_name: 'kg', group_title: '{group}-{name}', agents, dispatch: { auto_default_mode: mode },
+  ...(tunnel == null ? {} : { split: { tunnel } }),
 });
 const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LULU, phoneNumber: '+34600000000' }, { id: PEPE, phoneNumber: '+34611111111' }] } };
 
@@ -154,6 +156,31 @@ describe('while X has an open split, its replies go to the split', () => {
     expect(b.chats()).not.toContain(ORIGIN);
     expect(b.files.get(ORIGIN).at(-1)).toMatch(/^E@\[.*\]\.wa \(\d\d:\d\d\): respuesta de X$/);   // X's own record
     expect(b.files.get(SPLIT)).toBeUndefined();
+    expect(Object.keys(h.getState().contacts.whatsapp[SPLIT])).not.toContain('split');   // /split writes no mark
+  });
+
+  // Opt-in (operator 2026-11-01): the split entry's split.tunnel, else config.yaml split.tunnel, else no.
+  const handMade = (split) => {
+    const st = forkContact(seedState(), 'whatsapp', SPLIT, ORIGIN, { pushedName: SPLIT_TITLE, transcript: SPLIT_TITLE });
+    return split ? patchContact(st, 'whatsapp', SPLIT, { split }) : st;
+  };
+  for (const [what, split, tunnel, to] of [
+    ['REPRODUCE: nothing set → no tunnel', null, null, ORIGIN],
+    ['the entry\'s split: {tunnel: true}, config unset → tunnels', { tunnel: true }, null, SPLIT],
+    ['config split.tunnel: true, the entry says nothing → tunnels', null, true, SPLIT],
+    ['REPRODUCE: the entry\'s split: {tunnel: false} wins over config true → no tunnel', { tunnel: false }, true, ORIGIN],
+    ['the entry\'s split: {tunnel: true} wins over config false → tunnels', { tunnel: true }, false, SPLIT],
+  ]) {
+    it(what, async () => {
+      const b = buildSpine(harness({ config: cfg({ tunnel }), state: handMade(split) }));
+      await say(b.spine, 'e, hola');
+      expect(b.chats()).toEqual([to]);
+    });
+  }
+
+  it('the entry\'s split: block survives a rewrite of the entry and of the file', () => {
+    const st = parse(serialize(patchContact(handMade({ tunnel: true }), 'whatsapp', SPLIT, { mouth_chat: 'sec-room' })));
+    expect(st.contacts.whatsapp[SPLIT]).toMatchObject({ parent_chat: ORIGIN, transcript: SPLIT_TITLE, mouth_chat: 'sec-room', split: { tunnel: true } });
   });
 
   it('X\'s invocation rules hold: a line E is not asked for runs nothing, in X or in the split', async () => {

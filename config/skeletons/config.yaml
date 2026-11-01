@@ -311,6 +311,7 @@ networks:
 #   placeholder: "🍴🤖 ..."   # {link} the topic's link (Telegram; unset there: "🍴 the fork is here: {link}")
 #   # the first message in the new group. {group} the original chat's name, {handle} the handle the command was typed to
 #   opener: "🍴 Fork of {group} — a diverging copy: same agents, its own thread from here. Reply /{handle} send to a message to copy it back to the original chat; /{handle} end to close."
+#   tunnel: false   # true: replies to a chat go to its open split; a split's conversations.yaml split: {tunnel} wins
 # send:
 #   origin_template: "↪ from {group}:\n"   # the line before a relayed message. {group} the side group's name
 
