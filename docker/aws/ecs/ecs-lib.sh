@@ -86,7 +86,7 @@ asg_instances() {
 taskdef_json() {
   jq -n --arg image "$1" --arg family $FAMILY --arg srv $SRV --arg attr $ATTR --argjson mem $MEM_MIB \
     --arg name "$N" --arg beeper "$EGPT_BEEPER" --arg tunnel "$TUNNEL_SH" --argjson sidecar "$OFICINA_TUNNEL" \
-    --arg ssh "$SSH_PORT" '
+    --arg ssh "$SSH_PORT" --arg listen "$SSH_PERMIT_LISTEN" '
     ([["egpt-home", "/home/egpt/.egpt"], ["egpt-claude", "/home/egpt/.claude"],
       ["egpt-src", "/home/egpt/src/egpt"], ["egpt-jsonl", "/home/egpt/.egpt-jsonl"]]
      + [$ARGS.positional[] | split(":")]) as $vols
@@ -104,7 +104,8 @@ taskdef_json() {
         memoryReservation: $mem,
         linuxParameters: {sharedMemorySize: 1024},
         environment: ([{name: "EGPT_BRANCH", value: "main"}, {name: "EGPT_BEEPER", value: $beeper}]
-          + if $ssh == "" then [] else [{name: "EGPT_SSH_PORT", value: $ssh}] end),
+          + if $ssh == "" then [] else [{name: "EGPT_SSH_PORT", value: $ssh}] end
+          + if $listen == "" then [] else [{name: "EGPT_SSH_PERMIT_LISTEN", value: $listen}] end),
         mountPoints: [$vols[] | {sourceVolume: .[0], containerPath: .[1]}],
         logConfiguration: {logDriver: "json-file", options: {"max-size": "50m", "max-file": "3"}}
       }] + if $sidecar == 1 then [{

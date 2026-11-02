@@ -37,6 +37,7 @@ What differs between deployments is a switch, not a branch on the name:
 | `ZONE`, `DNS_NAME`, `ZONE_VPC` | `egpt.internal`, … | empty | The private zone and the A record the instance sets at boot (`$N-dns`). |
 | `ECR_UNTAGGED` | 1 | 0 | EduWeb's ECR `egpt` was made by hand, untagged. Anywhere else, build-push.sh refuses an existing repo without the deployment's tag. |
 | `SSH_PORT` | empty | 2222 | [SSH into the container](#ssh-into-the-container-ssh_port-nu): sshd as egpt on that port (`EGPT_SSH_PORT` in the task definition), tcp `SSH_PORT` from anywhere in `$N-sg`, and the Elastic IP `$N-ip`, which the instance associates at boot (`$N-address`). Empty: none of these. |
+| `SSH_PERMIT_LISTEN` | empty | `127.0.0.1:22115 127.0.0.1:22102` | With `SSH_PORT`: [reverse tunnels into the container](#ssh-into-the-container-ssh_port-nu). sshd also allows `ssh -R`, listening only on these `host:port` (`EGPT_SSH_PERMIT_LISTEN`). Empty: local forwards only. |
 
 ### NU, the first time
 
@@ -235,7 +236,7 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 
 ## SSH into the container (`SSH_PORT`, NU)
 
-`ssh nu` lands in NU's container as egpt, the way `ssh an@dolly` lands on the home PC: for the egpt shell (`node ~/src/egpt/egpt.mjs`), copying folders in and out, the VNC tunnel and the Claude login. The entrypoint runs sshd as egpt on `EGPT_SSH_PORT`: keys only, no agent or X11 forwarding, local forwards only. Log: `/tmp/sshd.log` in the container.
+`ssh nu` lands in NU's container as egpt, the way `ssh an@dolly` lands on the home PC: for the egpt shell (`node ~/src/egpt/egpt.mjs`), copying folders in and out, the VNC tunnel and the Claude login. The entrypoint runs sshd as egpt on `EGPT_SSH_PORT`: keys only, no agent or X11 forwarding, local forwards only (plus the reverse tunnels below). Log: `/tmp/sshd.log` in the container.
 
 - `~/.ssh/config` on the PC; the address is the `ip` line of `ecs/ecs-provision.sh --deploy nu`:
 
@@ -251,3 +252,4 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 - **VNC:** `ssh -N -L 16080:localhost:6080 nu`, then http://localhost:16080/vnc.html (password in `secrets/vnc.password`).
 - **Claude login:** `ssh -t nu egpt-claude-token`. It runs `claude setup-token`, saves the token you paste (not shown) as `secrets/claude-oauth.token`, and offers to restart egpt. Sandboxed beings use it on their next turn, the others after the restart. SSH shells export it too.
 - **Copying:** `tar -C <dir> -cf - . | ssh nu 'tar -C <dest> -xf -'`, and the other way round.
+- **Reverse tunnels (`SSH_PERMIT_LISTEN`):** kg and do keep `ssh -N -R 127.0.0.1:<port>:localhost:<their sshd> nu` up (`src/tools/nu-tunnel` on those machines), so NU's beings reach kg at 127.0.0.1:22115 and do at 127.0.0.1:22102. sshd then runs with `AllowTcpForwarding yes` and `PermitListen` set to these; any other `-R` is refused. GatewayPorts stays `no`, so the listeners are loopback only. The client must ask for `127.0.0.1` explicitly: a bare `-R <port>:…` asks for `localhost`, which `PermitListen` does not match.

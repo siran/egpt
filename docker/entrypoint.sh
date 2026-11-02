@@ -50,6 +50,9 @@ if [ -n "${EGPT_SSH_PORT:-}" ]; then
       && log "generated $SSH_DIR/ssh_host_ed25519_key"
   fi
   [ -s "$SSH_DIR/authorized_keys" ] || log "ssh: no keys yet; put public keys in $SSH_DIR/authorized_keys"
+  # EGPT_SSH_PERMIT_LISTEN: remote forwards too, listening only on those host:port (GatewayPorts no: loopback).
+  FWD=local
+  [ -z "${EGPT_SSH_PERMIT_LISTEN:-}" ] || FWD="yes"$'\n'"PermitListen $EGPT_SSH_PERMIT_LISTEN"
   (umask 077 && cat >/tmp/sshd_config <<CFG
 Port $EGPT_SSH_PORT
 HostKey $SSH_DIR/ssh_host_ed25519_key
@@ -61,7 +64,7 @@ UsePAM no
 AllowUsers egpt
 X11Forwarding no
 AllowAgentForwarding no
-AllowTcpForwarding local
+AllowTcpForwarding $FWD
 PermitTunnel no
 PidFile /tmp/sshd.pid
 ClientAliveInterval 60
