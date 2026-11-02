@@ -410,6 +410,20 @@ export const GROUP_TITLE_DEFAULT = '{group}-{name}';
 // Every side group's title starts with it: "SI+<group>-<name>" (/split), "SI+<group>" (automatic,
 // unless reply_in_side_group names the title). config.group_title_prefix replaces it; "" = none.
 export const SIDE_GROUP_PREFIX = 'SI+';
+// reply_in_side_group's value: a truthy word → true ("SI+<group>"), a falsy word / empty / absent →
+// false, any other string → that title.
+const replyInSideGroupOf = (v) => {
+  if (v === true || v === 1) return true;
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (['true', 'yes', 'on', '1'].includes(s.toLowerCase())) return true;
+  return ['false', 'no', 'off', '0', ''].includes(s.toLowerCase()) ? false : s;
+};
+// THE NODE DEFAULT (operator 2026-11-02): config.yaml reply_in_side_group on → a group chat whose own
+// entry says nothing replies in its SI+ group. Never a 1:1, an alias or fork entry, or Telegram
+// (http chatboxes and rooms are never groups). `group`: the bridge's chatType / Beeper's chat type.
+export const sideGroupByDefault = (entry, { surface, group }, config = {}) =>
+  replyInSideGroupOf(config?.reply_in_side_group) === true && entry?.reply_in_side_group == null
+  && !entry?.aliasOf && !entry?.parent_chat && group === true && surface !== 'telegram';
 // /send's posting account when config.send.post_back_from is unset or invalid: the operator's OWN
 // account (primary) — /send relays as the operator, who typed it (operator 2026-10-04). The config
 // override config.send.post_back_from='secondary' still routes via the mouth when set.
@@ -3603,7 +3617,7 @@ export function createCommands({
     // The fork's log names its thread, so the parent's next roll leaves it alone.
     if (slug && lastThread) {
       try { await mkdir(slugDir(surface, slug), { recursive: true }); } catch { /* the stamp says why */ }
-      await stampThreadId(surface, slug, lastThread, { key: transcript });
+      await stampThreadId(surface, slug, lastThread, { key: transcript, io: { readFile, writeFile } });
     }
     return { state, slug, transcript, copied };
   }
@@ -3692,15 +3706,10 @@ export function createCommands({
   // reply has something to post (sender.open); false = withhold the reply (the create failed); null =
   // in place. The node whose being replies makes it when it holds none (operator 2026-10-19); both
   // nodes making one at once is fine: two groups, each node links the other's, and each keeps replying
-  // in the first one it holds — its own.
-  // The value: a truthy word → true ("SI+<group>"), a falsy word / empty / absent → false, any other
-  // string → that title.
-  const replyInSideGroupOf = (v) => {
-    if (v === true || v === 1) return true;
-    const s = typeof v === 'string' ? v.trim() : '';
-    if (['true', 'yes', 'on', '1'].includes(s.toLowerCase())) return true;
-    return ['false', 'no', 'off', '0', ''].includes(s.toLowerCase()) ? false : s;
-  };
+  // in the first one it holds — its own. An entry that says nothing takes the node default
+  // (sideGroupByDefault).
+  // A group chat: the bridge's chatType, else (a turn the spine starts) the chat's own record.
+  const isGroupChat = async (ev) => (ev.raw ? ev.raw.chatType : (await forkBridge.chatRaw?.(ev.chatId))?.type) === 'group';
   // THE TUNNEL (operator 2026-10-31): while the chat has an open /split (its own entry, parent_chat
   // this chat; /end drops it) that tunnels, every reply here goes to the most recent one, through its
   // mouth. Not a Telegram topic (everyone is already in it), not a group that is gone.
@@ -3718,16 +3727,23 @@ export function createCommands({
     return null;
   }
   const autoCreating = new Map();   // surface+chatId → the create in flight, so one reply makes one group
-  async function autoSideGroup(ev, { create = true } = {}) {
+  async function autoSideGroup(ev, { create = true, late = false } = {}) {
     if (!loadState || !writeState) return null;
     const surface = surfaceOf(ev);
     let state;
     try { state = await loadState(); } catch { return null; }
     const own = state?.contacts?.[surface]?.[ev.chatId];
-    if (!own || own.aliasOf) return null;
+    if (own?.aliasOf) return null;
+    // A chat first heard now: the transcript writes its entry after this gate, so under the node
+    // default the group is made with the reply, once (`late`); no entry even then → nothing posted.
+    if (!own) {
+      const byDefault = !late && sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
+      return byDefault ? () => autoSideGroup(ev, { late: true }) : null;
+    }
     const split = await openSplitOf(state, surface, ev);
     if (split) return { chatId: split, tunnel: true };
-    const setting = replyInSideGroupOf(own.reply_in_side_group);
+    const setting = own.reply_in_side_group != null ? replyInSideGroupOf(own.reply_in_side_group)
+      : sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
     if (!setting) return null;
     const room = Object.keys(state.contacts[surface]).find((id) => state.contacts[surface][id]?.aliasOf === ev.chatId && state.contacts[surface][id].automatic === true) ?? null;
     if (room) {
@@ -3760,7 +3776,8 @@ export function createCommands({
   // As on the creator, Rodz's copy comes first (mouthCopyOf; it waits on this chat's lane only), so the
   // group is never usable here before its mouth_chat: one write holds both. An automatic group also
   // switches reply_in_side_group on for this node's own entry of the origin when that entry says
-  // nothing (operator 2026-10-19: only the creating node is configured), in the same write.
+  // nothing (operator 2026-10-19: only the creating node is configured), in the same write — unless
+  // this node's default already covers it (sideGroupByDefault; the origin is taken as a group).
   const SIDE_KINDS = new Set(['join', 'split', 'automatic']);
   async function linkSideGroup(ev) {
     const c = ev?.canary;
@@ -3794,7 +3811,8 @@ export function createCommands({
         const { jid } = getContact(state, surface, c.origin);
         state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : {}) });
         as = `an alias of ${jid}`;
-        if (c.kind === 'automatic' && getContact(state, surface, jid)?.entry?.reply_in_side_group == null) {
+        const originEntry = getContact(state, surface, jid)?.entry;
+        if (c.kind === 'automatic' && originEntry?.reply_in_side_group == null && !sideGroupByDefault(originEntry, { surface, group: true }, cfg())) {
           state = patchContact(state, surface, jid, { reply_in_side_group: 'on' });
           switched = jid;
         }

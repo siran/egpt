@@ -48,7 +48,8 @@ contacts:
       #warm: { keep: true }
 
       # no reply here: every reply goes to a side group the primary makes (config-schema reply_in_side_group);
-      # true/yes/on → "SI+<title>", any other text → that title
+      # true/yes/on → "SI+<title>", any other text → that title; off → in place, whatever
+      # config.yaml's default; unset → config.yaml reply_in_side_group (group chats only)
       #reply_in_side_group: on
 
       # on a /split's own entry: while it is open, replies to its parent_chat are posted here

@@ -3690,13 +3690,23 @@ export const CONFIG_SCHEMA = {
 
   reply_in_side_group: `
     The automatic side group (operator 2026-10-18). Set it on ONE conversation's OWN entry in
-    config/conversations.yaml. Read nowhere else: in config/config.yaml, on a side group's entry or in
-    a folder config.yaml it does nothing. There is no trigger phrase.
+    config/conversations.yaml, or in config/config.yaml as the node's default (2026-11-02). On a side
+    group's entry or in a folder config.yaml it does nothing. There is no trigger phrase.
 
-    VALUE:
+    VALUE (the chat's own entry; it always wins):
       true / yes / on / 1 (any case)   → on; the group is titled "SI+<chat title>".
-      false / no / off / 0 / "" / unset → off: replies in place (the DEFAULT).
+      false / no / off / 0 / ""        → off: replies in place.
+      unset                            → the node default, below.
       any other text                   → on; that text (trimmed) is the group's title, as is.
+
+    NODE DEFAULT (config.yaml; operator 2026-11-02: "as a default, agents should reply in an output
+    channel, not in the same group"):
+      true / yes / on / 1 → on for every GROUP chat on a Beeper surface whose entry leaves it unset,
+                            titled "SI+<chat title>". Never a 1:1, Telegram (the bot's chats or
+                            Beeper's), an http chatbox, a room or the shell, or a side group's or a
+                            /split's own entry.
+      anything else / unset → off (the DEFAULT): only the chats' own entries count.
+    Read live. commands.sideGroupByDefault is the test, exported to list which chats would flip.
 
     On: no being replies in this chat, in any mode; every reply (its limbs and voice too) goes to the
     side group, unquoted. The node whose being is about to reply creates it when it holds none, on its
@@ -3706,8 +3716,9 @@ export const CONFIG_SCHEMA = {
     makes nothing. It is an alias of the chat (same folder and thread, its own transcript),
     marked automatic: true. /send works in it; /end does nothing there. Once the group is gone the
     next reply opens a new one. A title may repeat: the group is known by its id. The other node links
-    it from the opener and, when its own entry for the chat says nothing, sets reply_in_side_group: on
-    there too — so only the creating node needs configuring (2026-10-19). Both nodes making one at
+    it from the opener and, when its own entry for the chat says nothing and its own default does not
+    cover the chat, sets reply_in_side_group: on there too — so only the creating node needs
+    configuring (2026-10-19). Both nodes making one at
     once is fine: two groups, each node links the other's, and each keeps replying in the first it
     holds (its own); a line in either reaches both, as an alias of the chat.
   `,
