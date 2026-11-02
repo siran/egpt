@@ -316,7 +316,7 @@ export function createWarmCliSession(options = {}) {
   // Not interrupted, the other agent ran on and completed at ~100s, and the CLI's own turn ended in 2-3s
   // with a report ("quick finished … slow is still running"). No gentler stop exists: `send_now: true`
   // on the interrupt answered send_now 'nothing_waiting' and stopped nothing; `stop_task` stops a task.
-  let background = new Map();       // task_id -> { description, since, parentTaskId?, ambient? }, still running
+  let background = new Map();       // task_id -> { description, since, taskType?, parentTaskId?, ambient? }, still running
   let finished = [];                // completions no turn has taken yet
   const outcomes = new Map();       // task_id -> { status, message, at }: how each ended, the last OUTCOMES_KEPT
   let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started, summaries }
@@ -326,7 +326,7 @@ export function createWarmCliSession(options = {}) {
   // indicators"). Kept here, not dropped: an ambient task is the CLI's task all the same — while it runs
   // the pool must not evict its process, and its notification and end are read like any (the CLI's own
   // turn, its outcome). Only the activity shown leaves it out: liveness's status (src/spine/liveness.mjs).
-  const taskOf = (t, since) => ({ description: describeTask(t), since, ...(t.parent_task_id ? { parentTaskId: t.parent_task_id } : {}), ...(t.ambient === true ? { ambient: true } : {}) });
+  const taskOf = (t, since) => ({ description: describeTask(t), since, ...(t.task_type ? { taskType: t.task_type } : {}), ...(t.parent_task_id ? { parentTaskId: t.parent_task_id } : {}), ...(t.ambient === true ? { ambient: true } : {}) });
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
   // env, revoked at close. A boxed session's rides the launcher's -SetEnv and hands none in here.
   const link = typeof options.beingLink?.mint === 'function' ? options.beingLink.mint() : null;

@@ -203,6 +203,7 @@ export function createSpine({
   tickMs = 0,
   livenessEveryMs,                     // () => ms — every live message's pulse (config liveness.every_ms, read each tick); undefined → liveness.mjs default
   livenessBackgroundEveryMs,           // () => ms — a chat's unchanged background status, posted again (config liveness.background_every_ms, read each tick); undefined → liveness.mjs default
+  livenessBackgroundChangeMs,          // () => ms — a change to it waits this long after the last status (config liveness.background_change_ms, read each tick); undefined → liveness.mjs default
   // Per-turn timeout, opt-in (config turn_timeout_ms). ≤0/absent = none (operator 2026-10-26).
   // On expiry the turn fails visibly and its warm entry is evicted.
   turnTimeoutMs = 0,
@@ -238,7 +239,7 @@ export function createSpine({
   if (commands) commands = new Proxy(commands, { get: (t, k) => (k === 'run' && typeof t[k] === 'function' ? ordered(t[k].bind(t)) : Reflect.get(t, k)) });
   // LIVENESS (src/spine/liveness.mjs): a running turn and a chat's background work stay visibly
   // alive in the chat; long background work is asked about through the wake path below.
-  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
+  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, backgroundChangeMs: livenessBackgroundChangeMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so

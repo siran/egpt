@@ -3216,13 +3216,18 @@ export const CONFIG_SCHEMA = {
       every_ms
         DEFAULT: 15000 (operator 2026-10-16: "all updates every 15s").
         The spine tick is sized down to it (boot effectiveTickMs). Read at boot.
-        A chat's background task list is checked at this pace: a change (a task
-        appears or finishes) posts a fresh status message, one per pulse.
+        A chat's background task list is checked at this pace; a change (a task
+        appears or finishes) is posted as background_change_ms says.
       background_every_ms
         DEFAULT: 600000 (10 min; operator 2026-10-30: "publicar el estatus de
         todas las tareas en un mensaje cada cierto tiempo"). While background work
         runs with no change, its status is posted again this often — a new
         message, never an edit. Read each tick.
+      background_change_ms
+        DEFAULT: 120000 (2 min; An 2026-11-02: "this is probably too much :)").
+        A change waits this long after the chat's last status, then ONE post
+        carries the current state. The first status (a turn ends leaving work
+        running) and the last ("done" / "ended") are not held. Read each tick.
   `,
 
   lag_probe: `

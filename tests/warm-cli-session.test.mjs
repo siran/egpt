@@ -933,7 +933,7 @@ describe('warm-cli-session — a background task finishes', () => {
     const s = createWarmCliSession({ spawn: f.spawn });
     const t0 = Date.now();
     await s.turn('START BG');
-    expect(s.backgroundTasks).toEqual([{ taskId: 'b1', description: 'Run delayed echo', since: expect.any(Number) }]);
+    expect(s.backgroundTasks).toEqual([{ taskId: 'b1', taskType: 'local_bash', description: 'Run delayed echo', since: expect.any(Number) }]);
     const since = s.backgroundTasks[0].since;
     expect(since).toBeGreaterThanOrEqual(t0);
     await new Promise((r) => setTimeout(r, 5));
@@ -957,9 +957,9 @@ describe('warm-cli-session — a background task finishes', () => {
       { task_id: 'w1', task_type: 'monitor_mcp', description: 'Watch the job log', parent_task_id: 'a1', ambient: true },
     ]);
     expect(s.backgroundTasks).toEqual([
-      { taskId: 'a1', description: 'Factuwin tests on AWS Windows', since: expect.any(Number) },
-      { taskId: 'b1', description: 'Queue menu calibration job', since: expect.any(Number), parentTaskId: 'a1' },
-      { taskId: 'w1', description: 'Watch the job log', since: expect.any(Number), parentTaskId: 'a1', ambient: true },
+      { taskId: 'a1', taskType: 'local_agent', description: 'Factuwin tests on AWS Windows', since: expect.any(Number) },
+      { taskId: 'b1', taskType: 'local_bash', description: 'Queue menu calibration job', since: expect.any(Number), parentTaskId: 'a1' },
+      { taskId: 'w1', taskType: 'monitor_mcp', description: 'Watch the job log', since: expect.any(Number), parentTaskId: 'a1', ambient: true },
     ]);
     expect(s.background).toBe(3);                     // not evictable while the watcher runs: closing it would kill it
     f.out({ type: 'system', subtype: 'task_updated', task_id: 'w1', patch: { status: 'completed' } });
@@ -967,6 +967,24 @@ describe('warm-cli-session — a background task finishes', () => {
     expect(s.backgroundOutcome('w1')).toMatchObject({ status: 'completed' });
     expect(s.background).toBe(2);
     s.close();
+  });
+
+  // 2026-11-02, "this is probably too much :)": the status rolls background shell commands into one line;
+  // it tells them from agents by the CLI's task_type, kept here. None given (an older cli-host's adoption): none kept.
+  it('keeps the CLI\'s task_type on each task — from the event, and on adoption', async () => {
+    const f = backgroundClaude();
+    const s = createWarmCliSession({ spawn: f.spawn });
+    await s.turn('hi');
+    f.tasks([{ task_id: 'a1', task_type: 'local_agent', description: 'Ask ChatGPT' }, { task_id: 'b1', task_type: 'local_bash', description: 'checkpoint', parent_task_id: 'a1' }, { task_id: 'x1', description: 'no type' }]);
+    expect(s.backgroundTasks).toEqual([
+      { taskId: 'a1', taskType: 'local_agent', description: 'Ask ChatGPT', since: expect.any(Number) },
+      { taskId: 'b1', taskType: 'local_bash', description: 'checkpoint', since: expect.any(Number), parentTaskId: 'a1' },
+      { taskId: 'x1', description: 'no type', since: expect.any(Number) },
+    ]);
+    s.close();
+    const adopted = createWarmCliSession({ adopt: { proc: f.spawn(), sessionId: 'sess-1', background: [{ task_id: 'b1', task_type: 'local_bash', description: 'checkpoint', since: 1234 }, { task_id: 'b2', description: 'from an older cli-host', since: 1235 }] } });
+    expect(adopted.backgroundTasks).toEqual([{ taskId: 'b1', taskType: 'local_bash', description: 'checkpoint', since: 1234 }, { taskId: 'b2', description: 'from an older cli-host', since: 1235 }]);
+    adopted.close();
   });
 
   // An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así". A background Bash with no
@@ -1206,7 +1224,7 @@ describe('warm-cli-session — a background subagent\'s text never reaches the r
     const s = createWarmCliSession({ spawn: f.spawn, onBackgroundDone: (i) => done.push(i) });
     const r1 = await s.turn('START');
     expect(r1.bgStarted).toBe(1);
-    expect(s.backgroundTasks).toEqual([{ taskId: 'a1', description: 'counter', since: expect.any(Number) }]);
+    expect(s.backgroundTasks).toEqual([{ taskId: 'a1', taskType: 'local_agent', description: 'counter', since: expect.any(Number) }]);
     await s.turn('SEND');
     expect(s.background).toBe(1);
     f.subagentDone();

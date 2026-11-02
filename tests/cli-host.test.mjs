@@ -132,6 +132,23 @@ describe('a spine restart never ends a claude session', () => {
     ]);
   });
 
+  it('(b) …and the CLI\'s task_type: the status tells a shell command from an agent (2026-11-02)', async () => {
+    const w = world();
+    const one = w.spine();
+    await run(one, 'bg: run the audit');
+    const tasks = [{ task_id: 'a1', task_type: 'local_agent', description: 'audit' }, { task_id: 'b1', task_type: 'local_bash', description: 'audit step', parent_task_id: 'a1' }];
+    w.spawns[0].child.stdout.emit('data', `${JSON.stringify({ type: 'system', subtype: 'background_tasks_changed', session_id: 'sess-1', tasks })}\n`);
+    await flush();
+    one.pair.drop();
+    const two = w.spine();
+    await two.adoptAll();
+    await flush();
+    expect(two.pool.background(KEY)).toEqual([
+      { taskId: 'a1', taskType: 'local_agent', description: 'audit', since: expect.any(Number) },
+      { taskId: 'b1', taskType: 'local_bash', description: 'audit step', since: expect.any(Number), parentTaskId: 'a1' },
+    ]);
+  });
+
   it('a turn in flight when the spine died is adopted: its reply reaches the being through the wake', async () => {
     const w = world();
     const one = w.spine();
