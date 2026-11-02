@@ -31,7 +31,7 @@ What differs between deployments is a switch, not a branch on the name:
 | Key | EDW | NU | Effect |
 |---|---|---|---|
 | `LEGACY_NODE` | `edw-node` | empty | The plain-EC2 host. With one: ecs-provision.sh reuses provision.sh's network and volume, ecs-cutover.sh migrates from it, and provision.sh, migrate.sh and run.sh run. Without one: ecs-provision.sh makes the network and the volume, ecs-cutover.sh is the first start, and the plain-EC2 scripts refuse. |
-| `DATA_INIT` | empty | `format` | `format`: at boot the instance formats a blank data volume (first MiB all zeros) and creates `egpt-home`; anything else is never formatted. Empty: never formats, and requires `egpt-home/config/config.yaml`. |
+| `DATA_INIT` | empty | `format` | `format`: ecs-provision.sh tags the data volume it creates `DataInit=pending`; at boot the instance formats it only if it has no filesystem and that tag, creates `egpt-home`, and tags it `DataInit=done` (`$N-data-attach` allows that one tag). Anything else is never formatted. A new encrypted volume reads as random bytes, not zeros, so the tag is the only sign it is blank. Empty: never formats, and requires `egpt-home/config/config.yaml`. |
 | `BUCKET` | `egpt-edw-transfer-…` | empty | The transfer bucket; the ECS role gets `$N-transfer` on it. |
 | `OFICINA_TUNNEL` | 1 | 0 | The oficina-tunnel sidecar. |
 | `ZONE`, `DNS_NAME`, `ZONE_VPC` | `egpt.internal`, … | empty | The private zone and the A record the instance sets at boot (`$N-dns`). |

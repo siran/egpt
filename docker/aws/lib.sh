@@ -69,7 +69,7 @@ one() {
   printf '%s' "$2"
 }
 
-tagspec() { echo "ResourceType=$1,Tags=[{Key=Project,Value=$PROJECT},{Key=Name,Value=$2}]"; }
+tagspec() { echo "ResourceType=$1,Tags=[{Key=Project,Value=$PROJECT},{Key=Name,Value=$2}${3:+,$3}]"; }  # type name [{Key=K,Value=V}]
 
 byname() {  # describe-call query name: our resource ids with that Name
   one "$3" "$(q ec2 "$1" --filters "$TAGF" "Name=tag:Name,Values=$3" --query "$2")"
