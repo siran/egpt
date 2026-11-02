@@ -1,19 +1,34 @@
 # shellcheck shell=bash disable=SC2034
 # Shared by the laptop-side scripts in docker/aws (sourced, not run).
-# Everything they create carries Project=egpt-edw and is looked up by that tag.
-
-PROJECT=egpt-edw
-ACCOUNT=331665579468   # EduWeb; any other account is refused
-export AWS_PROFILE=${AWS_PROFILE:-eduweb}
-export AWS_DEFAULT_REGION=us-east-1
-REGISTRY=$ACCOUNT.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-BUCKET=egpt-edw-transfer-$ACCOUNT
-PREFIX=migrate/
-TAGF="Name=tag:Project,Values=$PROJECT"
-APPLY=0
+# The deployment is deployments/<name>.env, picked with --deploy <name> (default edw); this
+# takes --deploy out of the caller's arguments. Everything a deployment creates carries its
+# Project tag and is looked up by that tag.
 
 log() { echo "$*" >&2; }
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+DEPLOY=edw _args=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --deploy) [ $# -ge 2 ] || die "--deploy needs a name"; DEPLOY=$2; shift ;;
+    *) _args+=("$1") ;;
+  esac
+  shift
+done
+set -- "${_args[@]}"
+DEPLOYMENTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployments
+[[ $DEPLOY =~ ^[a-z0-9-]+$ && -f $DEPLOYMENTS/$DEPLOY.env ]] \
+  || die "no deployment '$DEPLOY' (docker/aws/deployments/*.env)"
+# shellcheck source=deployments/edw.env
+. "$DEPLOYMENTS/$DEPLOY.env"
+
+export AWS_PROFILE=${AWS_PROFILE:-$PROFILE}
+export AWS_DEFAULT_REGION=$REGION
+REGISTRY=$ACCOUNT.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+DATA=$N-data                 # the data volume's Name
+PREFIX=migrate/
+TAGF="Name=tag:Project,Values=$PROJECT"
+APPLY=0
 
 # Prints a command line, quoting the args that need it.
 show() {
@@ -73,7 +88,67 @@ ours() {  # project-tag-value what
 
 # Instance roles: EC2 may assume them; the transfer policy gets/deletes under the bucket's prefix only.
 TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-TRANSFER='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::'$BUCKET/$PREFIX'*"}]}'
+TRANSFER=
+[ -z "$BUCKET" ] || TRANSFER='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::'$BUCKET/$PREFIX'*"}]}'
+
+offered() {  # instance type: the AZs that offer it, sorted
+  q ec2 describe-instance-type-offerings --location-type availability-zone \
+    --filters "Name=instance-type,Values=$1" --query 'InstanceTypeOfferings[].Location' | tr -s '\t ' '\n' | LC_ALL=C sort
+}
+
+# ensure_network TYPE...: the deployment's VPC (one public subnet, internet gateway, no NAT) and a
+# security group with no inbound rules; a new subnet goes in the first AZ offering every TYPE.
+# Sets VPC IGW SUBNET AZ RT SG.
+ensure_network() {
+  local att='' gw='' assoc='' azs t
+  VPC=$(byname describe-vpcs 'Vpcs[].VpcId' "$N-vpc")
+  if [ -n "$VPC" ]; then log "vpc      $VPC"
+  else VPC=$(new vpc ec2 create-vpc --cidr-block "$VPC_CIDR" --tag-specifications "$(tagspec vpc "$N-vpc")" --query Vpc.VpcId); fi
+
+  IGW=$(byname describe-internet-gateways 'InternetGateways[].InternetGatewayId' "$N-igw")
+  if [ -n "$IGW" ]; then
+    log "igw      $IGW"
+    att=$(q ec2 describe-internet-gateways --internet-gateway-ids "$IGW" --query 'InternetGateways[0].Attachments[0].VpcId')
+  else
+    IGW=$(new igw ec2 create-internet-gateway --tag-specifications "$(tagspec internet-gateway "$N-igw")" --query InternetGateway.InternetGatewayId)
+  fi
+  if [ -z "$att" ]; then run aws ec2 attach-internet-gateway --internet-gateway-id "$IGW" --vpc-id "$VPC"
+  elif [ "$att" != "$VPC" ]; then die "$N-igw is attached to $att, not $VPC"; fi
+
+  SUBNET=$(byname describe-subnets 'Subnets[].SubnetId' "$N-public")
+  if [ -n "$SUBNET" ]; then
+    AZ=$(q ec2 describe-subnets --subnet-ids "$SUBNET" --query 'Subnets[0].AvailabilityZone')
+    log "subnet   $SUBNET ($AZ)"
+  else
+    azs=$(offered "$1")
+    for t in "${@:2}"; do azs=$(LC_ALL=C comm -12 <(printf '%s\n' "$azs") <(offered "$t")); done
+    AZ=$(sed -n 1p <<<"$azs")
+    [ -n "$AZ" ] || die "no AZ offers all of: $*"
+    SUBNET=$(new subnet ec2 create-subnet --vpc-id "$VPC" --cidr-block "$SUBNET_CIDR" --availability-zone "$AZ" \
+      --tag-specifications "$(tagspec subnet "$N-public")" --query Subnet.SubnetId)
+  fi
+
+  RT=$(byname describe-route-tables 'RouteTables[].RouteTableId' "$N-rt")
+  if [ -n "$RT" ]; then
+    log "routes   $RT"
+    gw=$(q ec2 describe-route-tables --route-table-ids "$RT" --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId")
+    assoc=$(q ec2 describe-route-tables --route-table-ids "$RT" --query "RouteTables[0].Associations[?SubnetId=='$SUBNET'].RouteTableAssociationId")
+  else
+    RT=$(new rt ec2 create-route-table --vpc-id "$VPC" --tag-specifications "$(tagspec route-table "$N-rt")" --query RouteTable.RouteTableId)
+  fi
+  [ -n "$gw" ] || run aws ec2 create-route --route-table-id "$RT" --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW"
+  [ -n "$assoc" ] || run aws ec2 associate-route-table --route-table-id "$RT" --subnet-id "$SUBNET"
+
+  SG=$(byname describe-security-groups 'SecurityGroups[].GroupId' "$N-sg")
+  if [ -n "$SG" ]; then
+    log "sg       $SG"
+    [ -z "$(q ec2 describe-security-groups --group-ids "$SG" --query 'SecurityGroups[0].IpPermissions')" ] \
+      || log "WARNING: $N-sg has inbound rules; it should have none"
+  else
+    SG=$(new sg ec2 create-security-group --group-name "$N-sg" --description "$LABEL node: no inbound" --vpc-id "$VPC" \
+      --tag-specifications "$(tagspec security-group "$N-sg")" --query GroupId)
+  fi
+}
 
 parse_apply() {  # for scripts whose only flag is --apply
   for a; do
@@ -89,9 +164,15 @@ check_account() {
   else log "account $a ($AWS_PROFILE, $AWS_DEFAULT_REGION) - DRY RUN, nothing changes (add --apply)"; fi
 }
 
-# The EDW instance (pending/running/stopping/stopped), or empty.
+# provision.sh, migrate.sh and run.sh drive the plain-EC2 host, LEGACY_NODE; a deployment without one is refused.
+legacy_only() {
+  [ -n "$LEGACY_NODE" ] || die "$(basename "$0") is the plain-EC2 path; deployment $DEPLOY has none (use ecs/)"
+}
+
+# The plain-EC2 instance LEGACY_NODE (pending/running/stopping/stopped), or empty.
 find_instance() {
-  one instance "$(q ec2 describe-instances --filters "$TAGF" Name=tag:Name,Values=edw-node \
+  [ -n "$LEGACY_NODE" ] || return 0
+  one instance "$(q ec2 describe-instances --filters "$TAGF" "Name=tag:Name,Values=$LEGACY_NODE" \
     Name=instance-state-name,Values=pending,running,stopping,stopped \
     --query 'Reservations[].Instances[].InstanceId')"
 }
@@ -109,7 +190,7 @@ ssm_send() {
   cmd="echo $(base64 -w0 "$file") | base64 -d > $dest && bash $dest $*"
   params=$(jq -nc --arg c "$cmd" '{commands: [$c], executionTimeout: ["3600"]}')
   cid=$(q ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
-    --comment "egpt-edw $(basename "$dest") ${1:-}" --parameters "$params" --query Command.CommandId)
+    --comment "$PROJECT $(basename "$dest") ${1:-}" --parameters "$params" --query Command.CommandId)
   log "ssm command $cid on $id: bash $dest $*"
   for _ in $(seq 720); do
     sleep 5

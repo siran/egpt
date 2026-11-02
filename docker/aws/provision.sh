@@ -15,14 +15,12 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+legacy_only
 check_account
 
-VPC_CIDR=10.88.0.0/16
-SUBNET_CIDR=10.88.1.0/24
 ROLE=edw-instance-role
 IPROFILE=edw-instance-profile
 ROOT_GB=30
-DATA_GB=30
 
 user_data() {  # data-volume-id
   sed "s/@VOL@/${1//-/}/" <<'EOF'
@@ -53,59 +51,8 @@ touch /etc/egpt-edw-node
 EOF
 }
 
-# Network
-VPC=$(byname describe-vpcs 'Vpcs[].VpcId' edw-vpc)
-if [ -n "$VPC" ]; then log "vpc      $VPC"
-else VPC=$(new vpc ec2 create-vpc --cidr-block $VPC_CIDR --tag-specifications "$(tagspec vpc edw-vpc)" --query Vpc.VpcId); fi
-
-IGW=$(byname describe-internet-gateways 'InternetGateways[].InternetGatewayId' edw-igw)
-att=
-if [ -n "$IGW" ]; then
-  log "igw      $IGW"
-  att=$(q ec2 describe-internet-gateways --internet-gateway-ids "$IGW" --query 'InternetGateways[0].Attachments[0].VpcId')
-else
-  IGW=$(new igw ec2 create-internet-gateway --tag-specifications "$(tagspec internet-gateway edw-igw)" --query InternetGateway.InternetGatewayId)
-fi
-if [ -z "$att" ]; then run aws ec2 attach-internet-gateway --internet-gateway-id "$IGW" --vpc-id "$VPC"
-elif [ "$att" != "$VPC" ]; then die "edw-igw is attached to $att, not $VPC"; fi
-
-SUBNET=$(byname describe-subnets 'Subnets[].SubnetId' edw-public)
-if [ -n "$SUBNET" ]; then
-  AZ=$(q ec2 describe-subnets --subnet-ids "$SUBNET" --query 'Subnets[0].AvailabilityZone')
-  log "subnet   $SUBNET ($AZ)"
-else
-  offered() {
-    q ec2 describe-instance-type-offerings --location-type availability-zone \
-      --filters "Name=instance-type,Values=$1" --query 'InstanceTypeOfferings[].Location' | tr -s '\t ' '\n' | LC_ALL=C sort
-  }
-  # The first AZ that also offers t3a.large, the resize target.
-  AZ=$(LC_ALL=C comm -12 <(offered "$TYPE") <(offered t3a.large) | sed -n 1p)
-  [ -n "$AZ" ] || die "no AZ offers both $TYPE and t3a.large"
-  SUBNET=$(new subnet ec2 create-subnet --vpc-id "$VPC" --cidr-block $SUBNET_CIDR --availability-zone "$AZ" \
-    --tag-specifications "$(tagspec subnet edw-public)" --query Subnet.SubnetId)
-fi
-
-RT=$(byname describe-route-tables 'RouteTables[].RouteTableId' edw-rt)
-gw='' assoc=''
-if [ -n "$RT" ]; then
-  log "routes   $RT"
-  gw=$(q ec2 describe-route-tables --route-table-ids "$RT" --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId")
-  assoc=$(q ec2 describe-route-tables --route-table-ids "$RT" --query "RouteTables[0].Associations[?SubnetId=='$SUBNET'].RouteTableAssociationId")
-else
-  RT=$(new rt ec2 create-route-table --vpc-id "$VPC" --tag-specifications "$(tagspec route-table edw-rt)" --query RouteTable.RouteTableId)
-fi
-[ -n "$gw" ] || run aws ec2 create-route --route-table-id "$RT" --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW"
-[ -n "$assoc" ] || run aws ec2 associate-route-table --route-table-id "$RT" --subnet-id "$SUBNET"
-
-SG=$(byname describe-security-groups 'SecurityGroups[].GroupId' edw-sg)
-if [ -n "$SG" ]; then
-  log "sg       $SG"
-  [ -z "$(q ec2 describe-security-groups --group-ids "$SG" --query 'SecurityGroups[0].IpPermissions')" ] \
-    || log "WARNING: edw-sg has inbound rules; it should have none"
-else
-  SG=$(new sg ec2 create-security-group --group-name edw-sg --description "EDW node: no inbound" --vpc-id "$VPC" \
-    --tag-specifications "$(tagspec security-group edw-sg)" --query GroupId)
-fi
+# Network; a new subnet's AZ also offers t3a.large, the resize target.
+ensure_network "$TYPE" t3a.large
 
 # Instance role: SSM, ECR pull, and get/delete on the transfer prefix only.
 role_new=0

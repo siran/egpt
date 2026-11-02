@@ -8,6 +8,56 @@ The move to ECS on EC2 is in [ECS on EC2](#ecs-on-ec2-ecs) below. After the cuto
 - Everything created is tagged `Project=egpt-edw` (and `Name=edw-*`) and found again by that tag. Untagged resources are never touched. The account runs EduWeb production, and one of its instances is named `edw-Sun…`, so a Name alone never identifies ours.
 - Each `.sh` has a `.cmd` beside it that runs it in WSL (Ubuntu-22.04) with the same arguments, e.g. `provision.cmd --apply`.
 
+## Deployments (`deployments/*.env`)
+
+The scripts serve more than one deployment. Each is a file in `deployments/`, sourced by `lib.sh` (bash syntax), and picked with `--deploy <name>` on any script or `.cmd`. Without the flag it is `edw`, so every command below works unchanged.
+
+- `edw.env`: EDW, EduWeb's account, with the values the scripts used to hold.
+- `nu.env`: NU, an independent node in the personal account 480854905773 ([plan](../../plans/2611020936-NU-NODE.md)).
+
+Each file sets:
+- the account: any other is refused, so a profile pointing at the wrong account stops the script;
+- the profile, the region, and the `Project` tag. Nothing without that tag is touched;
+- the name prefix `N`, which names:
+  - the cluster, service, family and container `$N`;
+  - `$N-ecs-lt`, `$N-ecs-asg`, `$N-ecs-role`, `$N-ecs-profile`, `$N-ecs-node`;
+  - the data volume and its instance attribute, `$N-data`;
+  - `$N-vpc`, `$N-igw`, `$N-public`, `$N-rt`, `$N-sg`;
+  - the image tag, `egpt:$N`;
+- the CIDRs, the instance types, the on-demand default, the data volume's size, swap, the memory reservation and `EGPT_BEEPER`.
+
+What differs between deployments is a switch, not a branch on the name:
+
+| Key | EDW | NU | Effect |
+|---|---|---|---|
+| `LEGACY_NODE` | `edw-node` | empty | The plain-EC2 host. With one: ecs-provision.sh reuses provision.sh's network and volume, ecs-cutover.sh migrates from it, and provision.sh, migrate.sh and run.sh run. Without one: ecs-provision.sh makes the network and the volume, ecs-cutover.sh is the first start, and the plain-EC2 scripts refuse. |
+| `DATA_INIT` | empty | `format` | `format`: at boot the instance formats a blank data volume (first MiB all zeros) and creates `egpt-home`; anything else is never formatted. Empty: never formats, and requires `egpt-home/config/config.yaml`. |
+| `BUCKET` | `egpt-edw-transfer-…` | empty | The transfer bucket; the ECS role gets `$N-transfer` on it. |
+| `OFICINA_TUNNEL` | 1 | 0 | The oficina-tunnel sidecar. |
+| `ZONE`, `DNS_NAME`, `ZONE_VPC` | `egpt.internal`, … | empty | The private zone and the A record the instance sets at boot (`$N-dns`). |
+| `ECR_UNTAGGED` | 1 | 0 | EduWeb's ECR `egpt` was made by hand, untagged. Anywhere else, build-push.sh refuses an existing repo without the deployment's tag. |
+
+### NU, the first time
+
+1. **`build-push.sh --deploy nu --apply`**, from a plain checkout in WSL. It creates ECR `egpt` tagged `Project=egpt-nu` and pushes `egpt:<sha>` and `egpt:nu`.
+2. **`ecs/ecs-provision.sh --deploy nu --apply`** creates, in order:
+   - the VPC 10.90.0.0/16 with its gateway, subnet, routes, and `nu-sg` with no inbound rules;
+   - `nu-data`, an empty, encrypted 30 GB gp3 volume;
+   - the role, the profile, the cluster, the launch template, the ASG (on-demand t3a.small/t3.small, at 0), the task definition and the service (at 0).
+3. **`ecs/ecs-cutover.sh --deploy nu --apply`**. With no plain-EC2 node, it scales the ASG to 1, waits for `nu-data` to be mounted, and sets the service to 1.
+   - At its first boot the instance formats the blank `nu-data` and creates `egpt-home`.
+   - The entrypoint then seeds `config/config.yaml` and `secrets/vnc.password`.
+   - `--rollback` is refused, because there is nothing to roll back to.
+4. Then plan phase 3: the config, being N, the claude token, and the Beeper sign-ins over VNC.
+
+Notes:
+- When `EGPT_BEEPER` is not `off`, each Beeper profile lives on the data volume, so sign-ins survive a new task.
+  - The first account's `~/.config/BeeperTexts` is mounted from `/srv/egpt/egpt-beeper`, and each other account's `~/.config/BeeperTexts-<name>` from `/srv/egpt/egpt-beeper-<name>`.
+  - The instance creates these dirs owned by 1000:1000 at every boot, with the others.
+  - See [Two Beeper accounts](#two-beeper-accounts-in-one-container-nu).
+- `TYPES` in `nu.env` is the operator's t3a.small. Two Beepers took ~0.9 GB before sign-in; to move to medium, change `TYPES` and re-run ecs-provision.sh, then follow [Resizing in place](#resizing-edw-in-place-learned-2026-10-30) for the running instance.
+- Teardown is by tag, `Project=egpt-nu`, as for EDW.
+
 ## Order
 
 1. **`build-push.sh --apply`** builds the image from the checkout it sits in, tags it `egpt:<sha>` and `egpt:edw`, and pushes both to ECR `egpt`. The image is ~3.2 GB (~1.3 GB compressed); it carries no whisper model, since models live on the data volume.
@@ -158,7 +208,7 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 2. `aws ecs deregister-container-instance --cluster edw --container-instance <arn> --force`
 3. Stop the instance, `modify-instance-attribute --instance-type`, start it (it keeps its private IP and the edw-data volume).
 4. On the host: `systemctl stop ecs; rm -rf /var/lib/ecs/data/*; systemctl start ecs`, so the agent registers as a new container instance.
-5. `aws autoscaling resume-processes …` (the same three), then set `TYPES` in ecs/ecs-lib.sh and run `ecs-provision.sh --on-demand --apply`, so the launch template matches.
+5. `aws autoscaling resume-processes …` (the same three), then set `TYPES` in deployments/edw.env and run `ecs-provision.sh --on-demand --apply`, so the launch template matches.
 
 ## Two Beeper accounts in one container (NU)
 

@@ -3,24 +3,28 @@
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
-CLUSTER=edw
-SERVICE=edw
-FAMILY=edw
-LT=edw-ecs-lt
-ASG=edw-ecs-asg
-ROLE=edw-ecs-role
-IPROFILE=edw-ecs-profile
-NODE=edw-ecs-node            # Name of the ASG's instances (the old one is edw-node)
-TYPES=(t3a.medium t3.medium)   # Spot pools; on-demand takes the first (medium: 4 GB, 10-30; 2 GB thrashed)
+CLUSTER=$N
+SERVICE=$N
+FAMILY=$N
+LT=$N-ecs-lt
+ASG=$N-ecs-asg
+ROLE=$N-ecs-role
+IPROFILE=$N-ecs-profile
+NODE=$N-ecs-node             # Name of the ASG's instances
 AMI_PARAM=/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 SRV=/srv/egpt
-ATTR=edw-data                # instance attribute, set once $SRV is mounted; the task requires it
-MEM_MIB=1024                 # memoryReservation (soft); t3a.small registers ~1.9 GiB
-ZONE=egpt.internal           # Route 53 private zone, ours; found by name + tag
-EDW_DNS=edw.$ZONE            # A record the instance points at its own private IP at every boot
-ZONE_VPC=vpc-b33403d6        # EduWeb's production VPC: Portales-new proxies the chatbox to $EDW_DNS:8095
+ATTR=$N-data                 # instance attribute, set once $SRV is mounted; the task requires it
 
-# oficina-tunnel sidecar: 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
+# Beeper profiles on the data volume (host-dir:profile), named as the entrypoint names them:
+# the first account ~/.config/BeeperTexts, the others ~/.config/BeeperTexts-<name>.
+BEEPER_VOLS=()
+if [ "$EGPT_BEEPER" != off ]; then
+  IFS=', ' read -r -a _names <<<"$EGPT_BEEPER"
+  BEEPER_VOLS=(egpt-beeper:/home/egpt/.config/BeeperTexts)
+  for _n in "${_names[@]:1}"; do BEEPER_VOLS+=("egpt-beeper-$_n:/home/egpt/.config/BeeperTexts-$_n"); done
+fi
+
+# oficina-tunnel sidecar (OFICINA_TUNNEL=1): 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
 # Never exits on its own: waits for its secrets and retries ssh every minute. ECS's restart policy
 # is only a backstop (it did not restart a clean exit 0, 2026-10-26).
 TUNNEL_SH='s=/home/egpt/.egpt/secrets
@@ -39,7 +43,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 find_volume() {
-  one volume "$(q ec2 describe-volumes --filters "$TAGF" Name=tag:Name,Values=edw-data --query 'Volumes[].VolumeId')"
+  one volume "$(q ec2 describe-volumes --filters "$TAGF" "Name=tag:Name,Values=$DATA" --query 'Volumes[].VolumeId')"
 }
 
 find_zone() {  # our private zone $ZONE: its id (Z...), or empty
@@ -81,26 +85,27 @@ asg_instances() {
 # The task definition for IMAGE (no tags).
 taskdef_json() {
   jq -n --arg image "$1" --arg family $FAMILY --arg srv $SRV --arg attr $ATTR --argjson mem $MEM_MIB \
-    --arg tunnel "$TUNNEL_SH" '
-    [["egpt-home", "/home/egpt/.egpt"], ["egpt-claude", "/home/egpt/.claude"],
-     ["egpt-src", "/home/egpt/src/egpt"], ["egpt-jsonl", "/home/egpt/.egpt-jsonl"]] as $vols
+    --arg name "$N" --arg beeper "$EGPT_BEEPER" --arg tunnel "$TUNNEL_SH" --argjson sidecar "$OFICINA_TUNNEL" '
+    ([["egpt-home", "/home/egpt/.egpt"], ["egpt-claude", "/home/egpt/.claude"],
+      ["egpt-src", "/home/egpt/src/egpt"], ["egpt-jsonl", "/home/egpt/.egpt-jsonl"]]
+     + [$ARGS.positional[] | split(":")]) as $vols
     | {
       family: $family,
       networkMode: "host",
       requiresCompatibilities: ["EC2"],
       placementConstraints: [{type: "memberOf", expression: "attribute:\($attr) == mounted"}],
       volumes: [$vols[] | {name: .[0], host: {sourcePath: "\($srv)/\(.[0])"}}],
-      containerDefinitions: [{
-        name: "edw",
+      containerDefinitions: ([{
+        name: $name,
         image: $image,
         essential: true,
         privileged: true,
         memoryReservation: $mem,
         linuxParameters: {sharedMemorySize: 1024},
-        environment: [{name: "EGPT_BRANCH", value: "main"}, {name: "EGPT_BEEPER", value: "off"}],
+        environment: [{name: "EGPT_BRANCH", value: "main"}, {name: "EGPT_BEEPER", value: $beeper}],
         mountPoints: [$vols[] | {sourceVolume: .[0], containerPath: .[1]}],
         logConfiguration: {logDriver: "json-file", options: {"max-size": "50m", "max-file": "3"}}
-      }, {
+      }] + if $sidecar == 1 then [{
         name: "oficina-tunnel",
         image: $image,
         essential: false,
@@ -111,8 +116,8 @@ taskdef_json() {
         mountPoints: [{sourceVolume: "egpt-home", containerPath: "/home/egpt/.egpt", readOnly: true}],
         restartPolicy: {enabled: true, restartAttemptPeriod: 60},
         logConfiguration: {logDriver: "json-file", options: {"max-size": "50m", "max-file": "3"}}
-      }]
-    }'
+      }] else [] end)
+    }' --args "${BEEPER_VOLS[@]}"
 }
 
 spec_hash() { jq -S -c . <<<"$1" | sha256sum | cut -c1-12; }
@@ -130,7 +135,7 @@ td_image() {  # arn
 }
 
 # taskdef_for IMAGE: prints the ARN of an ACTIVE revision for IMAGE, registering one when the
-# latest revision's spec (the edw-spec tag) differs.
+# latest revision's spec (the $N-spec tag) differs.
 taskdef_for() {
   local json h latest
   json=$(taskdef_json "$1")
@@ -138,7 +143,7 @@ taskdef_for() {
   latest=$(latest_taskdef)
   if [ -n "$latest" ]; then
     ours "$(td_tag "$latest" Project)" "task definition $latest"
-    if [ "$(td_tag "$latest" edw-spec)" = "$h" ]; then
+    if [ "$(td_tag "$latest" "$N-spec")" = "$h" ]; then
       log "taskdef  ${latest##*/} has this spec ($h)"
       echo "$latest"
       return
@@ -147,7 +152,7 @@ taskdef_for() {
   fi
   log "task definition to register (spec $h):"
   jq . <<<"$json" | sed 's/^/  | /' >&2
-  jq --arg p "$PROJECT" --arg h "$h" '. + {tags: [{key: "Project", value: $p}, {key: "edw-spec", value: $h}]}' \
+  jq --arg p "$PROJECT" --arg k "$N-spec" --arg h "$h" '. + {tags: [{key: "Project", value: $p}, {key: $k, value: $h}]}' \
     <<<"$json" >"$TMP/taskdef.json"
   new taskdef ecs register-task-definition --cli-input-json "file://$TMP/taskdef.json" \
     --query taskDefinition.taskDefinitionArn

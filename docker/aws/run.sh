@@ -38,6 +38,7 @@ FLAGS=(-d --name edw --hostname edw --restart unless-stopped
   -v "$SRV/egpt-jsonl:/home/egpt/.egpt-jsonl")   # boxed beings' Claude sessions survive a recreate
 
 if [ $ON_HOST = 0 ]; then
+  legacy_only
   check_account
   IMAGE=$REGISTRY/egpt:$TAG
   if pushed=$(q ecr describe-images --repository-name egpt --image-ids "imageTag=$TAG" \

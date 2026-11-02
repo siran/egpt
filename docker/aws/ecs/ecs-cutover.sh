@@ -1,10 +1,11 @@
 #!/bin/bash
-# ecs-cutover.sh [--rollback] [--apply]
+# ecs-cutover.sh [--deploy edw] [--rollback] [--apply]
 # Moves EDW from the hand-run container on edw-node to the ECS service edw:
 #   stops edw on edw-node (restart=no), stops edw-node (kept, NOT terminated), detaches edw-data,
 #   scales the ASG to 1 (its instance attaches edw-data at boot), then sets the service to 1.
 # --rollback: service to 0, ASG to 0, edw-data back on edw-node, edw-node and its edw started.
 # One poller per bot token: the old container is stopped before the new task can start.
+# Without a LEGACY_NODE (a new deployment) this is the first start: ASG to 1, then the service.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/ecs-lib.sh"
 
@@ -13,7 +14,7 @@ for a; do
   case $a in
     --apply) APPLY=1 ;;
     --rollback) ROLLBACK=1 ;;
-    *) die "usage: ecs-cutover.sh [--rollback] [--apply]" ;;
+    *) die "usage: ecs-cutover.sh [--deploy edw] [--rollback] [--apply]" ;;
   esac
 done
 check_account
@@ -21,7 +22,7 @@ check_account
 OLD=$(find_instance) OST=
 [ -z "$OLD" ] || OST=$(q ec2 describe-instances --instance-ids "$OLD" --query 'Reservations[0].Instances[0].State.Name')
 VOL=$(find_volume)
-[ -n "$VOL" ] || die "no volume edw-data tagged $PROJECT"
+[ -n "$VOL" ] || die "no volume $DATA tagged $PROJECT"
 read -r VST VATT <<<"$(q ec2 describe-volumes --volume-ids "$VOL" --query 'Volumes[0].[State,Attachments[0].InstanceId]')"
 [ "$VATT" = None ] && VATT=
 read -r sst sdes srun std <<<"$(service_info)"
@@ -37,10 +38,10 @@ if [ "$APPLY" = 1 ] && { [ $ASG_OK = 0 ] || [ "$sst" != ACTIVE ]; }; then
   die "the ASG or the service is missing (ecs-provision.sh --apply)"
 fi
 
-# remote NAME: runs $TMP/NAME on edw-node as root over SSM (printed in a dry run).
+# remote NAME: runs $TMP/NAME on LEGACY_NODE as root over SSM (printed in a dry run).
 remote() {
   if [ "$APPLY" = 1 ]; then ssm_send "$OLD" "$TMP/$1" "/root/$1"
-  else log "[dry] on ${OLD:-edw-node} over SSM, as root:"; sed 's/^/  | /' "$TMP/$1" >&2; fi
+  else log "[dry] on ${OLD:-$LEGACY_NODE} over SSM, as root:"; sed 's/^/  | /' "$TMP/$1" >&2; fi
 }
 
 wait_container_instance() {
@@ -53,10 +54,10 @@ wait_container_instance() {
     ci=$(q ecs list-container-instances --cluster $CLUSTER --status ACTIVE \
       --filter "attribute:$ATTR == mounted and agentConnected == true" --query 'containerInstanceArns[0]') || ci=''
     [ -n "$ci" ] && break
-    log "  waiting for an instance with edw-data mounted (asg: $(asg_instances | tr '\t' ' '))"
+    log "  waiting for an instance with $DATA mounted (asg: $(asg_instances | tr '\t' ' '))"
     sleep 15
   done
-  [ -n "$ci" ] || die "no instance mounted edw-data in 20 min; on the ASG's instance see /var/log/cloud-init-output.log"
+  [ -n "$ci" ] || die "no instance mounted $DATA in 20 min; on the ASG's instance see /var/log/cloud-init-output.log"
   read -r ec2id agent <<<"$(q ecs describe-container-instances --cluster $CLUSTER --container-instances "$ci" \
     --query 'containerInstances[0].[ec2InstanceId,versionInfo.agentVersion]')"
   log "ready    $ec2id ($(q ec2 describe-instances --instance-ids "$ec2id" \
@@ -88,7 +89,7 @@ EOF
     run aws ec2 detach-volume --volume-id "$VOL" --query State
     run aws ec2 wait volume-available --volume-ids "$VOL"
   elif [ -n "$VATT" ] && [[ " ${NEWI[*]} " != *" $VATT "* ]]; then
-    die "edw-data is attached to $VATT, which is neither edw-node nor in $ASG"
+    die "$DATA is attached to $VATT, which is neither ${LEGACY_NODE:-a plain-EC2 node} nor in $ASG"
   fi
   run aws autoscaling update-auto-scaling-group --auto-scaling-group-name $ASG --min-size 1 --max-size 1 --desired-capacity 1
   wait_container_instance
@@ -96,13 +97,16 @@ EOF
   if [ "$APPLY" = 1 ]; then
     wait_stable || die "the service did not settle; see the events above (rollback: ecs-cutover.sh --rollback --apply)"
   fi
-  log "${OLD:-edw-node} stays stopped. Once ECS has proven itself: aws ec2 terminate-instances --instance-ids ${OLD:-<id>}"
-  log "(its root volume goes with it; edw-data stays)"
+  if [ -n "$LEGACY_NODE" ]; then
+    log "${OLD:-$LEGACY_NODE} stays stopped. Once ECS has proven itself: aws ec2 terminate-instances --instance-ids ${OLD:-<id>}"
+    log "(its root volume goes with it; $DATA stays)"
+  fi
   exit 0
 fi
 
 # Rollback
-[ -n "$OLD" ] || die "no edw-node instance to roll back to"
+[ -n "$LEGACY_NODE" ] || die "--rollback returns to the plain-EC2 node; deployment $DEPLOY has none"
+[ -n "$OLD" ] || die "no $LEGACY_NODE instance to roll back to"
 cat >"$TMP/edw-start.sh" <<'EOF'
 #!/bin/bash
 # On edw-node: mount edw-data and start the hand-run edw again.

@@ -1,19 +1,19 @@
 #!/bin/bash
-# ecs-deploy.sh [--tag edw] [--restart] [--apply]
-# Points the service edw at egpt:<tag> as ECR has it now, pinned by digest: registers a
+# ecs-deploy.sh [--deploy edw] [--tag <deployment>] [--restart] [--apply]
+# Points the deployment's service at egpt:<tag> as ECR has it now, pinned by digest: registers a
 # task-definition revision when the image or the definition changed, then updates the service.
 # The old task stops before the new one starts (never two pollers). Replaces run.sh on ECS.
 # --restart replaces the task even when nothing changed.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/ecs-lib.sh"
 
-TAG=edw RESTART=0
+TAG=$N RESTART=0
 while [ $# -gt 0 ]; do
   case $1 in
     --apply) APPLY=1 ;;
     --tag) TAG=${2:?--tag needs a value}; shift ;;
     --restart) RESTART=1 ;;
-    *) die "usage: ecs-deploy.sh [--tag edw] [--restart] [--apply]" ;;
+    *) die "usage: ecs-deploy.sh [--deploy edw] [--tag $N] [--restart] [--apply]" ;;
   esac
   shift
 done
