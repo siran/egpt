@@ -152,22 +152,26 @@ for _ in $(seq 5); do
 done
 EOF
     if [ "$DATA_INIT" = format ]; then cat <<'EOF'
-# A blank volume (a new one reads as zeros) gets a filesystem and egpt-home, once; anything else is never formatted.
+# Formatted only with no filesystem AND tagged DataInit=pending (set by ecs-provision.sh at create-volume), then DataInit=done.
+# A new encrypted volume reads as random bytes, not zeros, so the tag is the only sign that it is blank.
 fresh=''
 if [ -z "$uuid" ]; then
-  nz=$(head -c 1048576 "$dev" | tr -d '\0' | wc -c)
-  if [ "$nz" = 0 ]; then
-    mkfs.xfs "$dev"
-    udevadm settle
-    uuid=$(blkid -p -o value -s UUID "$dev") fstype=xfs fresh=1
-  fi
+  init=$(aws ec2 describe-volumes --volume-ids "$VOL" --query "Volumes[0].Tags[?Key=='DataInit'].Value | [0]" --output text)
+  [ "$init" = pending ] || { echo "@LABEL@: $VOL has no filesystem and DataInit is '$init', not pending; it is not formatted"; exit 1; }
+  mkfs.xfs "$dev"
+  udevadm settle
+  uuid=$(blkid -p -o value -s UUID "$dev") fstype=xfs fresh=1
+  [ -n "$uuid" ]
 fi
-[ -n "$uuid" ] || { echo "@LABEL@: $VOL holds data but no filesystem; it is not formatted"; exit 1; }
 grep -q "UUID=$uuid" /etc/fstab || echo "UUID=$uuid $SRV $fstype defaults,nofail 0 2" >>/etc/fstab
 mkdir -p "$SRV"
 systemctl daemon-reload
 mountpoint -q "$SRV" || mount "$SRV"
-[ -z "$fresh" ] || install -d -o 1000 -g 1000 -m 755 "$SRV/egpt-home"
+if [ -n "$fresh" ]; then
+  install -d -o 1000 -g 1000 -m 755 "$SRV/egpt-home"
+  aws ec2 create-tags --resources "$VOL" --tags Key=DataInit,Value=done \
+    || echo "@LABEL@: could not tag $VOL DataInit=done; it has a filesystem now, so no boot formats it"
+fi
 [ -d "$SRV/egpt-home" ] || { echo "@LABEL@: $VOL has no egpt-home"; exit 1; }
 EOF
     else cat <<'EOF'
@@ -215,9 +219,11 @@ if [ -n "$VOL" ]; then
   log "data     $VOL ($vaz, attached to ${vatt:-nothing})"
 else
   [ -z "$LEGACY_NODE" ] || die "no volume $DATA tagged $PROJECT (provision.sh)"
-  # Created empty; the instance formats it at its first boot (DATA_INIT=format).
+  # Created empty; with DATA_INIT=format it is tagged DataInit=pending and the instance formats it at its first boot.
+  init=
+  [ "$DATA_INIT" != format ] || init='{Key=DataInit,Value=pending}'
   VOL=$(new data-volume ec2 create-volume --availability-zone "$AZ" --size "$DATA_GB" --volume-type gp3 --encrypted \
-    --tag-specifications "$(tagspec volume "$DATA")" --query VolumeId)
+    --tag-specifications "$(tagspec volume "$DATA" "$init")" --query VolumeId)
   run aws ec2 wait volume-available --volume-ids "$VOL"
 fi
 DIGEST=$(ecr_digest "$N")
@@ -285,6 +291,10 @@ inline() {  # name document: puts the inline policy unless it is already this do
   fi
 }
 [ -z "$BUCKET" ] || inline "$N-transfer" "$TRANSFER"
+# DATA_INIT=format: after formatting, the instance may set DataInit=done on its data volume, and no other tag.
+DONE='{"Sid":"DataInitDone","Effect":"Allow","Action":"ec2:CreateTags","Resource":"'$ARN_EC2:volume/$VOL'",
+ "Condition":{"StringEquals":{"aws:RequestTag/DataInit":"done"},"ForAllValues:StringEquals":{"aws:TagKeys":["DataInit"]}}}'
+[ "$DATA_INIT" != format ] || ATTACH=$(jq -c --argjson s "$DONE" '.Statement += [$s]' <<<"$ATTACH")
 inline "$N-data-attach" "$ATTACH"
 [ -z "$ZONE" ] || inline "$N-dns" "$DNS"
 
