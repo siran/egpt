@@ -36,13 +36,15 @@ What differs between deployments is a switch, not a branch on the name:
 | `OFICINA_TUNNEL` | 1 | 0 | The oficina-tunnel sidecar. |
 | `ZONE`, `DNS_NAME`, `ZONE_VPC` | `egpt.internal`, … | empty | The private zone and the A record the instance sets at boot (`$N-dns`). |
 | `ECR_UNTAGGED` | 1 | 0 | EduWeb's ECR `egpt` was made by hand, untagged. Anywhere else, build-push.sh refuses an existing repo without the deployment's tag. |
+| `SSH_PORT` | empty | 2222 | [SSH into the container](#ssh-into-the-container-ssh_port-nu): sshd as egpt on that port (`EGPT_SSH_PORT` in the task definition), tcp `SSH_PORT` from anywhere in `$N-sg`, and the Elastic IP `$N-ip`, which the instance associates at boot (`$N-address`). Empty: none of these. |
 
 ### NU, the first time
 
 1. **`build-push.sh --deploy nu --apply`**, from a plain checkout in WSL. It creates ECR `egpt` tagged `Project=egpt-nu` and pushes `egpt:<sha>` and `egpt:nu`.
 2. **`ecs/ecs-provision.sh --deploy nu --apply`** creates, in order:
-   - the VPC 10.90.0.0/16 with its gateway, subnet, routes, and `nu-sg` with no inbound rules;
+   - the VPC 10.90.0.0/16 with its gateway, subnet, routes, and `nu-sg`, whose only inbound rule is tcp 2222 (SSH);
    - `nu-data`, an empty, encrypted 30 GB gp3 volume;
+   - the Elastic IP `nu-ip`;
    - the role, the profile, the cluster, the launch template, the ASG (on-demand t3a.small/t3.small, at 0), the task definition and the service (at 0).
 3. **`ecs/ecs-cutover.sh --deploy nu --apply`**. With no plain-EC2 node, it scales the ASG to 1, waits for `nu-data` to be mounted, and sets the service to 1.
    - At its first boot the instance formats the blank `nu-data` and creates `egpt-home`.
@@ -230,3 +232,22 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 3. Mint a token per Desktop: in that window, Settings > Developer > Desktop API, or from a shell in the container, `node ~/src/egpt/src/tools/beeper-mint-token.mjs --port 23373` (then `--port 23374`) and approve the prompt in that window.
 4. Put them in `egpt-home/config/config.yaml` under `limbs.beeper.primary` and `limbs.beeper.secondary` (`account` + `token`, no `base_url`), and restart the container.
 5. Verify: the daemon log shows `connection 'primary' → http://127.0.0.1:23373` and `connection 'secondary' → http://127.0.0.1:23374`; `node ~/src/egpt/src/tools/beeper-whoami.mjs` shows both.
+
+## SSH into the container (`SSH_PORT`, NU)
+
+`ssh nu` lands in NU's container as egpt, the way `ssh an@dolly` lands on the home PC: for the egpt shell (`node ~/src/egpt/egpt.mjs`), copying folders in and out, the VNC tunnel and the Claude login. The entrypoint runs sshd as egpt on `EGPT_SSH_PORT`: keys only, no agent or X11 forwarding, local forwards only. Log: `/tmp/sshd.log` in the container.
+
+- `~/.ssh/config` on the PC; the address is the `ip` line of `ecs/ecs-provision.sh --deploy nu`:
+
+  ```
+  Host nu
+    HostName <EIP>
+    Port 2222
+    User egpt
+  ```
+- **Keys:** `egpt-home/secrets/ssh/authorized_keys` on the data volume, not group- or world-writable. Without it sshd runs and lets no one in; the entrypoint logs where it goes. The first key goes in from an SSM session on the instance: `sudo docker exec -i $(sudo docker ps -q --filter label=com.amazonaws.ecs.container-name=nu) sh -c 'cat >>"$EGPT_HOME/secrets/ssh/authorized_keys"' <<<'<public key>'`.
+- **Host key:** `secrets/ssh/ssh_host_ed25519_key`, made once on the data volume, so it is the same after a restart or on a new instance. The image ships no host keys.
+- **Address:** the Elastic IP `nu-ip`. Each instance associates it at boot (`nu-address` allows that and nothing else); if that fails, the user data log says so and the task runs anyway. Re-running `ecs/ecs-provision.sh --deploy nu --apply` moves it to a running instance that lacks it. It costs what the auto-assigned IPv4 it replaces costs ($3.65/mo), also while no instance holds it.
+- **VNC:** `ssh -N -L 16080:localhost:6080 nu`, then http://localhost:16080/vnc.html (password in `secrets/vnc.password`).
+- **Claude login:** `ssh -t nu egpt-claude-token`. It runs `claude setup-token`, saves the token you paste (not shown) as `secrets/claude-oauth.token`, and offers to restart egpt. Sandboxed beings use it on their next turn, the others after the restart. SSH shells export it too.
+- **Copying:** `tar -C <dir> -cf - . | ssh nu 'tar -C <dest> -xf -'`, and the other way round.

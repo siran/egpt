@@ -19,6 +19,7 @@ set -- "${_args[@]}"
 DEPLOYMENTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployments
 [[ $DEPLOY =~ ^[a-z0-9-]+$ && -f $DEPLOYMENTS/$DEPLOY.env ]] \
   || die "no deployment '$DEPLOY' (docker/aws/deployments/*.env)"
+SSH_PORT=                    # default; a deployment may set it: sshd in the container, an EIP, tcp $SSH_PORT open
 # shellcheck source=deployments/edw.env
 . "$DEPLOYMENTS/$DEPLOY.env"
 
@@ -97,10 +98,11 @@ offered() {  # instance type: the AZs that offer it, sorted
 }
 
 # ensure_network TYPE...: the deployment's VPC (one public subnet, internet gateway, no NAT) and a
-# security group with no inbound rules; a new subnet goes in the first AZ offering every TYPE.
+# security group with no inbound rules (with SSH_PORT: tcp $SSH_PORT from anywhere, only);
+# a new subnet goes in the first AZ offering every TYPE.
 # Sets VPC IGW SUBNET AZ RT SG.
 ensure_network() {
-  local att='' gw='' assoc='' azs t
+  local att='' gw='' assoc='' azs t rules='' ssh_in='' ssh="tcp $SSH_PORT $SSH_PORT 0.0.0.0/0"
   VPC=$(byname describe-vpcs 'Vpcs[].VpcId' "$N-vpc")
   if [ -n "$VPC" ]; then log "vpc      $VPC"
   else VPC=$(new vpc ec2 create-vpc --cidr-block "$VPC_CIDR" --tag-specifications "$(tagspec vpc "$N-vpc")" --query Vpc.VpcId); fi
@@ -142,12 +144,22 @@ ensure_network() {
   SG=$(byname describe-security-groups 'SecurityGroups[].GroupId' "$N-sg")
   if [ -n "$SG" ]; then
     log "sg       $SG"
-    [ -z "$(q ec2 describe-security-groups --group-ids "$SG" --query 'SecurityGroups[0].IpPermissions')" ] \
-      || log "WARNING: $N-sg has inbound rules; it should have none"
+    if [ -z "$SSH_PORT" ]; then
+      [ -z "$(q ec2 describe-security-groups --group-ids "$SG" --query 'SecurityGroups[0].IpPermissions')" ] \
+        || log "WARNING: $N-sg has inbound rules; it should have none"
+    else
+      rules=$(q ec2 describe-security-group-rules --filters "Name=group-id,Values=$SG" \
+        --query 'SecurityGroupRules[?!IsEgress].[IpProtocol,FromPort,ToPort,CidrIpv4]' | tr '\t' ' ')
+      if grep -qxF "$ssh" <<<"$rules"; then ssh_in=1; log "ssh      $N-sg allows $ssh"; fi
+      [ -z "$(grep -vxF "$ssh" <<<"$rules")" ] || log "WARNING: $N-sg has inbound rules besides $ssh; it should have none"
+    fi
   else
     SG=$(new sg ec2 create-security-group --group-name "$N-sg" --description "$LABEL node: no inbound" --vpc-id "$VPC" \
       --tag-specifications "$(tagspec security-group "$N-sg")" --query GroupId)
   fi
+  [ -z "$SSH_PORT" ] || [ -n "$ssh_in" ] || run aws ec2 authorize-security-group-ingress --group-id "$SG" \
+    --protocol tcp --port "$SSH_PORT" --cidr 0.0.0.0/0 --tag-specifications "$(tagspec security-group-rule "$N-ssh")" \
+    --query 'SecurityGroupRules[0].SecurityGroupRuleId'
 }
 
 parse_apply() {  # for scripts whose only flag is --apply

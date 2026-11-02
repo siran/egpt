@@ -82,8 +82,9 @@ COPY --from=whisper /src/whisper.cpp/samples/jfk.wav /opt/whisper/samples/jfk.wa
 
 # The being box: a sandboxed being runs as its conversation's own uid in a private view
 # (docker/egpt-box). Root-owned; the spine may run it through one sudoers line.
-RUN apt-get update && apt-get install -y --no-install-recommends sudo acl openssh-client \
-  && rm -rf /var/lib/apt/lists/*
+# openssh-server: sshd as egpt when EGPT_SSH_PORT is set; its host key is on the data volume, not here.
+RUN apt-get update && apt-get install -y --no-install-recommends sudo acl openssh-client openssh-server \
+  && rm -f /etc/ssh/ssh_host_* && rm -rf /var/lib/apt/lists/*
 
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/egpt-entrypoint
 COPY --chmod=755 docker/scripts/ /usr/local/bin/
@@ -101,6 +102,9 @@ USER egpt
 ENV HOME=/home/egpt EGPT_HOME=/home/egpt/.egpt DISPLAY=:99 EGPT_SESSION1=1 \
     RADIO_PIPER=/opt/piper CLAUDE_CONFIG_DIR=/home/egpt/.claude
 RUN mkdir -p /home/egpt/.egpt /home/egpt/.config/BeeperTexts /home/egpt/.claude /home/egpt/src/egpt
+# SSH shells get the beings' Claude token, as the entrypoint exports it. Top of .bashrc: `ssh nu cmd` too.
+RUN { printf '%s\n' 'if [ -s "$EGPT_HOME/secrets/claude-oauth.token" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$(tr -d "\r\n" <"$EGPT_HOME/secrets/claude-oauth.token")"; fi'; \
+      cat ~/.bashrc; } >/tmp/bashrc && mv /tmp/bashrc ~/.bashrc
 VOLUME ["/home/egpt/.egpt", "/home/egpt/.config/BeeperTexts", "/home/egpt/.claude", "/home/egpt/src/egpt"]
 EXPOSE 5900 6080
 
