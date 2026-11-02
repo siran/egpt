@@ -64,12 +64,45 @@ keep_running() {  # name, command...
   done
 }
 
+# EGPT_BEEPER=primary,secondary: one Beeper Desktop per account, all on the same screen.
+# The first keeps the default profile, the others use ~/.config/BeeperTexts-<name> (Beeper's own
+# BEEPER_PROFILE naming). Instance i serves its Desktop API on 23373+i, inside egpt's token lookup.
+beeper_run() {  # index profile-dir
+  env BEEPER_USER_DATA_DIR="$2" /opt/beeper/beepertexts --no-sandbox --password-store=basic \
+    --disable-gpu --pas-port=$((23373 + $1)) &
+  local pid=$!
+  # Beeper centres every new window on the same spot; give each instance its own.
+  timeout 300 xdotool search --sync --all --onlyvisible --pid $pid --class Beeper \
+    windowmove %@ $((20 + $1 % 3 * 480)) $((20 + 60 * ($1 / 3))) >/dev/null 2>&1 &
+  wait $pid
+}
+
+start_beepers() {  # list
+  local names name dir out i=0 seen=' '
+  IFS=', ' read -r -a names <<<"$1"
+  for name in "${names[@]}"; do
+    if [[ ! $name =~ ^[A-Za-z0-9_-]+$ || $seen == *" $name "* || $i -ge 10 ]]; then
+      log "beeper: skipping '$name'"; continue
+    fi
+    seen+="$name "
+    dir=$HOME/.config/BeeperTexts; [ $i = 0 ] || dir+=-$name
+    out=/tmp/beeper-$name.log
+    mkdir -p "$dir"
+    mountpoint -q "$dir" || log "beeper $name: $dir is not a mounted volume; its login goes with the container"
+    log "beeper $name: profile $dir, Desktop API 127.0.0.1:$((23373 + i)), log $out"
+    keep_running "beeper $name" beeper_run $i "$dir" >"$out" 2>&1 &
+    i=$((i + 1))
+  done
+}
+
 if [ "${EGPT_BEEPER:-on}" = off ]; then
   log "Beeper off (EGPT_BEEPER=off)"
-else
+elif [ "${EGPT_BEEPER:-on}" = on ]; then
   # --password-store=basic: no desktop keyring in the container.
   keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
     --disable-gpu >/tmp/beeper.log 2>&1 &
+else
+  start_beepers "$EGPT_BEEPER"
 fi
 
 # One long-lived Claude token (claude setup-token) for every being, kept on the data volume so it

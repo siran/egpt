@@ -159,3 +159,24 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 3. Stop the instance, `modify-instance-attribute --instance-type`, start it (it keeps its private IP and the edw-data volume).
 4. On the host: `systemctl stop ecs; rm -rf /var/lib/ecs/data/*; systemctl start ecs`, so the agent registers as a new container instance.
 5. `aws autoscaling resume-processes …` (the same three), then set `TYPES` in ecs/ecs-lib.sh and run `ecs-provision.sh --on-demand --apply`, so the launch template matches.
+
+## Two Beeper accounts in one container (NU)
+
+`EGPT_BEEPER` takes `off` (EDW), `on` (one Beeper, the default; unchanged), or a list of names. `EGPT_BEEPER=primary,secondary` runs one Beeper Desktop per name, both on the VNC screen, side by side:
+
+| name | profile (`BEEPER_USER_DATA_DIR`) | Desktop API (`--pas-port`) | log |
+|---|---|---|---|
+| primary (first) | `/home/egpt/.config/BeeperTexts`, today's | 127.0.0.1:23373 | `/tmp/beeper-primary.log` |
+| secondary | `/home/egpt/.config/BeeperTexts-secondary` | 127.0.0.1:23374 | `/tmp/beeper-secondary.log` |
+
+- The port is a launch flag, not an app setting, so there is no port step in the app. egpt finds each Desktop by its token on 23373–23382 anyway.
+- Each profile needs its own mount, or that login goes with the container (the entrypoint logs `is not a mounted volume`). NU's task definition mounts host dirs, e.g. `/srv/egpt/egpt-beeper` and `/srv/egpt/egpt-beeper-secondary`, at the two profile paths. Create them owned by 1000:1000 before the first task: Docker creates a missing source dir as root, and Beeper runs as egpt.
+- Memory, measured before sign-in: ~0.45 GB per Beeper (PSS), ~0.9 GB for the two.
+
+### One-time sign-ins
+
+1. Open noVNC (port forward above). The left window is primary (ear), the right one secondary (mouth).
+2. Sign each window into its own account: primary = the ear account, secondary = the mouth account.
+3. Mint a token per Desktop: in that window, Settings > Developer > Desktop API, or from a shell in the container, `node ~/src/egpt/src/tools/beeper-mint-token.mjs --port 23373` (then `--port 23374`) and approve the prompt in that window.
+4. Put them in `egpt-home/config/config.yaml` under `limbs.beeper.primary` and `limbs.beeper.secondary` (`account` + `token`, no `base_url`), and restart the container.
+5. Verify: the daemon log shows `connection 'primary' → http://127.0.0.1:23373` and `connection 'secondary' → http://127.0.0.1:23374`; `node ~/src/egpt/src/tools/beeper-whoami.mjs` shows both.
