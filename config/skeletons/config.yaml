@@ -302,6 +302,10 @@ networks:
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [split, send, end]
 
+# group chats reply in their "SI+<group>" side group unless their conversations.yaml entry says
+# otherwise; never a 1:1 or Telegram. Unset = off (config-schema reply_in_side_group)
+# reply_in_side_group: on
+
 # --- Side-group texts (/split, /send) ----------------------------------------
 # All optional; unset = the text shown. Each {word} listed is filled in; any other
 # {word} stays as written. Every template key: MANUAL.md "Templates".
