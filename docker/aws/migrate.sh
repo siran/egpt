@@ -7,6 +7,7 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 parse_apply "$@"
+legacy_only
 check_account
 
 VOLS=(egpt-home egpt-claude)
