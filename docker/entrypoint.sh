@@ -4,6 +4,13 @@
 set -u
 log() { echo "[entrypoint] $*"; }
 
+keep_running() {  # name, command...
+  local name=$1; shift
+  while true; do
+    "$@"; log "$name exited ($?), restarting in 5s"; sleep 5
+  done
+}
+
 REPO=$HOME/src/egpt
 REPO_URL=${EGPT_REPO_URL:-https://github.com/siran/egpt.git}
 
@@ -34,6 +41,38 @@ else
   log "VNC disabled (no VNC_PASSWORD and no readable $VNC_FILE)"
 fi
 
+# SSH (EGPT_SSH_PORT): sshd as egpt, keys only. Host key (made once) and authorized_keys in secrets/ssh/.
+if [ -n "${EGPT_SSH_PORT:-}" ]; then
+  SSH_DIR=$EGPT_HOME/secrets/ssh
+  (umask 077 && mkdir -p "$SSH_DIR")
+  if [ ! -s "$SSH_DIR/ssh_host_ed25519_key" ]; then
+    ssh-keygen -q -t ed25519 -N '' -f "$SSH_DIR/ssh_host_ed25519_key" </dev/null \
+      && log "generated $SSH_DIR/ssh_host_ed25519_key"
+  fi
+  [ -s "$SSH_DIR/authorized_keys" ] || log "ssh: no keys yet; put public keys in $SSH_DIR/authorized_keys"
+  (umask 077 && cat >/tmp/sshd_config <<CFG
+Port $EGPT_SSH_PORT
+HostKey $SSH_DIR/ssh_host_ed25519_key
+AuthorizedKeysFile $SSH_DIR/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+AllowUsers egpt
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding local
+PermitTunnel no
+PidFile /tmp/sshd.pid
+ClientAliveInterval 60
+SetEnv EGPT_HOME=$EGPT_HOME CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR DISPLAY=$DISPLAY
+Subsystem sftp internal-sftp
+CFG
+  )
+  keep_running sshd /usr/sbin/sshd -D -e -f /tmp/sshd_config >/tmp/sshd.log 2>&1 &
+  log "sshd on :$EGPT_SSH_PORT (log /tmp/sshd.log)"
+fi
+
 # A new container is a new pid namespace: pid files left by the previous one name other processes.
 rm -f "$EGPT_HOME"/state/daemon-s0.pid "$EGPT_HOME"/state/daemon-s1.pid "$EGPT_HOME"/state/spine.pid
 
@@ -56,13 +95,6 @@ if [ ! -f "$EGPT_HOME/config/config.yaml" ]; then
   cp "$REPO/config/skeletons/config.yaml" "$EGPT_HOME/config/config.yaml"
   log "seeded $EGPT_HOME/config/config.yaml - fill in beeper.main.token"
 fi
-
-keep_running() {  # name, command...
-  local name=$1; shift
-  while true; do
-    "$@"; log "$name exited ($?), restarting in 5s"; sleep 5
-  done
-}
 
 # EGPT_BEEPER=primary,secondary: one Beeper Desktop per account, all on the same screen.
 # The first keeps the default profile, the others use ~/.config/BeeperTexts-<name> (Beeper's own

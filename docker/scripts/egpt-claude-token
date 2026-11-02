@@ -1,0 +1,15 @@
+#!/bin/bash
+# egpt-claude-token  - logs the beings into Claude: claude setup-token, then the token it prints
+# goes to secrets/claude-oauth.token. From the operator's PC: ssh -t nu egpt-claude-token
+set -eu
+f=$EGPT_HOME/secrets/claude-oauth.token
+claude setup-token
+read -rsp 'Paste the token it printed (not shown): ' tok; echo
+if [[ $tok != sk-ant-oat* || $tok == *[[:space:]]* ]]; then
+  echo "not an sk-ant-oat... token; nothing written" >&2; exit 1
+fi
+(umask 077 && mkdir -p "${f%/*}" && printf '%s\n' "$tok" >"$f.new" && mv "$f.new" "$f")
+echo "saved $f: ${#tok} chars, sha256 $(printf '%s' "$tok" | sha256sum | cut -c1-12)"
+echo "Sandboxed beings use it on their next turn; the others after a restart."
+read -rp 'Restart egpt now? [y/N] ' a
+if [[ $a == [yY]* ]]; then echo "restarting: ECS starts a new task"; kill -TERM 1; fi

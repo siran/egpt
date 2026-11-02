@@ -32,7 +32,7 @@ ATTACH='{"Version":"2012-10-17","Statement":[
 {"Sid":"Describe","Effect":"Allow","Action":"ec2:DescribeVolumes","Resource":"*"}]}'
 DEPLOY_CFG='{"maximumPercent":100,"minimumHealthyPercent":0,"deploymentCircuitBreaker":{"enable":true,"rollback":true}}'
 
-user_data() {  # data-volume-id zone-id
+user_data() {  # data-volume-id zone-id [eip-allocation-id]
   local v bdirs=''
   for v in "${BEEPER_VOLS[@]}"; do bdirs+=" ${v%%:*}"; done
   {
@@ -183,6 +183,13 @@ mountpoint -q "$SRV" || mount "$SRV"
 [ -f "$SRV/egpt-home/config/config.yaml" ] || { echo "@LABEL@: $VOL has no egpt-home/config/config.yaml"; exit 1; }
 EOF
     fi
+    [ -z "$SSH_PORT" ] || cat <<'EOF'
+
+# SSH's fixed address: the Elastic IP @EIP@ moves to this instance. Without it the task still runs here.
+aws ec2 associate-address --allocation-id @EIP@ --instance-id "$me" --allow-reassociation --query AssociationId --output text \
+  || echo "@LABEL@: could not associate @EIP@; ssh @N@ does not reach this instance"
+
+EOF
     cat <<'EOF'
 for d in egpt-claude egpt-src egpt-jsonl@BEEPER_DIRS@; do [ -d "$SRV/$d" ] || install -d -o 1000 -g 1000 -m 755 "$SRV/$d"; done
 
@@ -194,7 +201,8 @@ touch /etc/egpt-@N@-ecs-node
 EOF
   } | sed -e "s/@VOL@/$1/" -e "s/@CLUSTER@/$CLUSTER/" -e "s/@ATTR@/$ATTR/g" -e "s/@PROJECT@/$PROJECT/" \
     -e "s/@ZONE_ID@/$2/" -e "s/@DNS_NAME@/$DNS_NAME/g" -e "s/@REGION@/$AWS_DEFAULT_REGION/" \
-    -e "s/@N@/$N/g" -e "s/@LABEL@/$LABEL/g" -e "s/@SWAP_MB@/$SWAP_MB/" -e "s/@BEEPER_DIRS@/$bdirs/"
+    -e "s/@N@/$N/g" -e "s/@LABEL@/$LABEL/g" -e "s/@SWAP_MB@/$SWAP_MB/" -e "s/@BEEPER_DIRS@/$bdirs/" \
+    -e "s/@EIP@/${3:-}/g"
 }
 
 if [ -n "$LEGACY_NODE" ]; then
@@ -225,6 +233,22 @@ else
   VOL=$(new data-volume ec2 create-volume --availability-zone "$AZ" --size "$DATA_GB" --volume-type gp3 --encrypted \
     --tag-specifications "$(tagspec volume "$DATA" "$init")" --query VolumeId)
   run aws ec2 wait volume-available --volume-ids "$VOL"
+fi
+# SSH_PORT: the Elastic IP $N-ip. Each instance takes it at boot; a running one that lacks it gets it here.
+EIP=
+if [ -n "$SSH_PORT" ]; then
+  EIP=$(byname describe-addresses 'Addresses[].AllocationId' "$N-ip")
+  [ -n "$EIP" ] || EIP=$(new eip ec2 allocate-address --domain vpc --tag-specifications "$(tagspec elastic-ip "$N-ip")" \
+    --query AllocationId)
+  eip_ip='<new>' eip_on=
+  is_new "$EIP" || read -r eip_ip eip_on <<<"$(q ec2 describe-addresses --allocation-ids "$EIP" \
+    --query 'Addresses[0].[PublicIp,InstanceId]')"
+  [ "$eip_on" != None ] || eip_on=
+  log "ip       $eip_ip ($EIP, on ${eip_on:-nothing})"
+  inst=$(one instance "$(q ec2 describe-instances --filters "$TAGF" "Name=tag:Name,Values=$NODE" \
+    Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId')")
+  [ -z "$inst" ] || [ "$inst" = "$eip_on" ] || run aws ec2 associate-address --allocation-id "$EIP" --instance-id "$inst" \
+    --allow-reassociation --query AssociationId
 fi
 DIGEST=$(ecr_digest "$N")
 if [ -n "$DIGEST" ]; then
@@ -263,6 +287,11 @@ DNS='{"Version":"2012-10-17","Statement":[
 {"Sid":"OwnRecord","Effect":"Allow","Action":"route53:ChangeResourceRecordSets","Resource":"arn:aws:route53:::hostedzone/'$ZID'",
  "Condition":{"ForAllValues:StringEquals":{"route53:ChangeResourceRecordSetsNormalizedRecordNames":["'$DNS_NAME'"],
   "route53:ChangeResourceRecordSetsRecordTypes":["A"],"route53:ChangeResourceRecordSetsActions":["UPSERT"]}}}]}'
+# SSH_PORT: the instance may associate $N-ip, with our tagged instances only.
+ADDRESS='{"Version":"2012-10-17","Statement":[
+{"Sid":"OwnAddress","Effect":"Allow","Action":"ec2:AssociateAddress","Resource":"'$ARN_EC2:elastic-ip/$EIP'"},
+{"Sid":"OurInstances","Effect":"Allow","Action":"ec2:AssociateAddress","Resource":"'$ARN_EC2':instance/*",
+ "Condition":{"StringEquals":{"aws:ResourceTag/Project":"'$PROJECT'"}}}]}'
 
 # Instance role: what edw-instance-role has, plus the ECS agent's policy, attaching the data volume and its DNS record.
 role_new=0
@@ -297,6 +326,7 @@ DONE='{"Sid":"DataInitDone","Effect":"Allow","Action":"ec2:CreateTags","Resource
 [ "$DATA_INIT" != format ] || ATTACH=$(jq -c --argjson s "$DONE" '.Statement += [$s]' <<<"$ATTACH")
 inline "$N-data-attach" "$ATTACH"
 [ -z "$ZONE" ] || inline "$N-dns" "$DNS"
+[ -z "$SSH_PORT" ] || inline "$N-address" "$ADDRESS"
 
 prof_new=0 roles=''
 if iam_has get-instance-profile --instance-profile-name $IPROFILE; then
@@ -326,7 +356,7 @@ fi
 AMI=$(q ssm get-parameter --name $AMI_PARAM --query Parameter.Value)
 read -r AMI_NAME ROOTDEV <<<"$(q ec2 describe-images --image-ids "$AMI" --query 'Images[0].[Name,RootDeviceName]')"
 log "ami      $AMI ($AMI_NAME, root $ROOTDEV)"
-user_data "$VOL" "$ZID" >"$TMP/user-data.sh"
+user_data "$VOL" "$ZID" "$EIP" >"$TMP/user-data.sh"
 jq -n --arg ami "$AMI" --arg type "${TYPES[0]}" --arg prof $IPROFILE --arg sg "$SG" --arg rootdev "$ROOTDEV" \
   --argjson gb $ROOT_GB --arg p $PROJECT --arg node $NODE --arg root "$N-ecs-root" --arg ud "$(base64 -w0 "$TMP/user-data.sh")" '{
   ImageId: $ami,
