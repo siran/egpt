@@ -467,7 +467,7 @@ export function createSpine({
     const { to, ev, mention, pinned, trigger = null, marks = [] } = entry;
     let d;
     const drop = () => { for (const m of marks) m.off(); };
-    try { d = await gating.decide(to, ev, mention); }
+    try { d = await gating.decide(to, ev, mention, { reacts: marksHere(to, ev) }); }
     catch (e) { drop(); note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
     if (d.mode !== 'auto' || !d.mayReply) { drop(); note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
     const at = d.replyChatId ?? null;                 // the chat's automatic SI+ group (see openAndRunReply)
@@ -811,7 +811,7 @@ export function createSpine({
   async function gateOf(target, ev) {
     const to = gateAs(target, null);
     const mention = target.mention ?? ev.mention;
-    return { target, meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(to, ev, mention, { denied: !!target.denied, bot: !humanTurn(ev) }) };
+    return { target, meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(to, ev, mention, { denied: !!target.denied, bot: !humanTurn(ev), reacts: target.mesh ? null : marksHere(to, ev) }) };
   }
   // The targets whose gate receives the line, and whether the line is RECORDED at all: the router's
   // answer for the beings here, or any target receiving it ('off' for all → not received, C4).
@@ -1420,6 +1420,9 @@ export function createSpine({
   // THE MARK ON THE LINE A TURN ANSWERS, placed at arrival (turns.receipt). The emoji train (2026-11-03):
   // 👾 → 🤔 → off on a human's line. Else dd2c11b7's ✍️ on a human's unaddressed 'on' line. Not where the
   // reply goes elsewhere (side group, tunnel), nor on a reaction: its msgId is the message reacted to.
+  // …and whether this chat can carry it at all (turns.canMark: the mouth's room, or the being's own
+  // account), the fact gating.decide sets `emoji` on. Not: the turn runs as bubble does.
+  const marksHere = (to, ev) => () => turns.canMark?.(to, ev) ?? false;
   function markOf(to, d, ev) {
     if (d.replyChatId != null || ev.kind === 'reaction') return [];
     const m = !d.emoji ? (d.unaddressed ? turns.receipt?.(to, ev) : null)
@@ -1458,7 +1461,7 @@ export function createSpine({
     if (stopSwitch?.present()) { note(`wake ${where}: STOP file present — not woken`); return false; }
     const channel = guard ? guardChannel(ev) : null;
     if (guard?.blocked(channel)) { note(`guard: ${channel} stopped — background wake suppressed`); return false; }
-    const d = await gating.decide(being, ev, WAKE_MENTION);
+    const d = await gating.decide(being, ev, WAKE_MENTION, { reacts: marksHere(being, ev) });
     if (!d.mayReply) { note(`wake ${where}: mode ${d.mode} — not woken`); return false; }
     if (guard) await guardCountNonHuman(ev, channel, true);
     const { key: turnKey, pinned } = await turns.keyOf(being, ev);

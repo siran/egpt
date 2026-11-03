@@ -247,6 +247,13 @@ export function makeLimbAwareBridge(bridge, ...limbs) {
       return limb ? limb[m](c, ...rest) : bridge[m](c, ...rest);
     };
   }
+  // WHO MAY REACT IN THIS CHAT, by its owner (2026-11-03): a limb's chat only as the limb's own account
+  // (the Telegram bot, `beingAccount`) or not at all (the chatbox, the console); never a Beeper mouth.
+  // undefined for the bridge's own chats: the mouth decides (sender.mjs makeOutbound `reacts`).
+  routed.reactsAsBeing = (c) => {
+    const limb = limbs.find((l) => l?.owns?.(c));
+    return limb ? (limb.reactsAsBeing?.(c) ?? limb.beingAccount === true) : bridge.reactsAsBeing?.(c);
+  };
   return routed;
 }
 
@@ -3312,7 +3319,8 @@ export async function boot({
   // …and the MOUTH, for the same reason (operator 2026-09-07): the steer 👀 is an outbound like
   // any other, so it resolves through the ONE resolver the reply does (sender.mjs makeOutbound).
   // Without it the ack went out on this account while the reply came out of the peer's.
-  const turns = createTurns({ brain, bridge, bridgeOf: rawBridgeOf, peerMouth, log });
+  // shellAwareBridgeOf: its reactions route as rawBridgeOf's do, and it also knows the console's chats (reactsAsBeing).
+  const turns = createTurns({ brain, bridge, bridgeOf: shellAwareBridgeOf, peerMouth, log });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.

@@ -292,7 +292,20 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
       bridge: bridgeOf ? (bridgeOf(being, chatId) ?? bridge) : bridge,
       route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
       // May a being react here? A mouth, or a limb whose account is the being's own (a bot: `beingAccount`).
-      reacts: () => !!peerMouth || out.bridge?.beingAccount === true,
+      // A chat a limb owns is the limb's to answer (boot makeLimbAwareBridge `reactsAsBeing`, 2026-11-03):
+      // the chatbox and the console have no reactions, whatever else this node holds.
+      reacts: () => out.bridge?.reactsAsBeing?.(chatId) ?? (!!peerMouth || out.bridge?.beingAccount === true),
+      // CAN A TEMPORARY MARK GO ON A MESSAGE HERE AND COME BACK OFF — react()'s own branches for
+      // `temporary`, nothing placed (the emoji train, 2026-11-03): the mouth's own room, or the holder
+      // when it is the mouth; never a peer link (no verb takes one back), never a chat the mouth is not in.
+      async canMark() {
+        if (!out.reacts()) return false;
+        const says = out.route();
+        const mouthChat = says ? await says : null;
+        if (mouthChat) return !!mouthChat.bridge;
+        if (peerMouth?.mouthIsElsewhere?.(chatId, being)) return false;
+        return typeof out.bridge?.react === 'function';
+      },
       // `wait`: how long a local mouth waits for its own copy to arrive (the emoji train's 👾, 2026-11-03).
       async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false, wait = null } = {}) {
         // NO MOUTH ON THIS NODE — one account, the operator's (operator 2026-10-18): a reaction from

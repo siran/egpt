@@ -230,6 +230,11 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     };
   }
   const train = (to, ev) => receipt(to, ev, TRAIN_EMOJI, { what: 'train', wait: TRAIN_COPY_WAIT_MS });
+  // May the train go on this chat's lines (makeOutbound canMark)? The fact gating.decide takes for `emoji`.
+  async function canMark(to, ev) {
+    try { return (await outbound(to, ev.chatId).canMark()) === true; }
+    catch (e) { note(`train ${to}/${ev.chatId}: could not tell whether a mark can be placed here — ${e?.message ?? e}`); return false; }
+  }
 
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
   // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
@@ -379,5 +384,6 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     steerRelayedTurn,
     receipt,
     train,
+    canMark,
   };
 }

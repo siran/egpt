@@ -126,7 +126,7 @@ describe('gating — a legacy super alias is a plain alias', () => {
   it('decide names no reply target and no SI reaction, from either chat', async () => {
     for (const chatId of [MAIN, SUPER]) {
       const d = await g.decide('e', evIn(chatId));
-      expect(Object.keys(d).sort()).toEqual(['emoji', 'mayReply', 'mode', 'receives']);   // emoji: the default thinking train
+      expect(Object.keys(d).sort()).toEqual(['mayReply', 'mode', 'receives']);
     }
   });
 });

@@ -58,7 +58,10 @@ describe('makeLimbAwareBridge with the shell only — exactly the old makeShellA
     const shell = { owns, ...recorder('shell', SHELL, calls) };
     const bridge = { onEdit() {}, ...recorder('beeper', ['send', 'startStream', 'postStatus'], calls) };
     const routed = makeLimbAwareBridge(bridge, shell);
-    expect(Object.keys(routed).sort()).toEqual(Object.keys(legacyShellAware(bridge, shell)).sort());
+    // …plus reactsAsBeing, the per-chat "who may react here" (2026-11-03): the console's chats, no one.
+    expect(Object.keys(routed).sort()).toEqual([...Object.keys(legacyShellAware(bridge, shell)), 'reactsAsBeing'].sort());
+    expect(routed.reactsAsBeing('lobby')).toBe(false);
+    expect(routed.reactsAsBeing('!room:beeper.local')).toBeUndefined();
     expect(routed.onEdit).toBe(bridge.onEdit);
     expect(routed.react).toBeUndefined();
   });

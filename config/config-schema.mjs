@@ -543,8 +543,10 @@ export const CONFIG_SCHEMA = {
                   posts nothing unless the being was addressed (@handle, an opening
                   bare handle, a reply to its post); then the "…" is posted. Not on
                   a steered line (✍️/👍 as before), a bot's line, a reaction, or a
-                  chat whose reply goes to a side group or split. Where no reaction
-                  can be placed (no mouth account) nothing shows until the reply.
+                  chat whose reply goes to a side group or split. Only where the
+                  chat can carry the reaction: a chat the mouth is in, or the
+                  Telegram bot's own. Elsewhere — no mouth account, a chat the
+                  mouth is not in, the chatbox, the console — that turn is bubble's.
           bubble  as before: the ⏳ placeholder with its liveness timer, and the ✍️
                   on an unaddressed 'on' line.
         Read live (src/spine/gating.mjs decide).

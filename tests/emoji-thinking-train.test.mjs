@@ -9,7 +9,8 @@ import { createSpine } from '../src/spine/spine.mjs';
 import { createSender, THINKING } from '../src/spine/sender.mjs';
 import { createReplyActions } from '../src/spine/reply-actions.mjs';
 import { createTurns } from '../src/spine/turns.mjs';
-import { makePeerMouth } from '../src/spine/boot.mjs';
+import { makePeerMouth, makeLimbAwareBridge } from '../src/spine/boot.mjs';
+import { makeOutbound } from '../src/spine/sender.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 import { crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
@@ -60,7 +61,7 @@ function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, no
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
   const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(train ? { dispatch: { thinking_train: train } } : {}) };
   const bridge = fakeBridge();
-  const peerMouth = mouth ? mouth(bridge) : MOUTH_HOLDS;
+  const peerMouth = mouth ? mouth(bridge) : MOUTH_HOLDS;   // mouth() => null: no mouth on this node
   const brain = {
     calls: [], steered: [],
     async turn(being, ev, onPartial) { brain.calls.push(ev.body); return work(onPartial, ev); },
@@ -420,14 +421,26 @@ describe('dispatch.thinking_train: bubble — today exactly', () => {
 describe('gating.decide — emoji, addressed', () => {
   const gating = (mode, dispatch) => createGating({ getConfig: () => ({ agents: { egpt: { mode } }, ...(dispatch ? { dispatch } : {}) }) });
   const ev = { surface: 'whatsapp', chatId: '!g', body: 'hola', msgId: 'm1' };
-  it('emoji by default, absent under bubble; `addressed` only for a human line that addresses the being', async () => {
-    expect((await gating('on').decide('egpt', ev, {})).emoji).toBe(true);
-    expect((await gating('on', { thinking_train: 'bubble' }).decide('egpt', ev, { atEAnywhere: true }))).toEqual({ mode: 'on', receives: true, mayReply: true });
-    expect((await gating('on').decide('egpt', ev, { atEAnywhere: true })).addressed).toBe(true);
-    expect((await gating('on').decide('egpt', ev, { replyToBot: true })).addressed).toBe(true);
-    expect((await gating('on').decide('egpt', ev, {})).addressed).toBeUndefined();
-    expect((await gating('on').decide('egpt', ev, { atEAnywhere: true }, { bot: true })).addressed).toBeUndefined();
-    expect((await gating('on').decide('egpt', { ...ev, msgId: undefined }, { replyToBot: true })).addressed).toBeUndefined();   // a wake: no line
+  const reacts = () => Promise.resolve(true);
+  it('emoji by default where the chat can be marked, absent under bubble; `addressed` only for a human line that addresses the being', async () => {
+    expect((await gating('on').decide('egpt', ev, {}, { reacts })).emoji).toBe(true);
+    expect((await gating('on', { thinking_train: 'bubble' }).decide('egpt', ev, { atEAnywhere: true }, { reacts }))).toEqual({ mode: 'on', receives: true, mayReply: true });
+    expect((await gating('on').decide('egpt', ev, { atEAnywhere: true }, { reacts })).addressed).toBe(true);
+    expect((await gating('on').decide('egpt', ev, { replyToBot: true }, { reacts })).addressed).toBe(true);
+    expect((await gating('on').decide('egpt', ev, {}, { reacts })).addressed).toBeUndefined();
+    expect((await gating('on').decide('egpt', ev, { atEAnywhere: true }, { bot: true, reacts })).addressed).toBeUndefined();
+    expect((await gating('on').decide('egpt', { ...ev, msgId: undefined }, { replyToBot: true }, { reacts })).addressed).toBeUndefined();   // a wake: no line
+  });
+  it("REPRODUCE: no mark possible here (or no answer) — bubble's decision, exactly; asked only when a reply may follow", async () => {
+    const asked = [];
+    const no = () => { asked.push('no'); return Promise.resolve(false); };
+    const BUBBLE = { mode: 'on', receives: true, mayReply: true };
+    expect(await gating('on').decide('egpt', ev, { atEAnywhere: true }, { reacts: no })).toEqual(BUBBLE);
+    expect(await gating('on').decide('egpt', ev, { atEAnywhere: true })).toEqual(BUBBLE);
+    expect(await gating('on').decide('egpt', ev, { atEAnywhere: true }, { reacts: () => Promise.reject(new Error('x')) })).toEqual(BUBBLE);
+    await gating('mention').decide('egpt', ev, {}, { reacts: no });                          // no turn: not asked
+    await gating('on', { thinking_train: 'bubble' }).decide('egpt', ev, {}, { reacts: no });  // bubble: not asked
+    expect(asked).toEqual(['no']);
   });
   it("surfaces: an addressed '…' surfaces with the emoji train, except in auto and a tunnel", async () => {
     const g = gating('on');
@@ -436,6 +449,72 @@ describe('gating.decide — emoji, addressed', () => {
     expect(g.surfaces({ mode: 'on', mayReply: true, addressed: true }, '…')).toBe(false);
     expect(g.surfaces({ mode: 'auto', mayReply: true, emoji: true, addressed: true }, '…')).toBe(false);
     expect(g.surfaces({ mode: 'on', mayReply: true, emoji: true, addressed: true, quiet: true, tunnel: true }, '…')).toBe(false);
+  });
+});
+
+// ── WHERE NO MARK CAN GO, THE TURN IS BUBBLE'S (operator 2026-11-03) ────────────────────────────────
+describe('emoji train only where the chat can be marked; elsewhere bubble, for that turn', () => {
+  it('REPRODUCE: a single-account node (no mouth) — the ⏳ opens, no reaction', async () => {
+    const b = build({ mode: 'on', mouth: () => null, work: answers('Hola.') });
+    await b.bridge.emit(msg('@e hola'));
+    await flush();
+    expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['Hola.']]]);
+    expect(b.reactions()).toEqual([]);
+  });
+
+  it("REPRODUCE: a chat the mouth is not in — the ⏳ opens, no reaction; an unaddressed 'on' line keeps the quiet rule", async () => {
+    const b = build({ mode: 'on', mouth: () => ({ route: async () => null, mouthIsElsewhere: () => true }), work: answers('…') });
+    await b.bridge.emit(msg('@e hola'));
+    await flush();
+    expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['✓']]]);
+    await b.bridge.emit(msg('qué calor hace hoy'));
+    await flush();
+    expect(b.bridge.streams).toHaveLength(1);
+    expect(b.reactions()).toEqual([]);
+  });
+});
+
+// The per-chat answer itself: makeOutbound canMark over boot's facade and the real peer mouth.
+describe('canMark — can this chat carry a temporary mark', () => {
+  const port = (name, extra = {}) => ({ name, async react() { return true; }, async unreact() { return true; }, async send() { return { ok: true }; }, ...extra });
+  const TG = port('telegram', { owns: (c) => String(c).startsWith('tg:'), beingAccount: true });
+  const HTTP = port('http', { owns: (c) => String(c).startsWith('http:') });
+  const SHELL = { owns: (c) => c === 'lobby', async send() { return { ok: true }; } };
+
+  it("REPRODUCE: an HTTP chat on a node that also has the Telegram bot — false; the bot's own chat — true", async () => {
+    const facade = makeLimbAwareBridge(makeLimbAwareBridge(TG, HTTP), SHELL);   // a beeperless node, shell-aware
+    const out = makeOutbound({ bridge: facade });
+    expect(out('egpt', 'http:eduweb-1').reacts()).toBe(false);
+    expect(await out('egpt', 'http:eduweb-1').canMark()).toBe(false);
+    expect(await out('egpt', 'tg:42').canMark()).toBe(true);
+    expect(await out('egpt', 'lobby').canMark()).toBe(false);
+  });
+
+  it('REPRODUCE: the console and the chatbox on a node with a mouth — false; the bot and a Beeper chat the mouth holds — true', async () => {
+    const facade = makeLimbAwareBridge(makeLimbAwareBridge(port('beeper'), TG, HTTP), SHELL);
+    const out = makeOutbound({ bridge: facade, peerMouth: MOUTH_HOLDS });
+    expect(await out('egpt', 'lobby').canMark()).toBe(false);
+    expect(await out('egpt', 'http:eduweb-1').canMark()).toBe(false);
+    expect(await out('egpt', 'tg:42').canMark()).toBe(true);
+    expect(await out('egpt', '!room:beeper.local').canMark()).toBe(true);
+  });
+
+  it('no mouth: a Beeper chat — false', async () => {
+    expect(await makeOutbound({ bridge: makeLimbAwareBridge(port('beeper'), TG) })('egpt', '!room:beeper.local').canMark()).toBe(false);
+  });
+
+  it("REPRODUCE: the real local mouth — true in a chat it is in, false in one it is not (route's own roster read)", async () => {
+    const AN = '+15550000001', RODZ = '+15550000002', M1 = '+15551110001', M2 = '+15551110002';
+    const raw = { id: '!g:beeper.local', type: 'group', participants: { items: [{ id: 'self', isSelf: true }, { id: 'rodz', phoneNumber: RODZ }, { id: 'm1', phoneNumber: M1 }, { id: 'm2', phoneNumber: M2 }] } };
+    const mouthSide = { id: '!m:beeper.local', type: 'group', participants: { items: [{ id: 'self', isSelf: true }, { id: 'an', phoneNumber: AN }, { id: 'm1', phoneNumber: M1 }, { id: 'm2', phoneNumber: M2 }] } };
+    const mouthBridge = { ...port('secondary'), async selfIdentities() { return [RODZ]; }, async listChatsRaw() { return [mouthSide]; } };
+    const node = (member) => {
+      const ear = { ...port('primary'), async selfIdentities() { return [AN]; }, async chatHasParticipant(_c, id) { return member && id === RODZ; }, async chatRaw() { return raw; } };
+      const peerMouth = makePeerMouth({ peer: null, bridge: ear, localMouth: () => ({ name: 'secondary', home: 'primary', bridge: mouthBridge }) });
+      return makeOutbound({ bridge: ear, peerMouth })('egpt', 'g');
+    };
+    expect(await node(true).canMark()).toBe(true);
+    expect(await node(false).canMark()).toBe(false);
   });
 });
 

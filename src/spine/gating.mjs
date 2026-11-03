@@ -84,9 +84,11 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
   // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
   // So is a human's 'on' line that does not address the being (operator 2026-11-02): `unaddressed`.
-  // `emoji`: dispatch.thinking_train is not 'bubble' (operator 2026-11-03): no ⏳ in any mode, the line
-  // carries 👾/🤔 instead. `addressed`, with it: a human's line addresses the being (a wake is no line).
-  async function decide(being, ev, mention = ev.mention, { denied = false, bot = false } = {}) {
+  // `emoji`: dispatch.thinking_train is not 'bubble' AND the chat's mouth can mark a line here
+  // (operator 2026-11-03): no ⏳ in any mode, the line carries 👾/🤔 instead. Else the turn is bubble's.
+  // `reacts`: () => Promise<boolean>, the spine's answer for this chat (turns.canMark), asked only then.
+  // `addressed`, with it: a human's line addresses the being (a wake is no line).
+  async function decide(being, ev, mention = ev.mention, { denied = false, bot = false, reacts = null } = {}) {
     const c = cfg();
     let state = null;
     if (loadState) { try { state = await loadState(); } catch { state = null; } }
@@ -111,7 +113,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     }
     const unaddressed = !bot && mode === 'on' && !addressed;
     const quiet = tunnel || (bot ? c.dispatch?.bot_quiet !== false : unaddressed);
-    const emoji = c.dispatch?.thinking_train !== 'bubble';
+    let emoji = c.dispatch?.thinking_train !== 'bubble' && mayReply && !!reacts;
+    if (emoji) { try { emoji = (await reacts()) === true; } catch { emoji = false; } }
     const direct = emoji && !bot && addressed && ev.msgId != null;
     return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}), ...(unaddressed ? { unaddressed } : {}), ...(emoji ? { emoji } : {}), ...(direct ? { addressed: true } : {}) };
   }
