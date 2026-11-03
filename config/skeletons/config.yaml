@@ -330,7 +330,9 @@ networks:
 #   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
 #   bot_quiet: true                 # a turn another being/node's line triggered: no ⏳ train, posted once whole,
 #                                   # its '…' never shown (only logged). false = shown like a human's. Humans unaffected.
-#   address_without_at: true        # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
+#   thinking_train: emoji           # emoji: no ⏳ bubble; the line gets 👾 at arrival, 🤔 when its turn starts, off at the end.
+#                                   # bubble: the ⏳ placeholder as before.
+#   address_without_at: true       # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
 #                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 
 # chats no being answers; message (optional) is posted there once, and again to anyone who addresses a being (at most once a day)

@@ -3,6 +3,7 @@
 // then reaction is removed. polite silence then can be kept, or the response"). The bridge's ✍️ goes on
 // the line at arrival and comes off when the turn ends, whatever its outcome. Not on an addressed line
 // (its ⏳ is the receipt), a bot's line, a tunnelled or side-group reply, or a reaction.
+// dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -41,7 +42,7 @@ function fakeBridge({ reactThrows = false } = {}) {
 // `sideGroupFor`: the chats whose reply goes elsewhere ('!t' the tunnel, '!s' a side group).
 function build({ mode = 'on', work, reactThrows = false, turnTimeoutMs = 0 } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents };
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { thinking_train: 'bubble' } };
   const bridge = fakeBridge({ reactThrows });
   const brain = { calls: [], async turn(being, ev, onPartial) { brain.calls.push(ev.body); return work(onPartial, ev); } };
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, reply: r }); } };

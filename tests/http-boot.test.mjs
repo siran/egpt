@@ -107,6 +107,8 @@ async function bootChatbox({ withBeeper = false, client = {}, agents = AGENTS, a
   return { app, io, turns, lines, port, url, post, messages, beeper, state: () => convState };
 }
 
+const BUBBLE = (c) => { c.dispatch = { ...c.dispatch, thinking_train: 'bubble' }; };
+
 // Every `data:` event of an SSE response, as it arrives.
 function sse(href) {
   const ac = new AbortController();
@@ -181,8 +183,9 @@ describe('limbs.http on a node with no Beeper', () => {
     app.stop();
   });
 
+  // The streamed ⏳ frames are the bubble's (dispatch.thinking_train: bubble).
   it('the reply streams over SSE (placeholder, frames, final) and the JSON fetch has it too', async () => {
-    const { app, post, messages, url } = await bootChatbox();
+    const { app, post, messages, url } = await bootChatbox({ edit: BUBBLE });
     const j = await post({ text: 'hola' });
     const stream = sse(`${url}events?session=${encodeURIComponent(j.session)}`);
     await vi.waitFor(() => expect(settled(stream.events)).toBeTruthy(), { timeout: 5000 });
@@ -215,7 +218,7 @@ describe('what the widget shows', () => {
   });
 
   it('a stamped being, every signature slot empty: its stamp still leads, and what streamed stays above the seam', async () => {
-    const { app, post, messages } = await bootChatbox();
+    const { app, post, messages } = await bootChatbox({ edit: BUBBLE });
     const j = await post({ text: 'hola' });
     await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
     expect(settled((await messages(j.session)).messages).text).toMatch(/^🦉 pensando\n\n— ↓ reply —\n\nrespuesta a /);

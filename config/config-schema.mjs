@@ -532,6 +532,22 @@ export const CONFIG_SCHEMA = {
                  and a "…" in mention/mention-direct/accum is posted.
         A HUMAN's turn is untouched either way. Read live (src/spine/gating.mjs
         decide/surfaces).
+      thinking_train
+        ENUM: "emoji" | "bubble"
+        DEFAULT: "emoji"
+        How a turn shows it is running (operator 2026-11-03):
+          emoji   no "⏳ Thinking…" bubble, in any mode. A human's line that starts
+                  or queues a turn gets 👾 from the mouth at arrival, 🤔 when its
+                  turn starts, and the reaction comes off when the turn ends (reply,
+                  silence, error, timeout). The reply is posted once, whole. A "…"
+                  posts nothing unless the being was addressed (@handle, an opening
+                  bare handle, a reply to its post); then the "…" is posted. Not on
+                  a steered line (✍️/👍 as before), a bot's line, a reaction, or a
+                  chat whose reply goes to a side group or split. Where no reaction
+                  can be placed (no mouth account) nothing shows until the reply.
+          bubble  as before: the ⏳ placeholder with its liveness timer, and the ✍️
+                  on an unaddressed 'on' line.
+        Read live (src/spine/gating.mjs decide).
       address_without_at
         Boolean. DEFAULT: true
         May a BARE handle OPENING a message address its agent — "d hola",

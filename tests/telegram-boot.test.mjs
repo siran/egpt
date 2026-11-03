@@ -224,9 +224,21 @@ describe('reactions: the bot reacts like E on kg', () => {
     const { app, tg } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R'), session: reacting });
     expect(app.telegramPort.beingAccount).toBe(true);
     await tg[0].onIncoming('hola E', tgFrom);
+    // The emoji train (the default): 👾 at arrival, 🤔 replacing it as the turn starts (a bot holds one
+    // reaction per message), off before the /react.
+    const at = (r) => ({ chatId: 'tg:42', msgId: '7', ...r });
+    await vi.waitFor(() => expect(tg[0].reactions).toEqual([at({ emoji: '👾' }), at({ emoji: '🤔' }), at({ off: '🤔' }), at({ emoji: '👍' })]));
+    expect(tg[0].sent.filter((s) => /👍 \(/.test(s.text))).toEqual([]);
+    expect(tg[0].streams.map((h) => h.init)).toEqual([]);
+    app.stop();
+  });
+
+  it('dispatch.thinking_train: bubble — an unaddressed line gets the arrival ✍️ as before', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...TELEGRAM_ONLY(), dispatch: { thinking_train: 'bubble' } }, { state: seedOn('telegram', 'tg:42', 'An R'), session: reacting });
+    await tg[0].onIncoming('hola E', tgFrom);
     // 'hola E' does not address E in 'on': the arrival ✍️ is up while the turn runs and off before the /react.
     await vi.waitFor(() => expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '✍️' }, { chatId: 'tg:42', msgId: '7', off: '✍️' }, { chatId: 'tg:42', msgId: '7', emoji: '👍' }]));
-    expect(tg[0].sent.filter((s) => /👍 \(/.test(s.text))).toEqual([]);
     app.stop();
   });
 

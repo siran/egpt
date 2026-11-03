@@ -482,22 +482,23 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
   // ITS OWN ARRIVAL names the copy, and nothing else does — no search (operator 2026-10-18): the
   // bridge's in-memory record (noted before any gate), else the copy itself if it lands within
   // COPY_WAIT_MS. Both through findMessageByKey, so one rule decides.
-  const ownCopy = async ({ bridge: on, chatId }, { msgKey, timestamp = 0 } = {}) => {
+  // `wait`: how long a copy may trail (the emoji train's 👾 waits longer, 2026-11-03).
+  const ownCopy = async ({ bridge: on, chatId }, { msgKey, timestamp = 0 } = {}, wait = COPY_WAIT_MS) => {
     const want = String(msgKey ?? '').trim();
     if (!want) return { ok: false, reason: 'no-key', detail: 'the message carries no cross-account key' };
     const seen = findMessageByKey(on?.recentMessages?.(chatId) ?? [], want, timestamp);
     if (seen.reason !== 'no-match' || !on?.awaitMessage) return seen;   // found, or twins no wait can tell apart
-    const m = await Promise.resolve(on.awaitMessage(chatId, (x) => findMessageByKey([x], want, timestamp).ok, COPY_WAIT_MS)).catch(() => null);
-    return m?.id != null ? { ok: true, msgId: String(m.id) } : { ...seen, detail: `${seen.detail}, nor did it arrive within ${COPY_WAIT_MS}ms` };
+    const m = await Promise.resolve(on.awaitMessage(chatId, (x) => findMessageByKey([x], want, timestamp).ok, wait)).catch(() => null);
+    return m?.id != null ? { ok: true, msgId: String(m.id) } : { ...seen, detail: `${seen.detail}, nor did it arrive within ${wait}ms` };
   };
   // `remove` takes a reaction back OFF the mouth's own copy, found the same way (the 🎧 listening
   // mark, 2026-09-16 — sender.mjs makeOutbound `react`).
-  const reactLocally = async (chat, { msgKey, timestamp = 0, emoji, remove = false }) => {
+  const reactLocally = async (chat, { msgKey, timestamp = 0, emoji, remove = false, wait }) => {
     const { bridge: on, chatId, connection } = chat;
     const key = String(emoji ?? '');
     if (!key) return { ok: false, reason: 'no-text', detail: 'nothing to react with' };
     if (!(remove ? on?.unreact : on?.react)) return { ok: false, reason: 'no-react', detail: `'${connection}' cannot ${remove ? 'remove a reaction' : 'react'}` };
-    const hit = await ownCopy(chat, { msgKey, timestamp });
+    const hit = await ownCopy(chat, { msgKey, timestamp }, wait);
     if (!hit.ok) return hit;                  // no-key / no-match / ambiguous → NO reaction anywhere, as on the link
     try {
       const r = await (remove ? on.unreact(chatId, hit.msgId, key) : on.react(chatId, hit.msgId, key));
@@ -574,8 +575,8 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     //
     // `remove` (2026-09-16): a LOCAL mouth takes the reaction off its own copy. The link has no verb
     // for that and none is added, so a peer refuses it — never by placing one instead.
-    react(chat, { msgKey, timestamp = 0, emoji, remove = false } = {}) {
-      if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji, remove });
+    react(chat, { msgKey, timestamp = 0, emoji, remove = false, wait } = {}) {
+      if (chat?.bridge) return reactLocally(chat, { msgKey, timestamp, emoji, remove, wait });
       if (!peer) return Promise.resolve({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
       if (remove) return Promise.resolve({ ok: false, reason: 'no-verb', detail: 'the mouth link has no verb that takes a reaction back' });
       return reactor({ peer, chat, msgKey, timestamp, emoji, onLog });

@@ -3,6 +3,7 @@
 // the being does meanwhile (a tool use, ten seconds of work, streamed text); its reply is posted
 // once, whole, when the turn ends; its '…' is never shown, in any mode — only recorded, as
 // "(not surfaced)". No ✓ bubble, no steer reaction on the bot's line. A HUMAN's turn is unchanged.
+// dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -41,7 +42,7 @@ function streamingBridge() {
 // `work(onPartial)` is the brain's turn body; `steers` turns on allow_new_input 'any'.
 function build({ mode = 'on', work, steers = false, dispatch } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(dispatch ? { dispatch } : {}) };
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { thinking_train: 'bubble', ...dispatch } };
   const bridge = streamingBridge();
   const brain = {
     calls: [], steered: [],

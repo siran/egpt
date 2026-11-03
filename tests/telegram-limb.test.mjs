@@ -649,6 +649,23 @@ describe('telegram limb — outbound', () => {
     bridge.stop();
   });
 
+  // The emoji train and the steer ack (2026-11-03): each glyph in the bot set's own spelling — ✍ bare,
+  // the rest have no FE0F. A bot holds one reaction per message: 🤔 is set over 👾, [] takes it off.
+  it('the train and steer glyphs go as the bot set spells them; one reaction per message, replaced', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    for (const e of ['👾', '🤔', '✍️', '👍']) await bridge.sendReaction('tg:42', '9', e);
+    expect(api.of('setMessageReaction').map((c) => c.body.reaction[0].emoji)).toEqual(['👾', '🤔', '✍', '👍']);
+    expect([...'✍'].map((c) => c.codePointAt(0).toString(16))).toEqual(['270d']);
+    await bridge.sendReaction('tg:42', '10', '👾');
+    await bridge.sendReaction('tg:42', '10', '🤔');
+    await bridge.removeReaction('tg:42', '10', '🤔');
+    expect(api.of('setMessageReaction').filter((c) => c.body.message_id === 10).map((c) => c.body.reaction)).toEqual([
+      [{ type: 'emoji', emoji: '👾' }], [{ type: 'emoji', emoji: '🤔' }], [],
+    ]);
+    bridge.stop();
+  });
+
   // /group (2026-10-26): the chat's photo (multipart, like sendMedia), title and description. A topic's
   // are its group's: the thread is dropped at the API, and no message_thread_id goes with them.
   it('setChatInfo: photo uploads multipart, title and description go as JSON, a topic sets its parent group', async () => {

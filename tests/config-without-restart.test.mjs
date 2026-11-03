@@ -183,6 +183,9 @@ async function bootWith({ modes = {}, edit = (c) => c } = {}) {
   const made = [];
   const exits = [];
   const lines = [];
+  // Distinct replies: the emoji train posts each reply whole, so its text meets the send guard's 'similar' rule.
+  const words = ['uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho'];
+  let replies = 0;
   let config = edit(BASE());
   let hash = 'h0';
   const ens = ensureContact(emptyState(), 'whatsapp', CHAT, { pushedName: 'fam', slugHint: 'fam' });
@@ -195,7 +198,7 @@ async function bootWith({ modes = {}, edit = (c) => c } = {}) {
     readConfigHash: () => hash,
     startBridge: start,
     makeSession: (opts) => {
-      const s = { opts, closed: false, turns: [], background: 0, get sessionId() { return opts.sessionId ?? `sess-${made.indexOf(s)}`; }, async turn(m) { this.turns.push(m); return { text: 'ok', sessionId: this.sessionId }; }, close() { this.closed = true; } };
+      const s = { opts, closed: false, turns: [], background: 0, get sessionId() { return opts.sessionId ?? `sess-${made.indexOf(s)}`; }, async turn(m) { this.turns.push(m); return { text: words[replies++ % words.length], sessionId: this.sessionId }; }, close() { this.closed = true; } };
       made.push(s);
       return s;
     },

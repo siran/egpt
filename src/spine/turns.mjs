@@ -64,6 +64,10 @@ import { makeOutbound } from './sender.mjs';
 // "thinking" — that's the placeholder's job, and a woven message gets no placeholder.
 const RECEIPT_EMOJI = '✍️';
 const STEER_ACK_EMOJI = '👍';
+// The emoji thinking train on a turn's own line (operator 2026-11-03): 👾 at arrival, 🤔 when the
+// turn starts. Both in Telegram's bot set. The mouth's copy of an image lands 1–2 s after the ear's.
+const TRAIN_EMOJI = ['👾', '🤔'];
+const TRAIN_COPY_WAIT_MS = 6000;
 
 /**
  * @param {{ brain: object, bridge?: object, bridgeOf?: Function, log?: {line?: Function} }} deps
@@ -205,14 +209,27 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     catch (e) { note(`${what} ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
   }
 
-  // ✍️ ON A QUIET TURN'S OWN LINE (operator 2026-11-03): the same receipt, placed at arrival as a
-  // temporary mark, never awaited. The function returned takes it back off once it landed; any
-  // number of calls, one removal.
-  function receipt(to, ev) {
-    const placed = placeReaction(to, ev, RECEIPT_EMOJI, { what: 'arrival-ack', temporary: true });
-    let off = null;
-    return () => (off ??= placed.then((ok) => (ok ? placeReaction(to, ev, RECEIPT_EMOJI, { what: 'arrival-ack', remove: true }) : false)));
+  // THE MARK ON A TURN'S OWN LINE (operator 2026-11-03): `glyphs[0]` placed at arrival as a temporary
+  // mark, never awaited. `started()` changes it to `glyphs[1]` (a reaction replaces the account's last
+  // one: WhatsApp and a Telegram bot hold one per message). `off()` takes off whichever landed: any
+  // number of calls, one removal, nothing placed after it. Each step waits for the one before.
+  // ✍️ alone is dd2c11b7's arrival ack (bubble); `train` is the emoji train.
+  function receipt(to, ev, glyphs = [RECEIPT_EMOJI], { what = 'arrival-ack', wait } = {}) {
+    let up = null, done = false;
+    const place = (emoji, opts) => placeReaction(to, ev, emoji, { what, ...opts });
+    let chain = place(glyphs[0], { temporary: true, ...(wait ? { wait } : {}) }).then((ok) => { if (ok) up = glyphs[0]; });
+    return {
+      started() {
+        if (glyphs[1] && !done) chain = chain.then(async () => { if (!done && await place(glyphs[1], { temporary: true })) up = glyphs[1]; });
+        return chain;
+      },
+      off() {
+        if (!done) { done = true; chain = chain.then(async () => { if (up) await place(up, { remove: true }); }); }
+        return chain;
+      },
+    };
   }
+  const train = (to, ev) => receipt(to, ev, TRAIN_EMOJI, { what: 'train', wait: TRAIN_COPY_WAIT_MS });
 
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
   // arrives while a turn is ALREADY streaming on this key can be WOVEN INTO that turn instead
@@ -361,5 +378,6 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     steerLiveTurn,
     steerRelayedTurn,
     receipt,
+    train,
   };
 }

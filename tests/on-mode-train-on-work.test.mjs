@@ -5,6 +5,7 @@
 // a human's opens its ⏳ on arrival when it addresses the being, else it is quiet (2026-11-02,
 // tests/on-mode-unaddressed-quiet.test.mjs). Built with dispatch.bot_quiet: false — under the default
 // a non-human line's train never opens before its end (tests/mode-bot-quiet.test.mjs).
+// dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createRouter } from '../src/spine/router.mjs';
@@ -43,7 +44,7 @@ function streamingBridge() {
 // `work(onPartial)` is the brain's turn body; `steers` turns on allow_new_input 'any'.
 function build({ mode = 'on', work, steers = false } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { bot_quiet: false } };   // An (u-1) owns the node
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { bot_quiet: false, thinking_train: 'bubble' } };   // An (u-1) owns the node
   const bridge = streamingBridge();
   const brain = {
     calls: [], steered: [],

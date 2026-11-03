@@ -114,6 +114,9 @@ const gateAs = (t, fallback) => t?.being ?? t?.mesh?.being ?? fallback;
 
 // An ambient 'on' turn still running this long opens its ⏳ train (operator 2026-10-18).
 const AMBIENT_OPEN_MS = 10_000;
+// A turn that never opens its ⏳ and posts its reply whole at finish: a quiet one, and every one with
+// the emoji train (dispatch.thinking_train, operator 2026-11-03).
+const whole = (d) => !!(d.quiet || d.emoji);
 
 /**
  * Build the spine. Nothing starts until start(). All deps are injected so the
@@ -431,8 +434,9 @@ export function createSpine({
   // Pending dwells, keyed by turnKey. Each holds the LATEST triggering ev (what the fired
   // turn quotes/records) + firstAt (the CAP anchor). The burst content itself lives in the
   // cycle (cycleBy), so a fired dwell just drains it — no separate message buffer.
+  // `marks`: each burst line's emoji train (markOf), carried to the one turn that answers them all.
   const dwellBy = new Map();
-  function armDwell(turnKey, ctx) {
+  function armDwell(turnKey, { marks = [], ...ctx }) {
     const existing = dwellBy.get(turnKey);
     const firstAt = existing?.firstAt ?? clock.now();
     if (existing?.timer) clearTimeoutFn(existing.timer);
@@ -440,7 +444,7 @@ export function createSpine({
     const wait = Math.min(dwellDuration(), remaining);
     const timer = setTimeoutFn(() => { fireDwell(turnKey).catch((e) => note(`dwell ${turnKey}: ${e?.message ?? e}`)); }, wait);
     timer?.unref?.();
-    dwellBy.set(turnKey, { ...ctx, timer, firstAt });
+    dwellBy.set(turnKey, { ...ctx, marks: [...(existing?.marks ?? []), ...marks], timer, firstAt });
   }
   // A message arriving mid-dwell (incl. the operator's own accumulated line) re-arms the
   // timer, keeping the SAME trigger — no-op when no dwell is pending. `trigger` rides with the
@@ -460,11 +464,12 @@ export function createSpine({
     const entry = dwellBy.get(turnKey);
     if (!entry) return;
     dwellBy.delete(turnKey);
-    const { to, ev, mention, pinned, trigger = null } = entry;
+    const { to, ev, mention, pinned, trigger = null, marks = [] } = entry;
     let d;
+    const drop = () => { for (const m of marks) m.off(); };
     try { d = await gating.decide(to, ev, mention); }
-    catch (e) { note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
-    if (d.mode !== 'auto' || !d.mayReply) { note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
+    catch (e) { drop(); note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
+    if (d.mode !== 'auto' || !d.mayReply) { drop(); note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
     const at = d.replyChatId ?? null;                 // the chat's automatic SI+ group (see openAndRunReply)
     const replyTo = at ? null : (ev.msgId ?? null);   // quote UNIFORMLY — including auto (see openAndRunReply)
     const ahead = bumpTrain(turnKey);
@@ -473,7 +478,7 @@ export function createSpine({
     // armed this dwell. It is the BASE only when the drained cycle came back empty (a burst with
     // lines prompts with those verbatim), and each of those lines was already stripped on its way
     // into the cycle; this closes the one case that is not.
-    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true, pinned, trigger }));
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, burst: true, pinned, trigger, marks }));
   }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
@@ -1229,7 +1234,7 @@ export function createSpine({
     // no reply to delay).
     if (d.mayReply && d.mode === 'auto') {
       pushCycle(turnKey, cycleLine);
-      armDwell(turnKey, { to, ev, mention, pinned, trigger });
+      armDwell(turnKey, { to, ev, mention, pinned, trigger, marks: markOf(to, d, ev) });
       return;
     }
 
@@ -1273,7 +1278,7 @@ export function createSpine({
       // written rather than the event: warm-cli-session.inject records `rec.text` as the exact
       // string it puts on stdin and matches the `--replay-user-messages` echo against THAT, so it
       // acks the stripped line without knowing anything changed.
-      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev) && !d.quiet, ack: !d.quiet })) return;
+      if (await steerLiveTurn({ to, ev: trigger == null ? ev : { ...ev, line: trigger }, turnKey, human: humanTurn(ev) && !whole(d), ack: !d.quiet })) return;
       // Reply branch (the reply train). Open THIS message's OWN placeholder NOW, on
       // arrival — the per-message ack + streaming target, quoting the triggering message
       // (operator: "mentions should always be replied to the message" — now EVERY reply,
@@ -1405,12 +1410,21 @@ export function createSpine({
     // ambient: an 'on' turn on a non-human line opens no ⏳ — a silence then posts nothing. A human's
     // opens at arrival when it addresses the being, else it is quiet (operator 2026-11-02). A quiet turn (a bot's line, dispatch.bot_quiet; a tunnelled one) is
     // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
-    const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
+    // So is every turn with the emoji train (2026-11-03).
+    const ambient = whole(d) || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });
-    // ✍️ on a human's unaddressed 'on' line while its quiet turn runs (operator 2026-11-03). Not where the
-    // reply goes elsewhere (side group, tunnel), nor on a reaction: its msgId is the message reacted to.
-    const receipt = d.unaddressed && !at && ev.kind !== 'reaction' ? turns.receipt?.(to, ev) ?? null : null;
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient, receipt }));
+    const marks = markOf(to, d, ev);
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient, marks }));
+  }
+
+  // THE MARK ON THE LINE A TURN ANSWERS, placed at arrival (turns.receipt). The emoji train (2026-11-03):
+  // 👾 → 🤔 → off on a human's line. Else dd2c11b7's ✍️ on a human's unaddressed 'on' line. Not where the
+  // reply goes elsewhere (side group, tunnel), nor on a reaction: its msgId is the message reacted to.
+  function markOf(to, d, ev) {
+    if (d.replyChatId != null || ev.kind === 'reaction') return [];
+    const m = !d.emoji ? (d.unaddressed ? turns.receipt?.(to, ev) : null)
+      : humanTurn(ev) && ev.msgId != null ? turns.train?.(to, ev) : null;
+    return m ? [m] : [];
   }
 
   // A BACKGROUND TASK THE BEING STARTED HAS FINISHED with no turn in flight (operator 2026-10-15:
@@ -1467,8 +1481,8 @@ export function createSpine({
   // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
   // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
   // concern only — it says nothing about the record.
-  // `receipt`: takes the arrival ✍️ off (turns.receipt) — after the reply, before the limbs, and in the finally.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, receipt = null }) {
+  // `marks` (markOf): 🤔 as the line goes to the model; off after the reply, before the limbs, and in the finally.
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, marks = [] }) {
     let live = null, opening = null;
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
@@ -1480,7 +1494,7 @@ export function createSpine({
       turns.setLive(turnKey, { senderId: ev.senderId ?? null, chatId: ev.chatId ?? null, out });
       out.activate?.();                                 // queued → live the moment its turn starts
       live = liveness.turnStarted({ out, being: to, ev, chat: d.replyChatId ?? ev.chatId, auto: d.mode === 'auto' });
-      if (ambient && !d.quiet) opening = setTimeoutFn(() => out.begin?.(), AMBIENT_OPEN_MS);   // the train opens if the turn runs this long
+      if (ambient && !whole(d)) opening = setTimeoutFn(() => out.begin?.(), AMBIENT_OPEN_MS);   // the train opens if the turn runs this long
       // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
       // draining either way advances the baseline the next turn's cycle starts from.
@@ -1589,13 +1603,14 @@ export function createSpine({
       // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
       let streamed = '';
       const onPartial = (partial, use) => {
-        if (use?.tool) return d.quiet ? undefined : out.begin?.();   // the being used a tool: an ambient turn opens its train
+        if (use?.tool) return whole(d) ? undefined : out.begin?.();   // the being used a tool: an ambient turn opens its train
         const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
         transcript.logStream?.(ev, streamed, raw, { being: to });
         streamed = raw;
-        if (d.quiet) return;                           // quiet: recorded, never shown — the reply posts whole at finish
+        if (whole(d)) return;                          // quiet / emoji train: recorded, never shown — the reply posts whole at finish
         return out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
       };
+      for (const m of marks) m.started();              // 🤔: the line goes to the model now
       const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
       const rawText = reply?.text ?? '';
       const surfaced = gating.surfaces(d, rawText);
@@ -1666,8 +1681,11 @@ export function createSpine({
         // "processing (/react)" record; OFF (the system default) → the quiet reaction-only resolution.
         verbose: reply?.verbose === true,
       });
-      // Off before the limbs: a Telegram bot holds one reaction per message, so a /react replaces the ✍️ and its removal would take the /react.
-      await receipt?.();
+      // Off before the limbs: one reaction per account per message (WhatsApp, a Telegram bot), so a /react
+      // would replace the mark and the mark's removal would take the /react. Awaited only then: a 👾
+      // still waiting for the mouth's copy must not hold the turn.
+      const off = Promise.all(marks.map((m) => m.off()));
+      if (parsed?.run.length) await off;
       // …and to the conversation's chat members seated for its replies (room-relay.mjs fanOutReply).
       if (deliverable && !isDeliberateSilence(proseText)) await roomRelay?.fanOutReply?.(ev, to, proseText);
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
@@ -1737,7 +1755,7 @@ export function createSpine({
       try { await out.fail?.(e); } catch { /* best effort */ }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
       return false;
-    } finally { if (opening) clearTimeoutFn(opening); receipt?.(); dropTrain(turnKey); turns.clearLive(turnKey); liveness.turnEnded(live); }
+    } finally { if (opening) clearTimeoutFn(opening); for (const m of marks) m.off(); dropTrain(turnKey); turns.clearLive(turnKey); liveness.turnEnded(live); }
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---

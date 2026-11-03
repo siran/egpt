@@ -293,7 +293,8 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
       route: () => (peerMouth ? Promise.resolve().then(() => peerMouth.route(chatId, being)).catch((e) => { onLog(`mouth: could not decide the route for ${chatId} — posting locally: ${e?.message ?? e}`); return null; }) : null),
       // May a being react here? A mouth, or a limb whose account is the being's own (a bot: `beingAccount`).
       reacts: () => !!peerMouth || out.bridge?.beingAccount === true,
-      async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false } = {}) {
+      // `wait`: how long a local mouth waits for its own copy to arrive (the emoji train's 👾, 2026-11-03).
+      async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false, wait = null } = {}) {
         // NO MOUTH ON THIS NODE — one account, the operator's (operator 2026-10-18): a reaction from
         // it is his own, so none is placed (taking one off still works: a stale 🎧 from before).
         // The /react limb says it as a quoted line instead.
@@ -320,7 +321,7 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         let r = null;
         try {
           const { msgKey, timestamp } = await keyOf();
-          r = await peerMouth.react?.(mouthChat, { msgKey, timestamp, emoji, ...(remove ? { remove } : {}) });
+          r = await peerMouth.react?.(mouthChat, { msgKey, timestamp, emoji, ...(remove ? { remove } : {}), ...(wait ? { wait } : {}) });
         } catch (e) { onLog(`${what} ${being}/${chatId}: asking ${who} to react threw — ${e?.message ?? e}`); }
         if (remove) onLog(r?.ok ? `${what} ${being}/${chatId}: ${who} took the ${emoji} off its own copy (its chat ${r.chatId})` : `${what} ${being}/${chatId}: ${who} could not take the ${emoji} off its own copy (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''})`);
         else if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);

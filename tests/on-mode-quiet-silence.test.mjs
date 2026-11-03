@@ -5,6 +5,7 @@
 // not); an addressed one opens its ⏳ at arrival. Every other mode keeps the immediate ⏳.
 // A test that streams or works before a non-human line's end, or runs one in mention/accum, sets
 // dispatch.bot_quiet: false — the default quiet turn is tests/mode-bot-quiet.test.mjs's.
+// dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -52,7 +53,7 @@ function fakeTimers() {
 
 function build({ mode = 'on', reply = 'ok', partials = [], tasks = [], dispatch } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(dispatch ? { dispatch } : {}) };   // An (u-1) owns the node
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { thinking_train: 'bubble', ...dispatch } };   // An (u-1) owns the node
   const bridge = streamingBridge();
   const brain = {
     calls: [], tasks,

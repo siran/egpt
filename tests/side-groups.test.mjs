@@ -388,11 +388,11 @@ const fakeTimers = () => {
   return { setTimeout: (fn) => { pending.push(fn); return { unref() {} }; }, clearTimeout() {}, flush() { pending.splice(0).forEach((fn) => fn()); }, size: () => pending.length };
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
-function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 'ok', partials = [], timers = null, transcript = { async log() {} } } = {}) {
+function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 'ok', partials = [], timers = null, transcript = { async log() {} }, train = null } = {}) {
   const brain = { calls: [], async turn(being, ev, onPartial) { this.calls.push({ being, chatId: ev.chatId }); for (const p of partials) onPartial?.(...(Array.isArray(p) ? p : [p])); return { text: typeof reply === 'function' ? reply() : reply }; } };
   const bridge = streamingBridge();
   const notes = [];
-  const config = { ...h.config, dispatch: { auto_default_mode: mode } };
+  const config = { ...h.config, dispatch: { auto_default_mode: mode, ...(train ? { thinking_train: train } : {}) } };
   const spine = createSpine({
     bridge, brain, identity: createIdentity({ now: () => 1000 }),
     router: createRouter({ getAgents: () => AGENTS, getConfig: () => config }),
@@ -816,7 +816,7 @@ describe('every mode replies in the side group; a turn that stays silent makes n
   it('on: once the group exists, an addressed line opens its ⏳ there on arrival; an unaddressed one posts there whole', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
     const atTurn = [];
-    const b = buildSpine(h, { reply: () => { atTurn.push(b.bridge.streams.length); return 'ok'; } });
+    const b = buildSpine(h, { train: 'bubble', reply: () => { atTurn.push(b.bridge.streams.length); return 'ok'; } });
     await say(b.spine, 'hola a todos');
     await say(b.spine, 'que bien', { userId: PEPE, senderName: 'Pepe' });
     await say(b.spine, ASK);
@@ -828,7 +828,7 @@ describe('every mode replies in the side group; a turn that stays silent makes n
 
   it('on, addressed: the ⏳ opens in the group up front', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
-    const b = buildSpine(h);
+    const b = buildSpine(h, { train: 'bubble' });
     await say(b.spine, ASK);
     expect(b.bridge.streams.map((s) => [s.chat, s.init])).toEqual([[SIDE, THINKING]]);
   });

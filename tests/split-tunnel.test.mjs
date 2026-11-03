@@ -458,14 +458,18 @@ describe('a tunnelled turn is quiet: only real content reaches the split, and it
     expect(said(b)).toEqual([[SPLIT, 'listo', ['listo']]]);
   });
 
+  // The ⏳ locks run under dispatch.thinking_train: bubble.
   it('regression lock: no split — a human\'s addressed line in an \'on\' chat opens its ⏳ in X as today', async () => {
-    const b = buildSpine(onChat(), { replies: { [ORIGIN]: '…' } });
+    const h = onChat();
+    h.config.dispatch.thinking_train = 'bubble';
+    const b = buildSpine(h, { replies: { [ORIGIN]: '…' } });
     await say(b.spine, 'e jaja');
     expect(said(b)).toEqual([[ORIGIN, THINKING, ['✓']]]);
   });
 
   it('regression lock: split-E\'s own turn in S opens its ⏳ there, unmarked, and its /react is placed', async () => {
     const h = onChat();
+    h.config.dispatch.thinking_train = 'bubble';
     await typed(h, inOrigin('/e split viaje'));
     const b = buildSpine(h, { replies: { [SPLIT]: '…' } });
     await say(b.spine, 'e jaja', inSplit());

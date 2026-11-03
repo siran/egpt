@@ -29,13 +29,14 @@ afterAll(async () => {
 
 const CHAT = '!lead:beeper.com';
 const ADMIN = '!admin:beeper.com';
-const CONFIG = (isPublic) => () => ({
+const CONFIG = (isPublic, train = null) => () => ({
   node_name: 'kg',
   user_name: 'John',
   bridge_signature_close: '🏰',
   admin_channel: ADMIN,
   beeper: { use: 'main', main: { account: 'you@example.com', token: 'TOK' } },
   agents: { egpt: { configuration: 'egpt', name: 'EduWeb', body_emoji: '🐶', handles: ['e'], default: true, ...(isPublic ? { public: true } : {}) } },
+  ...(train ? { dispatch: { thinking_train: train } } : {}),
 });
 
 function memIo() {
@@ -78,12 +79,12 @@ function seedOn() {
   return ens.state;
 }
 
-async function run({ isPublic, turn, body = 'hola, quiero información' }) {
+async function run({ isPublic, turn, body = 'hola, quiero información', train = null }) {
   const { start, built } = fakeTransport();
   let convState = seedOn();
   const lines = [];
   const app = await boot({
-    readConfig: CONFIG(isPublic),
+    readConfig: CONFIG(isPublic, train),
     startBridge: start,
     makeSession: (opts) => ({ opts, sessionId: 'sess-1', turn, close() {} }),
     probeEndpoint: async () => ({ ok: false, status: 0 }),
@@ -120,7 +121,7 @@ describe('boot — a public being', () => {
 
   // Addressed: in 'on' an unaddressed line opens no placeholder (2026-11-02).
   it('LOCK: without the flag the same being streams its placeholder, stamped and signed as before', async () => {
-    const { app, spy } = await run({ isPublic: false, turn: reply, body: 'e hola, quiero información' });
+    const { app, spy } = await run({ isPublic: false, turn: reply, body: 'e hola, quiero información', train: 'bubble' });
     expect(spy.streams).toHaveLength(1);
     expect(spy.streams[0].init).toMatch(/^🐶 EduWeb: ⏳ Thinking… 🏰/);
     expect(spy.streams[0].finals[0]).toMatch(/^🐶 EduWeb: Hola, ¿de qué colegio me escribes\? 🏰/);

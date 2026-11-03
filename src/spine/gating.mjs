@@ -84,6 +84,8 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
   // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
   // So is a human's 'on' line that does not address the being (operator 2026-11-02): `unaddressed`.
+  // `emoji`: dispatch.thinking_train is not 'bubble' (operator 2026-11-03): no ⏳ in any mode, the line
+  // carries 👾/🤔 instead. `addressed`, with it: a human's line addresses the being (a wake is no line).
   async function decide(being, ev, mention = ev.mention, { denied = false, bot = false } = {}) {
     const c = cfg();
     let state = null;
@@ -109,14 +111,19 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     }
     const unaddressed = !bot && mode === 'on' && !addressed;
     const quiet = tunnel || (bot ? c.dispatch?.bot_quiet !== false : unaddressed);
-    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}), ...(unaddressed ? { unaddressed } : {}) };
+    const emoji = c.dispatch?.thinking_train !== 'bubble';
+    const direct = emoji && !bot && addressed && ev.msgId != null;
+    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}), ...(unaddressed ? { unaddressed } : {}), ...(emoji ? { emoji } : {}), ...(direct ? { addressed: true } : {}) };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an
   // 'on'-mode '...' silence (E free to post but declining to add noise — recorded,
   // not surfaced). Every other mode is already fully decided by mayReply.
+  // With the emoji train a silence to a human who addressed the being is posted (operator 2026-11-03),
+  // except in auto (the operator's own silence) and a tunnel (only real content reaches the split).
   function surfaces(decision, replyText) {
     if (!decision?.mayReply) return false;
+    if (decision.emoji && decision.addressed && decision.mode !== 'auto' && !decision.quiet) return true;
     // 'auto' gates like 'on' — its free-post silence ('…') is likewise recorded, not surfaced. So is a quiet turn's, in any mode.
     return !((decision.mode === 'on' || decision.mode === 'auto' || decision.quiet) && isSilenceReply(replyText));
   }

@@ -3,6 +3,7 @@
 // left E's "⏳ Thinking…" edited to "✓"). No ⏳ at arrival or later, posted only when whole, its '…'
 // never shown: the bot_quiet path. A line addressing the being (@handle, bare handle, a reply to its
 // post) keeps its ⏳ at arrival. mention/accum, auto, bot_quiet and the tunnel are unchanged.
+// dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -44,7 +45,7 @@ function build({ mode = 'on', work, steers = false, dispatch } = {}) {
     egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode },
     n: { configuration: 'n', handles: ['n'], mode: 'mention' },
   };
-  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(dispatch ? { dispatch } : {}) };
+  const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { thinking_train: 'bubble', ...dispatch } };
   const bridge = streamingBridge();
   const brain = {
     calls: [], steered: [],
