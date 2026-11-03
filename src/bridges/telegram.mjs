@@ -761,6 +761,9 @@ export function startTelegramBridge({
     wasSentByUs,
     sendFailure: (chatId) => failures.get(current(chatId)) ?? null,
     getChatName: (chatId) => titles.get(chatId) ?? null,
+    // A config-named channel (admin_channel, log_to_group) given as a tg: id is that chat, a topic included (boot
+    // resolveConfiguredChat; nu's admin channel is a topic, 2026-11-02). A bot cannot list its chats: a name is none.
+    resolveChatId: (id) => (isTelegramChatId(id) ? current(String(id)) : null),
     isAlive: () => alive,
     stop: () => {
       stopped = true;
