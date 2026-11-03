@@ -1424,6 +1424,64 @@ describe('crossAccountMsgKey — a bodiless message is keyed by its attachment',
   });
 });
 
+// ── 4d. SENT FROM A BEEPER CLIENT: THE OTHER ACCOUNT'S COPY IS STAMPED LATER (kg, 2026-10-30) ───
+// Real pairs, both accounts' /messages, eGPT Admin (51b00b89). The sender's copy carries its own clock
+// at send (ms); the other account's carries WhatsApp's server second, taken after the upload. A frame
+// with ms accepts a copy up to 5 s later, never earlier (2026-11-03).
+describe('a copy sent from a Beeper client, as the other account holds it', () => {
+  const IMG_ON_EAR = { id: '41174', chatID: '!trYqoMoH7jETBozvcOQh:beeper.local', timestamp: '2026-10-31T02:53:07.260Z', type: 'IMAGE', text: 'w', isSender: true,
+    attachments: [{ type: 'img', mimeType: 'image/png', fileName: 'image.png', fileSize: 103234, size: { width: 1275, height: 356 } }] };
+  const IMG_ON_MOUTH = { id: '17743', chatID: '!nG3zZhXhJ0mZfmCu6s2f:beeper.local', timestamp: '2026-10-31T02:53:08.000Z', type: 'IMAGE', text: 'w', isSender: false,
+    attachments: [{ type: 'img', mimeType: 'image/jpeg', fileName: 'image.jpg', fileSize: 50254, size: { width: 1275, height: 356 } }] };
+  const TEXT_ON_EAR = { id: '39424', timestamp: '2026-10-28T02:05:23.990Z', type: 'TEXT', text: 'w ok?', isSender: true };
+  const TEXT_ON_MOUTH = { id: '16977', timestamp: '2026-10-28T02:05:24.000Z', type: 'TEXT', text: 'w ok?', isSender: false };
+  const BARE_IMG_ON_EAR = { ...IMG_ON_EAR, id: '33380', timestamp: '2026-10-18T17:26:17.469Z', text: '',
+    attachments: [{ type: 'img', mimeType: 'image/png', fileName: 'image.png', fileSize: 108905, size: { width: 935, height: 441 } }] };
+  const BARE_IMG_ON_MOUTH = { ...IMG_ON_MOUTH, id: '14575', timestamp: '2026-10-18T17:26:18.000Z', text: '',
+    attachments: [{ type: 'img', mimeType: 'image/jpeg', fileName: 'image.jpg', fileSize: 63525, size: { width: 935, height: 441 } }] };
+  const at = (m) => Date.parse(m.timestamp);
+  const KEY = crossAccountMsgKey(TEXT_ON_EAR);
+  const copyAt = (id, iso) => ({ ...TEXT_ON_MOUTH, id, timestamp: iso });
+
+  it('the caption keys both copies of an image alike — the key is not what missed', () => {
+    expect(crossAccountMsgKey(IMG_ON_MOUTH)).toBe(crossAccountMsgKey(IMG_ON_EAR));
+  });
+
+  it('REPRODUCE: the mouth finds its copy of a captioned image (#41174 → #17743)', () => {
+    expect(findMessageByKey([IMG_ON_MOUTH], crossAccountMsgKey(IMG_ON_EAR), at(IMG_ON_EAR))).toEqual({ ok: true, msgId: '17743' });
+  });
+
+  it('REPRODUCE: the mouth finds its copy of a text sent late in its second (#39424 → #16977)', () => {
+    expect(findMessageByKey([TEXT_ON_MOUTH], KEY, at(TEXT_ON_EAR))).toEqual({ ok: true, msgId: '16977' });
+  });
+
+  it('REPRODUCE: a frame with ms reaches a copy 5 s later, not 6', () => {
+    expect(findMessageByKey([copyAt('1', '2026-10-28T02:05:28.000Z')], KEY, at(TEXT_ON_EAR))).toEqual({ ok: true, msgId: '1' });
+    expect(findMessageByKey([copyAt('1', '2026-10-28T02:05:29.000Z')], KEY, at(TEXT_ON_EAR)).reason).toBe('no-match');
+  });
+
+  it('a frame with ms and two candidates in its window refuses', () => {
+    const r = findMessageByKey([copyAt('1', '2026-10-28T02:05:23.000Z'), copyAt('2', '2026-10-28T02:05:25.000Z')], KEY, at(TEXT_ON_EAR));
+    expect(r.reason).toBe('ambiguous');
+    expect(r.detail).toMatch(/2 of them at 2026-10-28T02:05:23\.990Z or up to 5s later/);
+  });
+
+  it('a copy EARLIER than the frame is never accepted', () => {
+    expect(findMessageByKey([copyAt('1', '2026-10-28T02:05:22.000Z')], KEY, at(TEXT_ON_EAR)).reason).toBe('no-match');
+    expect(findMessageByKey([copyAt('1', '2026-10-28T02:05:22.000Z'), TEXT_ON_MOUTH], KEY, at(TEXT_ON_EAR))).toEqual({ ok: true, msgId: '16977' });
+  });
+
+  it('a whole-second frame (the phone app) keeps its one second', () => {
+    expect(findMessageByKey([TEXT_ON_MOUTH], KEY, Date.parse('2026-10-28T02:05:24.000Z'))).toEqual({ ok: true, msgId: '16977' });
+    expect(findMessageByKey([TEXT_ON_MOUTH], KEY, Date.parse('2026-10-28T02:05:23.000Z')).reason).toBe('no-match');
+  });
+
+  // No caption: WhatsApp re-encoded the PNG, so mimeType, fileName and fileSize all differ. Out of scope.
+  it.fails('a captionless image keys alike on both accounts (#33380 / #14575)', () => {
+    expect(crossAccountMsgKey(BARE_IMG_ON_MOUTH)).toBe(crossAccountMsgKey(BARE_IMG_ON_EAR));
+  });
+});
+
 // ── 5. THE CONSOLE MUST NOT REGRESS ────────────────────────────────────────────────────────────
 // The operator's editor is the whole reason this port exists. Adding a second role to it is only
 // acceptable if the first one is byte-for-byte what it was.

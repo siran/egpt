@@ -208,7 +208,12 @@ export function findChatByKey(chats, chatKey, exclude = []) {
  * older same-body message ("ok", "e") would be. Whole seconds because a sender's own copy keeps
  * milliseconds and the other account's is truncated (…16.013Z / …16.000Z, live).
  *
- * AND IT FAILS CLOSED. No match in that second: nothing. Several in it: nothing. No timestamp and
+ * A FRAME WITH MILLISECONDS WAS SENT FROM A BEEPER CLIENT (2026-11-03, 1,500 measured pairs): the
+ * other account's copy carries WhatsApp's server second, the same or up to 5 s LATER (an image 1–2 s
+ * after its upload), never earlier. Such a frame accepts a copy in [its second, its second + 5].
+ * A whole-second frame (the phone app: both copies share the second) keeps the one second.
+ *
+ * AND IT FAILS CLOSED. No match in that window: nothing. Several in it: nothing. No timestamp and
  * several matches: nothing. Never a guess — no reaction beats one on the wrong message.
  *
  * @param {object[]} messages   RAW Beeper message payloads — the /v1/chats/{c}/messages shape
@@ -218,6 +223,7 @@ export function findChatByKey(chats, chatKey, exclude = []) {
  * @param {number} [timestamp]  the message's own timestamp in epoch ms, off the same frame. 0 or
  *   absent ⇒ no tie-break available ⇒ several matches stay ambiguous.
  */
+const COPY_LATE_S = 5;
 export function findMessageByKey(messages, msgKey, timestamp = 0) {
   const want = String(msgKey ?? '').trim();
   if (!want) return { ok: false, reason: 'no-key', detail: 'the frame carried no message key' };
@@ -232,9 +238,11 @@ export function findMessageByKey(messages, msgKey, timestamp = 0) {
   const ts = Number(timestamp) || 0;
   if (!ts) return ids.length === 1 ? { ok: true, msgId: ids[0] } : { ok: false, reason: 'ambiguous', detail: `${ids.length} messages key alike (${ids.join(', ')}) and the frame carried no timestamp — refusing to pick` };
   const second = (ms) => (ms == null ? null : Math.floor(ms / 1000));
-  const same = ids.filter((id) => second(_msgTimestampMs(hits.get(id))) === second(ts));
-  if (same.length === 0) return { ok: false, reason: 'no-match', detail: `no message on this account keys to that body at ${new Date(ts).toISOString()} (${ids.length} at other seconds: ${ids.join(', ')})` };
-  if (same.length > 1) return { ok: false, reason: 'ambiguous', detail: `${ids.length} messages key alike (${ids.join(', ')}) and ${same.length} of them at ${new Date(ts).toISOString()} — refusing to pick` };
+  const from = second(ts), to = from + (ts % 1000 !== 0 ? COPY_LATE_S : 0);
+  const at = to === from ? new Date(ts).toISOString() : `${new Date(ts).toISOString()} or up to ${COPY_LATE_S}s later`;
+  const same = ids.filter((id) => { const s = second(_msgTimestampMs(hits.get(id))); return s != null && s >= from && s <= to; });
+  if (same.length === 0) return { ok: false, reason: 'no-match', detail: `no message on this account keys to that body at ${at} (${ids.length} at other seconds: ${ids.join(', ')})` };
+  if (same.length > 1) return { ok: false, reason: 'ambiguous', detail: `${ids.length} messages key alike (${ids.join(', ')}) and ${same.length} of them at ${at} — refusing to pick` };
   return { ok: true, msgId: same[0] };
 }
 
