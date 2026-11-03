@@ -194,6 +194,16 @@ describe('a node whose only limb is Telegram', () => {
 });
 
 describe('a node with Beeper and Telegram', () => {
+  it('admin_channel named by a tg: topic id: the notice goes to that topic through Telegram, not to a Beeper chat by name', async () => {
+    await writeToken();
+    const resolveChatId = (id) => (id.startsWith('tg:') ? id : null);   // the real limb's answer (telegram-limb.test.mjs)
+    const { app, beeper, tg } = await bootWith({ ...MIXED(), admin_channel: 'tg:-1000000000104/124' }, { tgExtra: { resolveChatId } });
+    expect(await app.noticeToAdmin('🗜️ compacted')).toBeTruthy();
+    expect(tg[0].sent.map((s) => s.chatId)).toEqual(['tg:-1000000000104/124']);
+    expect(beeper[0].sent).toEqual([]);
+    app.stop();
+  });
+
   it('each reply goes out the limb its chat belongs to', async () => {
     await writeToken();
     let state = seedOn('whatsapp', waFrom.chatId, 'fam');

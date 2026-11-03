@@ -125,6 +125,8 @@ import { readRoomConfig, readRoomsFile, roomsFilePath, agentsFilePath } from '..
 import { RACY_MS } from '../stat-cache.mjs';
 import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
+import { createBrowserScreens } from '../tools/browser-screens.mjs';
+import { createScreenTunnel } from '../tools/screen-tunnel.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -3420,6 +3422,7 @@ export async function boot({
     ownNames: () => ownNodeNamesOf(getConfig()),
     onLog: (m) => log.line?.(`[beeper-update] ${m}`),
   }) : null;
+  const browserScreens = createBrowserScreens({ egptHome: EGPT_HOME, log: (m) => log.line?.(`[chrome] ${m}`) });
   const commands = createCommands({
     getConfig,
     seedOf: strangerSeedOf,                           // a new chat's public_commands, before its entry exists
@@ -3535,6 +3538,10 @@ export async function boot({
     reportUndelivered,                                   // a side group's lost opener → one log_to_group line (above)
     requestLogin,                                        // /login <site> → the auto-login limb (src/spine/login.mjs); returns an outcome token, never a credential
     onChromeLog: (m) => log.line?.(`[chrome] ${m}`),    // group Chrome launches / refusals ("no browser for …")
+    // A screen per browser group + its link (plans/2611022204-BROWSER-SCREENS.md); /browser's control link goes to
+    // admin_channel through the SAME resolver the compaction notice uses (resolveAdminChat, above).
+    browserScreens, screenTunnel: createScreenTunnel({ egptHome: EGPT_HOME, screens: browserScreens, log: (m) => log.line?.(`[chrome] ${m}`) }),
+    adminChat: resolveAdminChat,
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);

@@ -389,3 +389,26 @@ describe('a refresh while the daemon still holds an earlier sign-in window', () 
     pair.drop();
   });
 });
+
+// A browser group's own virtual screen (plans/2611022204-BROWSER-SCREENS.md): the spine names the display, the
+// daemon runs that Chrome with DISPLAY set to it and says so; no display → the daemon's own environment.
+describe('the daemon launches on the group\'s screen', () => {
+  it('a pipe and a plain Chrome get DISPLAY=<display>; without one the env is the daemon\'s own', async () => {
+    const w = world();
+    const { chromeHost } = w.connect();
+    expect(await chromeHost.launch({ ...launchOf('g'), display: ':101' })).toMatchObject({ pid: 4000, display: ':101' });
+    expect(w.spawns[0].opts.env.DISPLAY).toBe(':101');
+    chromeHost.kill('g');
+    await until(() => w.spawns[0].child.killed);
+    expect(await chromeHost.launchPlain({ group: 'h', profileDir: join(ROOT, 'h'), bin: 'chrome', argv: chromePlainArgs({ userDataDir: join(ROOT, 'h') }), display: ':102' })).toEqual({ pid: 4001, display: ':102' });
+    expect(w.spawns[1].opts.env.DISPLAY).toBe(':102');
+    expect(await chromeHost.launch(launchOf('k'))).not.toHaveProperty('display');
+    expect(w.spawns[2].opts.env).toBeUndefined();
+  });
+
+  it('refuses a display that is not ":<n>"', async () => {
+    const w = world();
+    await expect(w.connect().chromeHost.launch({ ...launchOf('g'), display: 'evil:1; x' })).rejects.toThrow(/is not ":<n>"/);
+    expect(w.spawns).toHaveLength(0);
+  });
+});

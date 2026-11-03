@@ -4,8 +4,8 @@
 // the spine (src/spine/commands.mjs ensureChrome) and arrives over the IPC slot of the spine's spawn.
 // This file reloads only when the daemon does; the spine end (connectChromeHost) ships with /upgrade.
 //
-// spine → daemon: launch{id, group, profileDir, bin, argv, plain?} · msg{group, msg} · kill{group} · list{id}
-// daemon → spine: reply{id, pid | error | groups:[{group, profileDir, pid, plain?}]} · msg{group, msg}
+// spine → daemon: launch{id, group, profileDir, bin, argv, plain?, display?} · msg{group, msg} · kill{group} · list{id}
+// daemon → spine: reply{id, pid, display? | error | groups:[{group, profileDir, pid, plain?}]} · msg{group, msg}
 //                 · exit{group, pid, code, signal}
 import { spawn as nodeSpawn } from 'node:child_process';
 import { relative, isAbsolute } from 'node:path';
@@ -42,7 +42,8 @@ export function createChromeHost({ profilesRoot, spawn = nodeSpawn, setPriority,
   // The daemon is the ONLY Chrome spawner: it runs nothing but a pipe Chrome, or a plain one (a human's
   // sign-in window, /browser refresh), on the profile it was sent, under our profiles root. Switches as
   // Chrome reads them: --, - or /, any case.
-  function refusal(profileDir, argv, plain) {
+  function refusal(profileDir, argv, plain, display) {
+    if (display != null && !/^:\d+$/.test(display)) return `display ${JSON.stringify(display)} is not ":<n>"`;
     const port = argv.find((a) => /^(--|-|\/)remote-debugging-(port|address)/i.test(a));
     if (port) return `${port} opens a debugging port`;
     const cmd = argv.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
@@ -55,14 +56,16 @@ export function createChromeHost({ profilesRoot, spawn = nodeSpawn, setPriority,
     return null;
   }
 
-  function launch({ id, group, profileDir, bin, argv, plain = false }) {
-    const why = refusal(profileDir, argv, plain);
+  // `display`: the group's own virtual screen on a container node (src/tools/browser-screens.mjs); absent, the
+  // daemon's own DISPLAY (a desktop's, or a container's :99).
+  function launch({ id, group, profileDir, bin, argv, plain = false, display = null }) {
+    const why = refusal(profileDir, argv, plain, display);
     if (why) { log(`chrome-host: refused "${group}" launch — ${why}`); return tell({ t: 'reply', id, error: why }); }
     if (chromes.has(group)) return tell({ t: 'reply', id, error: `the "${group}" Chrome is already up (pid ${chromes.get(group).child.pid})` });
     const exe = bin || findChromeExecutable();
     if (!exe) return tell({ t: 'reply', id, error: 'Chrome executable not found in standard locations' });
     let child;
-    try { child = spawn(exe, argv, { stdio: plain ? 'inherit' : ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'] }); }
+    try { child = spawn(exe, argv, { stdio: plain ? 'inherit' : ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'], ...(display && { env: { ...process.env, DISPLAY: display } }) }); }
     catch (e) { return tell({ t: 'reply', id, error: String(e?.message ?? e) }); }
     const c = { profileDir, child, plain };
     chromes.set(group, c);
@@ -75,8 +78,8 @@ export function createChromeHost({ profilesRoot, spawn = nodeSpawn, setPriority,
     let started = false;
     child.on('spawn', () => {
       started = true;
-      log(`chrome-host: launched "${group}" ${plain ? 'plain ' : ''}Chrome pid ${child.pid} on ${profileDir}`);
-      tell({ t: 'reply', id, pid: child.pid });
+      log(`chrome-host: launched "${group}" ${plain ? 'plain ' : ''}Chrome pid ${child.pid} on ${profileDir}${display ? ` on display ${display}` : ''}`);
+      tell({ t: 'reply', id, pid: child.pid, ...(display && { display }) });
     });
     child.on('error', (e) => {
       if (started) return log(`chrome-host: "${group}" Chrome pid ${child.pid}: ${e?.message ?? e}`);
@@ -137,7 +140,8 @@ const under = (p, root) => { const rel = relative(root, p); return !!rel && !rel
 
 /**
  * The spine's end. null without a daemon host (a spine run by hand, tests, Session 0) → no browser.
- *   launch({ group, profileDir, bin, argv }) → { pid, channel }   launchPlain({ group, profileDir, bin, argv }) → { pid }
+ *   launch({ group, profileDir, bin, argv, display? }) → { pid, channel, display? }   launchPlain({ … }) → { pid, display? }
+ *   (`display` comes back only from a daemon that set it: one started before browser screens ignores it)
  *   list() → [{ group, profileDir, pid, channel } | { group, profileDir, pid, plain: true }]
  *   kill(group)   onExit(cb({ group, pid, code, signal }))
  */
@@ -169,8 +173,8 @@ export function connectChromeHost(proc = process, env = process.env, { timeoutMs
   });
   proc.on('disconnect', () => { for (const g of [...channels.keys()]) drop(g, 'the daemon holding this Chrome is gone'); });
   return {
-    launch: async (o) => ({ pid: (await ask({ t: 'launch', ...o })).pid, channel: open(o.group) }),
-    launchPlain: async (o) => ({ pid: (await ask({ t: 'launch', ...o, plain: true })).pid }),
+    launch: async (o) => { const r = await ask({ t: 'launch', ...o }); return { pid: r.pid, channel: open(o.group), ...(r.display && { display: r.display }) }; },
+    launchPlain: async (o) => { const r = await ask({ t: 'launch', ...o, plain: true }); return { pid: r.pid, ...(r.display && { display: r.display }) }; },
     list: async () => (await ask({ t: 'list' })).groups.map((g) => (g.plain ? g : { ...g, channel: open(g.group) })),
     kill: (group) => post({ t: 'kill', group }),
     onExit: (cb) => { exits.add(cb); },

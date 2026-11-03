@@ -65,7 +65,7 @@ export function fakePipeChrome(browserOf = {}) {
       events.push(`plain:${opts.group}`);
       const p = { ...opts, pid: ++pid, close: () => { for (const cb of exits) cb({ group: opts.group, pid: p.pid, code: 0, signal: null }); } };
       plain.push(p);
-      return { pid: p.pid };
+      return { pid: p.pid, ...(opts.display && { display: opts.display }) };   // a daemon that runs it on that screen echoes it
     },
     async launch(opts) {
       events.push(`launch:${opts.group}`);
@@ -77,7 +77,7 @@ export function fakePipeChrome(browserOf = {}) {
         for (const cb of exits) cb({ group: opts.group, pid: child.pid, code, signal });
       });
       handles.push({ child, pid: child.pid, profileDir: opts.profileDir });
-      return { pid: child.pid, channel: createPipeChannel({ writable: child.stdio[3], readable: child.stdio[4] }) };
+      return { pid: child.pid, channel: createPipeChannel({ writable: child.stdio[3], readable: child.stdio[4] }), ...(opts.display && { display: opts.display }) };
     },
     list: async () => [],
     kill: (group) => { events.push(`kill:${group}`); live.get(group)?.kill(); },

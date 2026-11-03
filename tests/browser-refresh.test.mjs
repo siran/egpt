@@ -2,7 +2,7 @@
 // eGPT's pipe Chrome (Google sign-in, LOGIN_PORTAL's captcha), so a human signs in in a PLAIN Chrome on the
 // group's profile. The command closes eGPT's Chrome through the pool, opens the plain one through the
 // daemon, and holds the group until that window's Chrome exits. Fake chrome-host (fake-pipe-chrome.mjs).
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { join, dirname } from 'node:path';
 import { createCommands, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
 import { chromePipeArgs, chromePlainArgs } from '../src/tools/chrome-launcher.mjs';
@@ -52,7 +52,7 @@ describe('/browser refresh — the plain sign-in window', () => {
     expect(w.plain[0]).toMatchObject({ group: 'work', profileDir: workDir, bin: 'C:/x/chrome.exe', argv: chromePlainArgs({ userDataDir: workDir, url: LOGIN_PORTAL }) });
     expect(w.plain[0].argv).toEqual([`--user-data-dir=${workDir}`, '--no-first-run', LOGIN_PORTAL]);
     expect(lastText(w.sent)).toMatch(new RegExp(`^I closed my browser for work\\. A normal Chrome window opened on kg at ${LOGIN_PORTAL.replace(/[.?/]/g, '\\$&')}: sign in / pass the check yourself, then close that window — I'll use the session next time\\.`));
-    expect(lastText(w.sent).includes('VNC')).toBe(process.platform !== 'win32');
+    expect(lastText(w.sent)).not.toMatch(/VNC|link/);   // no screens injected: a desktop node (tests/browser-screens.test.mjs)
   });
 
   it('holds the group until the plain Chrome exits: a being is told why, nothing relaunches; then the chat hears it is back', async () => {
@@ -122,9 +122,9 @@ describe('/browser refresh — the plain sign-in window', () => {
     expect(lastText(w.sent)).toMatch(/no browser for this chat — this spine has no daemon chrome-host/);
   });
 
-  it('the url is a page, never a Chrome switch; anything but refresh is the usage line', async () => {
+  it('the url is a page, never a Chrome switch; an unknown verb is the usage line', async () => {
     const w = build();
-    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser', '/browser open https://x', `/browser refresh ${LOGIN_PORTAL} extra`, '/browser refresh --remote-debugging-port=9222', '/browser refresh work file:///C:/x', `/browser refresh work ${LOGIN_PORTAL} extra`]) {
+    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser open https://x', '/browser all brain extra', `/browser refresh ${LOGIN_PORTAL} extra`, '/browser refresh --remote-debugging-port=9222', '/browser refresh work file:///C:/x', `/browser refresh work ${LOGIN_PORTAL} extra`]) {
       await run(w.cmds, '!nys', bad);
       expect(lastText(w.sent)).toMatch(/^usage: \/e browser refresh \[group\] \[url\]/);
     }
@@ -192,17 +192,5 @@ describe('/browser refresh — who may run it', () => {
     expect(owner).toMatchObject({ body: '/browser refresh', commandBeing: 'e' });
     expect(await cmds.isCommand(owner)).toBe(true);
     expect(await cmds.isCommand(cmds.commandOf(ev()))).toBe(false);
-  });
-});
-
-describe('/browser refresh on a node with no desktop of its own', () => {
-  const real = process.platform;
-  afterEach(() => { Object.defineProperty(process, 'platform', { value: real }); });
-
-  it('a Linux/container node tells the operator to open VNC (:6080)', async () => {
-    Object.defineProperty(process, 'platform', { value: 'linux' });
-    const w = build();
-    await run(w.cmds, '!nys', '/browser refresh');
-    expect(lastText(w.sent)).toMatch(/close that window — I'll use the session next time\. Open VNC \(:6080\) to see it\.$/);
   });
 });
