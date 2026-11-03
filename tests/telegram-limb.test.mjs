@@ -882,6 +882,16 @@ describe('telegram limb behind the shared port adapter (beeper-port createBeeper
   );
   const ed = { persona: 'ed', bodyEmoji: '🦉', label: 'ED' };
 
+  // admin_channel / log_to_group named by a tg: id (nu's admin channel is a topic, tg:-1000000000104/124, 2026-11-02):
+  // boot's resolveConfiguredChat asks the owning limb, and the port answered null for every Telegram chat.
+  it('REPRODUCE: a tg: id resolves to itself (a topic too); a name resolves to nothing — a bot cannot list its chats', async () => {
+    const port = await portOn(fakeApi());
+    expect(await port.resolveChatId('tg:-1000000000104/124')).toBe('tg:-1000000000104/124');
+    expect(await port.resolveChatId('tg:42')).toBe('tg:42');
+    expect(await port.resolveChatId('eGPT Admin')).toBeNull();
+    port.stop();
+  });
+
   it('REPRODUCE-FIRST: a persona send carries the visible stamp and layers, and no invisible character', async () => {
     const api = fakeApi();
     const port = await portOn(api);

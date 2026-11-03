@@ -141,6 +141,19 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                restarts Beeper (eGPT stays up),
                                                one result line in log_to_group;
                                                else the one-line Beeper state
+/<handle> browser [group]                      this chat's (or [group]'s) browser,
+                                               opened on its own screen, and a
+                                               link: VIEW-only in the chat,
+                                               CONTROL to admin_channel (both
+                                               when typed there; refused while
+                                               admin_channel is unset). See below
+/<handle> browser all [group]                  the CONTROL link in the chat:
+                                               anyone with it drives
+/<handle> browser stop [group]                 close the link now; the browser
+                                               stays
+/<handle> browser close [group]                close the browser: its Chrome
+                                               (eGPT's or a sign-in window), its
+                                               link and its screen
 /<handle> browser refresh [group] [url]        close this chat's (or [group]'s)
                                                browser and open a normal Chrome
                                                window on its profile, to sign in
@@ -364,12 +377,37 @@ folder under the profiles root; any case), that group is used instead and the
 next word is the url: `/e browser refresh brain accounts.google.com`. A word with
 a dot, a slash or a scheme is always the url. An unknown word gets the usage and
 the known group names. The window opens on the desktop of the node that runs the
-being. On a container node, open its VNC (`:6080`) to see it. Sign in or pass the
+being; on a container node, on the group's own screen, and the answer carries its
+link (as `/<handle> browser`, below). Sign in or pass the
 check, then close the window. Until that window's Chrome exits, eGPT does not
 open the browser again, and a being that asks for it is told the browser is held
 for sign-in. When it exits, the chat you typed the command in gets one line:
 "browser <group> is back — signed-in session will be used". eGPT uses no stealth
 and solves no captchas. You pass the check yourself.
+
+### `/<handle> browser [all|stop|close] [group]` — see a group's browser, or share it
+
+On a container node (nu, EDW: Linux, no physical desktop) every browser group has
+its own virtual screen (`:100` and up, one per group, kept in
+`state/browser-screens.json`), and its Chrome, eGPT's or a sign-in window, opens
+there. `:99` keeps Beeper and stays the operator's. The command is the node's own,
+like `/status`: no being turn.
+
+`/<handle> browser [group]` (owners only) opens this chat's (or [group]'s) browser
+if it is not up and answers with a link to its screen through a temporary
+Cloudflare tunnel (`*.trycloudflare.com`). The chat gets the VIEW-only link; the
+CONTROL link goes to `admin_channel`, never into the chat. Typed in the admin
+channel itself, both links land there. With `admin_channel` unset the command
+says so and opens nothing. `/<handle> browser all` puts the CONTROL link in the
+chat: anyone with it can drive, together. Asking again while the link is open
+gives the same link; each new link has new passwords, so an old one is dead.
+
+The link has no time limit while someone watches. It closes 2 minutes after the
+last viewer leaves, or after 10 minutes if nobody opens it; `/<handle> browser
+stop` closes it now. `/<handle> browser close` closes the browser itself: its
+Chrome, its link and its screen; the next need starts them again. Nothing closes
+on memory. On a desktop node (Windows) the browser opens as a normal window on
+that PC and the answer says so: no screen, no link.
 
 On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
 [url]` (default `brain`, Google sign-in). It closes the Chrome processes on that
