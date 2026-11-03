@@ -70,6 +70,7 @@ function fakeTransport(declared = {}) {
       ...declared,
       async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
       async sendReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, emoji }); return true; },
+      async removeReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, off: emoji }); return true; },
       startStreamMessage(init, o) {
         const h = { init, delivered: false, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
         spy.streams.push(h); return h;
@@ -223,7 +224,8 @@ describe('reactions: the bot reacts like E on kg', () => {
     const { app, tg } = await bootWith(TELEGRAM_ONLY(), { state: seedOn('telegram', 'tg:42', 'An R'), session: reacting });
     expect(app.telegramPort.beingAccount).toBe(true);
     await tg[0].onIncoming('hola E', tgFrom);
-    await vi.waitFor(() => expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '👍' }]));
+    // 'hola E' does not address E in 'on': the arrival ✍️ is up while the turn runs and off before the /react.
+    await vi.waitFor(() => expect(tg[0].reactions).toEqual([{ chatId: 'tg:42', msgId: '7', emoji: '✍️' }, { chatId: 'tg:42', msgId: '7', off: '✍️' }, { chatId: 'tg:42', msgId: '7', emoji: '👍' }]));
     expect(tg[0].sent.filter((s) => /👍 \(/.test(s.text))).toEqual([]);
     app.stop();
   });

@@ -1407,7 +1407,10 @@ export function createSpine({
     // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
     const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient }));
+    // ✍️ on a human's unaddressed 'on' line while its quiet turn runs (operator 2026-11-03). Not where the
+    // reply goes elsewhere (side group, tunnel), nor on a reaction: its msgId is the message reacted to.
+    const receipt = d.unaddressed && !at && ev.kind !== 'reaction' ? turns.receipt?.(to, ev) ?? null : null;
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient, receipt }));
   }
 
   // A BACKGROUND TASK THE BEING STARTED HAS FINISHED with no turn in flight (operator 2026-10-15:
@@ -1464,7 +1467,8 @@ export function createSpine({
   // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
   // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
   // concern only — it says nothing about the record.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false }) {
+  // `receipt`: takes the arrival ✍️ off (turns.receipt) — after the reply, before the limbs, and in the finally.
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, receipt = null }) {
     let live = null, opening = null;
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
@@ -1662,6 +1666,8 @@ export function createSpine({
         // "processing (/react)" record; OFF (the system default) → the quiet reaction-only resolution.
         verbose: reply?.verbose === true,
       });
+      // Off before the limbs: a Telegram bot holds one reaction per message, so a /react replaces the ✍️ and its removal would take the /react.
+      await receipt?.();
       // …and to the conversation's chat members seated for its replies (room-relay.mjs fanOutReply).
       if (deliverable && !isDeliberateSilence(proseText)) await roomRelay?.fanOutReply?.(ev, to, proseText);
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
@@ -1731,7 +1737,7 @@ export function createSpine({
       try { await out.fail?.(e); } catch { /* best effort */ }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
       return false;
-    } finally { if (opening) clearTimeoutFn(opening); dropTrain(turnKey); turns.clearLive(turnKey); liveness.turnEnded(live); }
+    } finally { if (opening) clearTimeoutFn(opening); receipt?.(); dropTrain(turnKey); turns.clearLive(turnKey); liveness.turnEnded(live); }
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---

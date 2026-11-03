@@ -34,7 +34,7 @@ function streamingBridge() {
       streams.push(h);
       return h;
     },
-    react(chat, msgId, emoji) { reactions.push(emoji); return true; },
+    react(chat, msgId, emoji) { reactions.push([msgId, emoji]); return true; },
   };
 }
 
@@ -118,17 +118,19 @@ describe('on mode, a human line not addressed to the being — quiet', () => {
   it('REPRODUCE: an unaddressed line steered into the quiet turn gets no ✍️ and opens nothing; an addressed one does both', async () => {
     const g = gate();
     const b = build({ steers: true, work: async () => { await g.p; return { text: 'Listo.' }; } });
-    const done = b.bridge.emit(msg('qué calor hace hoy'));
+    const first = msg('qué calor hace hoy');   // its own quiet turn: the arrival ✍️ (on-mode-arrival-ack.test.mjs)
+    const done = b.bridge.emit(first);
     await until(() => b.brain.calls.length);
     await b.bridge.emit(msg('mirá esto'));
     await flush();
     expect(b.brain.steered).toEqual(['mirá esto']);
-    expect(b.bridge.reactions).toEqual([]);
+    expect(b.bridge.reactions).toEqual([[first.msgId, '✍️']]);
     expect(b.eStreams()).toEqual([]);
-    await b.bridge.emit(msg('e y aquello'));
+    const addressed = msg('e y aquello');
+    await b.bridge.emit(addressed);
     await flush();
     expect(b.brain.steered).toEqual(['mirá esto', 'e y aquello']);
-    expect(b.bridge.reactions).toEqual(['✍️']);
+    expect(b.bridge.reactions).toEqual([[first.msgId, '✍️'], [addressed.msgId, '✍️']]);
     expect(b.eStreams().map(([init]) => init)).toEqual([THINKING]);
     g.open();
     await done;

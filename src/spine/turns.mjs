@@ -200,9 +200,18 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // THE PLACEMENT ITSELF LIVES IN sender.mjs makeOutbound `react` (2026-09-16), shared with the
   // /react limb, which reacted from the ear's account because it answered the question for itself.
   // The inbound message already carries its cross-account key, so it is handed over as is.
-  async function placeReaction(to, ev, emoji) {
-    try { await outbound(to, ev.chatId).react(ev.msgId, emoji, () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs }), 'steer-ack'); }
-    catch (e) { note(`steer-ack ${to}/${ev.chatId}: ${e?.message ?? e}`); }
+  async function placeReaction(to, ev, emoji, { what = 'steer-ack', ...opts } = {}) {
+    try { return await outbound(to, ev.chatId).react(ev.msgId, emoji, () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs }), what, opts); }
+    catch (e) { note(`${what} ${to}/${ev.chatId}: ${e?.message ?? e}`); return false; }
+  }
+
+  // ✍️ ON A QUIET TURN'S OWN LINE (operator 2026-11-03): the same receipt, placed at arrival as a
+  // temporary mark, never awaited. The function returned takes it back off once it landed; any
+  // number of calls, one removal.
+  function receipt(to, ev) {
+    const placed = placeReaction(to, ev, RECEIPT_EMOJI, { what: 'arrival-ack', temporary: true });
+    let off = null;
+    return () => (off ??= placed.then((ok) => (ok ? placeReaction(to, ev, RECEIPT_EMOJI, { what: 'arrival-ack', remove: true }) : false)));
   }
 
   // STEER THE LIVE TURN (operator's ruling 2026-08-30, `allow_new_input`). A message that
@@ -351,5 +360,6 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     clearLive: (key) => { liveTurnBy.delete(key); },
     steerLiveTurn,
     steerRelayedTurn,
+    receipt,
   };
 }
