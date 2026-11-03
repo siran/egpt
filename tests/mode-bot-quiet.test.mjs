@@ -139,16 +139,16 @@ describe('bot_quiet (default on): a bot-triggered turn opens no ⏳ train', () =
 });
 
 describe('bot_quiet: a HUMAN-triggered turn is unchanged', () => {
-  it('on mode: ⏳ at arrival, live frames, the reply settles it', async () => {
+  it('on mode, addressed: ⏳ at arrival, live frames, the reply settles it', async () => {
     const b = build({ work: speaks([TOOL, 'Hola'], 'Hola') });
-    await b.bridge.emit(msg('qué calor hace hoy'));
+    await b.bridge.emit(msg('@e qué calor hace hoy'));
     expect(b.brain.calls[0].open).toEqual([THINKING]);
     expect(b.bridge.streams.map((s) => [s.init, s.frames, s.finals])).toEqual([[THINKING, ['Hola ⏳'], ['Hola']]]);
   });
 
-  it("on mode: a '…' resolves the ⏳ to ✓", async () => {
+  it("on mode, addressed: a '…' resolves the ⏳ to ✓", async () => {
     const b = build({ work: speaks([], '…') });
-    await b.bridge.emit(msg('jaja'));
+    await b.bridge.emit(msg('e jaja'));
     expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['✓']]]);
   });
 

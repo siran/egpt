@@ -458,9 +458,9 @@ describe('a tunnelled turn is quiet: only real content reaches the split, and it
     expect(said(b)).toEqual([[SPLIT, 'listo', ['listo']]]);
   });
 
-  it('regression lock: no split — a human\'s line in an \'on\' chat opens its ⏳ in X as today', async () => {
+  it('regression lock: no split — a human\'s addressed line in an \'on\' chat opens its ⏳ in X as today', async () => {
     const b = buildSpine(onChat(), { replies: { [ORIGIN]: '…' } });
-    await say(b.spine, 'jaja');
+    await say(b.spine, 'e jaja');
     expect(said(b)).toEqual([[ORIGIN, THINKING, ['✓']]]);
   });
 
@@ -468,7 +468,7 @@ describe('a tunnelled turn is quiet: only real content reaches the split, and it
     const h = onChat();
     await typed(h, inOrigin('/e split viaje'));
     const b = buildSpine(h, { replies: { [SPLIT]: '…' } });
-    await say(b.spine, 'jaja', inSplit());
+    await say(b.spine, 'e jaja', inSplit());
     expect(said(b)).toEqual([[SPLIT, THINKING, ['✓']]]);
     expect(b.opened().map((o) => o.canary)).toEqual([null]);
     const r = buildSpine(h, { limbs: true });

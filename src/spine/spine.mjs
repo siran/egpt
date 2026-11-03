@@ -1403,7 +1403,7 @@ export function createSpine({
     const ahead = bumpTrain(turnKey);
     // replyIn null: replyTo is this chat's own id — a local mouth quotes its own copy (sender quoteIn).
     // ambient: an 'on' turn on a non-human line opens no ⏳ — a silence then posts nothing. A human's
-    // opens at arrival, addressed or not (operator 2026-10-18). A quiet turn (a bot's line, dispatch.bot_quiet; a tunnelled one) is
+    // opens at arrival when it addresses the being, else it is quiet (operator 2026-11-02). A quiet turn (a bot's line, dispatch.bot_quiet; a tunnelled one) is
     // ambient in any mode and never opens before it ends: no timer, tool use or partial opens it (operator 2026-10-31).
     const ambient = d.quiet || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId, canary: tunnelCanary(d, to, ev) });

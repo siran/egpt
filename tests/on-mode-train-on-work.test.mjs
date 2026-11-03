@@ -2,8 +2,9 @@
 // after "help me pay paypal…" ran ~37 s with nothing visible and a steered "e" opened nothing
 // either): on its first tool use, after AMBIENT_OPEN_MS of running, or when a human line is
 // steered in. A quick tool-free silence still posts nothing. Ambient = a NON-HUMAN line (22:10):
-// a human's opens its ⏳ on arrival. Built with dispatch.bot_quiet: false — under the default a
-// non-human line's train never opens before its end (tests/mode-bot-quiet.test.mjs).
+// a human's opens its ⏳ on arrival when it addresses the being, else it is quiet (2026-11-02,
+// tests/on-mode-unaddressed-quiet.test.mjs). Built with dispatch.bot_quiet: false — under the default
+// a non-human line's train never opens before its end (tests/mode-bot-quiet.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createRouter } from '../src/spine/router.mjs';
@@ -99,8 +100,8 @@ describe('on mode, a non-human line — the train opens when the being starts wo
     expect(b.bridge.streams[0].finals).toEqual(['Hecho']);
   });
 
-  for (const line of ['e', 'mirá esto']) {
-    it(`REPRODUCE (live 21:33): a human line ("${line}") steered into the ambient turn opens its train at once`, async () => {
+  for (const line of ['e', 'e mirá esto']) {
+    it(`REPRODUCE (live 21:33): an addressed human line ("${line}") steered into the ambient turn opens its train at once`, async () => {
       const g = gate();
       const b = build({ steers: true, work: async () => { await g.p; return { text: 'Abrí PayPal.' }; } });
       const done = b.bridge.emit(msg('help me pay paypal', BEING));
@@ -115,6 +116,19 @@ describe('on mode, a non-human line — the train opens when the being starts wo
       expect(b.bridge.streams[0].finals).toEqual(['Abrí PayPal.']);
     });
   }
+
+  it('a human line not addressed to the being ("mirá esto") steered in opens nothing (2026-11-02)', async () => {
+    const g = gate();
+    const b = build({ steers: true, work: async () => { await g.p; return { text: '…' }; } });
+    const done = b.bridge.emit(msg('help me pay paypal', BEING));
+    await until(() => b.brain.calls.length);
+    await b.bridge.emit(msg('mirá esto'));
+    expect(b.brain.steered).toEqual(['mirá esto']);
+    g.open();
+    await done;
+    expect(b.bridge.streams).toEqual([]);
+    expect(b.quiet()).toHaveLength(1);
+  });
 
   it('REPRODUCE: worked then stayed silent — the train resolves to ✓, as a non-ambient silence does', async () => {
     const b = build({ work: async (onPartial) => { onPartial('', { tool: true }); return { text: '…' }; } });
@@ -150,8 +164,8 @@ describe('on mode, a non-human line — the train opens when the being starts wo
   });
 });
 
-describe('on mode, a human line — its ⏳ is up on arrival, addressed or not', () => {
-  for (const body of ['help me pay paypal', '@e hola']) {
+describe('on mode, a human line addressed to the being — its ⏳ is up on arrival', () => {
+  for (const body of ['e help me pay paypal', '@e hola']) {
     it(`"${body}": one ⏳ before any text, tool or timer; a tool use and ten seconds open nothing more`, async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const g = gate();

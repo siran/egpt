@@ -83,6 +83,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
   // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
+  // So is a human's 'on' line that does not address the being (operator 2026-11-02).
   async function decide(being, ev, mention = ev.mention, { denied = false, bot = false } = {}) {
     const c = cfg();
     let state = null;
@@ -93,6 +94,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     const { mode } = resolveMode(bv, being, c);
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
+    const addressed = replyAllowed('mention', mention ?? {});
     const onBotPost = ev.kind === 'reaction' && (!!ev.mention?.replyToBot || ev.replyToNode != null);
     let mayReply = !denied && !onBotPost && mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
     // Not asked for a backlog read or the operator's own line in an auto chat: no reply follows either.
@@ -100,12 +102,12 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     if (mayReply && sideGroupFor && !ev.backlog && !(mode === 'auto' && ev.isSender)) {
       let at = null;
       // An addressed reply makes the group now; an unaddressed one (on/auto) once it has something to post.
-      try { at = await sideGroupFor(ev, { create: replyAllowed('mention', mention ?? {}) }); } catch { at = false; }
+      try { at = await sideGroupFor(ev, { create: addressed }); } catch { at = false; }
       if (at === false) mayReply = false;
       else if (at?.chatId) { replyChatId = at.chatId; tunnel = at.tunnel === true; }
       else if (at) replyChatId = at;
     }
-    const quiet = tunnel || (bot && c.dispatch?.bot_quiet !== false);
+    const quiet = tunnel || (bot ? c.dispatch?.bot_quiet !== false : mode === 'on' && !addressed);
     return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}) };
   }
 

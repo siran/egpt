@@ -78,7 +78,7 @@ function seedOn() {
   return ens.state;
 }
 
-async function run({ isPublic, turn }) {
+async function run({ isPublic, turn, body = 'hola, quiero información' }) {
   const { start, built } = fakeTransport();
   let convState = seedOn();
   const lines = [];
@@ -94,7 +94,7 @@ async function run({ isPublic, turn }) {
     log: { line: (m) => lines.push(m) },
   });
   const spy = built[0];
-  await spy.onIncoming('hola, quiero información', { chatId: CHAT, chatName: 'Bea', network: 'whatsapp', userId: 'u-1', senderName: 'Bea', authorized: true, msgKey: 'm1' });
+  await spy.onIncoming(body, { chatId: CHAT, chatName: 'Bea', network: 'whatsapp', userId: 'u-1', senderName: 'Bea', authorized: true, msgKey: 'm1' });
   return { app, spy, lines };
 }
 const reply = async (m, onUpdate) => { onUpdate?.('Hola'); return { text: 'Hola, ¿de qué colegio me escribes?', sessionId: 'sess-1' }; };
@@ -118,8 +118,9 @@ describe('boot — a public being', () => {
     app.stop();
   });
 
+  // Addressed: in 'on' an unaddressed line opens no placeholder (2026-11-02).
   it('LOCK: without the flag the same being streams its placeholder, stamped and signed as before', async () => {
-    const { app, spy } = await run({ isPublic: false, turn: reply });
+    const { app, spy } = await run({ isPublic: false, turn: reply, body: 'e hola, quiero información' });
     expect(spy.streams).toHaveLength(1);
     expect(spy.streams[0].init).toMatch(/^🐶 EduWeb: ⏳ Thinking… 🏰/);
     expect(spy.streams[0].finals[0]).toMatch(/^🐶 EduWeb: Hola, ¿de qué colegio me escribes\? 🏰/);
