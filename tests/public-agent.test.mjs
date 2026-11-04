@@ -48,7 +48,7 @@ describe('sender — a public being: no placeholder, no error line, errors to th
     await open('edw-marketer').finish({ text: '' });
     await open('edw-marketer').finish({ text: '' }, { surface: false });
     expect(bridge.sent).toEqual([]);
-    expect(notices.map((n) => n.text)).toEqual(['⚠️ no reply (turn failed/empty)', '<received silence (error?)>']);
+    expect(notices.map((n) => n.text)).toEqual(['⚠️ the turn failed — empty reply; not answered', '<received silence (error?)>']);
   });
 
   it('a deliberate "…" and a limb-only turn are silent everywhere', async () => {

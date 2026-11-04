@@ -58,7 +58,7 @@ function recordingSender() {
       return {
         activate() { ph.activated = true; },
         update(p) { ph.updates.push(p); },
-        async finish(reply, { surface = true } = {}) { ph.finished = { text: typeof reply === 'string' ? reply : reply?.text, surface }; },
+        async finish(reply, { surface = true } = {}) { ph.finished = { text: typeof reply === 'string' ? reply : reply?.text, surface }; if (reply?.failed) ph.failed = reply.error; },   // the failure line (2026-11-04)
         async fail(e) { ph.failed = e?.message ?? String(e); },
         confirmedId: Promise.resolve(null),
       };

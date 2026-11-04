@@ -57,6 +57,7 @@ function recordingSender({ finishThrows = false } = {}) {
         async finish(reply, { surface = true } = {}) {
           if (finishThrows) throw new Error('bridge-finish-boom');
           ph.finished = { text: typeof reply === 'string' ? reply : reply?.text, surface };
+          if (reply?.failed) ph.failed = reply.error;   // the failure line (2026-11-04)
         },
         async fail(e) { ph.failed = e?.message ?? String(e); },
       };
@@ -124,7 +125,7 @@ describe('spine — DEFECT 1: an empty / failed / thrown turn resolves the place
 
     expect(bridge.streams).toHaveLength(1);
     expect(bridge.streams[0].deleted).toBe(false);                                  // NOT silently deleted
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);   // VISIBLE marker (bare — no end-marker, 2026-07-12)
+    expect(bridge.streams[0].finals).toEqual(['⚠️ the turn failed — empty reply; not answered']);   // VISIBLE marker (bare — no end-marker, 2026-07-12)
     expect(notes.some((n) => /no deliverable text \(empty\)/.test(n))).toBe(true);   // and it's LOUD in the log
   });
 
@@ -138,7 +139,7 @@ describe('spine — DEFECT 1: an empty / failed / thrown turn resolves the place
     buildSpine({ bridge, brain, sender: createSender({ bridge }), transcript, log: { line: (s) => notes.push(s) } });
     await bridge.emit(mention('@e hola', 'm1'));
 
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);   // NOT the raw CLI error text
+    expect(bridge.streams[0].finals).toEqual(['⚠️ the turn failed — API error 401; not answered']);   // NOT the raw CLI error text
     const rec = transcript.entries.find((e) => e.reply);
     expect(rec.reply.text).toBe(REJECTED);                                             // raw failure preserved
     expect(rec.reply.surfaced).toBe(false);                                            // recorded, not surfaced
@@ -150,7 +151,7 @@ describe('spine — DEFECT 1: an empty / failed / thrown turn resolves the place
     const brain = { async turn() { return { text: 'Listo, ya está.', sessionId: 's0', failed: true }; } };
     buildSpine({ bridge, brain, sender: createSender({ bridge }) });
     await bridge.emit(mention('@e hola', 'm1'));
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);
+    expect(bridge.streams[0].finals).toEqual(['⚠️ the turn failed — engine error; not answered']);
   });
 
   it('a PUBLIC being\'s failed turn: nothing in the chat, the CLI\'s error goes to the admin channel', async () => {

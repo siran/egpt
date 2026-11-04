@@ -101,12 +101,11 @@ describe('on mode, a non-human line — no placeholder up front', () => {
     expect(b.quiet()).toHaveLength(1);
   });
 
-  it('an empty turn posts nothing as well (no "<received silence>")', async () => {
+  it('an empty turn is a failure: its one line, no "<received silence>" (2026-11-04)', async () => {
     const b = build({ reply: '' });
     await b.bridge.emit(msg('ok', BEING));
-    expect(b.bridge.streams).toEqual([]);
+    expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([['⚠️ the turn failed — empty reply; not answered', ['⚠️ the turn failed — empty reply; not answered']]]);
     expect(b.bridge.sent).toEqual([]);
-    expect(b.quiet()).toHaveLength(1);
   });
 
   it('a real reply is posted ONCE, opening on its first text — never on ⏳ Thinking…', async () => {

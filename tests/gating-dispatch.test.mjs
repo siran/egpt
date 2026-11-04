@@ -87,8 +87,10 @@ describe('gating surfaces: — the model\'s "…" silence is HIDDEN only in on/a
     expect(g.surfaces(dec('accum'), '   ')).toBe(true);
   });
 
-  it('PRESERVE: an EMPTY reply in on/auto stays unsurfaced (BRIDGE_SILENCE path), and real prose always surfaces', () => {
-    expect(g.surfaces(dec('on'), '')).toBe(false);
+  it('an EMPTY reply is a failure and surfaces in on/auto too (2026-11-04); real prose always surfaces', () => {
+    expect(g.surfaces(dec('on'), '')).toBe(true);
+    expect(g.surfaces(dec('auto'), '  ')).toBe(true);
+    expect(g.surfaces(dec('on'), '…', { failed: true })).toBe(true);
     expect(g.surfaces(dec('mention'), 'hola')).toBe(true);
     expect(g.surfaces(dec('on'), 'hola')).toBe(true);
   });

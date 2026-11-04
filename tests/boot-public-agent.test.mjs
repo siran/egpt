@@ -113,7 +113,7 @@ describe('boot — a public being', () => {
     expect(spy.sent.filter((s) => s.chatId === CHAT)).toEqual([]);
     expect(spy.streams).toEqual([]);
     const admin = spy.sent.find((s) => s.chatId === ADMIN).text;
-    expect(admin).toContain(`egpt in ${CHAT}: turn failed:`);
+    expect(admin).toContain(`egpt in ${CHAT}: model error:`);   // a thrown turn's failure, as a failed result's (2026-11-04)
     expect(admin).toContain('API Error: 529 overloaded');
     app.stop();
   });
@@ -165,13 +165,13 @@ describe('boot — a turn fails on the CLI\'s is_error, never on its text', () =
     const { app, spy } = await runCli({ isPublic: false, result: { is_error: false, result: LIVE } });
     expect(spy.streams[0].finals[0]).toContain('Ahora responde 403');
     expect(spy.streams[0].finals[0]).toContain('Require all denied');
-    expect(spy.streams[0].finals[0]).not.toContain('no reply (turn failed/empty)');
+    expect(spy.streams[0].finals[0]).not.toContain('the turn failed');
     app.stop();
   });
 
   it('the measured 401 result is a failed turn: the no-reply marker, not the CLI text', async () => {
     const { app, spy } = await runCli({ isPublic: false, result: { is_error: true, api_error_status: 401, terminal_reason: 'api_error', result: 'Failed to authenticate. API Error: 401 OAuth access token is invalid.' } });
-    expect(spy.streams[0].finals[0]).toContain('⚠️ no reply (turn failed/empty)');
+    expect(spy.streams[0].finals[0]).toContain('⚠️ the turn failed — API error 401; not answered');
     expect(spy.streams[0].finals[0]).not.toContain('API Error');
     app.stop();
   });

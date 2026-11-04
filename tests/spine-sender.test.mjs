@@ -114,7 +114,7 @@ describe('sender — single-message reply train', () => {
     const out = createSender({ bridge }).open('!c', { being: 'e', replyTo: 'm1' });
     await out.finish({ text: '' }, { surface: true });   // meant to surface, nothing came back
     expect(bridge.streams[0].deleted).toBe(false);       // NOT silently deleted / left stuck
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);   // bare marker — no signature (2026-07-12)
+    expect(bridge.streams[0].finals).toEqual(['⚠️ the turn failed — empty reply; not answered']);   // bare marker — no signature (2026-07-12)
     expect(bridge.sent).toHaveLength(0);                 // delivered in place, no fallback
   });
 
@@ -149,7 +149,7 @@ describe('sender — single-message reply train', () => {
 
     const out2 = sender.open('!c', { being: 'wren' });
     await out2.finish({ text: '' }, { surface: true });           // empty → bare no-reply marker, no signature
-    expect(bridge.streams[1].finals).toEqual(['⚠️ no reply (turn failed/empty)']);
+    expect(bridge.streams[1].finals).toEqual(['⚠️ the turn failed — empty reply; not answered']);
   });
 
   // MULTILINE agent_signature_close (constraint #4, operator 2026-07-12): the agent close may be
@@ -286,7 +286,7 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     const out = sender.open('!c', { being: 'e' });
     out.update('lo estoy mirando');
     await out.finish({ text: '' }, { surface: true });              // meant to surface, nothing came back
-    expect(bridge.streams[0].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚠️ no reply (turn failed/empty)`]);
+    expect(bridge.streams[0].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚠️ the turn failed — empty reply; not answered`]);
 
     // …BUT THE SILENCE MARK NEVER LANDS BESIDE PROSE (operator 2026-09-01, live in the SPOILER
     // chat: "…doesn't need a reply from me. — ↓ reply — <received silence (error?)>"; his

@@ -1076,7 +1076,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, opts: { replyTo: '32886' } });
     expect(bridge.sent[0].text).toContain('Ahora responde 403');
     expect(bridge.sent[0].text).toContain('Require all denied');
-    expect(bridge.streams[0].finals).not.toContain('⚠️ no reply (turn failed/empty)');
+    expect(bridge.streams[0].finals.join(' ')).not.toMatch(/the turn failed/);
     expect(replies(transcript)[0].reply.surfaced).toBe(true);
   });
 
@@ -1189,7 +1189,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(settled.trim()).not.toBe('');                                 // …and must not resolve to an empty message either
     expect(settled).not.toContain('/reply');                             // the malformed command is still never surfaced
     expect(settled).toContain('No pude abrir Chrome en esta sesión.');   // …and the ANSWER inside the malformed limb is what it says (2026-09-14)
-    expect(settled).not.toBe('⚠️ no reply (turn failed/empty)');         // the marker is for a turn with nothing to say — this turn had everything to say
+    expect(settled).not.toMatch(/the turn failed/);                      // the marker is for a turn with nothing to say — this turn had everything to say
     expect(bridge.sent).toHaveLength(0);                                 // nothing runnable → no limb fired
   });
 

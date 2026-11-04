@@ -5,7 +5,7 @@
 // resolves WHICH mode/policy applies and packages the per-message decision:
 //
 //   decide(being, ev, mention?, { denied?, bot? }) -> { mode, receives, mayReply, quiet? }   (ONE conv-state read)
-//   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'/quiet '...' silence cosmetic
+//   surfaces(decision, replyText, { failed? })-> boolean    POST-brain: mayReply + the 'on'/quiet '...' silence cosmetic; a failure always surfaces
 //
 // `mode` resolves down ONE chain, most specific first (operator 2026-07-25):
 //   config.yaml         closed_chats.<surface>.<id>   'off' for every being (closed-chats.mjs)
@@ -124,8 +124,11 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // not surfaced). Every other mode is already fully decided by mayReply.
   // With the emoji train a silence to a human who addressed the being is posted (operator 2026-11-03),
   // except in auto (the operator's own silence) and a tunnel (only real content reaches the split).
-  function surfaces(decision, replyText) {
+  // A FAILED turn always surfaces, in every mode (operator 2026-11-04: "if there's a failure it has to be loud"):
+  // the engine's flag, or no text at all. Only a '…' is a silence.
+  function surfaces(decision, replyText, { failed = false } = {}) {
     if (!decision?.mayReply) return false;
+    if (failed || !String(replyText ?? '').trim()) return true;
     if (decision.emoji && decision.addressed && decision.mode !== 'auto' && !decision.quiet) return true;
     // 'auto' gates like 'on' — its free-post silence ('…') is likewise recorded, not surfaced. So is a quiet turn's, in any mode.
     return !((decision.mode === 'on' || decision.mode === 'auto' || decision.quiet) && isSilenceReply(replyText));

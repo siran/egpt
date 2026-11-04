@@ -1500,7 +1500,7 @@ export function createSpine({
   // concern only — it says nothing about the record.
   // `marks` (markOf): 🤔 as the line goes to the model; off after the reply, before the limbs, and in the finally.
   async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, marks = [] }) {
-    let live = null, opening = null;
+    let live = null, opening = null, answered = false;
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
       // the identity the same_sender tier of allow_new_input compares against (2026-08-30) —
@@ -1637,8 +1637,9 @@ export function createSpine({
       };
       for (const m of marks) m.started();              // 🤔: the line goes to the model now
       const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
+      answered = true;
       const rawText = reply?.text ?? '';
-      const surfaced = gating.surfaces(d, rawText);
+      const surfaced = gating.surfaces(d, rawText, { failed: isBrainFailureResult(reply) });
       // A turn the ENGINE reported failed (isBrainFailureResult — the structural flag, never the
       // text; the brainpool self-heals only overflow/dead-session, not this): do NOT deliver it as
       // a reply. Blank it so the placeholder resolves to the no-reply marker, and record the raw
@@ -1698,7 +1699,7 @@ export function createSpine({
       // model" — for a turn whose limbs were about to fire, and (the message being append-only)
       // it landed under a seam beneath prose the human had already read. The verbs go down, the
       // sender says it is processing them, and the transcript records what each one did below.
-      await out.finish(turnFailed ? { text: '', failed: true, error: rawText } : { ...reply, text: proseText }, {
+      await out.finish(turnFailed ? { text: '', failed: true, error: rawText, failReason: reply.failReason } : { ...reply, text: proseText }, {
         surface: actionOnly ? false : surfaced,
         commands: actionOnly ? parsed.run.map((a) => a.type) : null,
         // verbose_thinking, resolved once by brainpool's resolveConv and carried out on the reply
@@ -1777,7 +1778,9 @@ export function createSpine({
       // append here: it was recorded at ingestion, so C1.2 already holds whatever this
       // turn does (that rescue used to double-record the auto-dwell burst, which had
       // been logged at arrival but was invisible to the flag this branch checked).
-      try { await out.fail?.(e); } catch { /* best effort */ }
+      // The brain threw or timed out: the one failure line, naming it (operator 2026-11-04). A fault delivering the reply: ❌.
+      const why = e?.message ?? String(e);
+      try { await (answered ? out.fail?.(e) : out.finish({ text: '', failed: true, error: why, failReason: why })); } catch { /* best effort */ }
       note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
       return false;
     } finally { if (opening) clearTimeoutFn(opening); for (const m of marks) m.off(); dropTrain(turnKey); turns.clearLive(turnKey); liveness.turnEnded(live); }

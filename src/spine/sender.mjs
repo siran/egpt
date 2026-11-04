@@ -37,7 +37,19 @@ const FAIL_SUFFIX = '… ❌ Sending failed.';
 // "⚠️ …" marker; distinct from FAIL_SUFFIX (a SEND fault). It still flows through the
 // port's wrapPersona, so a configured agent_signature_close layer still appends — the
 // marker no longer carries a signature itself.
-const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
+// It is THE failure line, and names the failure (operator 2026-11-04: "if there's a failure it has to be
+// loud"): the API's refusal or error, a timeout, the engine's reason, else an empty reply.
+function failureName({ failed = false, error = '', failReason = null } = {}) {
+  if (!failed) return 'empty reply';
+  const e = String(error ?? '');
+  if (/safeguards/i.test(e)) return 'API error (safeguards)';
+  const api = /API Error:?\s*(\d{3})?/i.exec(e);
+  if (api) return `API error${api[1] ? ` ${api[1]}` : ''}`;
+  const ms = /^turn timeout after (\d+)ms/.exec(e)?.[1];
+  if (ms) return `timed out after ${elapsed(Number(ms))}`;
+  return String(failReason ?? '').replace(/^is_error\b\s*/, '').split('\n')[0].slice(0, 80).trim() || 'engine error';
+}
+const noReplyMark = (reply) => `⚠️ the turn failed — ${failureName(reply ?? {})}; not answered`;
 // '…' is the MODEL's word (40-rules.md). The bridge must never fabricate it:
 // a silence the bridge invented is indistinguishable from one the being chose.
 // When the bridge has nothing from the model, it says so in its OWN voice.
@@ -403,7 +415,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   const copies = new Map();   // one lookup per message and mouth room, shared by concurrent opens; misses are dropped
   // `chatId` a function → a room made only once the reply has something to post (a side group not made
-  // yet, gating.decide): asked at the first real text or a finish with a reply, at once for a status. A
+  // yet, gating.decide): asked at the first real text or a surfaced finish (a reply, or a failure: 2026-11-04), at once for a status. A
   // silence asks nothing. The reply then opens there like any other.
   const later = (room, opts) => {
     let asked = null, out = null;
@@ -423,7 +435,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
       pulse(ms, label) { return out ? out.pulse(ms, label) : true; },
       async end(text) { if (asked) await onOpen((o) => o.end(text)); },
       async finish(reply, o = {}) {
-        if (asked || (o.surface !== false && textOf(reply).trim())) return onOpen((x) => x.finish(reply, o));
+        if (asked || o.surface !== false) return onOpen((x) => x.finish(reply, o));   // a reply, or its failure line
         onLog(`sender: ${opts.being ?? '?'} turn withheld before its room was made — nothing posted`);
       },
       async fail(e) { if (asked) await onOpen((o) => o.fail(e)); },
@@ -495,7 +507,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
             if (surface && isPublic && reply?.failed) { await notice(`model error: ${String(reply.error ?? '').trim().slice(0, 300)}`); return; }   // the CLI's error, not the being's words
             if (surface && t.trim()) { sendResult = await deliverHere(t, isPublic ? { replyTo, persona: being } : { replyTo, ...(canary ? { canary } : {}) }); return; }   // plain text: no bodyEmoji/label, no end-marker
             // withheld / empty → post nothing; a public being's empty turn is an admin notice
-            if (surface) await notice(noReplyMark());
+            if (surface) await notice(noReplyMark(reply));
             else if (!t.trim() && !commands?.length) await notice(BRIDGE_SILENCE);
           },
           async fail(e) { await notice(`turn failed: ${e?.message ?? e}`); },   // a human doesn't post a failure scaffold
@@ -765,7 +777,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           // not silently deleted / left stuck). A settled reply already present in what was
           // read is a RESTATEMENT, not a divergence (see alreadyRead): settle on the stream so
           // the answer is not doubled; anything new still absorbs (seam, both kept).
-          const settled = t.trim() ? t : noReplyMark();
+          const settled = t.trim() ? t : noReplyMark(reply);
           // Past the edit window the placeholder stays on its last frame; the reply is a fresh message
           // from the same mouth, and the §7 fallback only if that did not deliver.
           if (stream && !editable()) {
