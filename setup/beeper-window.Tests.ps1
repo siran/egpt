@@ -30,20 +30,20 @@ Describe 'Get-BeeperWindowPlan' {
 }
 
 Describe 'Get-BeeperWindowOpen - where the window opens' {
-  $appData = 'C:\Users\an\AppData\Roaming'
+  $appData = 'C:\Users\user\AppData\Roaming'
   It 'reve (the service shares the default profile): that profile, no --user-data-dir' {
-    $o = Get-BeeperWindowOpen $true '--user-data-dir="C:\Users\an\AppData\Roaming\BeeperTexts" --disable-gpu' $appData
-    $o.profile | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    $o = Get-BeeperWindowOpen $true '--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts" --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
     $o.args | Should Be ''
   }
   It 'dolly (the service shares its own profile): that profile, with --user-data-dir' {
-    $o = Get-BeeperWindowOpen $true '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' $appData
-    $o.profile | Should Be 'C:\Users\an\.egpt\state\an-beeper'
-    $o.args | Should Be '--user-data-dir="C:\Users\an\.egpt\state\an-beeper"'
+    $o = Get-BeeperWindowOpen $true '--user-data-dir=C:\Users\user\.egpt\state\an-beeper --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\user\.egpt\state\an-beeper'
+    $o.args | Should Be '--user-data-dir="C:\Users\user\.egpt\state\an-beeper"'
   }
   It 'not shared (the baseline, or dolly before its conversion): the user''s default profile, never the service''s own' {
-    $o = Get-BeeperWindowOpen $false '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' $appData
-    $o.profile | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    $o = Get-BeeperWindowOpen $false '--user-data-dir=C:\Users\user\.egpt\state\an-beeper --disable-gpu' $appData
+    $o.profile | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
     $o.args | Should Be ''
     (Get-BeeperWindowOpen $false '' $appData).args | Should Be ''
   }

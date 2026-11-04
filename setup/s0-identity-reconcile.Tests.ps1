@@ -80,8 +80,8 @@ Describe 'Invoke-EgptDaemonPart' {
 }
 
 Describe 'Invoke-BeeperPart - the normal pass starts only a service that shares the window profile' {
-  $dollyAp = '--user-data-dir="C:\Users\an\.egpt\state\an-beeper" --disable-gpu --disable-gpu-compositing'
-  $hook = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart -LogPath "C:\Users\an\.egpt\config\logs\s0-identity.log"'
+  $dollyAp = '--user-data-dir="C:\Users\user\.egpt\state\an-beeper" --disable-gpu --disable-gpu-compositing'
+  $hook = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\user\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart -LogPath "C:\Users\user\.egpt\config\logs\s0-identity.log"'
   $reveAp = Get-BeeperServiceArgLine (Get-BeeperDefaultProfile $env:APPDATA)
   function Use-Service([string] $Ap, [string] $Hook, [string] $Status = 'Stopped', [bool] $Claimed = $false) {
     $script:Ap = $Ap; $script:Hook = $Hook; $script:Status = $Status; $script:Claimed = $Claimed

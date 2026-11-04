@@ -16,12 +16,12 @@ import { tmpdir } from 'node:os';
 import { startTranscriptorServer, transcribeViaEndpoint } from '../src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from '../src/tools/whisper-server.mjs';
 
-const FFMPEG = 'C:\\Users\\an\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe';
+const FFMPEG = 'C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe';
 const audioCfg = {
   enabled: true,
-  command: 'C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-cli.exe',
+  command: 'C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-cli.exe',
   ffmpeg_command: FFMPEG,
-  model_path: 'C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
+  model_path: 'C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
   language: 'es',
 };
 // Throwaway key — deliberately NOT ~/.egpt/bus.key (that file must be
@@ -40,7 +40,7 @@ if (!audio) {
 let whisper = null, transcribe;
 if (serverMode) {
   whisper = await startWhisperServer({
-    command: 'C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-server.exe',
+    command: 'C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-server.exe',
     model: audioCfg.model_path,
     port: 8089,
     language: 'es',

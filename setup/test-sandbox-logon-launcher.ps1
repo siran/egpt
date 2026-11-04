@@ -264,9 +264,9 @@ Write-Host "  verbatim, --verbose included: $(if ($passR) {'PASS'} else {'FAIL'}
 
 # ==== section 5: node's realpath through the ~\src traverse ACE ============
 # THE REGRESSION THAT BIT A BOXED BEING (2026-09-27, on do). It ran
-# `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+# `node C:\Users\user\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
 # died before the client's first line: EPERM, syscall 'lstat', path
-# 'C:\Users\an\src'. fs.realpathSync lstats EVERY component, and the pool's
+# 'C:\Users\user\src'. fs.realpathSync lstats EVERY component, and the pool's
 # traverse ACE on ~\src had no S (SYNCHRONIZE), which that open needs. A plain
 # read of the same file WORKED - only the realpath walk broke - so nothing short
 # of running Node as the pool account catches it. This does exactly that, on the

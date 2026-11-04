@@ -7,8 +7,8 @@
 
 Describe 'the reconciler task principal' {
   It 'is the desktop user, S4U (logged on or not, no stored password), Limited' {
-    $p = Get-S0IdentityTaskPrincipal 'reve\an'
-    $p.UserId | Should Be 'reve\an'
+    $p = Get-S0IdentityTaskPrincipal 'reve\user'
+    $p.UserId | Should Be 'reve\user'
     "$($p.LogonType)" | Should Be 'S4U'
     "$($p.RunLevel)" | Should Be 'Limited'
   }
@@ -26,12 +26,12 @@ Describe 'the reconciler task principal' {
 }
 
 Describe 'the reconciler command line' {
-  $p = 'C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1'
+  $p = 'C:\Users\user\bin\egpt\setup\s0-identity-reconcile.ps1'
   It 'the Beeper service and the log, as before; no -EgptHome unless given (the reconciler defaults it)' {
-    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' 'C:\h\s0.log' '' | Should Be '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1" -ServiceName egpt-beeper-primary -LogPath "C:\h\s0.log"'
+    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' 'C:\h\s0.log' '' | Should Be '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\user\bin\egpt\setup\s0-identity-reconcile.ps1" -ServiceName egpt-beeper-primary -LogPath "C:\h\s0.log"'
   }
   It 'carries the profile whose STOP file the egpt-daemon part honours' {
-    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' '' 'C:\Users\an\.egpt' | Should Match ' -EgptHome "C:\\Users\\an\\\.egpt"$'
+    Get-S0IdentityTaskArgument $p 'egpt-beeper-primary' '' 'C:\Users\user\.egpt' | Should Match ' -EgptHome "C:\\Users\\user\\\.egpt"$'
   }
   It 'the registration uses it' {
     $code = (Get-Content (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1')) | Where-Object { $_ -notmatch '^\s*#' }

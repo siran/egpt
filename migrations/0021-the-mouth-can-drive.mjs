@@ -14,9 +14,11 @@
 // and mesh.mjs both ask), and the mouth's id is on no list on either node. So a line typed through
 // Rodz reaches the being and is then refused as a stranger's. The fix is one id on one list.
 //
-// THE ID IS THE MOUTH'S MATRIX USER ID, `@dolly-egpt:beeper.com` — the same on both nodes
-// (`beeper.secondary`, the account dolly.egpt@gmail.com; handoffs/2026-09-03-session-zero.md
-// records dolly's S0 token minted for exactly that id). It is NOT derived from the node's config:
+// THE ID IS THE MOUTH'S MATRIX USER ID, the node's EGPT_MOUTH_ID (`@<localpart>:beeper.com`) — the
+// same on both nodes (`beeper.secondary`'s account; the session-zero handoff, kept in the node
+// profile, records dolly's S0 token minted for exactly that id). It is a node's value, never the
+// repo's: with EGPT_MOUTH_ID unset the node names no mouth and this reads SATISFIED with a note.
+// It is NOT derived from the node's config:
 // `beeper.secondary` holds the ACCOUNT (an e-mail), never the matrix id, so deriving it would be a
 // guess dressed as a reading.
 //
@@ -86,8 +88,8 @@
 //
 // THE EDIT IS ONE SPLICE, the layer that already owns this: src/tools/config-io.mjs's
 // spliceYamlSeqAppend, added for 0020's handle append, puts one item at the end of an INLINE flow
-// list — `[ "…", "@anrodriguez:beeper.com" ]` becomes `[ "…", "@anrodriguez:beeper.com",
-// "@dolly-egpt:beeper.com" ]` with the brackets, the spacing and any trailing comment untouched,
+// list — `[ "…", "@anaprueba:beeper.com" ]` becomes `[ "…", "@anaprueba:beeper.com",
+// "@mouth-acct:beeper.com" ]` with the brackets, the spacing and any trailing comment untouched,
 // verified by re-parse to be that one item and nothing else. `@` is a YAML RESERVED INDICATOR, so
 // the id can only be written QUOTED; the splice renders a new item in the same scalar style as the
 // item before it, and every id in these lists is quoted (it has to be — a bare phone number would
@@ -112,7 +114,7 @@ import { wakeTokens } from '../src/spine/router.mjs';
 import { allowedUsersPermits } from '../src/conversations-state.mjs';
 
 export const elevated = false;
-export const summary = 'the mouth may drive this node\'s meta engineer: `@dolly-egpt:beeper.com` joins the allowed_users of the `access_level: all` being pinned node-wide with `scope:`';
+export const summary = 'the mouth may drive this node\'s meta engineer: its matrix id (EGPT_MOUTH_ID) joins the allowed_users of the `access_level: all` being pinned node-wide with `scope:`';
 
 const ID = '0021';
 // The being this is about, BOTH halves: the unsandboxed one —
@@ -121,8 +123,9 @@ const ID = '0021';
 // the agent). Level alone is not a meta engineer: do's `djh` is unsandboxed and pinned to nothing.
 const LEVEL = 'all';
 const PIN = 'scope';
-// The mouth's MATRIX USER ID, the same on both nodes — `beeper.secondary`, dolly.egpt@gmail.com.
-const MOUTH = '@dolly-egpt:beeper.com';
+// The mouth's MATRIX USER ID, the same on both nodes — `beeper.secondary`'s account. The node's, from
+// its environment; the repo spells none.
+const mouthId = () => process.env.EGPT_MOUTH_ID?.trim() || null;
 
 const refuse = (why) => { throw new Error(`${ID} refuses: ${why}`); };
 const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -140,6 +143,8 @@ const named = (agents, name) => `agents.${name} (answers to ${answersTo(name, ag
 const pinOf = (agent) => (typeof agent[PIN] === 'string' ? agent[PIN] : JSON.stringify(agent[PIN] ?? null));
 
 export async function plan(ctx) {
+  const MOUTH = mouthId();
+  if (!MOUTH) return { satisfied: true, notes: ['EGPT_MOUTH_ID is not set: this node names no mouth matrix id, so there is nothing to add'] };
   const file = join(ctx.egptHome, 'config', 'config.yaml');
   if (!existsSync(file)) refuse(`there is no ${file}`);
   const bytes = readFileSync(file);

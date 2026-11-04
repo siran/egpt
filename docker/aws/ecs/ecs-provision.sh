@@ -1,11 +1,11 @@
 #!/bin/bash
-# ecs-provision.sh [--deploy edw] [--on-demand] [--apply]
+# ecs-provision.sh [--deploy <name>] [--on-demand] [--apply]
 # A deployment on ECS over EC2: cluster $N, a launch template and an Auto Scaling group for its one
 # container instance (Spot unless --on-demand or ON_DEMAND=1), the task definition and the service $N.
-# With a LEGACY_NODE (EDW) it reuses provision.sh's subnet, security group and data volume; without
+# With a LEGACY_NODE it reuses provision.sh's subnet, security group and data volume; without
 # one it makes them. Re-running finds what exists.
-# With a ZONE (EDW: egpt.internal), the instance points DNS_NAME at itself at every boot.
-# The ASG and the service start at 0; ecs-cutover.sh moves EDW over, or starts a new deployment.
+# With a ZONE (e.g. example.internal), the instance points DNS_NAME at itself at every boot.
+# The ASG and the service start at 0; ecs-cutover.sh moves a LEGACY_NODE over, or starts a new deployment.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/ecs-lib.sh"
 
@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do
   case $1 in
     --apply) APPLY=1 ;;
     --on-demand) OD=100 ;;
-    *) die "usage: ecs-provision.sh [--deploy edw] [--on-demand] [--apply]" ;;
+    *) die "usage: ecs-provision.sh [--deploy <name>] [--on-demand] [--apply]" ;;
   esac
   shift
 done
@@ -82,7 +82,7 @@ grep -q '[[:space:]]@N@$' /etc/hosts || echo '127.0.0.1 @N@' >>/etc/hosts
 
 EOF
     [ -z "$ZONE" ] || cat <<'EOF'
-# Every boot: @DNS_NAME@ (private zone, read in EduWeb's production VPC) -> this instance's private IP.
+# Every boot: @DNS_NAME@ (private zone, read in the VPC ZONE_VPC) -> this instance's private IP.
 cat >/usr/local/sbin/@N@-dns <<'DNS'
 #!/bin/bash
 # Log: journalctl -u @N@-dns (also on the console)
@@ -259,7 +259,7 @@ else
   log "image    egpt:$N is not in ECR yet (build-push.sh --apply); the plan uses $DIGEST"
 fi
 
-# Private zone in EduWeb's production VPC (Portales-new, over the peering); the instance keeps $DNS_NAME current.
+# Private zone, associated with ZONE_VPC (e.g. a peered VPC); the instance keeps $DNS_NAME current.
 ZID=
 [ -z "$ZONE" ] || ZID=$(find_zone)
 if [ -z "$ZONE" ]; then
@@ -293,7 +293,7 @@ ADDRESS='{"Version":"2012-10-17","Statement":[
 {"Sid":"OurInstances","Effect":"Allow","Action":"ec2:AssociateAddress","Resource":"'$ARN_EC2':instance/*",
  "Condition":{"StringEquals":{"aws:ResourceTag/Project":"'$PROJECT'"}}}]}'
 
-# Instance role: what edw-instance-role has, plus the ECS agent's policy, attaching the data volume and its DNS record.
+# Instance role: what provision.sh's instance role has, plus the ECS agent's policy, attaching the data volume and its DNS record.
 role_new=0
 if iam_has get-role --role-name $ROLE; then
   ours "$(q iam list-role-tags --role-name $ROLE --query "Tags[?Key=='Project'].Value")" "role $ROLE"
@@ -459,7 +459,7 @@ fi
 
 [ $prof_new = 0 ] || [ "$APPLY" = 0 ] || log "note: a new instance profile takes ~20s to reach EC2; wait before ecs-cutover.sh"
 if [ -n "$LEGACY_NODE" ]; then
-  log "next: ecs-cutover.sh (stops $N on ${vatt:-$LEGACY_NODE}, moves $DATA, scales $ASG to 1, service to 1)"
+  log "next: ecs-cutover.sh --deploy $DEPLOY (stops $N on ${vatt:-$LEGACY_NODE}, moves $DATA, scales $ASG to 1, service to 1)"
 else
   log "next: ecs-cutover.sh --deploy $DEPLOY (scales $ASG to 1, waits for $DATA, service to 1)"
 fi

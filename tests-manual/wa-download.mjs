@@ -4,7 +4,7 @@
 import WebSocket from 'ws';
 import http from 'node:http';
 import { readdirSync, statSync } from 'node:fs';
-const DL = 'C:\\Users\\an\\.egpt\\wa-downloads';
+const DL = 'C:\\Users\\user\\.egpt\\wa-downloads';
 const listTargets = () => new Promise((res, rej) => { http.get('http://127.0.0.1:9221/json/list', r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{try{res(JSON.parse(d))}catch(e){rej(e)}}); }).on('error', rej); });
 function connect(u){const ws=new WebSocket(u,{maxPayload:2e8});let id=1;const p=new Map();ws.on('message',b=>{let m;try{m=JSON.parse(b.toString())}catch{return}if(m.id&&p.has(m.id)){p.get(m.id)(m);p.delete(m.id);}});const send=(method,params={})=>new Promise(r=>{const i=id++;p.set(i,r);ws.send(JSON.stringify({id:i,method,params}));});const ready=new Promise((r,j)=>{ws.on('open',r);ws.on('error',j);});const ev=async e=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true,awaitPromise:true});if(r.result?.exceptionDetails)return{__err:r.result.exceptionDetails.exception?.description?.slice(0,200)};return r.result?.result?.value;};return{send,ready,ev};}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));

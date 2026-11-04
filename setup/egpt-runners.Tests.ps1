@@ -50,15 +50,15 @@ Describe 'Get-EgptServiceStartVerdict' {
 }
 
 Describe 'Test-EgptInteractiveLogon' {
-  $s1 = [pscustomobject]@{ SessionId = 1; User = 'reve\an' }
+  $s1 = [pscustomobject]@{ SessionId = 1; User = 'reve\user' }
   It 'an explorer of this user outside session 0 is a desktop logon, whatever the case of the name' {
-    Test-EgptInteractiveLogon @($s1) 'REVE\an' | Should Be $true
+    Test-EgptInteractiveLogon @($s1) 'REVE\user' | Should Be $true
   }
   It 'session 0 only, another user, or no explorer at all is no logon' {
-    Test-EgptInteractiveLogon @([pscustomobject]@{ SessionId = 0; User = 'reve\an' }) 'reve\an' | Should Be $false
-    Test-EgptInteractiveLogon @([pscustomobject]@{ SessionId = 2; User = 'reve\rodz' }) 'reve\an' | Should Be $false
-    Test-EgptInteractiveLogon @() 'reve\an' | Should Be $false
-    Test-EgptInteractiveLogon $null 'reve\an' | Should Be $false
+    Test-EgptInteractiveLogon @([pscustomobject]@{ SessionId = 0; User = 'reve\user' }) 'reve\user' | Should Be $false
+    Test-EgptInteractiveLogon @([pscustomobject]@{ SessionId = 2; User = 'reve\rodz' }) 'reve\user' | Should Be $false
+    Test-EgptInteractiveLogon @() 'reve\user' | Should Be $false
+    Test-EgptInteractiveLogon $null 'reve\user' | Should Be $false
   }
 }
 

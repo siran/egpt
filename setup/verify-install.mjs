@@ -87,7 +87,7 @@ export function taskChecks(task, { name, egptHome, exists = existsSync }) {
   return out;
 }
 
-// '.\an' / 'REVE\an' name the same local account as 'reve\an'; 'LocalSystem' names none.
+// '.\user' / 'REVE\user' name the same local account as 'reve\user'; 'LocalSystem' names none.
 export function sameAccount(account, user) {
   const split = (s) => { const m = String(s ?? '').match(/^(.*)\\([^\\]+)$/); return m ? { d: m[1].toLowerCase(), u: m[2].toLowerCase() } : null; };
   const a = split(account), b = split(user);

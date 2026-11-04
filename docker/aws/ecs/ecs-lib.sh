@@ -24,16 +24,20 @@ if [ "$EGPT_BEEPER" != off ]; then
   for _n in "${_names[@]:1}"; do BEEPER_VOLS+=("egpt-beeper-$_n:/home/egpt/.config/BeeperTexts-$_n"); done
 fi
 
-# oficina-tunnel sidecar (OFICINA_TUNNEL=1): 127.0.0.1:18089 -> oficina's whisper-server (127.0.0.1:8089) over SSH.
+# oficina-tunnel sidecar (OFICINA_TUNNEL=1): 127.0.0.1:18089 -> a whisper server's 127.0.0.1:8089, an SSH local
+# forward to the host in secrets/oficina-tunnel.target.
 # Never exits on its own: waits for its secrets and retries ssh every minute. ECS's restart policy
-# is only a backstop (it did not restart a clean exit 0, 2026-10-26).
+# is only a backstop (it did not restart a clean exit 0, 2026-10-26). The host's ssh port is the deployment's
+# OFICINA_TUNNEL_PORT.
+[ "$OFICINA_TUNNEL" != 1 ] || [[ ${OFICINA_TUNNEL_PORT:-} =~ ^[0-9]+$ ]] \
+  || die "OFICINA_TUNNEL=1 needs OFICINA_TUNNEL_PORT (the tunnel host's ssh port) in the deployment file"
 TUNNEL_SH='s=/home/egpt/.egpt/secrets
 while :; do
   missing=
   for f in oficina-tunnel.key oficina.known_hosts oficina-tunnel.target; do [ -s $s/$f ] || missing=$f; done
   if [ -n "$missing" ]; then echo "oficina-tunnel: no secrets/$missing yet; checking again in 1 min"
   else
-    ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$s/oficina.known_hosts -i $s/oficina-tunnel.key -L 127.0.0.1:18089:127.0.0.1:8089 -p 35547 "$(tr -d "[:space:]" <$s/oficina-tunnel.target)"
+    ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$s/oficina.known_hosts -i $s/oficina-tunnel.key -L 127.0.0.1:18089:127.0.0.1:8089 -p '"${OFICINA_TUNNEL_PORT:-22}"' "$(tr -d "[:space:]" <$s/oficina-tunnel.target)"
     echo "oficina-tunnel: ssh exited $?; retrying in 1 min"
   fi
   sleep 60

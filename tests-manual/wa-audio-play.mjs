@@ -5,6 +5,7 @@ import http from 'node:http';
 import { writeFileSync } from 'node:fs';
 const listTargets = () => new Promise((res, rej) => { http.get('http://127.0.0.1:9221/json/list', r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{try{res(JSON.parse(d))}catch(e){rej(e)}}); }).on('error', rej); });
 function connect(u){const ws=new WebSocket(u,{maxPayload:2e8});let id=1;const p=new Map();ws.on('message',b=>{let m;try{m=JSON.parse(b.toString())}catch{return}if(m.id&&p.has(m.id)){p.get(m.id)(m);p.delete(m.id);}});const send=(method,params={})=>new Promise(r=>{const i=id++;p.set(i,r);ws.send(JSON.stringify({id:i,method,params}));});const ready=new Promise((r,j)=>{ws.on('open',r);ws.on('error',j);});const ev=async e=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true,awaitPromise:true});if(r.result?.exceptionDetails)return{__err:r.result.exceptionDetails.exception?.description?.slice(0,200)};return r.result?.result?.value;};return{send,ready,ev};}
+const SELF_HINT = process.env.SELF_HINT || '(You)';   // a substring of the Self chat's title, e.g. the account's area code
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const click=async(cdp,c)=>{for(const type of ['mouseMoved','mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,x:c.x,y:c.y,button:'left',clickCount:1});};
 
@@ -17,8 +18,8 @@ const HOOK = `(() => { if (window.__egptAudioHook) return 'already'; window.__eg
 
   // Ensure Self chat open (the audio was sent to Self).
   let hdr = await cdp.ev(`(document.querySelector('#main header')||{}).innerText||''`);
-  if (!/\(You\)|Message yourself|646/.test(hdr || '')) {
-    const c = await cdp.ev(`(()=>{const r=document.querySelector('#pane-side [data-testid="message-yourself-row"]')||[...document.querySelectorAll('#pane-side span[title]')].find(s=>/646/.test(s.getAttribute('title')||''))?.closest('[data-testid="cell-frame-container"]');if(!r)return null;r.scrollIntoView({block:'center'});const b=r.getBoundingClientRect();return{x:Math.round(b.x+b.width/2),y:Math.round(b.y+b.height/2)};})()`);
+  if (!/\(You\)|Message yourself/.test(hdr || '') && !(hdr || '').includes(SELF_HINT)) {
+    const c = await cdp.ev(`(()=>{const r=document.querySelector('#pane-side [data-testid="message-yourself-row"]')||[...document.querySelectorAll('#pane-side span[title]')].find(s=>(s.getAttribute('title')||'').includes(${JSON.stringify(SELF_HINT)}))?.closest('[data-testid="cell-frame-container"]');if(!r)return null;r.scrollIntoView({block:'center'});const b=r.getBoundingClientRect();return{x:Math.round(b.x+b.width/2),y:Math.round(b.y+b.height/2)};})()`);
     if (c) { await click(cdp, c); await sleep(1500); }
     hdr = await cdp.ev(`(document.querySelector('#main header')||{}).innerText||''`);
   }
@@ -41,7 +42,7 @@ const HOOK = `(() => { if (window.__egptAudioHook) return 'already'; window.__eg
   console.log('captured:', JSON.stringify(caps));
   if (Array.isArray(caps) && caps.length) {
     const big = await cdp.ev(`(()=>{const c=(window.__egptAudioCaps||[]).slice().sort((a,b)=>b.size-a.size)[0];return c?{size:c.size,b64:c.b64}:null;})()`);
-    if (big?.b64) { writeFileSync('C:/Users/an/.egpt/wa-audio-hook.ogg', Buffer.from(big.b64,'base64')); console.log(`✅ wrote ${big.size} bytes → C:/Users/an/.egpt/wa-audio-hook.ogg`); }
+    if (big?.b64) { writeFileSync('C:/Users/user/.egpt/wa-audio-hook.ogg', Buffer.from(big.b64,'base64')); console.log(`✅ wrote ${big.size} bytes → C:/Users/user/.egpt/wa-audio-hook.ogg`); }
   }
   process.exit(0);
 })().catch(e => { console.error('err', e?.message ?? e); process.exit(1); });

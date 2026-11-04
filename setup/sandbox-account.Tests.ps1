@@ -720,9 +720,9 @@ Describe "Grant-SandboxPoolAce -Grant 'Traverse' (walk through the directory, do
 
 # ---------------------------------------------------------------------------
 # THE TRAVERSE GRANT CARRIES SYNCHRONIZE (2026-09-27, measured on do as a real
-# pool account). A boxed being ran `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs`
+# pool account). A boxed being ran `node C:\Users\user\src\egpt\src\tools\ask-spine.mjs`
 # and Node's module loader died before the client's first line: EPERM, syscall
-# 'lstat', path 'C:\Users\an\src'. The pool's ACE there was (Rc,X,RA) - exactly
+# 'lstat', path 'C:\Users\user\src'. The pool's ACE there was (Rc,X,RA) - exactly
 # what this table's old (X,RA,RC) lands as - and adding S by hand made every probe
 # pass. So an S-less traverse ACE is NOT "the same grant" as the (Rc,S,X,RA) the
 # older ancestors carry, which is what SANDBOX.md used to say.
@@ -1254,8 +1254,8 @@ Describe 'Clear-SandboxAbandonedLeases (the repair path for leases nothing will 
 
   It 'a ledger path that VANISHED is reported as such, not as clean, and the lock still releases' {
     # THE RENAME HOLE, found in the live ledgers on 2026-09-23 (two locks named
-    # ...\Favel Konefka-2608141626 while three named ...\Favel Elena
-    # Konefka-2608141626 - one conversation, renamed slug). NTFS carries a DACL
+    # ...\Fiona Ejemplar-2608141626 while three named ...\Fiona Elena
+    # Ejemplar-2608141626 - one conversation, renamed slug). NTFS carries a DACL
     # through a rename, so the ACE outlives the name. This cannot follow it; what
     # it must not do is call the outcome clean.
     $script:SandboxPoolPrefix = $script:MeUser
@@ -1397,16 +1397,16 @@ Describe 'Revoke-SandboxPathAces -FileId (the rename hole, closed)' {
 
   It 'REPRODUCE: today''s revoke LOSES the ACE when the folder is renamed, and the id-carrying one FOLLOWS it' {
     # This is the kg failure, reproduced end to end on a throwaway directory:
-    #   egpt-sbx-03/-04/-10 -> ...\Favel Elena Konefka-2608141626
-    #   egpt-sbx-08/-13     -> ...\Favel Konefka-2608141626
+    #   egpt-sbx-03/-04/-10 -> ...\Fiona Elena Ejemplar-2608141626
+    #   egpt-sbx-08/-13     -> ...\Fiona Ejemplar-2608141626
     # one conversation, renamed slug, and the ACEs alive at the new name while
     # the ledger pointed at nothing.
     $parent = New-LedgerTempDir
-    $conv = Join-Path $parent 'Favel Elena Konefka-2608141626'
+    $conv = Join-Path $parent 'Fiona Elena Ejemplar-2608141626'
     New-Item -ItemType Directory -Path $conv -Force | Out-Null
     Grant-TestModify $conv
     $id = Get-SandboxPathFileId -Path $conv
-    $renamed = Join-Path $parent 'Favel Konefka-2608141626'
+    $renamed = Join-Path $parent 'Fiona Ejemplar-2608141626'
     Rename-Item -LiteralPath $conv -NewName (Split-Path $renamed -Leaf)
 
     # WITHOUT the id - today's behaviour, and the loss itself: reported missing,
@@ -1528,8 +1528,8 @@ Describe 'the ledger line format (new ids, old ledgers, same file)' {
   }
 
   It 'BACK-COMPAT: an OLD-SHAPE line - a bare path, as every lock on a live node holds today - reads as a path with no id' {
-    $e = ConvertFrom-SandboxLeaseLedgerLine -Line 'C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626'
-    $e.Path | Should Be 'C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626'
+    $e = ConvertFrom-SandboxLeaseLedgerLine -Line 'C:\Users\user\.egpt\conversations\whatsapp\Fiona Ejemplar-2608141626'
+    $e.Path | Should Be 'C:\Users\user\.egpt\conversations\whatsapp\Fiona Ejemplar-2608141626'
     $e.FileId | Should Be ''
   }
 
@@ -1654,18 +1654,18 @@ Describe 'the reclaim and the sweep, with ids on the ledger' {
   }
 
   It 'ACCEPTANCE: the kg case - two ledgers, two names, ONE conversation, and nothing left granted' {
-    # egpt-sbx-08/-13 named ...\Favel Konefka-2608141626 while -03/-04/-10 named
-    # ...\Favel Elena Konefka-2608141626 - the same folder, before and after a
+    # egpt-sbx-08/-13 named ...\Fiona Ejemplar-2608141626 while -03/-04/-10 named
+    # ...\Fiona Elena Ejemplar-2608141626 - the same folder, before and after a
     # rename. Two leases, two spellings, one object. The sweep must clear BOTH
     # ledgers' ACEs off the folder that exists now, and release both locks.
     $script:SandboxPoolPrefix = ''
     $parent = New-LedgerTempDir
-    $oldName = Join-Path $parent 'Favel Elena Konefka-2608141626'
+    $oldName = Join-Path $parent 'Fiona Elena Ejemplar-2608141626'
     New-Item -ItemType Directory -Path $oldName -Force | Out-Null
     $two = @($script:MeUser, 'Everyone')
     foreach ($a in $two) { Grant-TestModifyTo $oldName $a }
     $id = Get-SandboxPathFileId -Path $oldName
-    $newName = Join-Path $parent 'Favel Konefka-2608141626'
+    $newName = Join-Path $parent 'Fiona Ejemplar-2608141626'
     Rename-Item -LiteralPath $oldName -NewName (Split-Path $newName -Leaf)
 
     # One lock naming the OLD slug (its turn ran before the rename), one naming
@@ -2884,9 +2884,9 @@ Describe 'Get-SandboxGlobalReadPaths (the provisioner''s list, read by node from
   }
 
   It 'kg''s entry comes back as one mount; an invalid one is skipped and NAMED' {
-    Set-FixtureConfig @('node_name: kg', 'global_read_paths:', '  - repos: C:/Users/an/src/siran', '  - src: C:/x', '  - notes: /d/notes')
+    Set-FixtureConfig @('node_name: kg', 'global_read_paths:', '  - repos: C:/Users/user/src/siran', '  - src: C:/x', '  - notes: /d/notes')
     $got = Get-SandboxGlobalReadPaths
-    (@($got.mounts | ForEach-Object { "$($_.name)=$($_.path)" }) -join ';') | Should Be 'repos=C:/Users/an/src/siran;notes=D:/notes'
+    (@($got.mounts | ForEach-Object { "$($_.name)=$($_.path)" }) -join ';') | Should Be 'repos=C:/Users/user/src/siran;notes=D:/notes'
     @($got.skipped).Count | Should Be 1
     @($got.skipped)[0] | Should Match 'entry 2 .*reserved'
   }

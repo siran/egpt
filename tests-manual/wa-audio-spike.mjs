@@ -74,7 +74,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
     } catch (e) { return { fetchErr: String(e && e.message || e) }; }
   })()`);
   if (blobInfo?.ok) {
-    const out = 'C:/Users/an/.egpt/wa-audio-spike.ogg';
+    const out = 'C:/Users/user/.egpt/wa-audio-spike.ogg';
     writeFileSync(out, Buffer.from(blobInfo.b64, 'base64'));
     console.log(`\n✅ BLOB EXTRACTED: ${blobInfo.size} bytes, type=${blobInfo.type} → wrote ${out}`);
     delete blobInfo.b64; console.log(JSON.stringify(blobInfo, null, 2));

@@ -324,12 +324,12 @@ function Ensure-SandboxPoolGroup {
 #
 # THE S IN THE TRAVERSE ROW IS LOAD-BEARING (2026-09-27, measured on do as a real
 # pool account, egpt-sbx-13). The row was (X,RA,RC) until then. A boxed being ran
-# `node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+# `node C:\Users\user\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
 # died before the client's first line: EPERM, syscall 'lstat', path
-# 'C:\Users\an\src'. fs.realpathSync lstats every component, lstat opens each one
+# 'C:\Users\user\src'. fs.realpathSync lstats every component, lstat opens each one
 # for FILE_READ_ATTRIBUTES, and CreateFileW adds SYNCHRONIZE to any synchronous
 # open. The pool's ACE on ~\src was (Rc,X,RA) - no S - so that open was refused:
-# `lstat C:/Users/an` ok, `lstat C:/Users/an/src` EPERM, `lstat .../src/egpt` ok,
+# `lstat C:/Users/user` ok, `lstat C:/Users/user/src` EPERM, `lstat .../src/egpt` ok,
 # realpathSync on the client EPERM, realpathSync.native and a plain read ok.
 # Granting S on ~\src by hand made every one of them pass.
 #
@@ -367,7 +367,7 @@ $SandboxPoolGrants = @{
 # a container makes Windows re-run inheritance propagation over the whole
 # subtree, so re-issuing a grant that is already correct is not free - ~\src
 # measured 307 s for ONE pass on reve, and Set-Acl HUNG twice against
-# C:\Users\an and had to be killed. All five ancestors and ~\src were already
+# C:\Users\user and had to be killed. All five ancestors and ~\src were already
 # correct before the run the operator watched, so it should have been seconds.
 #
 # icacls, NEVER Set-Acl, for the write (measured 2026-09-13): Set-Acl persists
@@ -1080,9 +1080,9 @@ function Get-SandboxGlobalReadPaths {
 # ---- `egpt` IS THE THIRD LINK, AND IT IS NOT A CONVENIENCE (operator ruling
 # 2026-09-23). It is THE BEING'S WORKING DIRECTORY, and the reason it exists is
 # privacy of the path itself. A sandboxed being's cwd used to be the durable
-# Room, `C:\Users\an\.egpt\conversations\whatsapp\<slug>`, and it QUOTED that
+# Room, `C:\Users\user\.egpt\conversations\whatsapp\<slug>`, and it QUOTED that
 # path into group chats all day - verbose tool lines read
-#   Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR...")
+#   Bash(cd "C:/Users/user/.egpt/conversations/whatsapp/Reencuentro CR...")
 # which discloses two things to everyone in the room: the OPERATOR's username
 # and profile layout, and - because a slug is usually a PERSON'S NAME - a third
 # party's private conversation name. Through the junction the same line reads
@@ -1121,7 +1121,7 @@ function Get-SandboxGlobalReadPaths {
 # this is a conversation-history shredder - stop rather than adjust it.
 #
 # ---- THE READ MOUNTS ARE THE OPTIONAL ROWS (operator ruling 2026-09-28:
-# "sandboxed beings should have access to my 'C:\Users\an\src\siran', we can call
+# "sandboxed beings should have access to my 'C:\Users\user\src\siran', we can call
 # it repos/", then "please frame this in config.yaml as global_read_paths list").
 # Each entry of the node's config.yaml global_read_paths - kg's is `repos`, the
 # operator's own repositories - mounted beside `src`, READ-ONLY, through the same
@@ -1148,7 +1148,7 @@ function Get-SandboxGlobalReadPaths {
 # for src and egpt: with no read mount the payload is exactly what it was.
 function Get-SandboxProfileJunctionStatement {
   param(
-    # THE REPO, not the operator's ~\src: C:\Users\an\src\egpt. Named -RepoRoot
+    # THE REPO, not the operator's ~\src: C:\Users\user\src\egpt. Named -RepoRoot
     # rather than -OperatorSrc so that a caller still passing the old, wider
     # target fails to bind instead of silently re-mounting all of ~\src.
     [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -1247,8 +1247,8 @@ function Get-SandboxLaunchSummary {
 # PATH IS A NAME, and NTFS carries a DACL through a rename - so renaming the
 # folder leaves the ACE alive at the new name while the only record of it points
 # at nothing:
-#   egpt-sbx-08, -13 -> ...\conversations\whatsapp\Favel Konefka-2608141626
-#   egpt-sbx-03, -04, -10 -> ...\conversations\whatsapp\Favel Elena Konefka-2608141626
+#   egpt-sbx-08, -13 -> ...\conversations\whatsapp\Fiona Ejemplar-2608141626
+#   egpt-sbx-03, -04, -10 -> ...\conversations\whatsapp\Fiona Elena Ejemplar-2608141626
 # One conversation (the -2608141626 id is identical), renamed slug. The revoke
 # reported 'missing', both callers read 'missing' as resolved, dropped the line
 # and released the lock, and three pool accounts were left holding Modify on a
@@ -1491,8 +1491,8 @@ $SandboxLeaseLedgerHeader = '# egpt sandbox lease ledger - one granted path per 
 
 # ---- THE LINE FORMAT, AND THE OLD LEDGERS IT MUST NOT BREAK (2026-09-23).
 #
-#   C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626
-#   C:\Users\an\.egpt\conversations\whatsapp\Favel Konefka-2608141626|fid=54118918:0000000000000000002900000008f38a
+#   C:\Users\user\.egpt\conversations\whatsapp\Fiona Ejemplar-2608141626
+#   C:\Users\user\.egpt\conversations\whatsapp\Fiona Ejemplar-2608141626|fid=54118918:0000000000000000002900000008f38a
 #
 # THE PATH IS STILL FIRST AND STILL WHOLE, so what an operator reads in a lock
 # file is what it always was. Everything after the first '|' is machinery.
@@ -1705,8 +1705,8 @@ function Add-SandboxLeaseLedgerPath {
 # callers then treat 'missing' as resolved, drop the line and release the lock,
 # and the ACE becomes UNFINDABLE: nothing on the box still names it.
 # MEASURED on kg 2026-09-23, straight out of the live lock ledgers:
-#   egpt-sbx-08.lock, egpt-sbx-13.lock -> ...\conversations\whatsapp\Favel Konefka-2608141626
-#   egpt-sbx-03/-04/-10.lock           -> ...\conversations\whatsapp\Favel Elena Konefka-2608141626
+#   egpt-sbx-08.lock, egpt-sbx-13.lock -> ...\conversations\whatsapp\Fiona Ejemplar-2608141626
+#   egpt-sbx-03/-04/-10.lock           -> ...\conversations\whatsapp\Fiona Elena Ejemplar-2608141626
 # Same conversation (the -2608141626 id is identical), renamed display slug. Two
 # of those five ledgers name a folder that is not there any more, and the ACEs
 # they were written to revoke rode the rename.
@@ -2194,8 +2194,8 @@ function Clear-SandboxAbandonedLeases {
 # STANDING grants: ACEs for that account's own SID, never the group, kept across
 # leases (the lease ledger's are per turn).
 #
-#   key=egpt:whatsapp:89xiqJ8w1iDuKtD4a5BY
-#   C:\Users\an\Documents|fid=<volume serial>:<id>|grant=Read
+#   key=egpt:whatsapp:FakeRoomId0000000008
+#   C:\Users\user\Documents|fid=<volume serial>:<id>|grant=Read
 #
 # Written only while holding that account's lease lock, and always by atomic
 # replace: a torn pin could lose its key line and hand its standing grants to

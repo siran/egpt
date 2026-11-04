@@ -4,7 +4,7 @@
 # check yourself, then close the window. While the node runs, prefer the chat command
 # /<handle> browser refresh [url] (MANUAL.md): it also keeps eGPT off the profile until you close it.
 # Usage: chrome-signin.cmd [profile] [url]   (default: brain, Google sign-in)
-#   e.g. chrome-signin.cmd brain https://iapps.courts.state.ny.us/nyscef/Login
+#   e.g. chrome-signin.cmd brain https://portal.example.gov/login
 param([string]$ProfileName = 'brain', [string]$Url = 'https://accounts.google.com/')
 $egptHome = if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }
 $root = Join-Path $egptHome 'chrome\profiles'

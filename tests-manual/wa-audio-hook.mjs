@@ -62,7 +62,7 @@ const HOOK = `(() => {
   console.log('\ncaptured decodeAudioData calls:', JSON.stringify(caps));
   if (Array.isArray(caps) && caps.length) {
     const big = await cdp.ev(`(()=>{const c=(window.__egptAudioCaps||[]).slice().sort((a,b)=>b.size-a.size)[0]; return c?{size:c.size,b64:c.b64}:null;})()`);
-    if (big?.b64) { writeFileSync('C:/Users/an/.egpt/wa-audio-hook.ogg', Buffer.from(big.b64,'base64')); console.log(`✅ wrote ${big.size} bytes → C:/Users/an/.egpt/wa-audio-hook.ogg (check the file header for OggS/opus)`); }
+    if (big?.b64) { writeFileSync('C:/Users/user/.egpt/wa-audio-hook.ogg', Buffer.from(big.b64,'base64')); console.log(`✅ wrote ${big.size} bytes → C:/Users/user/.egpt/wa-audio-hook.ogg (check the file header for OggS/opus)`); }
   } else {
     console.log('no decodeAudioData captured — WA may stream/decode differently, or no voice note played.');
   }

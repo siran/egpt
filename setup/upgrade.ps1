@@ -19,7 +19,7 @@
 #
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
-#   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer an@192.168.1.102
+#   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer user@192.0.2.102
 #   powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Force
 [CmdletBinding()]
 param(
@@ -425,7 +425,7 @@ if ($Peer) {
   Update-SourceTree "$Peer ~/src/egpt" $peerSrcGit
   Write-Host ""
   # FORWARD SLASHES, UNQUOTED, on purpose: backslashes are eaten in transit to the remote
-  # shell (a quoted C:\Users\... arrives as C:\Users\anbinegpt...), and quoting to survive
+  # shell (a quoted C:\Users\... arrives as C:\Users\userbinegpt...), and quoting to survive
   # both shells is worse. Windows accepts / in a path, and this one has no spaces.
   $remote = 'powershell -NoProfile -ExecutionPolicy Bypass -File ~/bin/egpt/setup/upgrade.ps1'
   if ($Force) { $remote += ' -Force' }

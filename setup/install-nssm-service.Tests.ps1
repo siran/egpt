@@ -19,11 +19,11 @@ Describe 'Get-S0ServicePlan - reve (measured): reconfigured in place' {
   }
   It 'enables it, drops EGPT_HOMES, adds AppExit 0 = Exit' {
     $p.steps -contains '  set Start: Disabled -> Auto' | Should Be $true
-    $p.steps -contains '  set AppEnvironmentExtra: EGPT_HOME=C:/Users/an/.egpt + EGPT_HOMES=C:/Users/an/.egpt -> EGPT_HOME=C:\Users\an\.egpt (EGPT_HOMES dropped: the multi-profile knob is retired)' | Should Be $true
+    $p.steps -contains '  set AppEnvironmentExtra: EGPT_HOME=C:/Users/user/.egpt + EGPT_HOMES=C:/Users/user/.egpt -> EGPT_HOME=C:\Users\user\.egpt (EGPT_HOMES dropped: the multi-profile knob is retired)' | Should Be $true
     $p.steps -contains '  set AppExit 0: (none) -> Exit' | Should Be $true
   }
   It 'grants the one ACE its SDDL lacks, and keeps the registered backstop' {
-    ($p.steps | Where-Object { $_ -like 'access:*' }) | Should Be 'access: .\an may stop and start egpt-daemon unelevated: add (A;;CCLCSWRPWPLORC;;;S-1-5-21-2140830422-4106283080-3982958092-1001)'
+    ($p.steps | Where-Object { $_ -like 'access:*' }) | Should Be 'access: .\user may stop and start egpt-daemon unelevated: add (A;;CCLCSWRPWPLORC;;;S-1-5-21-1000000001-1000000002-1000000003-1001)'
     ($p.steps | Where-Object { $_ -like 'backstop:*' }) | Should Match 'is registered'
   }
   It 'does not start beside the running Session 1 daemon of older code (no s1.claim), and says how to fix it' {
@@ -33,7 +33,7 @@ Describe 'Get-S0ServicePlan - reve (measured): reconfigured in place' {
   }
   It 'asks the password first, before anything changes, and never runs as LocalSystem' {
     $p.steps[0] | Should Match '^credential: .*before anything changes'
-    ($p.steps | Where-Object { $_ -like 'account:*' }) | Should Match 'log on as \.\\an.*never LocalSystem'
+    ($p.steps | Where-Object { $_ -like 'account:*' }) | Should Match 'log on as \.\\user.*never LocalSystem'
   }
 }
 
@@ -41,18 +41,18 @@ Describe 'Get-S0ServicePlan - dolly (inferred): an older install is removed and 
   $p = Get-S0ServicePlan (Get-Fixture 'dolly')
   It 'reinstalls: its host sits in the profile, not in setup\bin' {
     $p.mode | Should Be 'reinstall'
-    ($p.steps | Where-Object { $_ -like 'service: stop and remove*' }) | Should Match ([regex]::Escape('C:\Users\an\.egpt\bin\egpt-service.exe is not C:\Users\an\bin\egpt\setup\bin\egpt-service.exe'))
+    ($p.steps | Where-Object { $_ -like 'service: stop and remove*' }) | Should Match ([regex]::Escape('C:\Users\user\.egpt\bin\egpt-service.exe is not C:\Users\user\bin\egpt\setup\bin\egpt-service.exe'))
   }
   It 'sets every value, logs to daemon-*.log, EGPT_HOME only, AppExit Default Restart and 0 Exit' {
     (Get-Changed $p).Count | Should Be @($p.settings).Count
-    $p.steps -contains '  set AppStdout: C:\Users\an\.egpt\config\logs\daemon-stdout.log' | Should Be $true
-    $p.steps -contains '  set AppEnvironmentExtra: EGPT_HOME=C:\Users\an\.egpt' | Should Be $true
+    $p.steps -contains '  set AppStdout: C:\Users\user\.egpt\config\logs\daemon-stdout.log' | Should Be $true
+    $p.steps -contains '  set AppEnvironmentExtra: EGPT_HOME=C:\Users\user\.egpt' | Should Be $true
     $p.steps -contains '  set AppExit Default: Restart' | Should Be $true
     $p.steps -contains '  set AppExit 0: Exit' | Should Be $true
     $p.steps -contains '  set AppRotateBytes: 10485760' | Should Be $true
   }
   It 'registers the missing backstop and starts the service: no Session 1 daemon there' {
-    ($p.steps | Where-Object { $_ -like 'backstop:*' }) | Should Match '^backstop: register egpt-s0-identity as DOLLY\\an \(S4U'
+    ($p.steps | Where-Object { $_ -like 'backstop:*' }) | Should Match '^backstop: register egpt-s0-identity as DOLLY\\user \(S4U'
     $p.start | Should Be $true
     $p.steps[-1] | Should Be 'start: egpt-daemon - no Session 1 daemon: the service runs the node'
   }
@@ -65,10 +65,10 @@ Describe 'Get-S0ServiceSettings' {
     ($s | Where-Object { $_.name -eq 'AppExit Default' }).set -join ' ' | Should Be 'AppExit Default Restart'
     ($s | Where-Object { $_.name -eq 'AppExit 0' }).set -join ' ' | Should Be 'AppExit 0 Exit'
     ($s | Where-Object { $_.name -eq 'AppStopMethodConsole' }).set -join ' ' | Should Be 'AppStopMethodConsole 10000'
-    ($s | Where-Object { $_.name -eq 'AppParameters' }).want | Should Be 'C:\Users\an\bin\egpt\egpt-daemon.mjs'
+    ($s | Where-Object { $_.name -eq 'AppParameters' }).want | Should Be 'C:\Users\user\bin\egpt\egpt-daemon.mjs'
   }
   It 'never carries EGPT_HOMES' {
-    (@(Get-S0ServiceSettings (Get-Fixture 'reve')) | Where-Object { $_.name -eq 'AppEnvironmentExtra' }).want | Should Be 'EGPT_HOME=C:\Users\an\.egpt'
+    (@(Get-S0ServiceSettings (Get-Fixture 'reve')) | Where-Object { $_.name -eq 'AppEnvironmentExtra' }).want | Should Be 'EGPT_HOME=C:\Users\user\.egpt'
   }
 }
 
@@ -80,7 +80,7 @@ Describe 'Get-S0ServicePlan - variations' {
     (Get-S0ServicePlan $s).step | Should Be 'account'
   }
   It 'refuses a tree that is not the deployed checkout, unless told so' {
-    $s = Get-Fixture 'reve'; $s.repo = 'C:\Users\an\src\egpt'
+    $s = Get-Fixture 'reve'; $s.repo = 'C:\Users\user\src\egpt'
     $r = Get-S0ServicePlan $s
     $r.step | Should Be 'repo'
     $r.remedy | Should Match 'AllowThisTree'

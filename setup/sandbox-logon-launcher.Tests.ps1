@@ -12,7 +12,7 @@
 # USER. icacls on that conversation folder read:
 #   reve\egpt-sbx-12:(OI)(CI)(M)      reve\egpt-sbx-13:(OI)(CI)(M)
 #   reve\egpt-sbx-07:(OI)(CI)(M)      NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)
-#   BUILTIN\Administrators:(I)(OI)(CI)(F)   reve\an:(I)(OI)(CI)(F)
+#   BUILTIN\Administrators:(I)(OI)(CI)(F)   reve\user:(I)(OI)(CI)(F)
 # The LEASED account - egpt-sbx-05 - has no ACE on the folder it was handed as
 # its cwd. Step (d) had just reported a grant on it. The three that ARE there
 # are other leases' leftovers, and none of them is the account running.
@@ -438,7 +438,7 @@ Describe 'the lease-path pool reclaim (the statement the launcher really runs)' 
 # ---------------------------------------------------------------------------
 # THE -SetEnv ENVIRONMENT BLOCK (2026-09-23). Second live failure, different
 # from the 267 above and NOT a regression of it:
-#   2026-09-23 12:35:44  turn ken/o1TO4f1is79x0uJ3eYEv: claude exited 1 mid-turn
+#   2026-09-23 12:35:44  turn ken/FakeRoomId0000000018: claude exited 1 mid-turn
 #     + FullyQualifiedErrorId : sandbox-logon-launcher:
 #       CreateEnvironmentBlock for 'egpt-sbx-08' failed, Win32 error 5
 # A DIFFERENT pool account each time - egpt-sbx-12, then -05, then -08 - so not
@@ -627,7 +627,7 @@ Describe 'REPRODUCE: CreateEnvironmentBlock ACCESS_DENIED on the -SetEnv path' {
   It 'THE TRAP still holds: bInherit is $false, so the operator environment is never folded in' {
     # The single most load-bearing argument in this feature, and untouched by
     # this change: $true here would fold the OPERATOR's environment into the
-    # block and point a pool account at C:\Users\an. A lock, not a reproduce -
+    # block and point a pool account at C:\Users\user. A lock, not a reproduce -
     # it held before and must go on holding.
     (Get-LauncherStatementBlock $script:EnvBlockCallPattern) | Should Match ',\s*\$false\)'
   }
@@ -698,7 +698,7 @@ Describe 'the rebase is the sole authority for every per-user name (the launcher
     $table['TEMP'] | Should Be 'C:\Users\egpt-sbx-08\AppData\Local\Temp'
     $table['APPDATA'] | Should Be 'C:\Users\egpt-sbx-08\AppData\Roaming'
     foreach ($v in $table.Values) { ([string]$v -match '(?i)\\Users\\Default') | Should Be $false }
-    foreach ($v in $table.Values) { ([string]$v -match '(?i)\\Users\\an(\\|$)') | Should Be $false }
+    foreach ($v in $table.Values) { ([string]$v -match '(?i)\\Users\\user(\\|$)') | Should Be $false }
   }
 
   It 'derives the two logon-session names from this machine, as a LOCAL account requires' {
@@ -731,7 +731,7 @@ Describe 'the rebase is the sole authority for every per-user name (the launcher
 # PWD unset it reports the junction. But Claude Code RESOLVES ITS CWD AT STARTUP
 # and hands its Bash tool the resolved path, so a being asked to run `pwd` in a
 # WhatsApp group answered
-#   /c/Users/an/.egpt/conversations/whatsapp/<slug>
+#   /c/Users/user/.egpt/conversations/whatsapp/<slug>
 # - the operator's username and, in the slug, the name of the person the
 # conversation is with, to everyone else in the room. An INHERITED PWD overrides
 # that resolution and is the only lever that does, so the launcher sets one.
@@ -776,7 +776,7 @@ Describe 'PWD names the mount, so `pwd` in a chat quotes a pool account and noth
   }
 
   It 'it names neither the operator nor a conversation - the whole point of the mount' {
-    ([string]$table['PWD'] -match '(?i)/Users/an(/|$)') | Should Be $false
+    ([string]$table['PWD'] -match '(?i)/Users/user(/|$)') | Should Be $false
     ([string]$table['PWD'] -match '(?i)conversations') | Should Be $false
     ([string]$table['PWD'] -match '(?i)\.egpt') | Should Be $false
   }
@@ -846,7 +846,7 @@ Describe 'PWD names the mount, so `pwd` in a chat quotes a pool account and noth
     $stmt = Get-LauncherStatementBlock $script:CwdInsideProfilePattern
     $AccountName = 'egpt-sbx-08'
     $profilePath = 'C:\Users\egpt-sbx-08'
-    $WorkingDirectory = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+    $WorkingDirectory = 'C:\Users\user\.egpt\conversations\whatsapp\a-person-name-1234'
 
     $threw = $null
     try { Invoke-Expression $stmt } catch { $threw = $_.Exception.Message }
@@ -876,7 +876,7 @@ Describe 'PWD names the mount, so `pwd` in a chat quotes a pool account and noth
 # the pair cannot drift apart without one of the two suites going red.
 Describe 'ConvertTo-MsysPath (the renderer, and its parity with the JS original)' {
   It 'renders a Windows path msys-style and leaves posix alone' {
-    ConvertTo-MsysPath 'C:\Users\an' | Should Be '/c/Users/an'
+    ConvertTo-MsysPath 'C:\Users\user' | Should Be '/c/Users/user'
     ConvertTo-MsysPath 'D:/work/x' | Should Be '/d/work/x'
     ConvertTo-MsysPath '/already/posix' | Should Be '/already/posix'
   }
@@ -903,9 +903,9 @@ Describe 'ConvertTo-MsysPath (the renderer, and its parity with the JS original)
 # THE `egpt` MOUNT AS THE BEING'S CWD (operator ruling 2026-09-23).
 #
 # WHAT IT IS FOR. A sandboxed being's cwd used to be the durable Room,
-# C:\Users\an\.egpt\conversations\whatsapp\<slug>, and it quoted that path into
+# C:\Users\user\.egpt\conversations\whatsapp\<slug>, and it quoted that path into
 # group chats all day - verbose tool lines read
-#   Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR...")
+#   Bash(cd "C:/Users/user/.egpt/conversations/whatsapp/Reencuentro CR...")
 # disclosing the OPERATOR's username and profile layout and, because a slug is
 # usually a PERSON'S NAME, a third party's private conversation name, to
 # everyone else in the room. The cwd is now C:\Users\egpt-sbx-NN\egpt, a
@@ -954,7 +954,7 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     $stmt = Get-LauncherStatementBlock $script:CwdGuardPattern
     $sandboxCwd = $null
     $leasedName = 'egpt-sbx-08'
-    $TargetFolder = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+    $TargetFolder = 'C:\Users\user\.egpt\conversations\whatsapp\a-person-name-1234'
 
     $threw = $null
     try { Invoke-Expression $stmt } catch { $threw = $_.Exception.Message }
@@ -972,7 +972,7 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     $stmt = Get-LauncherStatementBlock $script:CwdGuardPattern
     $sandboxCwd = 'C:\Users\egpt-sbx-08\egpt'
     $leasedName = 'egpt-sbx-08'
-    $TargetFolder = 'C:\Users\an\.egpt\conversations\whatsapp\a-person-name-1234'
+    $TargetFolder = 'C:\Users\user\.egpt\conversations\whatsapp\a-person-name-1234'
 
     { Invoke-Expression $stmt } | Should Not Throw
   }
@@ -1001,15 +1001,15 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     $parse = Get-LauncherStatement '^\$ReadMountsList = ConvertFrom-JsonArgv'
     $shape = Get-LauncherStatementBlock '^foreach \(\$mount in \$ReadMountsList\)'
     # What sandbox-cli-session.mjs sends on kg.
-    $ReadMounts = '["repos=C:/Users/an/src/siran"]'
+    $ReadMounts = '["repos=C:/Users/user/src/siran"]'
     Invoke-Expression $parse; Invoke-Expression $shape
-    ($ReadMountsList -join '|') | Should Be 'repos=C:/Users/an/src/siran'
+    ($ReadMountsList -join '|') | Should Be 'repos=C:/Users/user/src/siran'
     # The default: a node without the key sends no flag at all.
     $ReadMounts = ''
     Invoke-Expression $parse; Invoke-Expression $shape
     @($ReadMountsList).Count | Should Be 0
     # A bare path is not NAME=PATH: loud, before any lease is taken.
-    $ReadMounts = '["C:/Users/an/src/siran"]'
+    $ReadMounts = '["C:/Users/user/src/siran"]'
     Invoke-Expression $parse
     { Invoke-Expression $shape } | Should Throw 'NAME=PATH'
   }
@@ -1067,17 +1067,17 @@ Describe 'the working directory is the mount, never the Room (the launcher wirin
     $profilePath = 'C:\Users\egpt-sbx-07'
     $AccountName = 'egpt-sbx-07'
     $psExe = 'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe'
-    $repoRoot = 'C:\Users\an\src\egpt'
-    $RoomTarget = 'C:\Users\an\.egpt\conversations\whatsapp\' + ('s' * 80)
+    $repoRoot = 'C:\Users\user\src\egpt'
+    $RoomTarget = 'C:\Users\user\.egpt\conversations\whatsapp\' + ('s' * 80)
     # kg's one mount: fits, nothing dropped.
-    $readMounts = [ordered]@{ repos = 'C:/Users/an/src/siran' }
+    $readMounts = [ordered]@{ repos = 'C:/Users/user/src/siran' }
     Invoke-Expression $build
     (@($readMounts.Keys) -join ',') | Should Be 'repos'
     $logged.Count | Should Be 0
     $fits = ((@($psExe) + $scrubArgs | ForEach-Object { Format-Win32Arg $_ }) -join ' ').Length
     ($fits -le 1024) | Should Be $true
     # Three more of that size do not: the last ones go, each named, until it fits.
-    $readMounts = [ordered]@{ repos = 'C:/Users/an/src/siran'; notes = 'C:/Users/an/Documents/notes'; music = 'C:/Users/an/Music/library'; books = 'C:/Users/an/Documents/books' }
+    $readMounts = [ordered]@{ repos = 'C:/Users/user/src/siran'; notes = 'C:/Users/user/Documents/notes'; music = 'C:/Users/user/Music/library'; books = 'C:/Users/user/Documents/books' }
     Invoke-Expression $build
     $kept = @($readMounts.Keys)
     $kept[0] | Should Be 'repos'

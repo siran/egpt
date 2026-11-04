@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-push.sh [--deploy edw] [--apply]
+# build-push.sh [--deploy <name>] [--apply]
 # Builds the image from the checkout this script is in, tags it egpt:<short sha> and
 # egpt:<deployment>, and pushes both to the deployment account's ECR repository "egpt",
 # creating it (tagged) when missing.

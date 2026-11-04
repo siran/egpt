@@ -1,6 +1,6 @@
 #!/bin/bash
 # migrate.sh [--apply]
-# Cutover: moves EDW's state (volumes egpt-home and egpt-claude) from the laptop to the AWS
+# Cutover: moves the local container's state (volumes egpt-home and egpt-claude) to the plain-EC2
 # instance through a private, encrypted S3 bucket. The tars hold secrets: never printed,
 # deleted from S3 as soon as the instance has them. The local edw container is stopped and
 # kept, volumes untouched, as the fallback.

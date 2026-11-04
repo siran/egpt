@@ -11,7 +11,7 @@
 # profile, the claim and the lockfile.
 #
 #   .\setup\register-s0-identity-task.ps1 -LogPath <file>   register (or replace) the task
-#   .\setup\register-s0-identity-task.ps1 -UserId reve\an   as that user (default: whoever runs this)
+#   .\setup\register-s0-identity-task.ps1 -UserId reve\user   as that user (default: whoever runs this)
 #   .\setup\register-s0-identity-task.ps1 -IntervalMin 5    a different cadence
 #   .\setup\register-s0-identity-task.ps1 -EgptHome <dir>   the profile whose STOP file it honours
 #   .\setup\register-s0-identity-task.ps1 -Remove           unregister

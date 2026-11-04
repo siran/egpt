@@ -7,7 +7,8 @@ import WebSocket from 'ws';
 import http from 'node:http';
 
 const PORT = Number(process.env.CDP_PORT || 9221);
-const SELF = process.env.SELF_NUMBER || '16468217865';   // the logged-in account
+const SELF = process.env.SELF_NUMBER;   // the logged-in account, digits only
+if (!SELF) { console.error('set SELF_NUMBER: the logged-in account\'s number, digits only'); process.exit(2); }
 const MSG = 'egpt cdp visible test ' + new Date().toISOString().slice(11, 19);
 
 const listTargets = () => new Promise((res, rej) => {

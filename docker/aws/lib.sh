@@ -1,13 +1,14 @@
 # shellcheck shell=bash disable=SC2034
 # Shared by the laptop-side scripts in docker/aws (sourced, not run).
-# The deployment is deployments/<name>.env, picked with --deploy <name> (default edw); this
-# takes --deploy out of the caller's arguments. Everything a deployment creates carries its
-# Project tag and is looked up by that tag.
+# The deployment is <name>.env, picked with --deploy <name> (default $EGPT_AWS_DEPLOY), in
+# $EGPT_AWS_DEPLOYMENTS (default ~/.egpt/config/aws-deployments, outside the repo), else in
+# deployments/ here (example.env); this takes --deploy out of the caller's arguments.
+# Everything a deployment creates carries its Project tag and is looked up by that tag.
 
 log() { echo "$*" >&2; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-DEPLOY=edw _args=()
+DEPLOY=${EGPT_AWS_DEPLOY:-} _args=()
 while [ $# -gt 0 ]; do
   case $1 in
     --deploy) [ $# -ge 2 ] || die "--deploy needs a name"; DEPLOY=$2; shift ;;
@@ -16,13 +17,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 set -- "${_args[@]}"
-DEPLOYMENTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployments
-[[ $DEPLOY =~ ^[a-z0-9-]+$ && -f $DEPLOYMENTS/$DEPLOY.env ]] \
-  || die "no deployment '$DEPLOY' (docker/aws/deployments/*.env)"
+DEPLOYMENTS=${EGPT_AWS_DEPLOYMENTS:-${EGPT_HOME:-$HOME/.egpt}/config/aws-deployments}
+[ -n "$DEPLOY" ] || die "no deployment: pass --deploy <name> or set EGPT_AWS_DEPLOY (looked for $DEPLOYMENTS/<name>.env)"
+DEPLOY_ENV=$DEPLOYMENTS/$DEPLOY.env
+[ -f "$DEPLOY_ENV" ] || DEPLOY_ENV=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployments/$DEPLOY.env
+[[ $DEPLOY =~ ^[a-z0-9-]+$ && -f $DEPLOY_ENV ]] \
+  || die "no deployment '$DEPLOY' ($DEPLOYMENTS/$DEPLOY.env, docker/aws/deployments/$DEPLOY.env)"
 SSH_PORT=                    # default; a deployment may set it: sshd in the container, an EIP, tcp $SSH_PORT open
 SSH_PERMIT_LISTEN=           # default; with SSH_PORT: "host:port ..." that reverse forwards (ssh -R) may listen on
-# shellcheck source=deployments/edw.env
-. "$DEPLOYMENTS/$DEPLOY.env"
+# shellcheck source=deployments/example.env
+. "$DEPLOY_ENV"
 
 export AWS_PROFILE=${AWS_PROFILE:-$PROFILE}
 export AWS_DEFAULT_REGION=$REGION

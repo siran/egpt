@@ -5,7 +5,8 @@
 import WebSocket from 'ws';
 import http from 'node:http';
 const PORT = Number(process.env.CDP_PORT || 9221);
-const SELF = process.env.SELF_NUMBER || '16468217865';
+const SELF = process.env.SELF_NUMBER;   // the logged-in account, digits only
+if (!SELF) { console.error('set SELF_NUMBER: the logged-in account\'s number, digits only'); process.exit(2); }
 const MSG = 'egpt cdp roundtrip ' + new Date().toISOString().slice(11, 19);
 const listTargets = () => new Promise((res, rej) => { http.get(`http://127.0.0.1:${PORT}/json/list`, r => { let d=''; r.on('data',c=>d+=c); r.on('end',()=>{try{res(JSON.parse(d))}catch(e){rej(e)}}); }).on('error', rej); });
 function connect(u){const ws=new WebSocket(u,{maxPayload:1e8});let id=1;const p=new Map();ws.on('message',b=>{let m;try{m=JSON.parse(b.toString())}catch{return}if(m.id&&p.has(m.id)){p.get(m.id)(m);p.delete(m.id);}});const send=(method,params={})=>new Promise(r=>{const i=id++;p.set(i,r);ws.send(JSON.stringify({id:i,method,params}));});const ready=new Promise((r,j)=>{ws.on('open',r);ws.on('error',j);});const evaluate=async e=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true,awaitPromise:true});return r.result?.result?.value;};return{send,ready,evaluate};}
@@ -25,7 +26,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
     if(st&&st.composer){header=st.header;break;}
   }
   // SAFETY GATE: only type/send if the open chat is provably Self.
-  const isSelf = !!header && (/\(You\)/i.test(header) || /Message yourself/i.test(header) || header.includes('646') );
+  const isSelf = !!header && (/\(You\)/i.test(header) || /Message yourself/i.test(header) || header.replace(/\D/g, '').includes(SELF) );
   console.log(`   header: "${header}"  → isSelf=${isSelf}`);
   if(!isSelf){ console.log('   NOT Self — aborting (no send).'); process.exit(2); }
 

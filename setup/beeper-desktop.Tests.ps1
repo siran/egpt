@@ -19,8 +19,8 @@ $script:Flags = '--disable-gpu --disable-gpu-compositing --disable-background-ti
 
 Describe 'Get-BeeperUserDataDir' {
   It 'reads a quoted, an unquoted and a forward-slash path' {
-    Get-BeeperUserDataDir '--user-data-dir="C:\Users\an\AppData\Roaming\BeeperTexts" --disable-gpu' | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
-    Get-BeeperUserDataDir '--user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata --disable-gpu' | Should Be 'C:/Users/an/.egpt/state/rodz-beeper/userdata'
+    Get-BeeperUserDataDir '--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts" --disable-gpu' | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
+    Get-BeeperUserDataDir '--user-data-dir=C:/Users/user/.egpt/state/rodz-beeper/userdata --disable-gpu' | Should Be 'C:/Users/user/.egpt/state/rodz-beeper/userdata'
   }
   It 'is null for the default profile' {
     Get-BeeperUserDataDir $script:Flags | Should BeNullOrEmpty
@@ -29,54 +29,54 @@ Describe 'Get-BeeperUserDataDir' {
 
 Describe 'Test-BeeperSharedProfile' {
   It 'matches the desktop user default profile, whatever the spelling' {
-    Test-BeeperSharedProfile '--user-data-dir="C:\Users\an\AppData\Roaming\BeeperTexts" --disable-gpu' 'C:\Users\an\AppData\Roaming' | Should Be $true
-    Test-BeeperSharedProfile '--user-data-dir=c:/users/an/appdata/roaming/beepertexts/ --disable-gpu' 'C:\Users\an\AppData\Roaming' | Should Be $true
+    Test-BeeperSharedProfile '--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts" --disable-gpu' 'C:\Users\user\AppData\Roaming' | Should Be $true
+    Test-BeeperSharedProfile '--user-data-dir=c:/users/user/appdata/roaming/beepertexts/ --disable-gpu' 'C:\Users\user\AppData\Roaming' | Should Be $true
   }
   It 'is false for another profile and for no --user-data-dir (the system profile)' {
-    Test-BeeperSharedProfile '--user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata' 'C:\Users\an\AppData\Roaming' | Should Be $false
-    Test-BeeperSharedProfile $script:Flags 'C:\Users\an\AppData\Roaming' | Should Be $false
+    Test-BeeperSharedProfile '--user-data-dir=C:/Users/user/.egpt/state/rodz-beeper/userdata' 'C:\Users\user\AppData\Roaming' | Should Be $false
+    Test-BeeperSharedProfile $script:Flags 'C:\Users\user\AppData\Roaming' | Should Be $false
   }
   # dolly: the service shares its own --user-data-dir; the conversion's Start/Pre hook says so.
   It 'a service on its own --user-data-dir is shared only behind the conversion''s Start/Pre hook' {
-    $dolly = '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu'
-    $hook = 'powershell.exe -NoProfile -File "C:\Users\an\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart -LogPath "C:\h\s0.log"'
-    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' | Should Be $false
-    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' '' | Should Be $false
-    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' $hook | Should Be $true
-    Test-BeeperSharedProfile $dolly 'C:\Users\an\AppData\Roaming' 'powershell.exe -File other.ps1' | Should Be $false
-    Test-BeeperSharedProfile $script:Flags 'C:\Users\an\AppData\Roaming' $hook | Should Be $false
+    $dolly = '--user-data-dir=C:\Users\user\.egpt\state\an-beeper --disable-gpu'
+    $hook = 'powershell.exe -NoProfile -File "C:\Users\user\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart -LogPath "C:\h\s0.log"'
+    Test-BeeperSharedProfile $dolly 'C:\Users\user\AppData\Roaming' | Should Be $false
+    Test-BeeperSharedProfile $dolly 'C:\Users\user\AppData\Roaming' '' | Should Be $false
+    Test-BeeperSharedProfile $dolly 'C:\Users\user\AppData\Roaming' $hook | Should Be $true
+    Test-BeeperSharedProfile $dolly 'C:\Users\user\AppData\Roaming' 'powershell.exe -File other.ps1' | Should Be $false
+    Test-BeeperSharedProfile $script:Flags 'C:\Users\user\AppData\Roaming' $hook | Should Be $false
   }
 }
 
 Describe 'the shared profile and the window that opens it' {
   It 'the service''s own --user-data-dir when it has one (dolly), else the window''s default profile (reve)' {
-    Get-BeeperShareProfile '--user-data-dir=C:\Users\an\.egpt\state\an-beeper --disable-gpu' 'C:\Users\an\AppData\Roaming' | Should Be 'C:\Users\an\.egpt\state\an-beeper'
-    Get-BeeperShareProfile $script:Flags 'C:\Users\an\AppData\Roaming' | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    Get-BeeperShareProfile '--user-data-dir=C:\Users\user\.egpt\state\an-beeper --disable-gpu' 'C:\Users\user\AppData\Roaming' | Should Be 'C:\Users\user\.egpt\state\an-beeper'
+    Get-BeeperShareProfile $script:Flags 'C:\Users\user\AppData\Roaming' | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
   }
   It 'the window needs --user-data-dir for any profile but the default one' {
-    Get-BeeperWindowArgs 'C:\Users\an\AppData\Roaming\BeeperTexts' 'C:\Users\an\AppData\Roaming' | Should Be ''
-    Get-BeeperWindowArgs 'c:/users/an/appdata/roaming/beepertexts/' 'C:\Users\an\AppData\Roaming' | Should Be ''
-    Get-BeeperWindowArgs 'C:\Users\an\.egpt\state\an-beeper' 'C:\Users\an\AppData\Roaming' | Should Be '--user-data-dir="C:\Users\an\.egpt\state\an-beeper"'
-    Get-BeeperUserDataDir (Get-BeeperWindowArgs 'C:\Users\an\.egpt\state\an-beeper' 'C:\Users\an\AppData\Roaming') | Should Be 'C:\Users\an\.egpt\state\an-beeper'
+    Get-BeeperWindowArgs 'C:\Users\user\AppData\Roaming\BeeperTexts' 'C:\Users\user\AppData\Roaming' | Should Be ''
+    Get-BeeperWindowArgs 'c:/users/user/appdata/roaming/beepertexts/' 'C:\Users\user\AppData\Roaming' | Should Be ''
+    Get-BeeperWindowArgs 'C:\Users\user\.egpt\state\an-beeper' 'C:\Users\user\AppData\Roaming' | Should Be '--user-data-dir="C:\Users\user\.egpt\state\an-beeper"'
+    Get-BeeperUserDataDir (Get-BeeperWindowArgs 'C:\Users\user\.egpt\state\an-beeper' 'C:\Users\user\AppData\Roaming') | Should Be 'C:\Users\user\.egpt\state\an-beeper'
   }
   It 'Test-BeeperRunsProfile: a --user-data-dir naming the profile, whatever the spelling; none is not' {
-    Test-BeeperRunsProfile '--user-data-dir="C:\Users\an\.egpt\state\an-beeper" --disable-gpu' 'c:/users/an/.egpt/state/an-beeper/' | Should Be $true
-    Test-BeeperRunsProfile '--user-data-dir=C:\other' 'C:\Users\an\.egpt\state\an-beeper' | Should Be $false
-    Test-BeeperRunsProfile $script:Flags 'C:\Users\an\AppData\Roaming\BeeperTexts' | Should Be $false
+    Test-BeeperRunsProfile '--user-data-dir="C:\Users\user\.egpt\state\an-beeper" --disable-gpu' 'c:/users/user/.egpt/state/an-beeper/' | Should Be $true
+    Test-BeeperRunsProfile '--user-data-dir=C:\other' 'C:\Users\user\.egpt\state\an-beeper' | Should Be $false
+    Test-BeeperRunsProfile $script:Flags 'C:\Users\user\AppData\Roaming\BeeperTexts' | Should Be $false
   }
 }
 
 Describe 'Get-BeeperServiceArgLine' {
   It 'is the profile plus the Session 0 flags, round-tripping through Get-BeeperUserDataDir' {
-    $l = Get-BeeperServiceArgLine 'C:\Users\an\AppData\Roaming\BeeperTexts'
-    $l | Should Be ('--user-data-dir="C:\Users\an\AppData\Roaming\BeeperTexts" ' + $script:Flags)
-    Get-BeeperUserDataDir $l | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts'
+    $l = Get-BeeperServiceArgLine 'C:\Users\user\AppData\Roaming\BeeperTexts'
+    $l | Should Be ('--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts" ' + $script:Flags)
+    Get-BeeperUserDataDir $l | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
   }
 }
 
 Describe 'the claim' {
   It 'is a sibling of the profile' {
-    Get-BeeperClaimPath 'C:\Users\an\AppData\Roaming\BeeperTexts\' | Should Be 'C:\Users\an\AppData\Roaming\BeeperTexts.egpt-s1-claim'
+    Get-BeeperClaimPath 'C:\Users\user\AppData\Roaming\BeeperTexts\' | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts.egpt-s1-claim'
   }
   It 'is held while one handle has it, refused to a second, and gone when released' {
     $p = Join-Path $TestDrive 'claim'
@@ -119,13 +119,13 @@ Describe 'Test-BeeperLockHeld (Chromium lockfile: write, share read, delete-on-c
 }
 
 Describe 'Select-BeeperProfileProcesses' {
-  $win = 'C:\Users\an\AppData\Roaming\BeeperTexts'
+  $win = 'C:\Users\user\AppData\Roaming\BeeperTexts'
   $procs = @(
     [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = 'Beeper.exe' },
-    [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = 'Beeper.exe --type=renderer --user-data-dir=C:\Users\an\AppData\Roaming\BeeperTexts' },
-    [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = 'Beeper.exe --user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata' },
+    [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = 'Beeper.exe --type=renderer --user-data-dir=C:\Users\user\AppData\Roaming\BeeperTexts' },
+    [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = 'Beeper.exe --user-data-dir=C:/Users/user/.egpt/state/rodz-beeper/userdata' },
     [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = $null },
-    [pscustomobject]@{ Name = 'node.exe'; CommandLine = 'node --user-data-dir=C:\Users\an\AppData\Roaming\BeeperTexts' }
+    [pscustomobject]@{ Name = 'node.exe'; CommandLine = 'node --user-data-dir=C:\Users\user\AppData\Roaming\BeeperTexts' }
   )
   It 'finds the children naming the profile, not another profile, an unreadable line or another program' {
     @(Select-BeeperProfileProcesses $procs $win).Count | Should Be 1
@@ -256,15 +256,15 @@ Describe 'running a Beeper service as the desktop user - the pieces (no LogonUse
     (Get-BeeperLogonVerdict 5).message | Should Match 'Win32 error 5'
   }
   It 'a blank password is refused with one line, before LogonUser is ever called' {
-    $blank = New-Object pscredential('.\an', (New-Object Security.SecureString))
+    $blank = New-Object pscredential('.\user', (New-Object Security.SecureString))
     $v = Test-BeeperCredential $blank
     $v.ok | Should Be $false
     $v.message | Should Be 'a blank password cannot run a service: Windows allows blank-password accounts to log on at the console only'
   }
-  It 'account names: .\an, MACHINE\an and a bare name all mean this machine' {
-    (Split-BeeperAccount '.\an').account | Should Be '.\an'
-    (Split-BeeperAccount "$env:COMPUTERNAME\an").account | Should Be '.\an'
-    (Split-BeeperAccount 'an').account | Should Be '.\an'
+  It 'account names: .\user, MACHINE\user and a bare name all mean this machine' {
+    (Split-BeeperAccount '.\user').account | Should Be '.\user'
+    (Split-BeeperAccount "$env:COMPUTERNAME\user").account | Should Be '.\user'
+    (Split-BeeperAccount 'user').account | Should Be '.\user'
     (Split-BeeperAccount 'DOMAIN\bob').domain | Should Be 'DOMAIN'
   }
   It 'the native type compiles (nothing in it is called)' {

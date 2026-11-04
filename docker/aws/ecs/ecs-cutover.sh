@@ -1,9 +1,9 @@
 #!/bin/bash
-# ecs-cutover.sh [--deploy edw] [--rollback] [--apply]
-# Moves EDW from the hand-run container on edw-node to the ECS service edw:
-#   stops edw on edw-node (restart=no), stops edw-node (kept, NOT terminated), detaches edw-data,
-#   scales the ASG to 1 (its instance attaches edw-data at boot), then sets the service to 1.
-# --rollback: service to 0, ASG to 0, edw-data back on edw-node, edw-node and its edw started.
+# ecs-cutover.sh [--deploy <name>] [--rollback] [--apply]
+# Moves a deployment from the hand-run container edw on its LEGACY_NODE to the ECS service $N:
+#   stops edw there (restart=no), stops LEGACY_NODE (kept, NOT terminated), detaches $N-data,
+#   scales the ASG to 1 (its instance attaches $N-data at boot), then sets the service to 1.
+# --rollback: service to 0, ASG to 0, $N-data back on LEGACY_NODE, LEGACY_NODE and its edw started.
 # One poller per bot token: the old container is stopped before the new task can start.
 # Without a LEGACY_NODE (a new deployment) this is the first start: ASG to 1, then the service.
 set -euo pipefail
@@ -14,7 +14,7 @@ for a; do
   case $a in
     --apply) APPLY=1 ;;
     --rollback) ROLLBACK=1 ;;
-    *) die "usage: ecs-cutover.sh [--deploy edw] [--rollback] [--apply]" ;;
+    *) die "usage: ecs-cutover.sh [--deploy <name>] [--rollback] [--apply]" ;;
   esac
 done
 check_account
@@ -67,7 +67,7 @@ wait_container_instance() {
 if [ $ROLLBACK = 0 ]; then
   cat >"$TMP/edw-stop.sh" <<'EOF'
 #!/bin/bash
-# On edw-node: stop the hand-run edw for good and release the data volume.
+# On the plain-EC2 host: stop the hand-run edw for good and release the data volume.
 set -euo pipefail
 if docker inspect edw >/dev/null 2>&1; then
   docker update --restart=no edw
@@ -109,7 +109,7 @@ fi
 [ -n "$OLD" ] || die "no $LEGACY_NODE instance to roll back to"
 cat >"$TMP/edw-start.sh" <<'EOF'
 #!/bin/bash
-# On edw-node: mount edw-data and start the hand-run edw again.
+# On the plain-EC2 host: mount the data volume and start the hand-run edw again.
 set -euo pipefail
 for _ in $(seq 30); do
   mountpoint -q /srv/egpt && break

@@ -401,7 +401,7 @@ function Get-BeeperLogonVerdict([int] $Code) {
   return $v
 }
 
-# '.\an' / 'reve\an' / 'an' -> @{ domain; user; account ('.\an' for this machine) }
+# '.\user' / 'reve\user' / 'user' -> @{ domain; user; account ('.\user' for this machine) }
 function Split-BeeperAccount([string] $Name) {
   if ($Name -match '^(.+?)\\(.+)$') { $d = $Matches[1]; $u = $Matches[2] } else { $d = '.'; $u = $Name }
   if ($d -ieq $env:COMPUTERNAME) { $d = '.' }

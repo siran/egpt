@@ -5,7 +5,7 @@ REM
 REM A plain double-click runs what needs no elevation and reports the rest as PENDING.
 REM Right-click > Run as administrator to apply those too. Arguments pass straight through:
 REM   migrate.cmd --dry-run
-REM   migrate.cmd --egpt-home "C:\Users\an\.egpt"
+REM   migrate.cmd --egpt-home "C:\Users\user\.egpt"
 
 setlocal
 set "MJS=%~dp0migrate.mjs"

@@ -27,7 +27,7 @@
 #     directory above the conversation folders. The S is load-bearing (measured
 #     on do 2026-09-27): the grant was (X,RA,RC) until then, and a boxed
 #     `node ~\src\egpt\src\tools\ask-spine.mjs` died EPERM on `lstat
-#     C:\Users\an\src` - Node realpaths every component, opening a directory to
+#     C:\Users\user\src` - Node realpaths every component, opening a directory to
 #     read its attributes asks for SYNCHRONIZE as well, and ~ lets the pool list
 #     nothing, so no traverse ACE below it works without S. An S-less ACE left
 #     by an earlier run is WRONG to the check, and this run converges it. The
@@ -38,7 +38,7 @@
 #     traverse ACE back, because `/remove:g` cannot take off one of a principal's
 #     two ACEs and the walk-through is what makes the checkout reachable at all;
 #   the same inheritable ReadAndExecute on each folder config.yaml's
-#     global_read_paths names (2026-09-28; kg's is `- repos: C:/Users/an/src/siran`,
+#     global_read_paths names (2026-09-28; kg's is `- repos: C:/Users/user/src/siran`,
 #     mounted as ~\repos) - EXCEPT its .env files, which the step BEFORE that
 #     grant takes the whole pool off. The list is read from THIS node's
 #     config.yaml (EGPT_HOME, else ~\.egpt) through node - see
@@ -243,7 +243,7 @@ try {
   #                  packages are public code; no credential lives here (pi's
   #                  auth.json is in ~\.pi).
   #   each global_read_paths folder, READ ONLY (operator 2026-09-28: "sandboxed
-  #                  beings should have access to my 'C:\Users\an\src\siran', we
+  #                  beings should have access to my 'C:\Users\user\src\siran', we
   #                  can call it repos/", then "please frame this in config.yaml
   #                  as global_read_paths list"). The target of the junction of
   #                  that name, standing for the reason ~\src\egpt's is (below),

@@ -65,8 +65,8 @@ function floatPCMtoWav(f32, sampleRate) {
     const raw = Buffer.from(b64, 'base64');
     const f32 = new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4);
     const wav = floatPCMtoWav(f32, meta.sampleRate);
-    writeFileSync('C:/Users/an/.egpt/wa-audio-pcm.wav', wav);
-    console.log(`✅ PCM captured: ${(meta.length/meta.sampleRate).toFixed(1)}s @ ${meta.sampleRate}Hz → wrote C:/Users/an/.egpt/wa-audio-pcm.wav (${wav.length} bytes)`);
+    writeFileSync('C:/Users/user/.egpt/wa-audio-pcm.wav', wav);
+    console.log(`✅ PCM captured: ${(meta.length/meta.sampleRate).toFixed(1)}s @ ${meta.sampleRate}Hz → wrote C:/Users/user/.egpt/wa-audio-pcm.wav (${wav.length} bytes)`);
   } else {
     console.log('no PCM captured (WA may use AudioWorklet/streaming, not createBufferSource).');
   }

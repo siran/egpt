@@ -12,7 +12,7 @@
 //       the being is found by its properties and edited by its YAML path, never by matching text.
 //   do  `dren` — handles [ dren ], `access_level: all`, `scope: agent/dren` — beside TWO beings
 //       that must not move. `don`, the worker, answers to the HANDLE `rodz` since 0020 (`rodz` the
-//       handle and `@dolly-egpt:beeper.com` the account are different things, and don is
+//       handle and `@mouth-acct:beeper.com` the account are different things, and don is
 //       `regular`). And `djh`, the radio agent, IS `access_level: all` — unsandboxed — but is
 //       pinned to no `scope:`, so it is not a meta engineer. Measured on do 2026-09-22: that pair
 //       is the live shape, and a level-only predicate would read it as ambiguous and refuse,
@@ -21,7 +21,7 @@
 // The assertions are on the FULL text, never a re-parse: the trailing comments beside these lists
 // and every other byte are what the splice layer exists to protect. CRLF throughout, as the live
 // configs are.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,11 +31,14 @@ import { runMigrations } from '../setup/migrate.mjs';
 
 const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 
-const MOUTH = '@dolly-egpt:beeper.com';
+const MOUTH = '@mouth-acct:beeper.com';
+// The mouth's id is the node's (EGPT_MOUTH_ID), never the repo's; these tests are a node that names it.
+beforeAll(() => { process.env.EGPT_MOUTH_ID = MOUTH; });
+afterAll(() => { delete process.env.EGPT_MOUTH_ID; });
 // kg's list as the operator measured it, 2026-09-22 — every id quoted, as they have to be: a bare
 // phone number would read as an integer and `@…` is a YAML reserved indicator.
-const OPERATOR = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com" ]';
-const DRIVEN = `[ "16468217865", "34836563681438", "@anrodriguez:beeper.com", "${MOUTH}" ]`;
+const OPERATOR = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com" ]';
+const DRIVEN = `[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "${MOUTH}" ]`;
 // The trailing comment on the line that CHANGES. It is on the meta engineer's line only, so it
 // also names, for these tests, which of the two identical lists is the one that moved.
 const DRIVES = '# who may drive this being';
@@ -74,7 +77,7 @@ const KG_LINES = [
   '    handles: [ llama ]',
   '    conversation_defaults:',
   '      access_level: sandbox',
-  '      allowed_users: [ "16468217865", operator ]',
+  '      allowed_users: [ "15550100001", operator ]',
   '',
   '  # codex, which is not going anywhere',
   '  codex:',
@@ -120,7 +123,7 @@ const DO_LINES = [
   '    mode: off',
   '    conversation_defaults:',
   '      access_level: all',
-  '      allowed_users: [ "16468217865" ] # who may wake the radio',
+  '      allowed_users: [ "15550100001" ] # who may wake the radio',
   '  codex:',
   '    configuration: codex',
   '    handles: [ codex ]',
@@ -185,7 +188,7 @@ describe('0021 on kg - the mouth may drive wren', () => {
     const ctx = ctxFor(h);
     await (await plan(ctx)).apply();
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);
-    expect(users(h, 'wren')).toEqual(['16468217865', '34836563681438', '@anrodriguez:beeper.com', MOUTH]);
+    expect(users(h, 'wren')).toEqual(['15550100001', '10000000000012', '@anaprueba:beeper.com', MOUTH]);
     expect(readFileSync(cfgPath(h), 'utf8')).toContain(`${DRIVEN} ${DRIVES}\r\n`);
     expect(readFileSync(`${cfgPath(h)}.bak-0021-test`, 'utf8')).toBe(KG);
     expect(await plan(ctx)).toMatchObject({ satisfied: true });
@@ -194,7 +197,7 @@ describe('0021 on kg - the mouth may drive wren', () => {
   it('the SANDBOXED persona keeps its list, though its line reads byte-for-byte the same', async () => {
     const h = home();
     await (await plan(ctxFor(h))).apply();
-    expect(users(h, 'egpt')).toEqual(['16468217865', '34836563681438', '@anrodriguez:beeper.com']);
+    expect(users(h, 'egpt')).toEqual(['15550100001', '10000000000012', '@anaprueba:beeper.com']);
     expect(users(h, 'egpt')).not.toContain(MOUTH);
     expect(readFileSync(cfgPath(h), 'utf8')).toContain(`      allowed_users: ${OPERATOR} # who may wake E\r\n`);
     // Every other being is left exactly as it was.
@@ -206,15 +209,15 @@ describe('0021 on kg - the mouth may drive wren', () => {
   });
 
   // kg's `eplus` really does end its list with a bare unquoted `operator` (measured 2026-09-22).
-  // The splice could not append `@dolly-egpt:beeper.com` to a plain-scalar list - and never has to,
+  // The splice could not append `@mouth-acct:beeper.com` to a plain-scalar list - and never has to,
   // because a being that is not the meta engineer is never visited at all.
   it('a BARE-scalar allowed_users on a non-qualifying being is never visited, let alone refused', async () => {
     const h = home();
     const p = await plan(ctxFor(h));
     expect(p.satisfied).toBe(false);          // no refusal, though llama's list could not be spliced
     await p.apply();
-    expect(users(h, 'llama')).toEqual(['16468217865', 'operator']);
-    expect(readFileSync(cfgPath(h), 'utf8')).toContain('      allowed_users: [ "16468217865", operator ]\r\n');
+    expect(users(h, 'llama')).toEqual(['15550100001', 'operator']);
+    expect(readFileSync(cfgPath(h), 'utf8')).toContain('      allowed_users: [ "15550100001", operator ]\r\n');
   });
 
   it('the meta engineer is found by its ACCESS LEVEL, never by the map key', async () => {
@@ -251,19 +254,19 @@ describe('0021 on do - dren gains it, and the worker that answers to `rodz` does
     const ctx = ctxFor(h);
     await (await plan(ctx)).apply();
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
-    expect(users(h, 'dren')).toEqual(['16468217865', '34836563681438', '@anrodriguez:beeper.com', MOUTH]);
+    expect(users(h, 'dren')).toEqual(['15550100001', '10000000000012', '@anaprueba:beeper.com', MOUTH]);
     expect(readFileSync(`${cfgPath(h)}.bak-0021-test`, 'utf8')).toBe(DO);
     expect(await plan(ctx)).toMatchObject({ satisfied: true });
   });
 
-  // THE `rodz` TRAP. `rodz` is a HANDLE do's worker answers to since 0020; `@dolly-egpt:beeper.com`
+  // THE `rodz` TRAP. `rodz` is a HANDLE do's worker answers to since 0020; `@mouth-acct:beeper.com`
   // is an ACCOUNT ID. A migration written against a handle list would have put the mouth's
   // authority on the worker - the `regular` being - instead of on the meta engineer.
   it('`don` answers to the handle `rodz` and still gains NOTHING - a handle is not an id', async () => {
     const h = doHome();
     expect(YAML.parse(DO).agents.don.handles).toContain('rodz');
     await (await plan(ctxFor(h))).apply();
-    expect(users(h, 'don')).toEqual(['16468217865', '34836563681438', '@anrodriguez:beeper.com']);
+    expect(users(h, 'don')).toEqual(['15550100001', '10000000000012', '@anaprueba:beeper.com']);
     expect(users(h, 'don')).not.toContain(MOUTH);
     expect(readFileSync(cfgPath(h), 'utf8')).toContain(`      allowed_users: ${OPERATOR} # who may wake the worker\r\n`);
     expect(readFileSync(cfgPath(h), 'utf8')).toContain('    handles: [ d, don, rodz ] # the worker, addressed either way\r\n');
@@ -285,9 +288,9 @@ describe('0021 on do - dren gains it, and the worker that answers to `rodz` does
     expect(p.changes).toContain(LEFT_ALONE('djh', '`djh`'));
     await p.apply();
     expect(users(h, 'dren')).toContain(MOUTH);
-    expect(users(h, 'djh')).toEqual(['16468217865']);
+    expect(users(h, 'djh')).toEqual(['15550100001']);
     expect(users(h, 'djh')).not.toContain(MOUTH);
-    expect(readFileSync(cfgPath(h), 'utf8')).toContain('      allowed_users: [ "16468217865" ] # who may wake the radio\r\n');
+    expect(readFileSync(cfgPath(h), 'utf8')).toContain('      allowed_users: [ "15550100001" ] # who may wake the radio\r\n');
   });
 
   it('the unpinned `all` being is still named once the change is settled', async () => {
@@ -302,6 +305,18 @@ describe('0021 on do - dren gains it, and the worker that answers to `rodz` does
 });
 
 describe('0021: "nothing to do here" is a note, never a refusal', () => {
+  it('a node that names no mouth (EGPT_MOUTH_ID unset): satisfied, and nothing is written', async () => {
+    const h = home(KG);
+    delete process.env.EGPT_MOUTH_ID;
+    try {
+      const p = await plan(ctxFor(h));
+      expect(p.satisfied).toBe(true);
+      expect(p.notes).toEqual(['EGPT_MOUTH_ID is not set: this node names no mouth matrix id, so there is nothing to add']);
+      expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);
+      expect(baks(h)).toEqual([]);
+    } finally { process.env.EGPT_MOUTH_ID = MOUTH; }
+  });
+
   it('already applied: satisfied, naming the being, and nothing is written', async () => {
     const h = home(KG_AFTER);
     const p = await plan(ctxFor(h));
@@ -383,7 +398,7 @@ describe('0021 refuses, naming the place, only on what it cannot honestly edit',
     const scalar = KG.replace(`      allowed_users: ${OPERATOR} ${DRIVES}`, `      allowed_users: "${MOUTH}"`);
     const h = home(scalar);
     await expect(plan(ctxFor(h))).rejects.toThrow(
-      /0021 refuses: `allowed_users` in agents\.wren\.conversation_defaults is "@dolly-egpt:beeper\.com" - an `all` being with an empty or non-list allowed_users is refused a turn by brainpool\.mjs/,
+      /0021 refuses: `allowed_users` in agents\.wren\.conversation_defaults is "@mouth-acct:beeper\.com" - an `all` being with an empty or non-list allowed_users is refused a turn by brainpool\.mjs/,
     );
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(scalar);
   });
@@ -396,10 +411,10 @@ describe('0021 refuses, naming the place, only on what it cannot honestly edit',
   });
 
   it('a BLOCK list - a shape this splice does not write', async () => {
-    const block = KG.replace(`      allowed_users: ${OPERATOR} ${DRIVES}`, '      allowed_users:\r\n        - "16468217865"\r\n        - "@anrodriguez:beeper.com"');
+    const block = KG.replace(`      allowed_users: ${OPERATOR} ${DRIVES}`, '      allowed_users:\r\n        - "15550100001"\r\n        - "@anaprueba:beeper.com"');
     const h = home(block);
     await expect(plan(ctxFor(h))).rejects.toThrow(
-      /0021 refuses: `allowed_users:` in agents\.wren\.conversation_defaults cannot take @dolly-egpt:beeper\.com \(refusing to edit agents\.wren\.conversation_defaults\.allowed_users: it is a block list; only an inline flow list is appended to\)/,
+      /0021 refuses: `allowed_users:` in agents\.wren\.conversation_defaults cannot take @mouth-acct:beeper\.com \(refusing to edit agents\.wren\.conversation_defaults\.allowed_users: it is a block list; only an inline flow list is appended to\)/,
     );
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(block);
   });
@@ -409,10 +424,10 @@ describe('0021 refuses, naming the place, only on what it cannot honestly edit',
   // number would read as an integer), but a list whose last item were PLAIN is caught by the
   // splice's own re-parse and refused by name - never written as YAML that no longer loads.
   it('a list whose last item is a PLAIN scalar is refused, not written broken', async () => {
-    const plain = KG.replace(`      allowed_users: ${OPERATOR} ${DRIVES}`, `      allowed_users: [ anrodriguez ] ${DRIVES}`);
+    const plain = KG.replace(`      allowed_users: ${OPERATOR} ${DRIVES}`, `      allowed_users: [ anaprueba ] ${DRIVES}`);
     const h = home(plain);
     await expect(plan(ctxFor(h))).rejects
-      .toThrow(/0021 refuses: `allowed_users:` in agents\.wren\.conversation_defaults cannot take @dolly-egpt:beeper\.com [\s\S]*the edited text no longer parses [\s\S]*reserved character @/);
+      .toThrow(/0021 refuses: `allowed_users:` in agents\.wren\.conversation_defaults cannot take @mouth-acct:beeper\.com [\s\S]*the edited text no longer parses [\s\S]*reserved character @/);
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(plain);
   });
 

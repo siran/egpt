@@ -9,7 +9,7 @@
 // folder the provisioner grants is the folder the launcher mounts.
 //
 // Prints ONE line of JSON on stdout and nothing else:
-//   { "mounts": [ { "name": "repos", "path": "C:/Users/an/src/siran" } ], "skipped": [ "<why>" ] }
+//   { "mounts": [ { "name": "repos", "path": "C:/Users/user/src/siran" } ], "skipped": [ "<why>" ] }
 // ONLY this key. config.yaml holds credentials (sandbox_oauth_token, beeper_token); nothing else
 // in it is read out here. `skipped` names each invalid entry, for the provisioner to print.
 import { readConfigSync } from '../src/tools/config-io.mjs';

@@ -1,6 +1,6 @@
 #!/bin/bash
 # run.sh [--tag edw] [--recreate] [--apply]
-# (Re)starts EDW's container on the AWS instance from the ECR image.
+# (Re)starts the container edw on the plain-EC2 host from the ECR image.
 # On the instance (as root) it does the work; anywhere else (WSL) it sends itself
 # to the instance over SSM and runs there.
 set -euo pipefail

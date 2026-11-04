@@ -100,7 +100,7 @@ $Shim    = Join-Path (Join-Path $Repo 'setup') 'session1-daemon-launcher.vbs'
 $Daemon  = Join-Path $Repo 'egpt-daemon.mjs'
 $WScript = Join-Path $env:SystemRoot 'System32\wscript.exe'
 # NOT "$env:USERDOMAIN\$env:USERNAME": USERDOMAIN is WORKGROUP on a workgroup machine and over
-# ssh, and WORKGROUP\an maps to no SID (0x80070534, dolly 2026-09-12). WindowsIdentity is authoritative.
+# ssh, and WORKGROUP\user maps to no SID (0x80070534, dolly 2026-09-12). WindowsIdentity is authoritative.
 $User    = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $q = [char]34

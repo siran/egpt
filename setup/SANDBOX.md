@@ -118,7 +118,7 @@ does:
 4. **The `.env` carve-out** under each `global_read_paths` folder (operator
    2026-09-28: the operator's repositories go to every boxed being as `repos`,
    read-only — *"EXCEPT secrets"* — then *"please frame this in config.yaml as
-   global_read_paths list"*; kg's entry is `- repos: C:/Users/an/src/siran`,
+   global_read_paths list"*; kg's entry is `- repos: C:/Users/user/src/siran`,
    written by migration 0034). `Find-SandboxSecretFiles` walks each tree by name only —
    no file is opened — skipping `.git`, `node_modules`, `venv*`, `.venv`,
    `__pycache__` and every reparse point; each `.env` / `.env.*` it finds goes
@@ -195,7 +195,7 @@ Fixed accounts are what make the per-conversation ACE possible.
 The important thing to understand, because it is the opposite of what a
 deny-list intuition suggests:
 
-**A Windows user profile already denies everyone else by default.** `C:\Users\an`
+**A Windows user profile already denies everyone else by default.** `C:\Users\user`
 grants SYSTEM, Administrators and `an` — and nothing to `Users`, `Authenticated
 Users` or `Everyone`. So a pool account cannot read the operator's profile at
 all, including `.claude` and `.egpt`, without an explicit grant.
@@ -210,7 +210,7 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 | `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
 | `~\src` | Pool group, traverse only | same chain; skipped where absent |
 | `~\src\egpt` | Pool group, **ReadAndExecute**, inherited | the editable eGPT checkout, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here (planted by the launcher's scrub pass, from `Get-SandboxProfileJunctionStatement`), and a junction is only a name: what may be done through it is decided by the DACL of the target. Permanent, not per-turn — it cannot be per-turn, because a DACL write on this tree re-propagates inheritance through `node_modules` (the parent `~\src` measured 307 s for one pass). **It used to be `~\src`, all of it**, and that was retired on 2026-09-23 (operator: *"dismiss mounting ~/src always, that was a faux-pas"*, and *"in the same way that the conversation directory is mounted in the sandbox account, the src/egpt can also be mounted as src/"*). The provisioner **removes** that old grant as its own step — narrowing the junction while leaving the wide inherited ACE would have been cosmetic. `my-code` went with it: it pointed at the very target `src` now points at. |
-| each `global_read_paths` folder in config.yaml (kg: `~\src\siran`) | Pool group, **ReadAndExecute**, inherited | folders every boxed being may read, read-only, **standing** — operator 2026-09-28: *"sandboxed beings should have access to my 'C:\Users\an\src\siran', we can call it repos/"*, then *"please frame this in config.yaml as global_read_paths list"*. A list of `- <mount name>: <path>`; kg's is `- repos: C:/Users/an/src/siran`, the operator's repositories (migration 0034 writes it where that folder exists; do has none). Every pool profile carries a junction of that name pointing here, planted only once this grant is on it. Standing for `~\src\egpt`'s reason, with the same cost stated: all sixteen accounts can read all of it, at all times — **except its `.env` files** (next row). kg's is 68,320 items on reve, so a first run pays one inheritance pass over them. Skipped where absent. Taking an entry out of config.yaml stops the mount, not the grant: that is `icacls <path> /remove:g egpt-sandbox-pool` by hand. |
+| each `global_read_paths` folder in config.yaml (kg: `~\src\siran`) | Pool group, **ReadAndExecute**, inherited | folders every boxed being may read, read-only, **standing** — operator 2026-09-28: *"sandboxed beings should have access to my 'C:\Users\user\src\siran', we can call it repos/"*, then *"please frame this in config.yaml as global_read_paths list"*. A list of `- <mount name>: <path>`; kg's is `- repos: C:/Users/user/src/siran`, the operator's repositories (migration 0034 writes it where that folder exists; do has none). Every pool profile carries a junction of that name pointing here, planted only once this grant is on it. Standing for `~\src\egpt`'s reason, with the same cost stated: all sixteen accounts can read all of it, at all times — **except its `.env` files** (next row). kg's is 68,320 items on reve, so a first run pays one inheritance pass over them. Skipped where absent. Taking an entry out of config.yaml stops the mount, not the grant: that is `icacls <path> /remove:g egpt-sandbox-pool` by hand. |
 | each `.env` / `.env.*` under a `global_read_paths` folder | **no pool ACE**, DACL protected | the ruling's one exception, *"EXCEPT secrets"*. Inheritance off with every inherited ACE copied to an explicit one (so the operator, SYSTEM, Administrators keep exactly what they had), then the pool group and each `egpt-sbx-NN` removed — the accounts too, because `/inheritance:d` would otherwise freeze a lease share's inherited ACE into a permanent one on the file. Two on reve when this was written: `preferredframe\.env` and `writing\.env`. **A broad read is refused, not carved:** a `.env` that `Everyone`, `Authenticated Users` or `BUILTIN\Users` can read is readable by every pool account whatever the pool's own ACEs say, and `/inheritance:d` would freeze that broad ACE onto the file for good — so such a file is reported `failed`, by SID, with **nothing written**, and the provisioner stops before granting the tree. On reve that is `writing\.env`: 174 directories under `~\src\siran\writing` carry an explicit `Everyone:(OI)(CI)(M)` (read 2026-09-28), which is not the sandbox's ACE to remove — and which would also make `repos/writing` **writable** by every boxed being. **Limits:** a `.env` **created later** inherits the pool's read until the provisioner runs again; a `.env` **moved in** from elsewhere on the same volume keeps its old DACL until then; names only (`.envrc`, key files, a token in `.git\config` are not touched); other token groups (`INTERACTIVE`, `LOCAL`) are not checked. A being whose `allowed_paths` names a `.env` *explicitly* still gets its per-lease ACE for its turns: that is the operator's own share. |
 | `~\.local\bin` | Pool group, ReadAndExecute | `claude.exe` |
 | `%APPDATA%\npm` | Pool group, ReadAndExecute | pi / codex entry JS |
@@ -225,13 +225,13 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 plants a second junction beside `src`:
 
 ```
-C:\Users\an\.egpt\conversations\whatsapp\<slug>\   the durable Room, the operator's
+C:\Users\user\.egpt\conversations\whatsapp\<slug>\   the durable Room, the operator's
 C:\Users\egpt-sbx-NN\egpt\                         → junction to it, re-planted per lease
 ```
 
 and **that** is what the launcher passes as the working directory. The reason is
 disclosure, not access: a being quotes its cwd into group chats all day —
-`Bash(cd "C:/Users/an/.egpt/conversations/whatsapp/Reencuentro CR…")` leaks the
+`Bash(cd "C:/Users/user/.egpt/conversations/whatsapp/Reencuentro CR…")` leaks the
 operator's username and profile layout, and a slug is usually a *person's name*,
 so it also leaks a third party's private conversation name to everyone else in
 the room. Through the mount the same line reads
@@ -246,9 +246,9 @@ is a different Room each time. Nothing about the ACL changes: `$TargetFolder` is
 what is granted, ledgered, revoked and reachability-checked.
 
 **And one more per `global_read_paths` entry** (operator ruling 2026-09-28:
-*"sandboxed beings should have access to my 'C:\Users\an\src\siran', we can
+*"sandboxed beings should have access to my 'C:\Users\user\src\siran', we can
 call it repos/"*, then *"please frame this in config.yaml as global_read_paths
-list"*). With kg's one entry, `- repos: C:/Users/an/src/siran`, a pool profile
+list"*). With kg's one entry, `- repos: C:/Users/user/src/siran`, a pool profile
 holds:
 
 ```
@@ -261,7 +261,7 @@ The list reaches the launcher from the **spine**, not from config directly:
 `brainpool.mjs` reads and validates it (`globalReadPathsOf` — an invalid entry
 is skipped with one log line) for every sandboxed turn, and
 `sandbox-cli-session.mjs` passes it as ONE argv element,
-`-ReadMounts '["repos=C:/Users/an/src/siran"]'` — a JSON array of `NAME=PATH`
+`-ReadMounts '["repos=C:/Users/user/src/siran"]'` — a JSON array of `NAME=PATH`
 strings, the `-SetEnv` shape, parsed by the launcher's one `ConvertFrom-JsonArgv`.
 A node without the key passes no `-ReadMounts` at all, so its argv is byte for
 byte what it was. Each mount comes out of the same generator
@@ -348,26 +348,26 @@ mask stays `(RC,S,X,RA)` rather than being pruned on a guess.
 
 **The `S` is load-bearing, and that one was measured** (2026-09-27, on do, as a
 real pool account). The grant was `(X,RA,RC)` until then. A boxed being ran
-`node C:\Users\an\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
+`node C:\Users\user\src\egpt\src\tools\ask-spine.mjs` and Node's module loader
 died before the client's first line: `EPERM … syscall: 'lstat', path:
-'C:\\Users\\an\\src'`. Reproduced as `egpt-sbx-13` with a probe script:
+'C:\\Users\\user\\src'`. Reproduced as `egpt-sbx-13` with a probe script:
 
 | call | result |
 |---|---|
-| `lstat C:/Users/an` | OK |
-| `lstat C:/Users/an/src` | `EPERM` |
-| `lstat C:/Users/an/src/egpt` | OK |
+| `lstat C:/Users/user` | OK |
+| `lstat C:/Users/user/src` | `EPERM` |
+| `lstat C:/Users/user/src/egpt` | OK |
 | `fs.realpathSync` on the client | `EPERM` |
 | `fs.realpathSync.native`, and a plain read | OK |
 
-The pool's ACE on `~\src` was `(Rc,X,RA)`; `C:\Users\an` on do carried
+The pool's ACE on `~\src` was `(Rc,X,RA)`; `C:\Users\user` on do carried
 `(Rc,S,X,RA)`. Adding `S` to `~\src` by hand made every probe pass. `lstat` opens
 the directory for `FILE_READ_ATTRIBUTES`, and `CreateFileW` adds `SYNCHRONIZE` to
 every synchronous open, so an ACE without `S` refuses it.
 
 **Why an S-less ACE sometimes works anyway**, which is how this stayed hidden:
 *list* on a parent implicitly grants read-attributes on its children. `C:\Users`
-lists to Everyone and Users, so on reve `C:\Users\an` stats fine with a bare
+lists to Everyone and Users, so on reve `C:\Users\user` stats fine with a bare
 `(Rc,X,RA)`. `~` lists to the pool **nothing**, so every traverse ACE **below**
 `~` has to carry `S` itself. `~\src` got by for as long as the wide
 `(OI)(CI)(RX)` sat on it too (`RX` includes `S`), and broke when the provisioner
@@ -400,7 +400,7 @@ single **file** takes the same mask without `(OI)(CI)`, derived in the helper:
 `icacls` accepts those flags on a leaf, exits 0 and writes **nothing**.
 It writes with **`icacls`, not `Set-Acl`** — `Set-Acl` persists the
 SACL (the `PrivilegeNotHeldException` documented on `Protect-SandboxCredDir`) and
-against `C:\Users\an` it *hung* twice and had to be killed. Plain `/grant`, never
+against `C:\Users\user` it *hung* twice and had to be killed. Plain `/grant`, never
 `/grant:r`, so a grant is additive: it never narrows an existing ACE, and
 narrowing one stays a hand operation.
 
@@ -597,8 +597,8 @@ DACL with it, so the leaked ACE is alive at the new name while the ledger line
 resolves to nothing. That outcome is reported `missing` and is **not** counted as
 clean — both the sweep and `setup\sweep-sandbox-leases.ps1` say so in as many
 words. Found in the live ledgers the same day: `egpt-sbx-08` and `-13` named
-`…\Favel Konefka-2608141626` while `-03`, `-04` and `-10` named `…\Favel Elena
-Konefka-2608141626` — the same conversation (identical `-2608141626` id), renamed
+`…\Fiona Ejemplar-2608141626` while `-03`, `-04` and `-10` named `…\Fiona Elena
+Ejemplar-2608141626` — the same conversation (identical `-2608141626` id), renamed
 slug. Following a moved folder would need its NTFS file id recorded at grant
 time, which nothing does.
 
@@ -645,7 +645,7 @@ icacls C:\Users\$env:USERNAME\src\egpt | Select-String 'egpt-sbx-'
 Operator ruling 2026-10-27: *"this E should be tied only to this sandbox
 account, sticky... when the account is released all access permission is
 reset... no special access would remain"*. For a being that needs a big tree
-(E in *eGPT Rodz Lulu An*: `~\Documents`, ~40k files) where a per-turn ACE
+(E in *eGPT Rodz Lola An*: `~\Documents`, ~40k files) where a per-turn ACE
 would re-propagate every turn and `global_read_paths` would hand it to every
 boxed being.
 
@@ -654,7 +654,7 @@ boxed being.
 agents:
   egpt:
     sandbox_pin:
-      C:/Users/an/Documents: { allowed_tools: [ Read, Glob, Grep ] }   # read-only
+      C:/Users/user/Documents: { allowed_tools: [ Read, Glob, Grep ] }   # read-only
 ```
 
 - **The pin** is `C:\ProgramData\egpt\sandbox-pins\<account>.pin`: a `key=`
@@ -826,7 +826,7 @@ Real, current, and worth knowing before relying on any of this.
    `confineToDirs: [cwd]`, because the mount alone did not fix the disclosure —
    `--add-dir` still named the Room's real path, the CLI reports the spelling it
    was *told* about, and a being asked `pwd` still answered
-   `/c/Users/an/.egpt/conversations/whatsapp/<slug>`. The junction path cannot
+   `/c/Users/user/.egpt/conversations/whatsapp/<slug>`. The junction path cannot
    replace it (it contains the leased account name, known only inside the
    launcher, long after the spine builds argv).
 
@@ -859,7 +859,7 @@ Real, current, and worth knowing before relying on any of this.
    question the kernel already answers.
 
    **It also closed the last operator path in a sandboxed being's argv.** The
-   node-level `allowed_paths: C:/Users/an/src` grant reached `--add-dir` on every
+   node-level `allowed_paths: C:/Users/user/src` grant reached `--add-dir` on every
    such turn; now nothing does.
 
    **`allowed_paths` still produces a real ACE** — `sandboxSharePathsFor` and the

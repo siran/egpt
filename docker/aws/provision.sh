@@ -1,8 +1,9 @@
 #!/bin/bash
 # provision.sh [--type t3a.medium] [--apply]
-# EDW's AWS host: its own VPC (one public subnet, internet gateway, no NAT), a security group
-# with no inbound rules, an instance role, an encrypted data volume and one Amazon Linux 2023
-# instance. Access is SSM only: no key pair, no open port. Re-running finds what exists.
+# The plain-EC2 host LEGACY_NODE (its resources are named edw-*): its own VPC (one public subnet,
+# internet gateway, no NAT), a security group with no inbound rules, an instance role, an encrypted
+# data volume and one Amazon Linux 2023 instance. Access is SSM only: no key pair, no open port.
+# Re-running finds what exists.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -25,7 +26,7 @@ ROOT_GB=30
 user_data() {  # data-volume-id
   sed "s/@VOL@/${1//-/}/" <<'EOF'
 #!/bin/bash
-# EDW host, first boot. Output: /var/log/cloud-init-output.log
+# Plain-EC2 egpt host, first boot. Output: /var/log/cloud-init-output.log
 set -euxo pipefail
 if [ ! -f /swapfile ]; then
   dd if=/dev/zero of=/swapfile bs=1M count=4096

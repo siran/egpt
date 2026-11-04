@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { unlink, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { lowerChild } from '../process-priority.mjs';
 
@@ -139,8 +139,8 @@ if (process.argv[1]?.endsWith('transcribe.mjs')) {
   if (!file) { console.log('usage: node src/tools/transcribe.mjs <audiofile> [lang]'); process.exit(1); }
   const cfg = {
     ffmpeg_command: 'C:\\ffmpeg\\bin\\ffmpeg.exe',
-    command: 'C:\\Users\\an\\bin\\whisper.cpp\\whisper-cli.exe',
-    model_path: 'C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
+    command: join(homedir(), 'bin', 'whisper.cpp', 'whisper-cli.exe'),
+    model_path: join(homedir(), 'bin', 'whisper.cpp', 'models', 'ggml-large-v3.bin'),
     language: process.argv[3] || 'es',
   };
   transcribeAudioFile(file, cfg, m => console.log('  ', m)).then(t => { console.log('\nTRANSCRIPT:', JSON.stringify(t)); process.exit(0); });

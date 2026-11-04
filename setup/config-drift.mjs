@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // setup/config-drift.mjs — does this node's config SHAPE match the peer's?
 //
-//   node setup/config-drift.mjs                 # compare against the default peer
 //   node setup/config-drift.mjs --peer dolly    # ssh target
-//   node setup/config-drift.mjs --peer "-p 2222 an@192.168.1.102"
+//   node setup/config-drift.mjs --peer "-p 2222 user@192.0.2.102"
+//   EGPT_PEER="-p 2222 user@192.0.2.102" node setup/config-drift.mjs   # the node's peer, set outside the repo
 //
 // Nodes legitimately differ in VALUES (dolly runs a 3B, reve a 26B; dj-son's
 // heartbeat lives only on dolly). What must not drift is which KEYS exist: a key
@@ -25,8 +25,9 @@ const peerArg = argv[argv.indexOf('--peer') + 1];
 // The peer must present a POSIX shell: `ssh dolly` lands in Windows cmd, where
 // `cat` and `||` do not exist. Dolly's 2222 is Windows OpenSSH (C:\Program Files\OpenSSH\sshd.exe,
 // session 0 - measured 2026-09-24) handing out an msys2 bash as its shell — that is the
-// endpoint to name. Override with --peer or EGPT_PEER.
-const PEER = (argv.includes('--peer') && peerArg) || process.env.EGPT_PEER || '-p 2222 an@192.168.1.102';
+// endpoint to name. Name it with --peer or EGPT_PEER; there is no default peer.
+const PEER = (argv.includes('--peer') && peerArg) || process.env.EGPT_PEER;
+if (!PEER) { console.error('config-drift: name the peer: --peer "<ssh args>" or EGPT_PEER (e.g. "-p 2222 user@host")'); process.exit(2); }
 const PEER_LABEL = (PEER.split('@')[1] || PEER.split(' ').pop() || PEER).trim();   // short, for the report
 
 const FILES = ['config/config.yaml', 'config/rooms.yaml', 'config/conversations.yaml'];
