@@ -57,14 +57,15 @@ function fakeBridge() {
 
 // `train`: dispatch.thinking_train (unset = the default). '!t' replies into a tunnel, '!s' into a side group.
 // `mouth(bridge)`: a peer mouth other than the holder itself (the default). `frames`: the train's frames, on `frameTimers`.
-function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, now = () => 1, mouth = null, frames = null } = {}) {
-  const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
+// `wren`: a second being, `w`, in mention mode; `work` gets the being as its third argument.
+function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, now = () => 1, mouth = null, frames = null, wren = false } = {}) {
+  const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode }, ...(wren ? { wren: { configuration: 'wren', handles: ['w', 'wren'], mode: 'mention' } } : {}) };
   const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(train ? { dispatch: { thinking_train: train } } : {}) };
   const bridge = fakeBridge();
   const peerMouth = mouth ? mouth(bridge) : MOUTH_HOLDS;   // mouth() => null: no mouth on this node
   const brain = {
     calls: [], steered: [],
-    async turn(being, ev, onPartial) { brain.calls.push(ev.body); return work(onPartial, ev); },
+    async turn(being, ev, onPartial) { brain.calls.push(ev.body); return work(onPartial, ev, being); },
     ...(steers ? { allowNewInput: async () => 'any', async steer(to, ev) { brain.steered.push(ev.body); return { ack: Promise.resolve({ ok: true }) }; } } : {}),
   };
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, reply: r }); } };
@@ -373,6 +374,49 @@ describe('emoji train: queued and steered', () => {
     expect(b.marks(first.msgId)).toEqual(TRAIN);
     expect(b.marks(steered.msgId)).toEqual(['+✍️', '+👍']);
     expect(b.posts()).toEqual([['!g', 'Listo.']]);
+  });
+});
+
+// kg 2026-11-04, eGPT Admin #44699: E ('on', every line) and wren (addressed) each ran a train on the one line.
+describe('emoji train: one per line, whichever beings answer it', () => {
+  it('REPRODUCE: E and wren on one line — one train; it steps while either runs and comes off when the last ends', async () => {
+    const eg = gate(), wg = gate();
+    const b = build({ mode: 'on', wren: true, frames: ['🤔', '🤓'], work: async (_, ev, being) => { await (being === 'wren' ? wg.p : eg.p); return { text: being === 'wren' ? 'Sí.' : '…' }; } });
+    const m = msg('w hola');
+    const done = b.bridge.emit(m);
+    await until(() => b.brain.calls.length === 2);
+    await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔']);
+    eg.open();
+    await flush(); await flush();
+    b.frameTimers.fire(); await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '+🤓']);
+    wg.open();
+    await done;
+    await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '+🤓', '-🤓']);
+    expect(b.posts()).toEqual([['!g', 'Sí.']]);
+  });
+
+  it('REPRODUCE: one of them uses a tool — its bubble opens and the mark comes off once, for both', async () => {
+    const tool = gate(), wg = gate();
+    const b = build({ mode: 'on', wren: true, frames: ['🤔', '🤓'], work: async (onPartial, ev, being) => {
+      if (being === 'wren') { await wg.p; return { text: 'Sí.' }; }
+      await tool.p; onPartial('Mirando.', { tool: true }); return { text: 'Mirando. Listo.' };
+    } });
+    const m = msg('w hola');
+    const done = b.bridge.emit(m);
+    await until(() => b.brain.calls.length === 2);
+    await flush();
+    tool.open();
+    await until(() => b.bridge.streams.length);
+    await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '-🤔']);
+    expect(b.frameTimers.size()).toBe(0);
+    wg.open();
+    await done;
+    await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '-🤔']);
   });
 });
 

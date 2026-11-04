@@ -223,18 +223,42 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // the mouth has its own copy (within `wait`) the mark moves there, placed there and then taken off here.
   // `frames`: the started phase steps through them on whichever account holds it; a step still in flight
   // skips the next.
-  function receipt(to, ev, glyphs = [RECEIPT_EMOJI], { what = 'arrival-ack', wait, handover = false, frames = null } = {}) {
-    let up = null, here = handover, done = false, busy = 0, timer = null, n = 0;
-    const place = (emoji, opts) => placeReaction(to, ev, emoji, { what, ...opts });
+  // ONE MARK PER LINE (kg 2026-11-04, #44699: E and wren each ran one on the same line through the same two
+  // accounts, and each took off or overwrote the other's): every turn on (chatId, msgId) holds the one mark.
+  // `off()` lets go; the last to let go takes it off. `off(true)` takes it off for all (a bubble opens, limbs run).
+  // The end takes off what it placed, on each account still holding it.
+  const lines = new Map();                     // `${chatId} ${msgId}` -> the mark on that line, while a turn holds it
+  const lineOf = (ev) => (ev.msgId != null ? `${ev.chatId} ${ev.msgId}` : null);
+  function receipt(to, ev, glyphs = [RECEIPT_EMOJI], opts = {}) {
+    const k = lineOf(ev);
+    const m = (k != null && lines.get(k)) || mark(to, ev, glyphs, opts);
+    if (k != null) lines.set(k, m);
+    m.refs++;
+    let held = true;
+    return {
+      started: m.started,
+      off(all = false) {
+        if (held) { held = false; if (--m.refs === 0) lines.delete(k); }
+        return all || !m.refs ? m.off() : m.settled();
+      },
+    };
+  }
+  function mark(to, ev, glyphs, { what = 'arrival-ack', wait, handover = false, frames = null }) {
+    const on = { here: null, mouth: null };    // what this mark placed and still holds, per account
+    let at = handover ? 'here' : 'mouth', done = false, begun = false, busy = 0, timer = null, n = 0, ended;
+    const gone = new Promise((r) => { ended = r; });
+    const place = (emoji, acct, opts) => placeReaction(to, ev, emoji, { what, here: acct === 'here', ...opts });
+    const put = async (acct, g, opts) => { const ok = await place(g, acct, { temporary: true, ...opts }); if (ok) on[acct] = g; return ok; };
+    const take = async (acct) => { if (on[acct] && await place(on[acct], acct, { remove: true })) on[acct] = null; };
     const key = () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs });
-    let chain = place(glyphs[0], { temporary: true, ...(handover ? { here } : wait ? { wait } : {}) }).then((ok) => { if (ok) up = glyphs[0]; });
+    let chain = put(at, glyphs[0], handover || !wait ? {} : { wait });
     const step = (fn) => { busy++; chain = chain.then(fn).finally(() => { busy--; }); return chain; };
-    const show = (g) => step(async () => { if (!done && g !== up && await place(g, { temporary: true, here })) up = g; });
+    const show = (g) => step(async () => { if (!done && g !== on[at]) await put(at, g); });
     if (handover) {
       Promise.resolve(outbound(to, ev.chatId).mouthHas(key, wait, what)).then((has) => has && step(async () => {
-        if (done || !here || !up || !(await place(up, { temporary: true }))) return;
-        await place(up, { remove: true, here });
-        here = false;
+        if (done || at !== 'here' || !on.here || !(await put('mouth', on.here))) return;
+        at = 'mouth';
+        await take('here');
       }), () => {});
     }
     const list = () => { const f = frames?.(); return Array.isArray(f) ? f.filter((g) => typeof g === 'string' && g) : []; };
@@ -247,13 +271,16 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
       arm();
     }
     return {
+      refs: 0,
+      gone,                                    // settles once the mark is off
+      settled: () => chain,
       started() {
         const first = list()[0] ?? glyphs[1];
-        if (first && !done) { show(first); if (frames && !timer) arm(); }
+        if (first && !done && !begun) { begun = true; show(first); if (frames) arm(); }
         return chain;
       },
       off() {
-        if (!done) { done = true; if (timer) clearTimeoutFn(timer); step(async () => { if (up) await place(up, { remove: true, here }); }); }
+        if (!done) { done = true; if (timer) clearTimeoutFn(timer); step(async () => { await take('here'); await take('mouth'); }).then(ended, ended); }
         return chain;
       },
     };
@@ -317,7 +344,8 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     // Its truth does not depend on anything below it, which is the entire reason it exists.
     // NEVER AWAITED (2026-10-18): its lookup may wait for the mouth's copy to arrive, and this runs
     // on the chat's lane. The 👍 below waits for it instead, so it still lands second.
-    const receipt = ack ? placeReaction(to, ev, RECEIPT_EMOJI) : null;
+    // A line another turn already marks (one mark per line) gets no ✍️ over that mark, and its 👍 once it is off.
+    const receipt = ack && !lines.has(lineOf(ev)) ? placeReaction(to, ev, RECEIPT_EMOJI) : null;
 
     const who = ev.senderName ?? ev.senderId ?? '?';
     let handed = false;
@@ -355,6 +383,7 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
         if (r?.ok) {
           note(`steer ${to}/${ev.chatId}: the model took the steered message — placing the ${STEER_ACK_EMOJI}`);
           await receipt;
+          await lines.get(lineOf(ev))?.gone;
           await placeReaction(to, ev, STEER_ACK_EMOJI);
         } else {
           note(`steer NEVER INGESTED ${to}/${ev.chatId}: ${who}'s message was handed to the live turn and the model never took it (${r?.reason ?? 'no reason given'}) — the ${RECEIPT_EMOJI} stands alone; there is no ${STEER_ACK_EMOJI} to place`);

@@ -1625,7 +1625,7 @@ export function createSpine({
           if (!whole(d)) return out.begin?.();         // the being used a tool: an ambient turn opens its train
           if (working || !opensOnTool(d)) return;
           working = true;                              // the emoji train's first tool: the bubble, with the text so far, replaces the mark
-          for (const m of marks) m.off();
+          for (const m of marks) m.off(true);          // off for every turn on the line
           show(partial);
           return out.begin?.();
         }
@@ -1709,9 +1709,10 @@ export function createSpine({
       });
       // Off before the limbs: one reaction per account per message (WhatsApp, a Telegram bot), so a /react
       // would replace the mark and the mark's removal would take the /react. Awaited only then: a 👾
-      // still waiting for the mouth's copy must not hold the turn.
-      const off = Promise.all(marks.map((m) => m.off()));
-      if (parsed?.run.length) await off;
+      // still waiting for the mouth's copy must not hold the turn. With limbs, off for every turn on the line.
+      const limbs = !!parsed?.run.length;
+      const off = Promise.all(marks.map((m) => m.off(limbs)));
+      if (limbs) await off;
       // …and to the conversation's chat members seated for its replies (room-relay.mjs fanOutReply).
       if (deliverable && !isDeliberateSilence(proseText)) await roomRelay?.fanOutReply?.(ev, to, proseText);
       // VOICE-OUT (chunk 2, operator 2026-08-09; redesigned operator 2026-08-10 — the
