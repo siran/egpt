@@ -512,8 +512,8 @@ networks:
 #   outbound: { messages: 18, window_ms: 10000, edits: 4000, chat_messages: 5, chat_window_ms: 3000, chat_similar_count: 5, chat_similar_window_ms: 2000, chat_similar_ratio: 0.85, chat_burst_count: 10, chat_burst_window_ms: 2000 }   # outbound ceiling: an over-ceiling emit STOPS the node; a chat with 5 near-identical / 10 any sends in 2s, or 5 per 3s twice running, is PAUSED; <=0 = that rule off
 # stop_phrase: "EGPT STOP"        # the whole message, from an allowed user, in ANY chat → this node writes EGPT_HOME/STOP and stops; "" = off
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
-# log_to_group: "eGPT Admin"      # per-/command audit → this group: one metadata-only line per command ("/<cmd> in <chat> by <sender> → <outcome?>"), NEVER the reply body; also the lifecycle lines (↻ / ✅ back up / started). A name, short room id or tg:<chat>[/<topic>]. May equal or differ from admin_channel; unset = off
-# admin_channel: "eGPT Admin"     # this node's own notices (compaction, ...): a chat name or short room id; unset = daemon log only
+# log_to_group: "eGPT Logs"       # per-/command audit → this group: one metadata-only line per command ("/<cmd> in <chat> by <sender> → <outcome?>"), NEVER the reply body; also the lifecycle lines (↻ / ✅ back up / started). A name, short room id or tg:<chat>[/<topic>]. May equal or differ from admin_channel; unset = off
+# admin_channel: "eGPT Admin"     # this node's own notices (compaction, /browser's control link, ...): a chat name, short room id or tg:<chat>[/<topic>]; unset = daemon log only. README quickstart C
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
 # mesh: { timeout_ms: 60000 }     # a relayed mention waits this long, then "<target> did not answer"
 # liveness: { every_ms: 15000, background_every_ms: 600000, background_change_ms: 120000 }   # how often a running turn's placeholder is re-edited; how often an unchanged background status is posted again; how long a change waits after the last status

@@ -50,6 +50,45 @@ This is the shortest way to get eGPT answering you in a chat on one laptop. Pick
 **A (WhatsApp, through Beeper)** or **B (a Telegram bot)**. You can add the other one later.
 Nothing else in this README is needed for a first run.
 
+**Docker is the recommended install.** The image carries every dependency eGPT uses: Node,
+Claude Code, Beeper Desktop on a virtual screen you open in your browser (noVNC), Chrome,
+whisper.cpp for voice notes and piper for speech. Your machine needs only Docker and Git.
+Running eGPT **raw**, straight on your laptop without a container, is welcome too: that is
+[What you need](#what-you-need) and [Install](#install) below.
+
+### Docker (recommended)
+
+1. In your clone, build the image and start it. It clones your fork into its own volume on
+   the first start, and seeds `~/.egpt/config/config.yaml` there:
+
+   ```bash
+   docker build -f docker/Dockerfile -t egpt .
+   docker run -d --name egpt --hostname egpt --restart unless-stopped --shm-size=1g \
+     --security-opt seccomp=unconfined --security-opt systempaths=unconfined \
+     -e EGPT_REPO_URL=https://github.com/<you>/egpt.git \
+     -p 127.0.0.1:6080:6080 \
+     -v egpt-home:/home/egpt/.egpt -v egpt-claude:/home/egpt/.claude \
+     -v egpt-src:/home/egpt/src/egpt -v egpt-beeper:/home/egpt/.config/BeeperTexts \
+     egpt
+   docker logs -f egpt     # Ctrl+C leaves it running
+   ```
+
+   The two `--security-opt` are what the beings' sandbox (`docker/egpt-box`) and Chrome need.
+   Only Telegram (B), no WhatsApp? Add `-e EGPT_BEEPER=off`.
+2. Sign the beings in to Claude: `docker exec -it egpt egpt-claude-token`. It runs
+   `claude setup-token` and saves the token you paste.
+3. The container's screen (Beeper, the browsers): open http://localhost:6080/vnc.html. The
+   password is in `docker exec egpt cat .egpt/secrets/vnc.password`.
+4. Edit the config as in [Install](#install) step 3, then do A or B (and C) below. Inside the
+   container, the commands are:
+
+   | Raw | Docker |
+   |---|---|
+   | edit `~/.egpt/config/config.yaml` | `docker exec egpt cat .egpt/config/config.yaml > config.yaml`, edit it, then `docker exec -i egpt sh -c 'cat > .egpt/config/config.yaml' < config.yaml` |
+   | `node setup/telegram-token.mjs main` | `docker exec -it -w /home/egpt/src/egpt egpt node setup/telegram-token.mjs main` |
+   | Beeper Desktop on the laptop | Beeper on the noVNC screen of step 3 |
+   | `node egpt-daemon.mjs` | already running; after a config change, `docker restart egpt` |
+
 ### What you need
 
 1. **Node.js 22 or newer.** Check with `node --version`.
@@ -139,6 +178,37 @@ eGPT answers **from your own WhatsApp number**, so your contacts see its replies
    To find your numeric id, send any message to @userinfobot in Telegram.
 5. **If you're not using A:** put a `#` at the start of the `beeper:` line and of each line under it
    (`main:`, `account:`, `token:`). eGPT then runs on Telegram only.
+
+### C. Admin and Logs channels (suggested)
+
+Give the node two chats of its own, so you see what it does without reading its terminal:
+
+- **eGPT Admin**: where you type its commands (`/e status`, `/e upgrade`, ...), and where it
+  sends its own notices, such as the control link of `/e browser`.
+- **eGPT Logs**: one line per command (`/upgrade in <chat> by <you> → ok`), and the lifecycle
+  lines: `↻ restarting`, `✅ egpt back up! — /upgrade: pulled 3 commits, npm install ok`,
+  `✅ egpt started`.
+
+On Telegram, one group with topics holds both:
+
+1. Create a group, and in its settings turn **Topics** on. Add your bot and make it an
+   **admin**: only then does it see every message, and post in the topics.
+2. Create two topics, `eGPT Admin` and `eGPT Logs`.
+3. Get each topic's id. Write a message in the topic, then right-click it (long-press on a
+   phone) → **Copy Message Link**. From `https://t.me/c/4301923150/185/190`, the topic is
+   `tg:-1000000000104/185`: `-100` and the number after `/c/`, then the topic's number.
+4. In `config.yaml`, at the top level (the skeleton has both lines, commented out):
+
+   ```yaml
+   log_to_group: "tg:-1000000000104/185"   # eGPT Logs
+   admin_channel: "tg:-1000000000104/124"  # eGPT Admin
+   ```
+
+   and put the eGPT Admin topic in `networks:` → `telegram:` → `admin_chat_ids`, so commands
+   typed there are accepted.
+
+On WhatsApp (A), make two groups instead, and give their names: `log_to_group: "eGPT Logs"`,
+`admin_channel: "eGPT Admin"`.
 
 ### Start eGPT
 
