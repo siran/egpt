@@ -3680,8 +3680,14 @@ export const CONFIG_SCHEMA = {
     <outcome> is appended only where a silent/side-effecting handler returns one
     (today: /end); every other command is just its invocation line.
 
-    VALUE: a chat NAME or a raw Beeper room id in SHORT form, resolved to its room
-    EXACTLY like admin_channel — the SAME boot.mjs resolver + poster (noticeToChannel),
+    The lifecycle lines go here too (2026-11-03): "↻ /restart|/upgrade|/rewind…"
+    before the exit, "✅ egpt back up! (sha → sha) pids — /upgrade: <what it did>"
+    and "✅ egpt started", besides the first admin chat (networks.<surface>.
+    admin_chat_ids); said once when that is this same chat.
+
+    VALUE: a chat NAME or a raw Beeper room id in SHORT form, or a Telegram id
+    (tg:<chat>[/<topic>], a topic included), resolved to its room EXACTLY like
+    admin_channel — the SAME boot.mjs resolver + poster (noticeToChannel),
     fail-closed, said from the being's own mouth. It MAY name the same chat as
     admin_channel or a different one. Unset (or empty): auditing is OFF — nothing is
     posted and no command's behavior changes (src/spine/commands.mjs run() chokepoint,

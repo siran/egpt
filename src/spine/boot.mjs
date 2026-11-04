@@ -2959,6 +2959,16 @@ export async function boot({
   const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
+  // A lifecycle line goes to the announce chat (announceChatId, above) AND to log_to_group when that is
+  // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
+  // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
+  const sayLifecycle = async (chatId, text) => {
+    const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
+    await Promise.all([
+      chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,
+      group && !(chatId && group.chatId === chatId) ? noticeToChannel({ configKey: 'log_to_group', text, what: 'announce', tag: 'announce' }) : null,
+    ]);
+  };
   // The going-down half, unchanged: the sidecar the NEXT boot reads back, the capped "↻ …" line,
   // then the exit itself.
   async function goDown(code) {
@@ -2971,7 +2981,7 @@ export async function boot({
     // Beeper account that id does not exist there (operator 2026-09-11).
     // The failure is SAID rather than swallowed: a restart line that never landed leaves the
     // operator watching a silent chat, and this is the last thing the process does.
-    try { if (selfDm) await Promise.race([sayOnce({ chatId: selfDm, text: `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`, what: 'announce' }), new Promise((r) => setTimeout(r, 3000))]); }
+    try { await Promise.race([sayLifecycle(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); }
     catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
     try { await unlink(drainingFile); } catch { /* no drain was published — the usual case */ }
     exit(code);
@@ -4036,7 +4046,6 @@ export async function boot({
     let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { sc = null; }
     if (sc) {
       try { await unlink(sidecar); } catch {}
-      if (!sc?.chatId) return;
       const nowSha = shortSha();
       const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
       const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
@@ -4045,15 +4054,14 @@ export async function boot({
       // way the recovery reaches a human: it names what the daemon did on its own and, for a
       // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
       // Absent on every other sidecar, which therefore renders byte-for-byte as before.
-      try { await sayOnce({ chatId: sc.chatId, text: `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
+      // `outcome` (daemon-runtime.mjs addOutcome, 2026-11-03): what /upgrade or /rewind did.
+      try { await sayLifecycle(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.outcome ? ` — ${sc.kind}: ${sc.outcome}` : ''}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return;
     }
-    const selfDm = announceChatId();
-    if (!selfDm) return;
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await sayOnce({ chatId: selfDm, text: `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
+    try { await sayLifecycle(announceChatId(), `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 

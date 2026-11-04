@@ -438,25 +438,41 @@ export function createDaemonRuntime(opts = {}) {
     }
   }
 
+  // WHAT /upgrade AND /rewind DID, on the back-up line (operator 2026-11-03: "nothing happened… or
+  // you didn't show updates"): the outcome joins the sidecar the going-down spine wrote, and boot.mjs's
+  // read-back says it after the shas ("— /upgrade: already up to date"). No sidecar (the spine could
+  // not write one): the daemon log is all there is. The ladder's own note overwrites it (force).
+  function addOutcome(outcome) {
+    try { writeFileSync(restartAnnouncePath, JSON.stringify({ ...JSON.parse(readFileSync(restartAnnouncePath, 'utf8')), outcome })); }
+    catch { /* best-effort */ }
+  }
+
   async function runUpgrade() {
     const before = gitVersion(root).sha;
     log(`upgrade requested — git pull (currently ${before})`);
-    const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: root, stdio: 'inherit' });
+    const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: root, stdio: 'pipe' });
     if (pull.status !== 0) {
-      log('git pull failed; continuing with current code');
+      const why = gitWhy(pull).replace(/^: /, '') || `exit ${pull.status}`;
+      log(`git pull failed (${why}); continuing with current code`);
+      addOutcome(`git pull failed (${why}), still on ${before}`);
       return false;
     }
     const after = gitVersion(root);
+    let outcome;
     if (after.sha !== before) {
       log(`pulled ${before} -> ${after.sha} — running npm install`);
+      const n = Number(gitOut(git(['rev-list', '--count', `${before}..${after.sha}`])));
       const r = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
       if (r.status !== 0) {
         log(`npm install exited ${r.status}${r.error ? `: ${r.error.message}` : ''}; continuing with current deps`);
       }
+      outcome = `pulled ${n} commit${n === 1 ? '' : 's'}, npm install ${r.status === 0 ? 'ok' : `exited ${r.status}`}`;
     } else {
       log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
+      outcome = 'already up to date';
     }
-    await buildExtension(root);
+    if (!(await buildExtension(root))) outcome += ', build:ext failed';
+    addOutcome(outcome);
     log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
     return true;
   }
@@ -488,14 +504,16 @@ export function createDaemonRuntime(opts = {}) {
     const co = spawnSync('git', ['checkout', ref], { cwd: root, stdio: 'inherit' });
     if (co.status !== 0) {
       log(`rewind step failed (git checkout ${ref})${co.error ? `: ${co.error.message}` : ''}; restarting anyway with current code`);
+      addOutcome(`git checkout ${ref} failed, still on ${gitVersion(root).sha}`);
       return false;
     }
     const ni = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
     if (ni.status !== 0) {
       log(`rewind step failed (npm install)${ni.error ? `: ${ni.error.message}` : ''}; restarting anyway with current code`);
+      addOutcome(`checked out ${ref}, npm install exited ${ni.status}`);
       return false;
     }
-    await buildExtension(root);
+    addOutcome(`checked out ${ref}${(await buildExtension(root)) ? '' : ', build:ext failed'}`);
     log(`rewind to ${ref} complete`);
     return true;
   }
