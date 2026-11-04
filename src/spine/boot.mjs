@@ -3461,6 +3461,7 @@ export async function boot({
     },
     backlogOf: (ev) => spineLate?.backlogOf(ev) ?? [],   // /recap — the spine's wake backlog for this chat (spineLate, above)
     timeZone: transcriptTimeZone,                        // …read out on the transcript's own clock
+    commandTurn: async (o) => spineLate?.commandTurn(o) ?? null,   // /super — the spine's turn for the command's line
     // /fork + /send + /end (operator 2026-10-01) — the beeper ops the three verbs need, ALL off the
     // ear's PORT (the account chat C lives on; resolveChatId/listChats above already come off it).
     // editMessage/createGroup/archiveChat/getChatName are forwarded by the port to the raw beeper

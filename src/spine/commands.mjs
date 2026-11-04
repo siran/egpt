@@ -23,7 +23,7 @@ import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-
 // over a single already-extracted token is the house single-token lookup (src/spine/mesh.mjs's
 // findAgentByToken, src/spine/heartbeat-loader.mjs's `agent:`); `addressableTokens` LISTS the
 // valid handles in the not-hosted log line. See agentsCmd's HANDLE → KEY block.
-import { addressed, addressableTokens, agentsInChat, fallbackWake, isKnownSender, mayWake, wakeTokens, voiceWakeTokens } from './router.mjs';
+import { addressed, addressableTokens, addressingView, agentsInChat, fallbackWake, isKnownSender, mayWake, wakeTokens, voiceWakeTokens } from './router.mjs';
 import { superChannelAlive, resolveMode } from './gating.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -37,7 +37,7 @@ import { shortChatId } from '../bridges/chat-id.mjs';
 // 2026-08-31) — the scorer lives in src/text-similarity.mjs beside the echo one, so
 // this module never grows a fuzzy-match of its own.
 import { closestNames } from '../text-similarity.mjs';
-import { ownNodeNamesOf, knownNodeNames } from './node-names.mjs';
+import { ownNodeNamesOf, knownNodeNames, fromOtherNode } from './node-names.mjs';
 import { Room, ROOMS_ROOT } from '../room-core.mjs';
 import { SHELL_SURFACE, surfaceOf as surfaceOfNetwork } from './identity.mjs';
 // The room slug rule (fixedSlugFor, surface `room`) applied to a READ, which must not mint —
@@ -269,6 +269,9 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end'];
 // Bare /agents: a non-operator gets agentsPublic where public_commands lists agents.
 const AGENTS_BARE_CMD = /^\/agents\s*$/i;
+// /<handle> super <message> (operator 2026-11-04): a turn of the chat's superintendent, agents.super.
+const SUPER_CMD = /^\/super\b/i;
+const SUPER_BEING = 'super';
 // The public list's words for a reply mode; 'off' has none (that being is not listed).
 const PUBLIC_MODE_WORDS = {
   on: 'answers everything', auto: 'answers everything',
@@ -632,6 +635,8 @@ export function createCommands({
   // message's line in transcript.md. Defaults: no backlog, UTC.
   backlogOf = () => [],
   timeZone = null,
+  // /super's turn: ({ being, ev }) → { turn } | null, THE SPINE's commandTurn, late-bound by boot like backlogOf.
+  commandTurn = async () => null,
   // ── /split + /send + /end seams (operator 2026-10-03) ─────────────────────────────────────
   // /split backs a new side-group with a NEW conversation diverged from this one (the automatic group
   // aliases one to it); /send relays a chosen message back to the original chat;
@@ -789,7 +794,9 @@ export function createCommands({
     let body = String(ev?.body ?? '').trim();
     let alias = null;
     if (!body.startsWith('/')) {
-      const hit = aliasOf(ev, body);
+      // A being's line (node-signed), read past its stamp and frame: /super is the only command found there.
+      const view = ev?.fromNode != null ? addressingView(ev).trim() : null;
+      const hit = view && parseBeingCommand(view)?.cmd === '/super' ? { body: view, alias: null } : aliasOf(ev, body);
       if (!hit) return null;
       ({ body, alias } = hit);
     }
@@ -826,7 +833,8 @@ export function createCommands({
   // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
   // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
   // senders (per-surface allowed_users / isSender) can command from anywhere.
-  // Anyone else runs only the chat's public commands (publicCommandsOf), never from a node-signed line.
+  // Anyone else runs only the chat's public commands (publicCommandsOf), never from a node-signed line,
+  // except a being's /super.
   // The ev is commandOf's: a command names its being (commandBeing), except a registered command on
   // the console.
   async function isCommand(ev) {
@@ -835,6 +843,8 @@ export function createCommands({
     if (!body.startsWith('/')) return false;
     const onConsole = surfaceOf(ev) === SHELL_SURFACE && COMMAND_SET.has(body.split(/\s/)[0].toLowerCase());
     if (ev?.commandBeing == null && !onConsole) return false;
+    // A being's line runs /super, but never this node's own S's line (author exclusion).
+    if (ev?.fromNode != null && SUPER_CMD.test(body)) return !(String(ev.fromBeing ?? '').toLowerCase() === SUPER_BEING && !fromOtherNode(cfg(), ev));
     if (isOperator(ev)) return true;
     if (ev?.fromNode != null) return false;
     const word = body.slice(1).split(/[\s=]/)[0].toLowerCase();
@@ -875,12 +885,13 @@ export function createCommands({
   // THE WRAPPER around the dispatch: run the command, then emit the ONE audit line. A '/'-command the
   // dispatch handled on THIS node is audited (outcome inline when the handler returned one); NO_AUDIT
   // (an ignored public /agents list) and a non-'/'-message (the rs radio quick reply) are not.
+  // A command that opened a turn (/super) hands back `{ turn }`, so the chat's lane does not wait on it.
   async function run(ev) {
     const outcome = await runDispatch(ev);
     if (outcome === NO_AUDIT) return;
     const m = /^\/(\w+)/.exec(String(ev?.body ?? '').trim());
-    if (!m) return;
-    await auditCommand(ev, m[1], typeof outcome === 'string' ? outcome : null);
+    if (m) await auditCommand(ev, m[1], typeof outcome === 'string' ? outcome : null);
+    return outcome?.turn ? { turn: outcome.turn } : undefined;
   }
 
   async function runDispatch(ev) {
@@ -1112,6 +1123,14 @@ export function createCommands({
     if (sendMatch) { await sendToOriginal(ev); return; }
     const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
     if (endMatch) { return await end(ev); }   // end() returns its outcome string (archived / no-op) for the audit line
+
+    // /super <message> — a turn of this chat's S (agents.super), answered here: its own thread in this chat.
+    const superMatch = /^\/super\b[ \t]*([\s\S]*)$/i.exec(line);
+    if (superMatch) {
+      if (!superMatch[1].trim()) { await send?.(ev.chatId, `usage: ${hintOf('super <message>', ev)}`); return; }
+      if (!cfg().agents?.[SUPER_BEING]) { await send?.(ev.chatId, `/super: no ${SUPER_BEING} agent on this node (config.yaml agents.${SUPER_BEING})`); return 'no super agent'; }
+      return (await commandTurn({ being: SUPER_BEING, ev })) ?? 'no turn';
+    }
 
     // A registered command no branch above dispatches.
     const tok = line.split(/\s+/)[0];

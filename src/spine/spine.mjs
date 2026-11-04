@@ -963,12 +963,13 @@ export function createSpine({
       // type one past the stop) when a HUMAN typed it: what the 2026-07-25 flood re-entered was
       // authorized-looking machine output, and that stays suppressed. It does NOT lift the stop —
       // only RESUME does; the command runs and the beings stay paused.
+      // A signed line that runs a command (a being's /super) counts as a cross-being wake does.
       if (guard) {
         if (guard.blocked(channel) && !humanTurn(ev)) return () => { note(`guard: ${channel} stopped — command suppressed`); };
         if (humanTurn(ev)) guard.noteHuman(channel);
-        else await guardCountNonHuman(ev, channel);
+        else await guardCountNonHuman(ev, channel, ev.fromNode != null);
       }
-      return async () => { await commands.run(cmd); };
+      return () => commands.run(cmd);   // a command's own turn (/super) comes back as { turn }
     }
 
     // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,
@@ -1471,6 +1472,16 @@ export function createSpine({
   // The being's own thread continuing — gated as a reply to it, so mute/off/paused still hold.
   const WAKE_MENTION = { replyToBot: true };
 
+  // A COMMAND'S TURN (/<handle> super, commands.mjs): the being answers the command's own line in its chat,
+  // through the reply path. The command decided who may; classify counted it for the loop guard.
+  async function commandTurn({ being, ev }) {
+    const d = await gating.decide(being, ev, COMMAND_MENTION, { bot: !humanTurn(ev), reacts: marksHere(being, ev) });
+    if (!d.mayReply) { note(`command ${being}/${ev.chatId}: mode ${d.mode} — no turn`); return null; }
+    const { key: turnKey, pinned } = await turns.keyOf(being, ev);
+    return { turn: openAndRunReply({ to: being, ev, d, turnKey, pinned }) };
+  }
+  const COMMAND_MENTION = { atEStart: true, atEAnywhere: true };
+
   // The reply train's turn body (DEFECT 1 + accumulation FEATURE). Fully guarded: from
   // the moment the placeholder opened, EVERY exit resolves it VISIBLY — the reply, the
   // no-reply marker (surfaced-but-empty or a failed turn), or a failure marker
@@ -1902,5 +1913,5 @@ export function createSpine({
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound, stats, drainForRestart, noteStoppedBackground, resumedAt, backlogOf, wakeOnBackground };
+  return { start, stop, tick, handleInbound, stats, drainForRestart, noteStoppedBackground, resumedAt, backlogOf, wakeOnBackground, commandTurn };
 }
