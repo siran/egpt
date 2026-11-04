@@ -710,8 +710,8 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
   //    CONTRACT as every list here: one flag, ONE argv element holding a JSON array of STRINGS -
   //    `NAME=PATH`, the -SetEnv shape - because ConvertFrom-JsonArgv parses nothing else. ──
   it('REPRODUCE-FIRST: a node read mount reaches the launcher as ONE -ReadMounts element of NAME=PATH strings', async () => {
-    const args = await argvFor({ sandboxReadMounts: [{ name: 'repos', path: 'C:/Users/an/src/siran' }, { name: 'notes', path: 'D:/notes' }] });
-    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:/Users/an/src/siran', 'notes=D:/notes']);
+    const args = await argvFor({ sandboxReadMounts: [{ name: 'repos', path: 'C:/Users/user/src/siran' }, { name: 'notes', path: 'D:/notes' }] });
+    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:/Users/user/src/siran', 'notes=D:/notes']);
     const i = args.indexOf('-ReadMounts');
     expect(args[i + 2].startsWith('-'), '-ReadMounts carries more than one argv value').toBe(true);
     // ...before -InnerBin, in the launcher's param-block order, and -InnerArgs is still last.
@@ -735,11 +735,11 @@ describe('sandbox-cli-session — the launcher argument contract (one argv eleme
   it('a pinned turn hands the launcher -PinKey and its standing paths, apart from the per-turn shares', async () => {
     const args = await argvFor({
       sandboxSharePaths: ['C:\\turn'],
-      sandboxPin: { key: 'egpt:whatsapp:89xiq', writable: [' C:\\w '], readOnly: ['C:/Users/an/Documents', 'C:\\w', '', 7] },
+      sandboxPin: { key: 'egpt:whatsapp:89xiq', writable: [' C:\\w '], readOnly: ['C:/Users/user/Documents', 'C:\\w', '', 7] },
     });
     expect(args[args.indexOf('-PinKey') + 1]).toBe('egpt:whatsapp:89xiq');
     expect(jsonArgOf(args, '-PinSharePath')).toEqual(['C:\\w']);
-    expect(jsonArgOf(args, '-PinSharePathReadOnly')).toEqual(['C:/Users/an/Documents']);
+    expect(jsonArgOf(args, '-PinSharePathReadOnly')).toEqual(['C:/Users/user/Documents']);
     expect(jsonArgOf(args, '-SharePath')).toEqual(['C:\\turn', THREAD_STORE]);
     expect(args.indexOf('-PinKey')).toBeLessThan(args.indexOf('-InnerBin'));
     expect(args[args.length - 2]).toBe('-InnerArgs');
@@ -940,7 +940,7 @@ describe('sandbox-cli-session — a missing or rejected sandbox_oauth_token tell
 //    owns the launcher for all three engines, so it taps the launcher's stderr and forwards the ONE
 //    `launch` summary line to onLog, leaving the engine's own stderr handling exactly as it was. ──
 describe('sandbox-cli-session — the launcher\'s launch summary line reaches onLog', () => {
-  const LAUNCH = String.raw`sandbox-logon-launcher: launch account=egpt-sbx-08 cwd=C:\Users\egpt-sbx-08\egpt junction=ok target=C:\Users\an\.egpt\conversations\whatsapp\Some One-2608141626`;
+  const LAUNCH = String.raw`sandbox-logon-launcher: launch account=egpt-sbx-08 cwd=C:\Users\egpt-sbx-08\egpt junction=ok target=C:\Users\user\.egpt\conversations\whatsapp\Some One-2608141626`;
   const NOISE = String.raw`sandbox-logon-launcher: environment block for 'egpt-sbx-08' rebased on its own profile at C:\Users\egpt-sbx-08: APPDATA` + '\r\n';
   // The launch line split mid-line across two chunks, CRLF-terminated as PowerShell writes it.
   const CHUNKS = [NOISE, LAUNCH.slice(0, 40), `${LAUNCH.slice(40)}\r\n`, 'sandbox-logon-launcher: launching exited 0\r\n'];
@@ -1005,7 +1005,7 @@ describe('sandbox-cli-session — the launcher\'s launch summary line reaches on
 describe('sandbox-cli-session — spawnBoxedCommand: a being\'s heartbeat command, run as the conversation\'s pool account', () => {
   const ROOM = join(STORE, 'room-wren');
   mkdirSync(join(ROOM, 'heartbeats'), { recursive: true });
-  const MOUNTS = [{ name: 'repos', path: 'C:\\Users\\an\\src\\siran' }];
+  const MOUNTS = [{ name: 'repos', path: 'C:\\Users\\user\\src\\siran' }];
   // The launcher's Format-Win32Arg, ported for the assertion only: what CreateProcessWithLogonW is
   // handed is these quoted elements joined by spaces (Invoke-AsLeasedAccount's $cmdParts).
   const win32Arg = (a) => {
@@ -1037,7 +1037,7 @@ describe('sandbox-cli-session — spawnBoxedCommand: a being\'s heartbeat comman
     expect(args[args.indexOf('-InnerBin') + 1]).toBe(BASH);
     expect(innerArgvOf(args)).toEqual(['-c', 'date +%F > hoy.txt']);
     expect(jsonArgOf(args, '-SetEnv')).toEqual([`CLAUDE_CODE_GIT_BASH_PATH=${BASH}`, 'MSYS2_PATH_TYPE=inherit']);
-    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:\\Users\\an\\src\\siran']);
+    expect(jsonArgOf(args, '-ReadMounts')).toEqual(['repos=C:\\Users\\user\\src\\siran']);
     expect(f.calls[0].opts).toMatchObject({ cwd: ROOM, windowsHide: true });
   });
 

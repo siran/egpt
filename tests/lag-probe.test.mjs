@@ -39,7 +39,7 @@ afterEach(() => { vi.useRealTimers(); });
 describe('lag probe: alert, repeat, recover', () => {
   it('lag over the threshold → ONE logging-group line with the attribution', async () => {
     const h = harness();
-    h.turns = [['e:whatsapp:!favel:beeper.local', 3], ['e:whatsapp:!x:beeper.local', 1]];
+    h.turns = [['e:whatsapp:!fiona:beeper.local', 3], ['e:whatsapp:!x:beeper.local', 1]];
     h.probe.start();
     h.lag = 9_999;
     await step(5_000);
@@ -238,18 +238,18 @@ describe('lag probe: slowest steps', () => {
 
   it('the alert names the slowest steps, a step still running, and the busiest turn chat by name', async () => {
     const h = harness();
-    h.turns = [['e:whatsapp:!favel:beeper.local', 3]];
+    h.turns = [['e:whatsapp:!fiona:beeper.local', 3]];
     h.probe.start();
     const p = h.probe.time('transcript', { chatId: '!b:beeper.local', chatName: 'Bea' }, () => new Promise((r) => setTimeout(r, 3_000)));
     await step(3_000); await p;
-    h.probe.time('classify', { chatId: '!favel:beeper.local', chatName: 'Favel Konefka' }, () => new Promise(() => {}));   // t=3s, never settles
+    h.probe.time('classify', { chatId: '!fiona:beeper.local', chatName: 'Fiona Ejemplar' }, () => new Promise(() => {}));   // t=3s, never settles
     await step(30_000);
     expect(h.posted).toEqual([]);
     h.lag = 31_000;
     await step(2_000);                   // t=35s: the sample that alerts
     const line = h.posted[0];
-    expect(line).toContain('in classify@Favel Konefka 32s');
-    expect(line).toContain('most e@Favel Konefka ×3');
+    expect(line).toContain('in classify@Fiona Ejemplar 32s');
+    expect(line).toContain('most e@Fiona Ejemplar ×3');
     expect(line).toMatch(/ · slowest transcript@Bea 3\.0s$/);
     h.probe.stop();
   });
@@ -285,12 +285,12 @@ describe('lag probe: wired into the spine', () => {
       sender: { open() { return { update() {}, fail() {}, async finish() {} }; } },
       transcript, heartbeats: { runDue() {} }, probe: h.probe,
     });
-    const done = spine.handleInbound({ body: 'hola', chatId: '!favel:beeper.local', chatName: 'Favel', surface: 'whatsapp', senderId: 'u1', mention: {} });
+    const done = spine.handleInbound({ body: 'hola', chatId: '!fiona:beeper.local', chatName: 'Fiona', surface: 'whatsapp', senderId: 'u1', mention: {} });
     await step(2_500);
     await done;
     const names = h.probe.slowest().map((s) => `${s.name}@${s.chat}`);
-    expect(h.probe.slowest()[0]).toEqual({ name: 'transcript', chat: 'Favel', ms: 2_500 });
-    expect(names).toEqual(expect.arrayContaining(['classify@Favel', 'refresh@-', 'config@-']));
+    expect(h.probe.slowest()[0]).toEqual({ name: 'transcript', chat: 'Fiona', ms: 2_500 });
+    expect(names).toEqual(expect.arrayContaining(['classify@Fiona', 'refresh@-', 'config@-']));
     expect(cb).toBe(null);   // never started: handleInbound alone drives it
   });
 });

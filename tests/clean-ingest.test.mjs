@@ -38,7 +38,7 @@ const SIG_KG_EP  = encodeNodeSignature('kg', 'eplus');  // a line E+ committed
 const SIG_DO_DON = encodeNodeSignature('do', 'don');    // a PEER node's being
 
 // mode drives the gate: 'mention' wakes only on a mention; 'on' wakes on every message (so the
-// ONLY thing that can stop a wake is the own-output classification — the faithful PALMA shape).
+// ONLY thing that can stop a wake is the own-output classification — the faithful MUESTRA shape).
 function buildSpine({ mode = 'mention', guard = null } = {}) {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body }); return { text: 'x' }; } };
   const identity = createIdentity({ now: () => 1000 });
@@ -78,7 +78,7 @@ describe('clean ingest — the three-check wake model', () => {
   });
 
   // 3. ECHO. E's own signed output re-entering (no cross-being address), in mode 'on' (replies to
-  //    everything) — must NOT re-wake E. This is the PALMA loop's REPLY face: only the own-output
+  //    everything) — must NOT re-wake E. This is the MUESTRA loop's REPLY face: only the own-output
   //    classification stops it, since 'on' has no mention gate.
   // contract 7.3
   it("3. E's own signed output re-entering does NOT re-wake E (mode on)", async () => {

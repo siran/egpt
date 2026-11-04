@@ -13,11 +13,11 @@ const SECRETS = {
   sandbox_oauth_token: 'SECRET-OAUTH-0001',
   beeper: { primary: { token: 'SECRET-BEEPER-0002' }, secondary: { token: 'SECRET-BEEPER-0003' } },
   shell: { token: 'SECRET-SHELL-0004' },
-  radio_service: { wildnloyal: { relay_password: 'SECRET-RADIO-0005' } },
+  radio_service: { examplefm: { relay_password: 'SECRET-RADIO-0005' } },
 };
 const SECRET_WORDS = ['SECRET-', 'sandbox_oauth_token', 'beeper', 'shell', 'token', 'relay_password'];
 
-const EGPT_TYPE = { type: 'ccode', model: 'opus', effort: 'high', verbose_thinking: true, allowed_paths: { 'C:/Users/an/src/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } } };
+const EGPT_TYPE = { type: 'ccode', model: 'opus', effort: 'high', verbose_thinking: true, allowed_paths: { 'C:/Users/user/src/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } } };
 const baseConfig = () => ({
   node_name: 'kg',
   ...SECRETS,
@@ -81,7 +81,7 @@ describe('renderConfigBlock — what a being is shown', () => {
     expect(data).toMatchObject({
       handles: ['e', 'egpt', 'ekg', 'egptkg'], node: 'kg', configuration: 'opus-default', engine: 'ccode', model: 'opus', effort: 'high',
       access_level: 'sandbox', sandboxed: true, mode: 'mention', verbose_thinking: true,
-      allowed_paths: { 'C:/Users/an/src/egpt': ['Read', 'Glob', 'Grep'] }, compaction: { ratio: 0.25 },
+      allowed_paths: { 'C:/Users/user/src/egpt': ['Read', 'Glob', 'Grep'] }, compaction: { ratio: 0.25 },
       thread: '53e9e587-384a-4d1b-9795-7e947847292c',
     });
   });

@@ -35,7 +35,7 @@ const read = (dir) => ({
 
 describe('groupColor — a fixed palette pick by name, overridable per group', () => {
   it('is deterministic and always from the palette', () => {
-    for (const g of ['brain', 'eduweb-si', 'shared', 'perrito', 'with space']) {
+    for (const g of ['brain', 'contoso-si', 'shared', 'perrito', 'with space']) {
       expect(GROUP_PALETTE).toContain(groupColor(g));
       expect(groupColor(g)).toBe(groupColor(g));
     }
@@ -52,14 +52,14 @@ describe('stampGroupProfile — name and color into the profile, nothing else to
   it('sets the Local State and Preferences keys Chrome 155 reads', () => {
     const dir = profile();
     const logs = [];
-    stampGroupProfile({ userDataDir: dir, group: 'eduweb-si', colors: { 'eduweb-si': '#188038' }, log: (m) => logs.push(m) });
+    stampGroupProfile({ userDataDir: dir, group: 'contoso-si', colors: { 'contoso-si': '#188038' }, log: (m) => logs.push(m) });
     const { ls, prefs } = read(dir);
-    expect(ls.profile.info_cache.Default).toMatchObject({ name: 'eduweb-si', is_using_default_name: false });
-    expect(prefs.profile).toMatchObject({ name: 'eduweb-si', using_default_name: false });
+    expect(ls.profile.info_cache.Default).toMatchObject({ name: 'contoso-si', is_using_default_name: false });
+    expect(prefs.profile).toMatchObject({ name: 'contoso-si', using_default_name: false });
     expect(prefs.extensions.theme.id).toBe('user_color_theme_id');
     expect(prefs.browser.theme.user_color2).toBe(argbOf('#188038'));
     expect(prefs.browser.theme.user_color2).toBeLessThan(0);                 // signed SkColor, as Chrome stores it
-    expect(logs).toEqual([`stamped "eduweb-si" profile ${dir}: name "eduweb-si", color #188038`]);
+    expect(logs).toEqual([`stamped "contoso-si" profile ${dir}: name "contoso-si", color #188038`]);
   });
 
   it('keeps everything else, numbers byte-for-byte (a double written as 1.0 stays 1.0)', () => {

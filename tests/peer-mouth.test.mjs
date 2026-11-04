@@ -55,16 +55,16 @@ const self = (id) => ({ id, isSelf: true });
 
 // The chat the brain is replying in, as the PRIMARY account sees it.
 const AS_PRIMARY = {
-  id: '!6ljZJkx0OaY9ZVhEzFgi:beeper.local', title: 'Group', type: 'group',
+  id: '!FakeRoomId0000000004:beeper.local', title: 'Group', type: 'group',
   participants: { items: [self('@primary:beeper.com'), member('p-secondary', SECONDARY_NUM), member('p-m1', M1), member('p-m2', M2)] },
 };
 // The SAME real chat, as the SECONDARY account sees it: different room id, different participant
 // ids, different order. Only the phone numbers line up.
 const AS_SECONDARY = {
-  id: '!HuXFQeZSY1X4khNDWTzz:beeper.local', title: 'Group', type: 'group',
+  id: '!FakeRoomId0000000003:beeper.local', title: 'Group', type: 'group',
   participants: { items: [member('s-m2', M2), self('@secondary:beeper.com'), member('s-primary', PRIMARY_NUM), member('s-m1', M1)] },
 };
-const SECONDARY_CHAT_ID = 'HuXFQeZSY1X4khNDWTzz';   // what shortChatId makes of it: no '!', no ':beeper.local'
+const SECONDARY_CHAT_ID = 'FakeRoomId0000000003';   // what shortChatId makes of it: no '!', no ':beeper.local'
 // A DIFFERENT group on the secondary's account — same two spines in it, a different third member.
 const OTHER_CHAT = {
   id: '!other:beeper.local', title: 'Other', type: 'group',
@@ -831,7 +831,7 @@ describe('a REACTION crosses the link and is placed on the OTHER account\'s own 
     const r = await poke();
     expect(r).toMatchObject({ ok: false, reason: 'no-match' });
     expect(reacted).toEqual([]);
-    expect(logs.join('\n')).toMatch(/REFUSING to react in HuXFQeZSY1X4khNDWTzz — no-match/);
+    expect(logs.join('\n')).toMatch(/REFUSING to react in FakeRoomId0000000003 — no-match/);
     port.stop();
   });
 
@@ -1004,7 +1004,7 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
     expect(r.detail).toMatch(/2 of them at 2026-09-07T11:07:17\.000Z/);
     expect(r.detail).toMatch(/refusing to pick/);
     expect(reacted).toEqual([]);
-    expect(logs.join('\n')).toMatch(/REFUSING to react in HuXFQeZSY1X4khNDWTzz — ambiguous/);
+    expect(logs.join('\n')).toMatch(/REFUSING to react in FakeRoomId0000000003 — ambiguous/);
     port.stop();
   });
 
@@ -1081,7 +1081,7 @@ describe('the mouth refuses rather than guessing — and always says so', () => 
     const { poke, reacted, logs, port } = rig({ listMessages: async () => { throw new Error('desktop api is down'); } });
     expect(await poke()).toMatchObject({ ok: false, reason: 'unavailable', detail: 'desktop api is down' });
     expect(reacted).toEqual([]);
-    expect(logs.join('\n')).toMatch(/could not read the messages of HuXFQeZSY1X4khNDWTzz — refusing to react/);
+    expect(logs.join('\n')).toMatch(/could not read the messages of FakeRoomId0000000003 — refusing to react/);
     port.stop();
   });
 
@@ -1268,8 +1268,8 @@ describe('findChatByLastMessage — which of MY chats last heard that, on its ow
   // only direction a failure here may fall. A MENTION renders through each account's own id
   // namespace; a CODE BLOCK carried one trailing newline more on one account than the other.
   it('a body that renders per-account (a mention, a code block) simply misses', () => {
-    const mention = chat('!same-room:beeper.local', '<a href="https://matrix.to/#/@dolly-egpt:beeper.com">Rodz</a> ping', '2026-09-12T13:39:43.000Z');
-    const earSawMention = { id: '9', text: '<a href="https://matrix.to/#/@whatsapp_lid-69433129173200:beeper.local">Rodz</a> ping', timestamp: '2026-09-12T13:39:43.000Z' };
+    const mention = chat('!same-room:beeper.local', '<a href="https://matrix.to/#/@mouth-acct:beeper.com">Rodz</a> ping', '2026-09-12T13:39:43.000Z');
+    const earSawMention = { id: '9', text: '<a href="https://matrix.to/#/@whatsapp_lid-10000000000015:beeper.local">Rodz</a> ping', timestamp: '2026-09-12T13:39:43.000Z' };
     expect(findChatByLastMessage([mention], earSawMention).reason).toBe('no-match');
     const fence = chat('!same-room:beeper.local', '```\nqwinsta\n```', '2026-09-07T21:41:46.460Z');
     const earSawFence = { id: '9', text: '```\nqwinsta\n\n```', timestamp: '2026-09-07T21:41:46.000Z' };
@@ -1362,16 +1362,16 @@ describe('findMessageByKey — which of MY messages is that one, on its own', ()
 describe('crossAccountMsgKey — a bodiless message is keyed by its attachment', () => {
   const VOICE_TS = '2026-09-15T15:33:38.000Z';
   const VOICE_ON_EAR = {
-    chatID: '!JwvpZvGK8H8DLDuPa89w:beeper.local', id: '7004', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
-    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/anrodriguez_ear7004', srcURL: 'file:///C:/ear/media/7004.ogg' }],
+    chatID: '!FakeRoomId0000000014:beeper.local', id: '7004', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
+    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/anaprueba_ear7004', srcURL: 'file:///C:/ear/media/7004.ogg' }],
   };
   const VOICE_ON_MOUTH = {
-    chatID: '!lHZ44tI32W0eEtbwMutM:beeper.local', id: '2404', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
-    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/dolly-egpt_mouth2404', srcURL: 'file:///C:/mouth/media/2404.ogg' }],
+    chatID: '!FakeRoomId0000000009:beeper.local', id: '2404', timestamp: VOICE_TS, type: 'VOICE', senderName: 'Contact', text: null,
+    attachments: [{ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: 'mxc://local.beeper.com/mouth-acct_mouth2404', srcURL: 'file:///C:/mouth/media/2404.ogg' }],
   };
   const OTHER_NOTE_ON_MOUTH = {
     ...VOICE_ON_MOUTH, id: '2390', timestamp: '2026-09-15T14:51:28.000Z',
-    attachments: [{ ...VOICE_ON_MOUTH.attachments[0], fileSize: 46699, id: 'mxc://local.beeper.com/dolly-egpt_mouth2390', srcURL: 'file:///C:/mouth/media/2390.ogg' }],
+    attachments: [{ ...VOICE_ON_MOUTH.attachments[0], fileSize: 46699, id: 'mxc://local.beeper.com/mouth-acct_mouth2390', srcURL: 'file:///C:/mouth/media/2390.ogg' }],
   };
 
   it('the two accounts\' views of one voice note key alike', () => {
@@ -1418,9 +1418,9 @@ describe('crossAccountMsgKey — a bodiless message is keyed by its attachment',
   // THE LAST-MESSAGE TIER (findChatByLastMessage) now reaches a chat whose last message is a voice
   // note — which is exactly the chat a 🎧 is placed in.
   it('a chat whose last message is that voice note is found by its last message', () => {
-    const mouthChat = { id: '!lHZ44tI32W0eEtbwMutM:beeper.local', type: 'single', preview: VOICE_ON_MOUTH };
+    const mouthChat = { id: '!FakeRoomId0000000009:beeper.local', type: 'single', preview: VOICE_ON_MOUTH };
     const otherChat = { id: '!other:beeper.local', type: 'single', preview: OTHER_NOTE_ON_MOUTH };
-    expect(findChatByLastMessage([otherChat, mouthChat], VOICE_ON_EAR)).toEqual({ ok: true, chatId: 'lHZ44tI32W0eEtbwMutM' });
+    expect(findChatByLastMessage([otherChat, mouthChat], VOICE_ON_EAR)).toEqual({ ok: true, chatId: 'FakeRoomId0000000009' });
   });
 });
 
@@ -1429,9 +1429,9 @@ describe('crossAccountMsgKey — a bodiless message is keyed by its attachment',
 // at send (ms); the other account's carries WhatsApp's server second, taken after the upload. A frame
 // with ms accepts a copy up to 5 s later, never earlier (2026-11-03).
 describe('a copy sent from a Beeper client, as the other account holds it', () => {
-  const IMG_ON_EAR = { id: '41174', chatID: '!trYqoMoH7jETBozvcOQh:beeper.local', timestamp: '2026-10-31T02:53:07.260Z', type: 'IMAGE', text: 'w', isSender: true,
+  const IMG_ON_EAR = { id: '41174', chatID: '!FakeRoomId0000000005:beeper.local', timestamp: '2026-10-31T02:53:07.260Z', type: 'IMAGE', text: 'w', isSender: true,
     attachments: [{ type: 'img', mimeType: 'image/png', fileName: 'image.png', fileSize: 103234, size: { width: 1275, height: 356 } }] };
-  const IMG_ON_MOUTH = { id: '17743', chatID: '!nG3zZhXhJ0mZfmCu6s2f:beeper.local', timestamp: '2026-10-31T02:53:08.000Z', type: 'IMAGE', text: 'w', isSender: false,
+  const IMG_ON_MOUTH = { id: '17743', chatID: '!FakeRoomId0000000010:beeper.local', timestamp: '2026-10-31T02:53:08.000Z', type: 'IMAGE', text: 'w', isSender: false,
     attachments: [{ type: 'img', mimeType: 'image/jpeg', fileName: 'image.jpg', fileSize: 50254, size: { width: 1275, height: 356 } }] };
   const TEXT_ON_EAR = { id: '39424', timestamp: '2026-10-28T02:05:23.990Z', type: 'TEXT', text: 'w ok?', isSender: true };
   const TEXT_ON_MOUTH = { id: '16977', timestamp: '2026-10-28T02:05:24.000Z', type: 'TEXT', text: 'w ok?', isSender: false };

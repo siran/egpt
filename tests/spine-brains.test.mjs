@@ -118,7 +118,7 @@ describe('brain registry', () => {
   // box holds Modify on it — and its brains/<name>.yaml cwd became the launcher's TargetFolder and
   // its allowed_paths a Modify share: a boxed being could grant itself the spine's own profile.
   it('REPRODUCE: a Room layer\'s box keys are ignored and named once in the log; model/effort still apply', () => {
-    const SPINE = 'C:/Users/an/.egpt';
+    const SPINE = 'C:/Users/user/.egpt';
     const logs = [];
     const files = {
       [join(BUILTIN, 'sonnet-high.yaml')]: 'type: ccode\nmodel: sonnet\neffort: high\nallowed_tools:\n  - Read\n',

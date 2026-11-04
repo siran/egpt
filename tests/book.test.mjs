@@ -7,7 +7,7 @@ import { createEmail } from '../src/spine/email.mjs';
 const TZ = 'America/Caracas';                         // UTC-4, no DST
 const NOW = Date.UTC(2026, 9, 15, 18, 0);             // Thu 2026-10-15 14:00 Caracas
 const ICS_SECRET = 'private-0123456789abcdef0123456789abcdef';
-const ICS_URL = `https://calendar.google.com/calendar/ical/demos%40eserviciosat.net/${ICS_SECRET}/basic.ics`;
+const ICS_URL = `https://calendar.google.com/calendar/ical/demos%40contoso-services.example/${ICS_SECRET}/basic.ics`;
 const KEY_ID = 'AKIAFAKEKEYID0000002';
 const SECRET = 'fakeSecretValue/zyxwvutsrqponmlkjihgfedcba98';
 const SECRETS = [ICS_SECRET, ICS_URL, KEY_ID, SECRET];
@@ -20,8 +20,8 @@ const ics = (...events) => ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Google 
 const WEEKLY_TU_TH_9 = ['DTSTART;TZID=America/Caracas:20261001T090000', 'DTEND;TZID=America/Caracas:20261001T100000', 'RRULE:FREQ=WEEKLY;WKST=SU;BYDAY=TU,TH;UNTIL=20261231T235959Z', 'SUMMARY:Standup'];
 
 const CONFIG = (book = {}, email = {}) => ({
-  book: { ics_url: ICS_URL, calendar_email: 'demos@eserviciosat.net', timezone: TZ, duration_minutes: 30, ...book },
-  email: { from: 'EduWeb <ventas@eduweb.com.ve>', to: ['contacto@eserviciosat.net'], aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...email },
+  book: { ics_url: ICS_URL, calendar_email: 'demos@contoso-services.example', timezone: TZ, duration_minutes: 30, ...book },
+  email: { from: 'Contoso <ventas@contoso.example>', to: ['contacto@contoso-services.example'], aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...email },
 });
 
 function build({ config = CONFIG(), feed = ics(), feedStatus = 200, feedThrows = null } = {}) {
@@ -40,7 +40,7 @@ function build({ config = CONFIG(), feed = ics(), feedStatus = 200, feedThrows =
   const getConfig = () => config;
   const mail = createEmail({ getConfig, fetch, now: () => NOW, log: (m) => logs.push(`[email] ${m}`) });
   const limb = createBookLimb({ getConfig, fetch, ses: mail.ses, missingMail: mail.missing, now: () => NOW, log: (m) => logs.push(`[book] ${m}`) });
-  return { book: (date, time, summary = 'Demo EduWeb — Colegio San José') => limb.book({ type: 'book', date, time, summary }, EV, 'edw-marketer'), logs, sent, feeds };
+  return { book: (date, time, summary = 'Demo Contoso — Colegio San José') => limb.book({ type: 'book', date, time, summary }, EV, 'edw-marketer'), logs, sent, feeds };
 }
 
 // The raw MIME of an SES call, and its text/calendar part decoded.
@@ -117,29 +117,29 @@ describe('/book — a free slot is booked by an invitation to book.calendar_emai
     expect(r).toEqual({ outcome: 'booked', detail: 'invitation sent to the team calendar for 2026-10-20 10:00-10:30 (America/Caracas)' });
     expect(feeds).toHaveLength(1);
     expect(sent).toHaveLength(1);
-    expect(sent[0].body.Destination).toEqual({ ToAddresses: ['demos@eserviciosat.net'] });
-    expect(sent[0].body.FromEmailAddress).toBe('EduWeb <ventas@eduweb.com.ve>');
+    expect(sent[0].body.Destination).toEqual({ ToAddresses: ['demos@contoso-services.example'] });
+    expect(sent[0].body.FromEmailAddress).toBe('Contoso <ventas@contoso.example>');
     const { headers, cal, ical } = invite(sent[0]);
-    expect(headers).toMatch(/^To: demos@eserviciosat\.net$/m);
+    expect(headers).toMatch(/^To: demos@contoso-services\.example$/m);
     expect(cal).toContain('Content-Type: text/calendar; charset=UTF-8; method=REQUEST');
     expect(ical).toContain('METHOD:REQUEST');
     expect(ical).toMatch(/^UID:.+@egpt$/m);
     expect(ical).toMatch(/^DTSTAMP:20261015T180000Z$/m);
     expect(ical).toMatch(/^DTSTART:20261020T140000Z$/m);
     expect(ical).toMatch(/^DTEND:20261020T143000Z$/m);
-    expect(ical).toContain('SUMMARY:Demo EduWeb — Colegio San José');
-    expect(ical).toContain('ORGANIZER:mailto:ventas@eduweb.com.ve');
-    expect(ical).toContain('ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demos@eserviciosat.net');
+    expect(ical).toContain('SUMMARY:Demo Contoso — Colegio San José');
+    expect(ical).toContain('ORGANIZER:mailto:ventas@contoso.example');
+    expect(ical).toContain('ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demos@contoso-services.example');
   });
 
   it('addresses or headers in the summary never become recipients or headers', async () => {
     const { book, sent } = build();
     await book('2026-10-20', '10:00', 'Demo\r\nBcc: x@evil.test\r\nTo: y@evil.test; ATTENDEE:mailto:z@evil.test');
-    expect(sent[0].body.Destination).toEqual({ ToAddresses: ['demos@eserviciosat.net'] });
+    expect(sent[0].body.Destination).toEqual({ ToAddresses: ['demos@contoso-services.example'] });
     const { headers, ical } = invite(sent[0]);
     expect(headers).not.toMatch(/evil/);
     expect(headers.split('\r\n').map((l) => l.split(':')[0])).toEqual(['From', 'To', 'Subject', 'Date', 'MIME-Version', 'Content-Type']);
-    expect(ical.match(/^ATTENDEE.*$/gm)).toEqual(['ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demos@eserviciosat.net']);
+    expect(ical.match(/^ATTENDEE.*$/gm)).toEqual(['ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demos@contoso-services.example']);
     expect(ical).toContain('SUMMARY:Demo Bcc: x@evil.test To: y@evil.test\\; ATTENDEE:mailto:z@evil.test');
   });
 

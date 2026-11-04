@@ -14,7 +14,7 @@ import { createCommands, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs'
 import { fakeChromeChild } from './fake-pipe-chrome.mjs';
 
 const MB = 1024 * 1024;
-const SHARED = { key: 'Reinie-2607150057', name: 'Reinie', group: 'shared' };
+const SHARED = { key: 'Renata-2607150057', name: 'Renata', group: 'shared' };
 const ROOT = dirname(CHROME_BRAIN_PROFILE);
 // What the spine sends for group `g` (commands.mjs ensureGroupChrome).
 const launchOf = (group, bin = 'chrome') => ({ group, profileDir: join(ROOT, group), bin, argv: chromePipeArgs({ userDataDir: join(ROOT, group), windowName: group }) });
@@ -141,7 +141,7 @@ describe('no daemon IPC → no browser', () => {
     expect(r).toMatchObject({ ok: false, reason: 'no-browser' });
     expect(r.detail).toMatch(/no daemon chrome-host/);
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatch(/no browser for "Reinie"/);
+    expect(logs[0]).toMatch(/no browser for "Renata"/);
   });
 
   // Operator 2026-10-22: the Session 0 service runs the node while nobody is logged in; the browser

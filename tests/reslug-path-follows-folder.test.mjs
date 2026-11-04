@@ -1,4 +1,4 @@
-// A group rename whose folder move fails (EBUSY, 2026-10-15 "EduWeb + SI" → "SI+EduWeb")
+// A group rename whose folder move fails (EBUSY, 2026-10-15 "Contoso + SI" → "SI+Contoso")
 // must not split the conversation: the entry stays on the folder that exists, writers keep
 // landing there, no empty folder appears at the new name, and a later message retries.
 // Real fs under a private profile; only the rename is faked busy.
@@ -20,9 +20,9 @@ import { createMedia } from '../src/spine/media.mjs';
 import { emptyState, ensureContact, getContact, slugDir, conversationPathOf } from '../src/conversations-state.mjs';
 
 const SURFACE = 'whatsapp';
-const CHAT = '!eduweb:beeper.com';
-const OLD_NAME = 'EduWeb + SI (super-inteligencia)';
-const NEW_NAME = 'SI+EduWeb';
+const CHAT = '!contoso:beeper.com';
+const OLD_NAME = 'Contoso + SI (super-inteligencia)';
+const NEW_NAME = 'SI+Contoso';
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
 let state, oldSlug, busyCode;

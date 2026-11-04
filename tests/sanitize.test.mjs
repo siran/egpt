@@ -8,8 +8,8 @@ import { sanitizeSlug as slugFromConvState } from '../src/conversations-state.mj
 
 describe('sanitizeSlug — Windows-path-safe, name-preserving (characterization)', () => {
   it('keeps accents, spaces, parens, plus — strips only Windows-illegal chars', () => {
-    expect(sanitizeSlug('Tío Jesús Palma')).toBe('Tío Jesús Palma');
-    expect(sanitizeSlug('+1 (646) 821-7865')).toBe('+1 (646) 821-7865');
+    expect(sanitizeSlug('Tío Jesús Muestra')).toBe('Tío Jesús Muestra');
+    expect(sanitizeSlug('+1 (555) 010-0001')).toBe('+1 (555) 010-0001');
     expect(sanitizeSlug('premise-driven bitcoin')).toBe('premise-driven bitcoin');
   });
 

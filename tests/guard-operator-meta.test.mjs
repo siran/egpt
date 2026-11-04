@@ -6,7 +6,7 @@
 //      meta-engineers are not.")
 //
 // THE LIVE FAILURE, kg 2026-09-16, the operator's own admin group:
-//   19:01:41 guard: whatsapp:trYqoMoH7jETBozvcOQh auto-STOP — 6 consecutive non-human turns
+//   19:01:41 guard: whatsapp:FakeRoomId0000000005 auto-STOP — 6 consecutive non-human turns
 //   19:05:02 guard: ... stopped — prompt suppressed        (operator: "w podemos enviar ...", to wren)
 //   19:28:25 guard: ... stopped — command suppressed       (operator: "/agents wren refresh")
 //   19:28:39 guard: ... stopped — prompt suppressed        (operator: "w there?")
@@ -30,7 +30,7 @@ const AGENTS = Object.fromEntries(Object.entries({
   don: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do' },     // do's persona, reached by relay
 }).map(([k, a]) => [k, { ...a, conversation_defaults: { allowed_users: ['*'] } }]));
 
-const ADMIN = 'trYqoMoH7jETBozvcOQh';
+const ADMIN = 'FakeRoomId0000000005';
 const CH = `whatsapp:${ADMIN}`;
 let seq = 0;
 const base = (chatId) => ({
@@ -182,7 +182,7 @@ describe('ruling 2 — meta engineers (resolved access_level: all) are beyond th
   });
 
   it('access_level: all from a PER-CONVERSATION override makes a meta engineer THERE — not elsewhere, and not the other beings in that conversation', async () => {
-    const SELF = 'yz3kJjWXsQJofK9naaVb';
+    const SELF = 'FakeRoomId0000000001';
     const selfCh = `whatsapp:${SELF}`;
     const { spine, guard, brain, asked } = build({ levels: { [`${SELF}/codex`]: 'all' } });
     guard.stopChannel(selfCh);

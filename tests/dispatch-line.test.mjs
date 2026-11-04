@@ -279,11 +279,11 @@ describe('formatDispatchLine — derives {node,name} from a legacy surface tag',
       .toBe('An@[status].wa (17:21): x');
   });
   it('DM/fallback tag "wa.<jid>" (node FIRST) -> [<jid>].wa', () => {
-    expect(formatDispatchLine({ senderName: 'An', surface: 'wa.16468217865', body: 'x', ts: TS }))
-      .toBe('An@[16468217865].wa (17:21): x');
+    expect(formatDispatchLine({ senderName: 'An', surface: 'wa.15550100001', body: 'x', ts: TS }))
+      .toBe('An@[15550100001].wa (17:21): x');
   });
   it('explicit chatName/node OVERRIDE whatever the surface implies', () => {
-    expect(formatDispatchLine({ senderName: 'An', surface: 'wa.16468217865', chatName: 'Mauricio', node: 'wa', body: 'x', ts: TS }))
+    expect(formatDispatchLine({ senderName: 'An', surface: 'wa.15550100001', chatName: 'Mauricio', node: 'wa', body: 'x', ts: TS }))
       .toBe('An@[Mauricio].wa (17:21): x');
   });
 });
@@ -292,7 +292,7 @@ describe('splitSurfaceTag', () => {
   it('node-last, node-first, bare, empty', () => {
     expect(splitSurfaceTag('compren_bitcoin.wa')).toEqual({ name: 'compren_bitcoin', node: 'wa' });
     expect(splitSurfaceTag('status.wa')).toEqual({ name: 'status', node: 'wa' });
-    expect(splitSurfaceTag('wa.16468217865')).toEqual({ name: '16468217865', node: 'wa' });
+    expect(splitSurfaceTag('wa.15550100001')).toEqual({ name: '15550100001', node: 'wa' });
     expect(splitSurfaceTag('kg')).toEqual({ name: '', node: 'kg' });
     expect(splitSurfaceTag('')).toEqual({ name: '', node: '' });
   });

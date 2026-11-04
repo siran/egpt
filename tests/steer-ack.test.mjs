@@ -1,5 +1,5 @@
 // THE JOYCE SHAPE — a steer that reported success into a session that had stopped consuming
-// (operator 2026-09-09, live 1:1 `Joyce Vicente-2606301852`).
+// (operator 2026-09-09, live 1:1 `Julia Demo-2606301852`).
 //
 // WHAT HAPPENED. Four messages arrived while a turn was "running"; each was steered, each got a
 // 👍, and no reply ever came. Measured on the box afterwards: the sandboxed claude.exe had NO
@@ -16,7 +16,7 @@
 //   ✍️  the BRIDGE has it. Placed on arrival, for a message destined for an agent. It claims
 //       receipt and nothing else, so it is honest by construction.
 //   👍  the MODEL took it. Placed only on real evidence of ingestion — never on a write.
-// ✍️ with no 👍 following is now a VISIBLE SYMPTOM, in the chat, at the time. In the Joyce
+// ✍️ with no 👍 following is now a VISIBLE SYMPTOM, in the chat, at the time. In the Julia
 // incident that is exactly what the operator would have seen instead of four confident 👍s.
 //
 // THE EVIDENCE THE 👍 NOW RIDES ON, measured 2026-09-09 against the real
@@ -43,7 +43,7 @@ import { createTurns } from '../src/spine/turns.mjs';
 const tick = () => new Promise((r) => setImmediate(r));
 const flush = async () => { for (let i = 0; i < 6; i++) await tick(); };
 
-// A fake `claude --input-format stream-json`. `consuming:false` IS the Joyce shape: the process
+// A fake `claude --input-format stream-json`. `consuming:false` IS the Julia shape: the process
 // is alive and the write to its stdin succeeds, but nothing on the other end ever reads it —
 // no replay, no result, no exit.
 function fakeClaude({ consuming = true, sessionId = 'sess-1' } = {}) {
@@ -158,7 +158,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
 
   // The turn's own `result` arrives as one of these lines. Dropping one silently is how a turn
   // can stop existing with the CLI alive and idle and NOTHING anywhere saying why — the state
-  // the Joyce session was measured in. Whether that is what happened there cannot be recovered;
+  // the Julia session was measured in. Whether that is what happened there cannot be recovered;
   // that it would have left no trace can be.
   it('an unreadable stdout line is REPORTED, not silently discarded — and the flood is capped', async () => {
     const logs = [];
@@ -194,7 +194,7 @@ describe('warm-cli-session — the injection ACK is evidence, not a successful w
   // Measured on claude 2.1.303 (2026-10-18): a steered "e" is its dispatch head plus an empty body,
   // "…#34353: ". Absorbed mid-turn, the CLI replays it as it REWROTE it, trailing space gone
   // (its transcript: queued_command promptRewritten:true, then queue-operation absorbed_mid_turn).
-  const HEAD = 'An@[eGPT Rodz Lulu An].wa (21:33) #34353: ';
+  const HEAD = 'An@[eGPT Rodz Lola An].wa (21:33) #34353: ';
   const absorbed = (f, text) => f.emit({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, session_id: 'sess-1', parent_tool_use_id: null, uuid: 'u-1', timestamp: '2026-10-19T03:16:54.930Z', isReplay: true });
 
   it('a line the CLI rewrote when absorbing it mid-turn still acks (absorbed_mid_turn)', async () => {
@@ -242,7 +242,7 @@ describe('warm pool — steer refuses loudly, and never on a write alone', () =>
     expect(logs.join('\n')).toMatch(/steer FAILED never-opened.*no warm entry/);
   });
 
-  it('the Joyce shape through the pool: handed over, never acknowledged, and it is logged as a failure', async () => {
+  it('the Julia shape through the pool: handed over, never acknowledged, and it is logged as a failure', async () => {
     const { pool, logs, f } = poolOn({ consuming: false });
     pool.run('k', 'ORIGINAL');
     await flush();
@@ -354,7 +354,7 @@ describe('turns.steerLiveTurn — ✍️ is the bridge, 👍 is the model', () =
     const pool = createWarmPool({ makeSession: (o) => createWarmCliSession({ ...o, spawn: f.spawn }) });
     const run = pool.run('k', 'ORIGINAL');
     await flush();
-    const line = 'An@[eGPT Rodz Lulu An].wa (21:33) #34353: ';
+    const line = 'An@[eGPT Rodz Lola An].wa (21:33) #34353: ';
     const { turns, reactions, notes } = harness((to, ev) => pool.steer('k', ev.line));
     expect(await turns.steerLiveTurn({ to: 'e', ev: { ...EV, line }, turnKey: KEY })).toBe(true);
     f.emit({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: line.trimEnd() }] }, session_id: 'sess-1', parent_tool_use_id: null, uuid: 'u-1', isReplay: true });

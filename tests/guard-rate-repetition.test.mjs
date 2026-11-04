@@ -1,5 +1,5 @@
-// guard-rate-repetition.test.mjs — THE LIVE LOOP, kg 2026-09-20, "🌴FAMILIA PALMA🌴"
-// (whatsapp:aYFq5skcCliVAmwIhRqH). The channel was auto-STOPped at 00:35:50 and nobody noticed
+// guard-rate-repetition.test.mjs — THE LIVE LOOP, kg 2026-09-20, "🌴FAMILIA MUESTRA🌴"
+// (whatsapp:FakeRoomId0000000013). The channel was auto-STOPped at 00:35:50 and nobody noticed
 // until 08:21; every message in between logged `stopped — prompt suppressed`, including the
 // operator's own `@ken @don @e están?`, and his wife wrote "Todos se desconectaron… 😂" at 01:32.
 //
@@ -56,9 +56,9 @@ function buildSpine({ guard, now = () => 1000 } = {}) {
   });
   return { spine, said, brain };
 }
-const CH = 'whatsapp:PALMA';
+const CH = 'whatsapp:MUESTRA';
 const from = (over = {}) => ({
-  chatId: 'PALMA', chatName: '🌴FAMILIA PALMA🌴', network: 'whatsapp', userId: 'u-an',
+  chatId: 'MUESTRA', chatName: '🌴FAMILIA MUESTRA🌴', network: 'whatsapp', userId: 'u-an',
   senderName: 'An', msgKey: `m${Math.random()}`, isSender: false, authorized: true, ...over,
 });
 // Rodz is the MOUTH account: everything E says lands back on the ear under that display name.
@@ -86,9 +86,9 @@ describe('1 — this node\'s OWN echo is bookkeeping, not a turn (the 2026-09-20
 
   it('ANOTHER node\'s being still counts — that is real chatter, not our echo', () => {
     const isEnvelope = () => false;
-    const ours = { surface: 'whatsapp', chatId: 'PALMA', body: 'hola', fromNode: 'kg' };
-    const theirs = { surface: 'whatsapp', chatId: 'PALMA', body: 'hola', fromNode: 'do' };
-    const person = { surface: 'whatsapp', chatId: 'PALMA', body: 'hola', fromNode: null };
+    const ours = { surface: 'whatsapp', chatId: 'MUESTRA', body: 'hola', fromNode: 'kg' };
+    const theirs = { surface: 'whatsapp', chatId: 'MUESTRA', body: 'hola', fromNode: 'do' };
+    const person = { surface: 'whatsapp', chatId: 'MUESTRA', body: 'hola', fromNode: null };
     const mine = (ev) => ev.fromNode === 'kg';
     expect(turnKind(ours, { isEnvelope, fromThisNode: mine })).toBe('echo');
     expect(turnKind(theirs, { isEnvelope, fromThisNode: mine })).toBe('being');
@@ -267,7 +267,7 @@ describe('4 — a pause is ANNOUNCED in the channel, once, with the way out', ()
     }
     expect(guard.blocked(CH)).toBe(true);
     expect(said).toHaveLength(1);
-    expect(said[0].chatId).toBe('PALMA');
+    expect(said[0].chatId).toBe('MUESTRA');
     expect(said[0].text).toMatch(/resume/);
     expect(said[0].text).toMatch(/6 non-human turns in 2 min/);
   });

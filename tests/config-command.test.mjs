@@ -125,7 +125,7 @@ describe('/config <key>=<value> — bare leaf + dotted path resolution, write, r
     const configPath = await tmpConfigPath();
     const config = {
       node_name: 'kg',
-      radio_service: { wildnloyal: { enabled: false, endpoint: 'https://radio.wildnloyal.org', relay_user: 'egpt', relay_password: 'SUPER-SECRET-RELAY-PASSWORD' } },
+      radio_service: { examplefm: { enabled: false, endpoint: 'https://radio.examplefm.example', relay_user: 'egpt', relay_password: 'SUPER-SECRET-RELAY-PASSWORD' } },
     };
     const { cmds, sent } = harness({ config, configPath });
     await cmds.run({ body: '/config', chatId: '!self', authorized: true });
@@ -202,10 +202,10 @@ describe('/config <key> — bare-key GET, mirrors the write path\'s resolution +
   it('token redaction: a GET of radio_service.<name>.relay_password never leaks the real value', async () => {
     const configPath = await tmpConfigPath();
     const config = {
-      radio_service: { wildnloyal: { relay_password: 'SUPER-SECRET-RELAY-PASSWORD' } },
+      radio_service: { examplefm: { relay_password: 'SUPER-SECRET-RELAY-PASSWORD' } },
     };
     const { cmds, sent } = harness({ config, configPath });
-    await cmds.run({ body: '/config radio_service.wildnloyal.relay_password', chatId: '!self', authorized: true });
+    await cmds.run({ body: '/config radio_service.examplefm.relay_password', chatId: '!self', authorized: true });
     expect(sent[0].text).not.toContain('SUPER-SECRET-RELAY-PASSWORD');
     expect(sent[0].text).toContain('<redacted>');
   });

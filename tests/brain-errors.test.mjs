@@ -23,7 +23,7 @@ describe('isDeadSessionError', () => {
   });
 });
 
-// E's reply, live 2026-10-16 17:24 (SI+EduWeb), from the logged fragments: swallowed as "failure-shaped".
+// E's reply, live 2026-10-16 17:24 (SI+Contoso), from the logged fragments: swallowed as "failure-shaped".
 const E_LIVE_403 ='/reply #32886 Listo, Cuigmar. csi_n ya está en la carpeta protegida.\n'
   + 'Ahora responde 403 y no se puede abrir por web; el .htaccess quedó con:\nRequire all denied';
 

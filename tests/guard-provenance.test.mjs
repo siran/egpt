@@ -380,7 +380,7 @@ describe('the node signature survives the REAL identity into the guard', () => {
 });
 
 // === OUR OWN ECHO NEVER TRIGGERS A TURN — IN ANY MODE ('on'/'auto' INCLUDED) ================
-// (operator 2026-10-08, the PALMA loop's REPLY face.) A being set to 'on'/'auto' entered an
+// (operator 2026-10-08, the MUESTRA loop's REPLY face.) A being set to 'on'/'auto' entered an
 // endless reply loop: it was answering its OWN "⏳ Thinking…" placeholder, posted eagerly as the
 // streaming target (sender.mjs) through the mouth account and re-entering on the ear carrying THIS
 // node's own frame. turnKind already classified it 'echo' and the loop COUNTER already refused to
@@ -434,7 +434,7 @@ function buildReplySpine({ mode = 'on', fromThisNode = () => false, wasSentByUs 
   return { spine, brain, transcript, sender, timers };
 }
 
-describe("an 'on'/'auto' being never replies to its own ⏳ placeholder / echo (the PALMA loop)", () => {
+describe("an 'on'/'auto' being never replies to its own ⏳ placeholder / echo (the MUESTRA loop)", () => {
   // THIS node is 'kg', so a frame that decodes to 'kg' is OUR OWN echo (fromThisNode).
   const fromThisNode = (ev) => String(ev?.fromNode ?? '').toLowerCase() === 'kg';
 

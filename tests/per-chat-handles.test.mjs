@@ -55,7 +55,7 @@ describe('per-chat handles: the router', () => {
   });
 
   it('the override drops the being\'s fallback_handle there too (kg\'s live shape: e as a fallback token)', async () => {
-    const kg = { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+13472576794' }, conversation_defaults: ANYONE } };
+    const kg = { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+15550100002' }, conversation_defaults: ANYONE } };
     const r = routerOn(state, kg, { isPresent: async () => false });
     expect(await beings(r, ev('e hola'))).toEqual([]);
     expect(await beings(r, ev('ekg hola'))).toEqual(['egpt']);

@@ -205,7 +205,7 @@ describe('AN ENVELOPE IS NEVER RECORDED — the message, not the chat', () => {
 //
 // THE LIVE EVIDENCE, from the operator's own log that morning:
 //   guard: whatsapp:EWlUhmXiFZTYGiKdbfRP stopped — mesh turn suppressed
-//   [bridge] incoming [perrito traduciones] Rodz Rodriguez: "⚠ ekg.kg did not answer"
+//   [bridge] incoming [perrito traduciones] Rodz Tester: "⚠ ekg.kg did not answer"
 // egpt-mesh-do-kg auto-STOPped three times before lunch, each time `nearing the loop cap (4)`
 // then `[guard] STOP` — and E went silent in a chat the guard never even looked at.
 //

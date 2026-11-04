@@ -7,7 +7,7 @@
 // fresh status takes over the animation and a late reply is sent fresh. While background work runs,
 // ONE status per chat is POSTED — a new message when its task list changes, else every
 // liveness.background_every_ms — never edited; a finished task is marked as its session's CLI said it
-// ended (An #2944): ✓ ✗ ⏹, ◦ not known. All of it rides the spine's tick (STOP-first) and
+// ended (operator 2026-10-31): ✓ ✗ ⏹, ◦ not known. All of it rides the spine's tick (STOP-first) and
 // THE reply path (sender.open / sender.post), with the real sender over a fake bridge here.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createSpine } from '../src/spine/spine.mjs';
@@ -318,7 +318,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     expect(b.notes.join('\n')).toContain('egpt/chat-A@g.us — background task(s) Run the audit still running, status posted');
   });
 
-  // An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así" — a background Bash described
+  // operator 2026-11-01: "por qué los mensajes se están viendo así? … se van así" — a background Bash described
   // by its whole command was posted as a heredoc, line by line. Its session keeps it one line (warm-cli-session).
   it("(b) a task the CLI described by a whole heredoc command is ONE line in the status, as its session keeps it", async () => {
     const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: { write() {}, end() {} }, kill() {} });
@@ -622,7 +622,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
   });
 });
 
-// An #2944, 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
+// operator 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
 // debe ser estructural, no pongas al SI a determinar el error cuando falla el proceso".
 describe('liveness — a finished task is marked as its session\'s CLI said it ended', () => {
   const FAILED = { status: 'failed', message: 'Background command "npm run lint" failed (exit code 1)' };
@@ -685,7 +685,7 @@ describe('liveness — a finished task is marked as its session\'s CLI said it e
   });
 });
 
-// An #2971, 2026-10-31: "the task list is confusing: are you listing parent and child process in the same
+// operator 2026-10-31: "the task list is confusing: are you listing parent and child process in the same
 // level? in that case why not nest?". The live case: ED's background agent and the two background Bash tasks
 // it ran, listed flat. claude 2.1.309 names the live agent that launched a task (parent_task_id), and marks
 // the tasks that are not activity (ambient: "hosts should exclude them from activity indicators").
@@ -765,7 +765,7 @@ describe('liveness — a task a background agent launched is listed under it', (
   });
 });
 
-// 2026-11-02 10:03–10:08, "eGPT Rodz Lulu An", An: "this is probably too much :)". Each change was posted at the
+// 2026-11-02 10:03–10:08, "eGPT Rodz Lola An", An: "this is probably too much :)". Each change was posted at the
 // next pulse: ten statuses in five minutes, up to 13 lines, mostly E's own background shell waits ("checkpoint
 // for ChatGPT progress"), not nested. Now a change waits liveness.background_change_ms (2 min) after a post;
 // the first status and the last are not held. A level's shell commands (the CLI's local_bash), more than 2

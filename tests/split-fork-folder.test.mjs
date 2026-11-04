@@ -1,6 +1,6 @@
 // split-fork-folder.test.mjs — a /split fork lives in its parent's folder (operator 2026-10-26: "/split
 // groups are not using the same folder as main conversation"; "/split gives the context and folder with
-// all previous files"). Live: EDW tg:-1004408163350/42 got a folder of its own, so ED there had no files,
+// all previous files"). Live: EDW tg:-1000000000101/42 got a folder of its own, so ED there had no files,
 // no keys and no history, and its copied thread could not be resumed.
 //
 //   - the fork's own entry has the parent's slug (conversation_path, cwd, box target), its own thread,
@@ -30,16 +30,16 @@ import { parseFrontMatter } from '../src/transcript-meta.mjs';
 import { emptyState, ensureContact, getContact, getBeing, patchContact, patchBeing, recordThread, forkContact, forkKeyOf, isForkEntry, rollTranscript } from '../src/conversations-state.mjs';
 
 const SURFACE = 'telegram';
-const P = 'tg:-1004408163350';
-const F = 'tg:-1004408163350/42';
-const KEY = 'SI+EduWeb-an';
+const P = 'tg:-1000000000101';
+const F = 'tg:-1000000000101/42';
+const KEY = 'SI+Contoso-an';
 
 beforeEach(() => { rmSync(EGPT_HOME, { recursive: true, force: true }); });
 afterAll(() => { rmSync(_HOME, { recursive: true, force: true }); });
 
 function seed({ boxed = true } = {}) {
   const settings = boxed ? { allowed_users: ['*'], access_level: 'sandbox' } : { allowed_users: ['*'], access_level: 'all', sandboxed: false };
-  let st = ensureContact(emptyState(), SURFACE, P, { pushedName: 'EduWeb' }).state;
+  let st = ensureContact(emptyState(), SURFACE, P, { pushedName: 'Contoso' }).state;
   st = patchContact(st, SURFACE, P, { agents: { ed: { ...settings, threadId: 'parent-thread' } } });
   st = forkContact(st, SURFACE, F, P, { pushedName: KEY, transcript: KEY });
   st = patchBeing(st, SURFACE, F, 'ed', settings);
@@ -110,7 +110,7 @@ describe('the fork shape in conversations-state', () => {
 
   it('a fork is never re-slugged by its own title: the folder is its parent\'s', () => {
     const { st } = seed();
-    const r = ensureContact(st, SURFACE, F, { pushedName: 'SI+EduWeb-otro nombre' });
+    const r = ensureContact(st, SURFACE, F, { pushedName: 'SI+Contoso-otro nombre' });
     expect(r.slug).toBe(st.contacts[SURFACE][P].slug);
     expect(r.renamedTo ?? null).toBe(null);
   });
@@ -123,9 +123,9 @@ describe('a fork\'s turns run in the parent\'s folder, on their own thread', () 
     const { made, makeSession } = sessions();
     const brain = brainOver(store, makeSession);
 
-    await brain.turn('ed', at(P, 'EduWeb'));
+    await brain.turn('ed', at(P, 'Contoso'));
     await brain.turn('ed', at(F, KEY));
-    await brain.turn('ed', at(P, 'EduWeb'));
+    await brain.turn('ed', at(P, 'Contoso'));
     expect(made).toHaveLength(2);                                   // two warm sessions, one per thread
     expect(made.map((s) => s.opts.sessionId)).toEqual(['parent-thread', 'fork-thread']);
     expect(made[0].turns).toHaveLength(2);
@@ -142,7 +142,7 @@ describe('a fork\'s turns run in the parent\'s folder, on their own thread', () 
     const store = { st };
     const contacts = createContacts({ loadState: async () => store.st, writeState: async (s) => { store.st = s; }, io: { mkdir: async () => {} } });
     expect((await contacts.transcriptTarget(SURFACE, F, { chatName: KEY })).path).toBe(room.transcriptPathFor(KEY));
-    expect((await contacts.transcriptTarget(SURFACE, P, { chatName: 'EduWeb' })).path).toBe(room.transcriptPath);
+    expect((await contacts.transcriptTarget(SURFACE, P, { chatName: 'Contoso' })).path).toBe(room.transcriptPath);
   });
 });
 

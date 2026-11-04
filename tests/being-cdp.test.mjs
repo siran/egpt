@@ -71,8 +71,8 @@ const sink = () => {
 const cmd = (id, method, params = {}, extra = {}) => JSON.stringify({ id, method, params, ...extra });
 
 const ADMIN = { being: 'e', surface: 'whatsapp', slug: 'eGPT Admin-2609121344', boxed: true };
-const DIEGO = { being: 'e', surface: 'whatsapp', slug: 'Diego Perez-2606301826', boxed: true };
-const GROUPS = { brain: ['eGPT Admin', 'eGPT Rodz Lulu An'] };
+const DIEGO = { being: 'e', surface: 'whatsapp', slug: 'Diego Prueba-2606301826', boxed: true };
+const GROUPS = { brain: ['eGPT Admin', 'eGPT Rodz Lola An'] };
 const CDP = { ask: 'browser', action: 'cdp', extra: [] };
 
 function linkWith(chromes, extra = {}) {
@@ -205,8 +205,8 @@ describe('being link — `browser cdp` resolves the group at ask time', () => {
   it('`browser start` goes through the same resolution and hands startBrowser the conversation', async () => {
     const { link, started } = linkWith({});
     await link.ask(DIEGO, { ask: 'browser', action: 'start', extra: [] });
-    expect(started).toEqual([{ key: DIEGO.slug, name: 'Diego Perez', group: 'shared' }]);
-    const none = linkWith({}, { readGroups: async () => ({ a: ['Diego Perez'], b: ['Diego Perez'] }) });
+    expect(started).toEqual([{ key: DIEGO.slug, name: 'Diego Prueba', group: 'shared' }]);
+    const none = linkWith({}, { readGroups: async () => ({ a: ['Diego Prueba'], b: ['Diego Prueba'] }) });
     expect(await none.link.ask(DIEGO, { ask: 'browser', action: 'start', extra: [] })).toMatchObject({ ok: false, reason: 'no-browser' });
     expect(none.started).toEqual([]);
   });
@@ -243,19 +243,19 @@ const chromeDetached = (c) => c.of('Target.detachFromTarget').length >= 1;
 describe('refusals — blocked for a BOXED being, served to an UNBOXED one', () => {
   const inside = join(slugDir('whatsapp', DIEGO.slug), 'downloads');
   const CASES = [
-    ['Page.navigate file:', 'Page.navigate', { url: 'file:///C:/Users/an/.ssh/id_rsa' }],
-    ['Page.navigate file: with a tab inside the scheme', 'Page.navigate', { url: 'fi\tle:///C:/Users/an/' }],
+    ['Page.navigate file:', 'Page.navigate', { url: 'file:///C:/Users/user/.ssh/id_rsa' }],
+    ['Page.navigate file: with a tab inside the scheme', 'Page.navigate', { url: 'fi\tle:///C:/Users/user/' }],
     ['Page.navigate view-source:file:', 'Page.navigate', { url: 'view-source:file:///C:/' }],
     ['Page.navigate devtools:', 'Page.navigate', { url: 'devtools://devtools/bundled/inspector.html' }],
     ['Target.createTarget chrome:', 'Target.createTarget', { url: 'chrome://settings/passwords' }],
     ['Target.createTarget chrome-extension:', 'Target.createTarget', { url: 'chrome-extension://vault/popup.html' }],
-    ['Network.loadNetworkResource file:', 'Network.loadNetworkResource', { url: 'file:///C:/Users/an/x', frameId: 'F', options: { disableCache: true, includeCredentials: false } }],
+    ['Network.loadNetworkResource file:', 'Network.loadNetworkResource', { url: 'file:///C:/Users/user/x', frameId: 'F', options: { disableCache: true, includeCredentials: false } }],
     ['Fetch.continueRequest rewritten to file:', 'Fetch.continueRequest', { requestId: 'r', url: 'file:///C:/x' }],
     ['DOMStorage on an extension origin', 'DOMStorage.getDOMStorageItems', { storageId: { securityOrigin: 'chrome-extension://vault', isLocalStorage: true } }],
-    ['DOM.setFileInputFiles', 'DOM.setFileInputFiles', { files: ['C:/Users/an/secret.txt'], nodeId: 1 }],
-    ['Page.handleFileChooser', 'Page.handleFileChooser', { action: 'accept', files: ['C:/Users/an/secret.txt'] }],
-    ['Input.dispatchDragEvent with files', 'Input.dispatchDragEvent', { type: 'drop', x: 1, y: 1, data: { items: [], files: ['C:/Users/an/x'], dragOperationsMask: 1 } }],
-    ['Browser.setDownloadBehavior outside the conversation', 'Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: 'C:/Users/an/Documents' }],
+    ['DOM.setFileInputFiles', 'DOM.setFileInputFiles', { files: ['C:/Users/user/secret.txt'], nodeId: 1 }],
+    ['Page.handleFileChooser', 'Page.handleFileChooser', { action: 'accept', files: ['C:/Users/user/secret.txt'] }],
+    ['Input.dispatchDragEvent with files', 'Input.dispatchDragEvent', { type: 'drop', x: 1, y: 1, data: { items: [], files: ['C:/Users/user/x'], dragOperationsMask: 1 } }],
+    ['Browser.setDownloadBehavior outside the conversation', 'Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: 'C:/Users/user/Documents' }],
     ['Page.setDownloadBehavior outside the conversation', 'Page.setDownloadBehavior', { behavior: 'allow', downloadPath: join(inside, '..', '..', 'Other-2601010101') }],
     ['Browser.setDownloadBehavior to the default dir', 'Browser.setDownloadBehavior', { behavior: 'allowAndName' }],
     ['Extensions.loadUnpacked', 'Extensions.loadUnpacked', { path: 'C:/x' }],
@@ -265,7 +265,7 @@ describe('refusals — blocked for a BOXED being, served to an UNBOXED one', () 
     ['Target.sendMessageToTarget', 'Target.sendMessageToTarget', { message: '{"id":1,"method":"Page.navigate","params":{"url":"file:///C:/"}}' }],
     ['Browser.close', 'Browser.close', {}],
     ['Browser.crash', 'Browser.crash', {}],
-    ['PWA.launchFilesInApp', 'PWA.launchFilesInApp', { manifestId: 'm', files: ['C:/Users/an/x'] }],
+    ['PWA.launchFilesInApp', 'PWA.launchFilesInApp', { manifestId: 'm', files: ['C:/Users/user/x'] }],
     ['PWA.install', 'PWA.install', { manifestId: 'm', installUrlOrBundleUrl: 'https://x/app.swbn' }],
   ];
 
@@ -498,7 +498,7 @@ describe('uploads — a boxed being attaches files from its own folder unless it
 
 // ── 3c. PRIVILEGED: privileged_browser: true serves a boxed being the unboxed CDP ────────────
 describe('privileged_browser — that conversation\'s boxed being is not filtered; no other is', () => {
-  const RODZ = { being: 'e', surface: 'whatsapp', slug: 'eGPT Rodz Lulu An-2610170000', boxed: true };
+  const RODZ = { being: 'e', surface: 'whatsapp', slug: 'eGPT Rodz Lola An-2610170000', boxed: true };
   const rodzDir = slugDir('whatsapp', RODZ.slug);
   async function brainPair() {
     const brain = fakeChrome('brain');
@@ -507,8 +507,8 @@ describe('privileged_browser — that conversation\'s boxed being is not filtere
     return { brain, logs, rodz: await open(RODZ), admin: await open(ADMIN) };
   }
   const TRY = [
-    [1, 'Page.navigate', { url: 'file:///C:/Users/an/.ssh/id_rsa' }],
-    [2, 'DOM.setFileInputFiles', { files: ['C:/Users/an/secret.txt'], backendNodeId: 7 }],
+    [1, 'Page.navigate', { url: 'file:///C:/Users/user/.ssh/id_rsa' }],
+    [2, 'DOM.setFileInputFiles', { files: ['C:/Users/user/secret.txt'], backendNodeId: 7 }],
     [3, 'Target.openDevTools', { targetId: 'T-page' }],
   ];
 
@@ -517,7 +517,7 @@ describe('privileged_browser — that conversation\'s boxed being is not filtere
     for (const [id, method, params] of TRY) rodz.t.send(cmd(id, method, params));
     await until(() => rodz.s.out.length === TRY.length);
     expect(rodz.s.out.filter((m) => m.error)).toEqual([]);
-    expect(brain.of('DOM.setFileInputFiles')[0].params.files).toEqual(['C:/Users/an/secret.txt']);
+    expect(brain.of('DOM.setFileInputFiles')[0].params.files).toEqual(['C:/Users/user/secret.txt']);
     expect(logs.filter((l) => l.includes('privileged browser — no CDP filter'))).toEqual([`e (whatsapp/${RODZ.slug}) privileged browser — no CDP filter`]);
   });
 

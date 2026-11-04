@@ -427,7 +427,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // counter on every lap the way a human-looking line would.
     //
     // WHAT CHANGED 2026-09-20: it no longer COUNTS either. An escaped echo of our own send is
-    // bookkeeping, not an utterance — "🌴FAMILIA PALMA🌴" was paused for eight hours by six of
+    // bookkeeping, not an utterance — "🌴FAMILIA MUESTRA🌴" was paused for eight hours by six of
     // them in five seconds. A PEER node's line is a different fact: that is real chatter and it
     // still counts, which is what keeps this cycle bounded.
     const { spine, guard } = harness({ members: pairOf(), tunnelRooms: [roomAt(R)], turns: 4 });
@@ -486,7 +486,7 @@ describe('room relay — LOOP SAFETY: every cycle built, and the thing that stop
     // in-flight sends so the confirmed id is known — the message never reaches the spine at all.
     // The spine keeps the belt: `bridge.wasSentByUs(chatId, msgId)`, read by turnKind. Wire it
     // true and the echo is NEITHER counted NOR a reset (operator 2026-09-20) — our own output is
-    // not an utterance. It used to be counted, and that is what filled PALMA's cap.
+    // not an utterance. It used to be counted, and that is what filled MUESTRA's cap.
     const h = harness({ members: pairOf(), tunnelRooms: [roomAt(R)] });
     h.bridge.wasSentByUs = (chatId, msgId) => msgId === 'ours-1';
     const PEER = encodeNodeSignature('do');

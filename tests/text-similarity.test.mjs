@@ -78,7 +78,7 @@ describe('similarity — overlap coefficient', () => {
 // closestNames — the "did you mean …?" behind /members' two dead-end errors.
 describe('closestNames — character-level near-miss', () => {
   // The operator's live case, 2026-08-31: a chat named with two c's, typed with one.
-  const CHATS = ['perrito traducciones', 'Radio WnL', 'Familia', 'egpt-mesh-do-kg'];
+  const CHATS = ['perrito traducciones', 'Radio EFM', 'Familia', 'egpt-mesh-do-kg'];
 
   it('catches the ONE-LETTER miss the overlap coefficient cannot see', () => {
     // token sets {perrito,traduciones} vs {perrito,traducciones} → disjoint on the 2nd word
@@ -92,12 +92,12 @@ describe('closestNames — character-level near-miss', () => {
   });
 
   it('compares in the folded space — case, accents and punctuation are free', () => {
-    expect(closestNames('RADIO WNL!', CHATS)).toEqual(['Radio WnL']);
+    expect(closestNames('RADIO EFM!', CHATS)).toEqual(['Radio EFM']);
     expect(closestNames('perrito traducciónes', CHATS)).toEqual(['perrito traducciones']);
   });
 
   it('a CONTAINED fragment is a hit even though the ratio alone would bury it', () => {
-    expect(closestNames('radio', CHATS)).toEqual(['Radio WnL']);
+    expect(closestNames('radio', CHATS)).toEqual(['Radio EFM']);
   });
 
   it('returns the candidate VERBATIM, so it can be quoted back at the operator', () => {

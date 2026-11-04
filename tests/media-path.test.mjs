@@ -4,7 +4,7 @@ import { relMediaPath } from '../src/media-path.mjs';
 describe('relMediaPath — saved paths surface relative to the conversation folder', () => {
   it('collapses an absolute Windows host path to media/<name>', () => {
     expect(
-      relMediaPath('C:\\Users\\an\\.egpt\\conversations\\whatsapp\\HFM-2606112207\\media\\20260617-120623-video-142664.mp4'),
+      relMediaPath('C:\\Users\\user\\.egpt\\conversations\\whatsapp\\HFM-2606112207\\media\\20260617-120623-video-142664.mp4'),
     ).toBe('media/20260617-120623-video-142664.mp4');
   });
 
@@ -13,7 +13,7 @@ describe('relMediaPath — saved paths surface relative to the conversation fold
   });
 
   it('never leaks the absolute host prefix', () => {
-    const out = relMediaPath('C:\\Users\\an\\.egpt\\conversations\\x\\media\\foo.jpg');
+    const out = relMediaPath('C:\\Users\\user\\.egpt\\conversations\\x\\media\\foo.jpg');
     expect(out).not.toContain('C:\\');
     expect(out).not.toContain('.egpt');
   });

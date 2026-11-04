@@ -32,7 +32,7 @@ import { readState, getBeing } from '../src/conversations-state.mjs';
 
 const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const slash = (p) => String(p).replace(/\\/g, '/');
-// `C:\Users\an` → `/c/Users/an`, the shape conversations.yaml stores a home_dir in. One line,
+// `C:\Users\user` → `/c/Users/user`, the shape conversations.yaml stores a home_dir in. One line,
 // re-derived here rather than imported, so the test states the expected form instead of agreeing
 // with the migration's.
 const msys = (p) => { const s = slash(p); const m = s.match(/^([A-Za-z]):\/(.*)$/); return m ? `/${m[1].toLowerCase()}/${m[2]}` : s; };
@@ -42,8 +42,8 @@ const msys = (p) => { const s = slash(p); const m = s.match(/^([A-Za-z]):\/(.*)$
 // production asks src/tools/chrome-launcher.mjs findChromeExecutable, the locator the spawner
 // itself falls back to. Backslashed here, as that locator returns it.
 const CHROME_EXE = 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe';
-const CHAT = 'MMF7iTSSiR3fc7UbbgM9';          // do's account's view of "perrito traduciones"
-const KG_CHAT = '0MP97ovrD6XvVovMVx6v';       // kg's account's view of the SAME group
+const CHAT = 'FakeRoomId0000000007';          // do's account's view of "perrito traduciones"
+const KG_CHAT = 'FakeRoomId0000000002';       // kg's account's view of the SAME group
 
 // ── what the migration writes, at the columns it writes it at ────────────────────────────────
 const BIN_LINES = (pad, bin) => [
@@ -117,8 +117,8 @@ const IN_CHROME = (dir) => PROFILE_LINES('  ', dir);              // an existing
 const WHOLE_CHROME = (dir) => CHROME_BLOCK([...BIN_LINES('  ', slash(CHROME_EXE)), ...PROFILE_LINES('  ', dir)]);
 
 // ── do's config.yaml as it reads after 0018/0019/0020/0021 ───────────────────────────────────
-const OPERATOR = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com" ]';
-const DRIVEN = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com", "@dolly-egpt:beeper.com" ]';
+const OPERATOR = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com" ]';
+const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mouth-acct:beeper.com" ]';
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
@@ -150,7 +150,7 @@ const DO_LINES = [
   '    mode: off',
   '    conversation_defaults:',
   '      access_level: all',
-  '      allowed_users: [ "16468217865" ] # who may wake the radio',
+  '      allowed_users: [ "15550100001" ] # who may wake the radio',
   '  codex:',
   '    configuration: codex',
   '    handles: [ codex ]',
@@ -194,21 +194,21 @@ const DO_CONV_LINES = [
   '  whatsapp:',
   `    ${CHAT}: # perrito traduciones`,
   '      conversation_path: .egpt/conversations/whatsapp/perrito-traduciones',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '      agents:',
   '        don:',
   '          threadId: perrito-do-fixture',
   '  room:',
   '    lobby:',
   '      conversation_path: .egpt/rooms/lobby',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '  shell:',
   '    main:',
   '      conversation_path: .egpt/conversations/shell/lobby',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ];
 const DO_CONV = crlf(DO_CONV_LINES);
-const DO_CONV_AT = DO_CONV_LINES.indexOf('      home_dir: /c/Users/an', DO_CONV_LINES.indexOf('    lobby:')) + 1;
+const DO_CONV_AT = DO_CONV_LINES.indexOf('      home_dir: /c/Users/user', DO_CONV_LINES.indexOf('    lobby:')) + 1;
 
 // ── kg, post-0021/0022: no `don`, its OWN chrome: block, and the same group under ITS id ─────
 const KG_LINES = [
@@ -241,7 +241,7 @@ const KG_LINES = [
   '# kg names its own browser already - a 64-bit install, and its own brain profile',
   'chrome:',
   '  bin: C:/Program Files/Google/Chrome/Application/chrome.exe',
-  '  profile_dir: C:/Users/an/.egpt/chrome/profiles/brain',
+  '  profile_dir: C:/Users/user/.egpt/chrome/profiles/brain',
   'compaction:',
   '  ratio: 0.80',
   '  cooling_ms: 600000',
@@ -272,14 +272,14 @@ const KG_CONV = crlf([
   '  whatsapp:',
   `    ${KG_CHAT}: # perrito traduciones`,
   '      conversation_path: .egpt/conversations/whatsapp/perrito-traduciones',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '  room:',
   '    acim:',
   '      conversation_path: .egpt/rooms/acim',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '    lobby:',
   '      conversation_path: .egpt/rooms/lobby',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ]);
 
 // The type files the `configuration:` lines name. None pins a `cwd:`, so 0014 has nothing to move.
@@ -682,7 +682,7 @@ describe('0023 refuses, naming the place, only on what it cannot honestly edit',
     ]);
     const h = home({ rooms: other });
     await expect(plan(ctxFor(h))).rejects.toThrow(
-      /0023 refuses: `room\/acim-do` already exists in .*rooms\.yaml but its `members:` carries no `\{ kind: wa-group, id: MMF7iTSSiR3fc7UbbgM9 \}`/,
+      /0023 refuses: `room\/acim-do` already exists in .*rooms\.yaml but its `members:` carries no `\{ kind: wa-group, id: FakeRoomId0000000007 \}`/,
     );
   });
 
@@ -691,7 +691,7 @@ describe('0023 refuses, naming the place, only on what it cannot honestly edit',
       ...DO_CONV_LINES.slice(0, DO_CONV_AT),
       '    acim-do:',
       '      conversation_path: .egpt/conversations/room/acim-do',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
       ...DO_CONV_LINES.slice(DO_CONV_AT),
     ]);
     const h = home({ conversations: elsewhere });

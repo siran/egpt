@@ -5,9 +5,9 @@
 // Was: ONE line, written only once whisper finished and stamped with THAT time — a note that
 // arrived 16:12 read `(16:15) #31503: (voice transcription, 11s) …`, and while it was being
 // transcribed the record held no trace of it. Now:
-//   Diego Pérez@[Diego Pérez].wa (16:12) #31503: (voice note, 11s — being transcribed…)
+//   Diego Pruéba@[Diego Pruéba].wa (16:12) #31503: (voice note, 11s — being transcribed…)
 //   …chatter…
-//   Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription, 11s) Mira marico…
+//   Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription, 11s) Mira marico…
 // The arrival is a RECORD (prompts nobody); the transcription is what is dispatched.
 import { describe, it, expect } from 'vitest';
 import { createIdentity } from '../src/spine/identity.mjs';
@@ -19,18 +19,18 @@ import { messageFacts } from '../src/conversations-state.mjs';
 import { voiceArrivalBody, voiceFailedBody, voiceTranscriptBody } from '../src/incoming-media.mjs';
 
 const T = (hh, mm) => Date.UTC(2026, 9, 16, hh, mm);
-const CHAT = 'Diego Pérez';
+const CHAT = 'Diego Pruéba';
 const FROM = {
   chatId: '!diego:beeper.local', chatName: CHAT, network: 'whatsapp',
-  userId: 'u-diego', senderName: 'Diego Pérez', isSender: false, authorized: false,
+  userId: 'u-diego', senderName: 'Diego Pruéba', isSender: false, authorized: false,
   atEStart: false, atEAnywhere: false, replyToBot: false, isReaction: false, msgKey: '31503',
 };
 const ARRIVAL = { ...FROM, isTranscriptFromVoice: false, voiceLine: 'arrival' };
 const OUTCOME = { ...FROM, isTranscriptFromVoice: true, voiceLine: 'outcome' };
 const HEARD = voiceTranscriptBody('Mira marico…', { durationSec: 11 });
 
-const ARRIVAL_LINE = 'Diego Pérez@[Diego Pérez].wa (16:12) #31503: (voice note, 11s — being transcribed…)';
-const OUTCOME_LINE = 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription, 11s) Mira marico…';
+const ARRIVAL_LINE = 'Diego Pruéba@[Diego Pruéba].wa (16:12) #31503: (voice note, 11s — being transcribed…)';
+const OUTCOME_LINE = 'Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription, 11s) Mira marico…';
 
 function clockedIdentity() {
   let now = T(16, 12);
@@ -67,14 +67,14 @@ describe('identity — the arrival keeps the id, the transcription answers it', 
     const a = identity.build({ body: voiceArrivalBody({ durationSec: 11 }), from: { ...ARRIVAL, replyToId: '31400' } });
     at(T(16, 15));
     const o = identity.build({ body: HEARD, from: { ...OUTCOME, replyToId: '31400' } });
-    expect(a.line).toBe('Diego Pérez@[Diego Pérez].wa (16:12) #31503: [re #31400] (voice note, 11s — being transcribed…)');
+    expect(a.line).toBe('Diego Pruéba@[Diego Pruéba].wa (16:12) #31503: [re #31400] (voice note, 11s — being transcribed…)');
     expect(o.line).toBe(OUTCOME_LINE);
     expect(o.replyToId).toBe('31400');   // the prompt still resolves what the note answered
   });
 });
 
-const doc = (...lines) => ['---', 'name: Diego Pérez', '---', '', ...lines.flatMap((l) => [l, ''])].join('\n');
-const CHATTER = 'Bea@[Diego Pérez].wa (16:13) #31504: jaja';
+const doc = (...lines) => ['---', 'name: Diego Pruéba', '---', '', ...lines.flatMap((l) => [l, ''])].join('\n');
+const CHATTER = 'Bea@[Diego Pruéba].wa (16:13) #31504: jaja';
 
 describe('bodyForMessageId — pending vs done', () => {
   it('REPRODUCE: while pending it says "being transcribed" (was: no entry → null, the caller fell through silently)', () => {
@@ -91,32 +91,32 @@ describe('bodyForMessageId — pending vs done', () => {
   });
 
   it('a multi-line transcription comes back whole, up to the next entry', () => {
-    const t = doc(ARRIVAL_LINE, 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos\ntres', CHATTER);
+    const t = doc(ARRIVAL_LINE, 'Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos\ntres', CHATTER);
     expect(transcriptionForNoteId(t, '31503')).toBe('uno\ndos\ntres');
   });
 
   it('a failed transcription resolves to its failure line — never a dangling "being transcribed"', () => {
-    const t = doc(ARRIVAL_LINE, `Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] ${voiceFailedBody('no transcript')}`);
+    const t = doc(ARRIVAL_LINE, `Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] ${voiceFailedBody('no transcript')}`);
     expect(bodyForMessageId(t, '31503')).toBe('(voice note not transcribed: no transcript)');
     expect(transcriptionForNoteId(t, '31503')).toBe(null);
   });
 
   it('a person REPLYING to the note is not its transcription', () => {
-    const t = doc(ARRIVAL_LINE, 'Bea@[Diego Pérez].wa (16:14) #31505: [re #31503] (voice transcription) no te oigo');
+    const t = doc(ARRIVAL_LINE, 'Bea@[Diego Pruéba].wa (16:14) #31505: [re #31503] (voice transcription) no te oigo');
     expect(bodyForMessageId(t, '31503')).toBe('(voice note, 11s — being transcribed…)');
   });
 
   it('LOCK: the one-line shape already on disk still reads exactly as before', () => {
-    const t = doc('Diego Pérez@[Diego Pérez].wa (16:15) #31503: (voice transcription, 11s) Mira marico…');
+    const t = doc('Diego Pruéba@[Diego Pruéba].wa (16:15) #31503: (voice transcription, 11s) Mira marico…');
     expect(transcriptionForNoteId(t, '31503')).toBe('Mira marico…');
   });
 });
 
 describe('accum context — the transcription is the SPEAKER\'s entry', () => {
   it('both lines are Diego\'s entries; the chatter between them stays between them', () => {
-    const t = doc('egpt@[Diego Pérez].wa (16:00): dime', ARRIVAL_LINE, CHATTER, 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos');
+    const t = doc('egpt@[Diego Pruéba].wa (16:00): dime', ARRIVAL_LINE, CHATTER, 'Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos');
     const { blocks } = contextSinceLastTurn(t, { being: 'egpt' });
-    expect(blocks).toEqual([ARRIVAL_LINE, CHATTER, 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos']);
+    expect(blocks).toEqual([ARRIVAL_LINE, CHATTER, 'Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription, 11s) uno\ndos']);
   });
 });
 
@@ -187,8 +187,8 @@ describe('spine — the arrival is a RECORD, the transcription is the prompt', (
     await s.emit(HEARD, OUTCOME);
     const text = transcriptText(s.files);
     expect(text.startsWith(afterChatter)).toBe(true);                // append-only: byte prefix intact
-    expect(text.indexOf(ARRIVAL_LINE)).toBeLessThan(text.indexOf('Bea@[Diego Pérez].wa (16:13) #31504: jaja'));
-    expect(text.indexOf('Bea@[Diego Pérez].wa (16:13) #31504: jaja')).toBeLessThan(text.indexOf(OUTCOME_LINE));
+    expect(text.indexOf(ARRIVAL_LINE)).toBeLessThan(text.indexOf('Bea@[Diego Pruéba].wa (16:13) #31504: jaja'));
+    expect(text.indexOf('Bea@[Diego Pruéba].wa (16:13) #31504: jaja')).toBeLessThan(text.indexOf(OUTCOME_LINE));
     expect(s.brain.calls.map((ev) => ev.line)).toEqual([OUTCOME_LINE]);   // the transcription is what prompts
     expect(s.brain.calls[0].msgId).toBe('31503');                          // …and its reply still quotes the note
   });

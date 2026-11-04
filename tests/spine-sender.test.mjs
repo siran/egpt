@@ -42,7 +42,7 @@ describe('sender — single-message reply train', () => {
   });
 
   // THE MODEL'S DELIBERATE '…' SILENCE (operator 2026-10-08, the live stray "🐶 E: ..." in eGPT
-  // Rodz Lulu An + after a voice note). TWO binding rules: (1) a '…' SURFACES as a normal reply in
+  // Rodz Lola An + after a voice note). TWO binding rules: (1) a '…' SURFACES as a normal reply in
   // mention/mention-direct/accum and is HIDDEN only in on/auto; (2) a being NEVER removes a message
   // — a hidden '…' is EDITED to the quiet limb mark '✓', never deleted (2026-08-24 lock STANDS).
   // The sender sees the mode as `surface`: false ⇒ hidden (on/auto) ⇒ '✓'; true ⇒ surfaced ⇒ the
@@ -319,8 +319,8 @@ describe('sender — the message never shrinks (append-only living mirror)', () 
     expect(bridge.streams[1].finals).toEqual([`lo estoy mirando${RETAINED_SEAM}⚙️ processing commands (/react /reply)`]);
   });
 
-  // VERBOSE OFF (operator 2026-10-06: no "⚙️ processing command" line). Live 2026-10-27 cuigmac:
-  // E's whole answer was `/react #778 😄` and the spine DELETED its ⏳. Ruling (An, #780): "nadie
+  // VERBOSE OFF (operator 2026-10-06: no "⚙️ processing command" line). Live 2026-10-27 staff1:
+  // E's whole answer was `/react #778 😄` and the spine DELETED its ⏳. Ruling (operator 2026-10-27): "nadie
   // borra nunca nada, ningún bot, ni el spine" — the placeholder is EDITED to the quiet mark ✓.
   it('REPRODUCE: verbose OFF, a LIMB-ONLY /react turn with nothing shown EDITS its placeholder to ✓ — never deleted', async () => {
     const bridge = fakeBridge();
@@ -571,7 +571,7 @@ describe('sender — bridgeOf: per-being connection routing (multi-connection Be
   });
 });
 
-// ROUTED-TARGET FALLBACK (the live Favel drop, 2026-10-10): a reply is routed to a super/alias room
+// ROUTED-TARGET FALLBACK (the live Fiona drop, 2026-10-10): a reply is routed to a super/alias room
 // (gating.decide's replyChatId), but the sending account is NOT a member of that room — resolveChatId
 // returns null and the whole reply was DROPPED ("send DROPPED … resolved=null"). It must fall back to
 // the origin chat (always resolvable — the message just arrived there) instead of being lost.
@@ -662,7 +662,7 @@ describe('sender — routed-target drop falls back to the origin chat (never a s
   // — "why is the error not bubbling up?"): any reply the bridge refuses is reported, once, with the
   // bridge's own reason.
   it('REPRODUCE: a reply the bridge refuses (no origin) → onUndeliverable ONCE, naming what was lost and the bridge\'s reason', async () => {
-    const SIDE = 'aheLwZ0u6CpjePxSdbG9';
+    const SIDE = 'FakeRoomId0000000012';
     const bridge = { ...bothUnreachableBridge(SIDE), sendFailure: (chat) => (chat === SIDE ? 'POST → 404 Chat not found' : null) };
     const calls = [];
     const out = createSender({ bridge, bodyEmojiOf: () => '🐶', onUndeliverable: async (o) => calls.push(o) }).open(SIDE, { being: 'e' });

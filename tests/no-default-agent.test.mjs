@@ -6,7 +6,7 @@ import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 
-const OP = '+16468217865';
+const OP = '+15550100001';
 const CHAT = { surface: 'whatsapp', chatId: '!g', chatName: 'grupo', kind: 'text', raw: { chatType: 'group' }, senderId: '+1555', senderName: 'Ana' };
 const msg = (body, extra = {}) => ({ ...CHAT, body, msgId: `m-${Math.random()}`, ts: 1, mention: {}, ...extra });
 

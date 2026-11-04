@@ -24,8 +24,8 @@
 // (src/spine/boot.mjs outboundOnly). So an ask posted on a connection this node does not HEAR can
 // never be answered: the ids the operator's quote-reply carries were minted by a different
 // account, in a different Matrix room. The round trip closes only if the ask is posted where the
-// answer will be heard. On the live kg node — ear `primary` (anrodz42), default mouth `secondary`
-// (dolly.egpt), `beeper.use` removed — that is `primary`, and the wiring said `secondary`.
+// answer will be heard. On the live kg node — ear `primary` (anaprueba42), default mouth `secondary`
+// (mouth.acct), `beeper.use` removed — that is `primary`, and the wiring said `secondary`.
 //
 // THE SHAPE MODELLED HERE IS THAT LIVE NODE: two Beeper accounts, ingest on 'primary' (the ear
 // rule), output resolving by name to 'secondary' (nameDerivedConnection), and no `use:` crutch.
@@ -57,20 +57,20 @@ afterAll(async () => {
 });
 
 // ── THE TWO CONNECTIONS, named the way the live node names them ─────────────────────────────
-const PRIMARY = 'TOK-primary';       // anrodz42 — the EAR (boot's ear rule: 'primary' by name)
-const SECONDARY = 'TOK-secondary';   // dolly.egpt — the MOUTH the names resolve output to
+const PRIMARY = 'TOK-primary';       // anaprueba42 — the EAR (boot's ear rule: 'primary' by name)
+const SECONDARY = 'TOK-secondary';   // mouth.acct — the MOUTH the names resolve output to
 const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
 
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const DANDO = '+34658515045';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const DARIO = '+15550100005';
 
 // An account's OWN entry: a matrix id and NO phoneNumber. A member's entry carries the number.
 const self = (id) => ({ id });
 const member = (id, phoneNumber) => ({ id, phoneNumber });
 
 const SELF_DM = '!self-dm-as-primary-sees-it';
-// A group anrodz42 is in and dolly.egpt is NOT — with RODZ present, so the peer mouth SHOULD take
+// A group anaprueba42 is in and mouth.acct is NOT — with RODZ present, so the peer mouth SHOULD take
 // the reply. The chat id is primary's; secondary's install has no such room.
 const RODZ_GROUP = '!rodz-group-as-primary-sees-it';
 // The advice channel in each of its two documented forms (config/config-schema.mjs advice_channel:
@@ -87,7 +87,7 @@ const ROSTERS = {
     [SELF_DM]: [self('an@beeper.local')],
     [RODZ_GROUP]: [self('an@beeper.local'), member('rodz@beeper.local', RODZ)],
   },
-  [SECONDARY]: {},   // dolly.egpt has neither room — that is the whole point
+  [SECONDARY]: {},   // mouth.acct has neither room — that is the whole point
 };
 
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
@@ -163,21 +163,21 @@ const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; }
 const KG = (extra = {}) => ({
   node_name: 'kg',
   user_name: 'An',
-  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: [DANDO, AN] } },
+  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: [DARIO, AN] } },
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY },
   },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
   ...extra,
 });
 
-// THE SAME TWO CONNECTIONS ON ONE ACCOUNT — two Desktop installs of anrodz42, the primary /
+// THE SAME TWO CONNECTIONS ON ONE ACCOUNT — two Desktop installs of anaprueba42, the primary /
 // primary_gui pair the operator runs. The mouth CAN reach everything here, so the mouth speaks:
 // the other half of the rule, and what keeps it a rule rather than "the ear always wins".
 const KG_ONE_ACCOUNT = (extra = {}) => {
   const c = KG(extra);
-  c.beeper.secondary.account = 'anrodz42@example.com';
+  c.beeper.secondary.account = 'anaprueba42@example.com';
   return c;
 };
 
@@ -213,7 +213,7 @@ async function bootWith(config, { makeSession = QUIET_SESSION } = {}) {
 
 const deliver = (spy, chatId, body, { atE = true } = {}) => spy.onIncoming(body, {
   chatId, chatName: chatId.replace(/^!/, ''), network: 'whatsapp',
-  userId: DANDO, senderName: 'Dando', authorized: true, msgKey: `m-${chatId}-${body.length}`,
+  userId: DARIO, senderName: 'Dario', authorized: true, msgKey: `m-${chatId}-${body.length}`,
   atEStart: atE, atEAnywhere: atE,
 });
 
@@ -232,7 +232,7 @@ async function waitFor(check, { timeoutMs = 3000, stepMs = 10 } = {}) {
 // ═══ 1. THE ADVICE CHANNEL ══════════════════════════════════════════════════════════════════
 describe('the advice channel is posted on the connection that can REACH it', () => {
   // THE REPRODUCTION, in the form the schema documents first: a raw Beeper room id. That id was
-  // minted by anrodz42's install; posting it on dolly.egpt names a room that does not exist.
+  // minted by anaprueba42's install; posting it on mouth.acct names a room that does not exist.
   it('a RAW-ROOM-ID advice channel is posted on primary, not on the default mouth', async () => {
     const { app, byConnection, statuses } = await bootWith(KG({ advice_channel: ADVICE_ROOM }), { makeSession: ASKING_SESSION });
 
@@ -442,7 +442,7 @@ describe('boot hands the peer mouth the per-chat resolver', () => {
 
     // Prime the arrival map the way every real route() call is primed: the chat ARRIVED. Nothing
     // addresses E here, so no turn runs and nothing dials the (absent) peer console.
-    await deliver(byConnection.primary, RODZ_GROUP, 'hola dando', { atE: false });
+    await deliver(byConnection.primary, RODZ_GROUP, 'hola dario', { atE: false });
     expect(byConnection.primary.streams).toEqual([]);
 
     expect(await app.peerMouth.route(RODZ_GROUP)).toBe(RAW[RODZ_GROUP]);

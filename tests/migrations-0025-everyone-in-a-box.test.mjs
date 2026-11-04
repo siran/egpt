@@ -16,7 +16,7 @@
 //
 // THE GRANT'S PATH IS DERIVED, never spelled, because the MIGRATION derives it — `dirname(
 // EGPT_HOME) + '/src'`, 0015's own reading. A fixture in a temp dir therefore states ITS OWN src/
-// path, which is the point: a spelled `C:/Users/an/src` would pass on one machine and be a lie
+// path, which is the point: a spelled `C:/Users/user/src` would pass on one machine and be a lie
 // everywhere else.
 //
 // The assertions are on the FULL text, never a re-parse: the comments beside these blocks and every
@@ -85,8 +85,8 @@ const GRANT_LINES = (h) => [
 ];
 
 // ── kg's config.yaml as it reads after 0015/0022/0023 ────────────────────────────────────────
-const OPERATOR = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com" ]';
-const DRIVEN = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com", "@dolly-egpt:beeper.com" ]';
+const OPERATOR = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com" ]';
+const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mouth-acct:beeper.com" ]';
 // The beings that already state a tier - left exactly as they are, whichever tier it is.
 const KG_DECLARED = [
   '  egpt:',
@@ -151,7 +151,7 @@ const KG_TAIL = [
   '# kg names its own browser already - a 64-bit install, and its own brain profile',
   'chrome:',
   '  bin: C:/Program Files/Google/Chrome/Application/chrome.exe',
-  '  profile_dir: C:/Users/an/.egpt/chrome/profiles/brain',
+  '  profile_dir: C:/Users/user/.egpt/chrome/profiles/brain',
 ];
 const KG_FOOT = [
   'compaction:',
@@ -253,13 +253,13 @@ const DO_AFTER = crlf(DO_LINES
   .map((l) => (l === '      access_level: regular' ? '      access_level: sandbox' : l)));
 
 // ── conversations.yaml: the room rows that make readState/getBeing resolve at all ────────────
-const KG_CHAT = '0MP97ovrD6XvVovMVx6v';
+const KG_CHAT = 'FakeRoomId0000000002';
 const CONV = crlf([
   'contacts:',
   '  whatsapp:',
   `    ${KG_CHAT}: # perrito traduciones`,
   '      conversation_path: .egpt/conversations/whatsapp/perrito-traduciones',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ]);
 
 // The type files the `configuration:` lines name. None pins a `cwd:`, so 0014 has nothing to move.
@@ -748,7 +748,7 @@ describe('0025: "nothing to do here" is a note, never a refusal', () => {
       '  whatsapp:',
       `    ${KG_CHAT}: # perrito traduciones`,
       '      conversation_path: .egpt/conversations/whatsapp/perrito-traduciones',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
       '      agents:',
       '        codex:',
       '          mode: on',
@@ -778,10 +778,10 @@ describe('0025 refuses, naming the place, only on what it cannot honestly read o
   });
 
   it('an `allowed_paths:` that EXISTS but is not a mapping', async () => {
-    const scalar = crlf(['node_name: kg', 'agents:', ...KG_DECLARED, 'allowed_paths: C:/Users/an/src']);
+    const scalar = crlf(['node_name: kg', 'agents:', ...KG_DECLARED, 'allowed_paths: C:/Users/user/src']);
     const h = home({ config: scalar });
     await expect(plan(ctxFor(h))).rejects.toThrow(
-      /0025 refuses: `allowed_paths:` in .*config\.yaml is "C:\/Users\/an\/src", not a mapping of paths/,
+      /0025 refuses: `allowed_paths:` in .*config\.yaml is "C:\/Users\/user\/src", not a mapping of paths/,
     );
     expect(read(h)).toBe(scalar);
   });

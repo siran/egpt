@@ -54,16 +54,16 @@ describe('config-swap — restart-only keys', () => {
   });
 
   it('a top-level chatbox block named by limbs.http.chatboxes binds at boot: restart-only, named by its key; an unrelated top-level block is hot', () => {
-    const boxes = { ...base, limbs: { http: { port: 8095, chatboxes: ['eduweb_marketer'] } }, eduweb_marketer: { url: 'eduweb', being: 'ed', intro: 'Hola' }, notes: { a: 1 } };
-    expect(restartKeysChanged(boxes, { ...boxes, eduweb_marketer: { ...boxes.eduweb_marketer, intro: '¡Hola, soy Edu!' } })).toEqual(['eduweb_marketer']);
+    const boxes = { ...base, limbs: { http: { port: 8095, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { url: 'contoso', being: 'ed', intro: 'Hola' }, notes: { a: 1 } };
+    expect(restartKeysChanged(boxes, { ...boxes, contoso_marketer: { ...boxes.contoso_marketer, intro: '¡Hola, soy Edu!' } })).toEqual(['contoso_marketer']);
     expect(restartKeysChanged(boxes, { ...boxes, notes: { a: 2 } })).toEqual([]);
     // a block added by its name, or removed with it: the list (under limbs) and the block
-    const { eduweb_marketer, ...without } = boxes;
+    const { contoso_marketer, ...without } = boxes;
     const named = { ...without, limbs: { http: { port: 8095, chatboxes: [] } } };
-    expect(restartKeysChanged(named, boxes)).toEqual(['limbs', 'eduweb_marketer']);
-    expect(restartKeysChanged(boxes, named)).toEqual(['limbs', 'eduweb_marketer']);
+    expect(restartKeysChanged(named, boxes)).toEqual(['limbs', 'contoso_marketer']);
+    expect(restartKeysChanged(boxes, named)).toEqual(['limbs', 'contoso_marketer']);
     // a block no list names is any other key
-    expect(restartKeysChanged(named, { ...named, eduweb_marketer: { being: 'ed' } })).toEqual([]);
+    expect(restartKeysChanged(named, { ...named, contoso_marketer: { being: 'ed' } })).toEqual([]);
   });
 });
 

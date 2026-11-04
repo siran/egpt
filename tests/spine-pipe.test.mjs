@@ -787,7 +787,7 @@ describe('spine — resume observation (a slept process is not a live one)', () 
   // backlog. type /recap to list them'"). Once per chat, after that chat's backlog has settled, and
   // only in a chat whose backlog WOULD HAVE REACHED A BEING had it been live — the spine's own
   // route + gate, asked without dispatching. N is the chat's whole backlog: the list /recap shows.
-  const A = 'chat-palma@g.us', B = 'chat-charla@g.us';
+  const A = 'chat-muestra@g.us', B = 'chat-charla@g.us';
   const slept = (s, over) => s.bridge.emit({ ...MSG, backlog: true, ...over });
   const addressed = { atEAnywhere: true };
   function wake(s) {
@@ -1041,11 +1041,11 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // already quotes it, so there is still no second/duplicate post (the 2026-07-08 rogue twin
   // stays fixed) and nothing E said is discarded.
   it('/reply at the message the placeholder already quotes DEMOTES to prose — ONE quoted message, no delete+repost', async () => {
-    const { bridge } = buildStreaming({ replyText: `Vale, ya lo miro.\n/reply #${MSG.msgId} Hola Zohy 👋` });
+    const { bridge } = buildStreaming({ replyText: `Vale, ya lo miro.\n/reply #${MSG.msgId} Hola Zuri 👋` });
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].deleted).toBe(false);                    // the train is NOT torn down
-    expect(bridge.streams[0].finals).toEqual(['Vale, ya lo miro.\nHola Zohy 👋']);   // the twin's words land HERE
+    expect(bridge.streams[0].finals).toEqual(['Vale, ya lo miro.\nHola Zuri 👋']);   // the twin's words land HERE
     expect(bridge.streams[0].opts).toMatchObject({ replyTo: MSG.msgId });
     expect(bridge.sent).toHaveLength(0);                              // nothing reposted — exactly one message
   });
@@ -1063,7 +1063,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     expect(bridge.sent[0]).toMatchObject({ chat: MSG.chatId, text: 'sounds good', opts: { replyTo: '157204' } });
   });
 
-  // THE LIVE TURN OF 2026-10-16 17:24 (SI+EduWeb), rebuilt from the logged fragments. E's correct
+  // THE LIVE TURN OF 2026-10-16 17:24 (SI+Contoso), rebuilt from the logged fragments. E's correct
   // answer mentioned a 403 and "denied"; the old text classifier called it failure-shaped, so the
   // /reply never ran and the chat got "⚠️ no reply (turn failed/empty)". Failure is now the engine's flag.
   it('REPRODUCE: E\'s live /reply about a 403 and "Require all denied" is delivered', async () => {
@@ -1092,18 +1092,18 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     }
   });
 
-  // THE LIVE SHAPE (operator 2026-07-15, Zohykar): E's WHOLE reply is `/reply #<trigger> …`.
+  // THE LIVE SHAPE (operator 2026-07-15, Zurikar): E's WHOLE reply is `/reply #<trigger> …`.
   // Stripping it as "redundant" left the reply with no prose at all → action-only → the
   // placeholder was DELETED and nothing was posted: E's words were EATEN. Quoting the trigger
   // unconditionally makes the guard fire on far more replies, so it widens exactly this shape
   // — which is why the target is redundant but the WORDS are not: they demote into the reply
   // that already quotes the target. Exactly one message, nothing lost, no repost.
   it('an action-only /reply at the message we ALREADY quote demotes to prose — ONE quoted message, words intact', async () => {
-    const { bridge } = buildStreaming({ replyText: `/reply #${MSG.msgId} Hola Zohy 👋` });
+    const { bridge } = buildStreaming({ replyText: `/reply #${MSG.msgId} Hola Zuri 👋` });
     await bridge.emit(MSG);
 
     expect(bridge.streams[0].deleted).toBe(false);                    // NOT torn down (today it is — the words vanish)
-    expect(bridge.streams[0].finals).toEqual(['Hola Zohy 👋']);       // E's words ARE the reply
+    expect(bridge.streams[0].finals).toEqual(['Hola Zuri 👋']);       // E's words ARE the reply
     expect(bridge.streams[0].opts).toMatchObject({ replyTo: MSG.msgId });   // natively quoting the trigger
     expect(bridge.sent).toHaveLength(0);                              // no repost — exactly one message
   });
@@ -1113,7 +1113,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // from `#<id> ` on the line is provably prose and its text streams character by character.
   // The partialProse invariant still holds throughout: never a '/' , and a monotone prefix walk.
   it('the demoted prose streams LIVE, and no /reply token or half-typed prefix ever renders', async () => {
-    const full = `/reply #${MSG.msgId} Hola Zohy`;
+    const full = `/reply #${MSG.msgId} Hola Zuri`;
     const { bridge } = buildStreaming({
       replyText: full,
       partials: Array.from({ length: full.length }, (_, i) => full.slice(0, i + 1)),
@@ -1124,10 +1124,10 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
     for (const f of frames) expect(f).not.toMatch(/\//);              // the token never renders, at any position
     const shown = frames.map((f) => f.replace(/ ⏳$/, ''));
     expect(shown).toContain('Hola');                                  // …the demoted prose DOES stream, live
-    expect(shown[shown.length - 1]).toBe('Hola Zohy');
+    expect(shown[shown.length - 1]).toBe('Hola Zuri');
     for (let i = 1; i < shown.length; i++)                            // monotone prefix walk — nothing ever un-renders
       expect(shown[i].startsWith(shown[i - 1])).toBe(true);
-    expect(bridge.streams[0].finals).toEqual(['Hola Zohy']);          // lands exactly on the delivered prose
+    expect(bridge.streams[0].finals).toEqual(['Hola Zuri']);          // lands exactly on the delivered prose
     expect(bridge.streams[0].deleted).toBe(false);
     expect(bridge.sent).toHaveLength(0);
   });
@@ -1152,7 +1152,7 @@ describe('spine — /reply handled BEFORE posting (no visible token, no delete+r
   // thinking process." The reaction still lands on its target; the placeholder must NOT carry the
   // "⚙️ processing command" debug line. End-to-end through the real spine + sender — the live
   // 2026-10-27 incident (E answered only `/react #778 😄`, verbose off, and the spine DELETED its ⏳).
-  // Ruling (An, #780): "nadie borra nunca nada, ningún bot, ni el spine" — the ⏳ is EDITED to ✓.
+  // Ruling (operator 2026-10-27): "nadie borra nunca nada, ningún bot, ni el spine" — the ⏳ is EDITED to ✓.
   it('REPRODUCE: verbose OFF, an action-only reply EDITS its placeholder to ✓ — never deleted, no "processing command"', async () => {
     const { bridge } = buildStreaming({ replyText: '/react #7 👍', partials: ['/re', '/react #7', '/react #7 👍'], verbose: false });
     await bridge.emit(MSG);

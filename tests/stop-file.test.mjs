@@ -211,9 +211,9 @@ describe('(c) the chat safe word writes the file, then stops the service', () =>
   });
 
   it('a FULL-form config chat_id still matches the SHORT id the bridge delivers', async () => {
-    const config = { ...CONFIG, networks: { whatsapp: { chat_ids: ['!yz3kJjWXsQJofK9naaVb:beeper.local'], allowed_users: ['u-1'] } } };
+    const config = { ...CONFIG, networks: { whatsapp: { chat_ids: ['!FakeRoomId0000000001:beeper.local'], allowed_users: ['u-1'] } } };
     const { app, spy, exits } = await bootNode({ config });
-    await spy.onIncoming('stop', { ...SELF_FROM, chatId: 'yz3kJjWXsQJofK9naaVb' });
+    await spy.onIncoming('stop', { ...SELF_FROM, chatId: 'FakeRoomId0000000001' });
     expect(existsSync(STOP_PATH)).toBe(true);
     expect(exits).toEqual([0]);
     app.stop();

@@ -1,11 +1,11 @@
 // tests/radio-relay.test.mjs — src/radio-relay.mjs: the station uploader (PUT
 // <endpoint>/host/relay/<speaker>/<filename>) + its two pure helpers. `fetch` is always
-// injected — this suite must NEVER touch radio.wildnloyal.org. `sleep` is injected too so
+// injected — this suite must NEVER touch radio.examplefm.example. `sleep` is injected too so
 // the retry/backoff tests run instantly (no real timers).
 import { describe, it, expect, vi } from 'vitest';
 import { uploadNote, radioNoteFilename, pickSpeaker, MAX_UPLOAD_BYTES } from '../src/radio-relay.mjs';
 
-const radio = { endpoint: 'https://radio.wildnloyal.org', relay_user: 'egpt', relay_password: 'shh' };
+const radio = { endpoint: 'https://radio.examplefm.example', relay_user: 'egpt', relay_password: 'shh' };
 const noSleep = async () => {};   // instant backoff — the retry tests must not actually wait
 
 describe('uploadNote — THE LOCK: transport failure then success must air (retry works)', () => {
@@ -22,7 +22,7 @@ describe('uploadNote — THE LOCK: transport failure then success must air (retr
     expect(fetchFn).toHaveBeenCalledTimes(2);
     // both attempts hit the SAME URL/auth — a retry is not a different request
     expect(calls[0].url).toBe(calls[1].url);
-    expect(calls[0].url).toBe('https://radio.wildnloyal.org/host/relay/roger/note.ogg');
+    expect(calls[0].url).toBe('https://radio.examplefm.example/host/relay/roger/note.ogg');
     expect(calls[0].opts.headers.Authorization).toBe(`Basic ${Buffer.from('egpt:shh').toString('base64')}`);
   });
 });
@@ -122,10 +122,10 @@ describe('radioNoteFilename — ISO-timestamped, keeps the source extension', ()
 
 describe('pickSpeaker — sender id -> station speaker, via radio.hosts, falling back to default_speaker', () => {
   it('a mapped sender resolves to its host name', () => {
-    expect(pickSpeaker({ '16468217865': 'roger' }, '16468217865', 'egpt')).toBe('roger');
+    expect(pickSpeaker({ '15550100001': 'roger' }, '15550100001', 'egpt')).toBe('roger');
   });
   it('an unmapped sender falls back to default_speaker', () => {
-    expect(pickSpeaker({ '16468217865': 'roger' }, '99999', 'egpt')).toBe('egpt');
+    expect(pickSpeaker({ '15550100001': 'roger' }, '99999', 'egpt')).toBe('egpt');
   });
   it('neither a mapping nor a default_speaker -> null', () => {
     expect(pickSpeaker({}, '99999', undefined)).toBeNull();

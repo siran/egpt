@@ -60,9 +60,9 @@ describe('readChromeCredential — registrable-domain match', () => {
   });
 
   it('matches across subdomains on the SAVED side (saved accounts.google.com ↔ mail.google.com)', async () => {
-    const rows = [{ origin_url: 'https://accounts.google.com/signin', username_value: 'me@gmail.com', password_value: v10blob('g-pass') }];
+    const rows = [{ origin_url: 'https://accounts.google.com/signin', username_value: 'me@example.com', password_value: v10blob('g-pass') }];
     const got = await readChromeCredential({ profilePath: 'C:/fake/brain', domain: 'mail.google.com' }, makeSeams({ rows }));
-    expect(got).toEqual({ username: 'me@gmail.com', password: 'g-pass' });
+    expect(got).toEqual({ username: 'me@example.com', password: 'g-pass' });
   });
 
   it('a different registrable domain does not match → null', async () => {

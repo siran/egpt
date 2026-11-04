@@ -11,7 +11,7 @@ import { transcriptAppend, replyLine, contextSinceLastTurn, bodyForMessageId } f
 describe('transcriptAppend', () => {
   // contract 5.3
   it('a new transcript gets the front matter + the line', () => {
-    const out = transcriptAppend({ existing: false, body: 'hola wren', name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5136707031', persona: 'wren' });
+    const out = transcriptAppend({ existing: false, body: 'hola wren', name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5000000102', persona: 'wren' });
     expect(out.startsWith('---\n')).toBe(true);
     expect(out).toContain('surface: tg');
     expect(out).toContain('persona: wren');
@@ -254,8 +254,8 @@ describe('a received message lands in transcript.md', () => {
   it('inbound + reply both end up in the file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'egpt-tlog-'));
     const fpath = join(dir, 'transcript.md');
-    const inbound = '[2026-06-13 20:19 UTC, in Telegram chat -5136707031, An said:]\nwren, you back?';
-    appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: inbound, name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5136707031', persona: 'wren' }));
+    const inbound = '[2026-06-13 20:19 UTC, in Telegram chat -5000000102, An said:]\nwren, you back?';
+    appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: inbound, name: 'DOLLY-REVE', surface: 'tg', slug: 'dolly-reve', chatId: '-5000000102', persona: 'wren' }));
     appendFileSync(fpath, transcriptAppend({ existing: existsSync(fpath), body: replyLine({ being: 'wren', body: 'Back and live.', surfaced: true, chatName: 'DOLLY-REVE', node: 'tg' }) }));
     const t = readFileSync(fpath, 'utf8');
     expect(t).toContain('wren, you back?');     // the received message is logged

@@ -120,7 +120,7 @@ describe('warm-cli-session — resident multi-turn', () => {
 // it NEVER throws: every "nothing was handed over" is a plain `false`, because a false NEGATIVE
 // only costs a queued turn while a false POSITIVE silently swallows the message.
 //
-// WHAT A NON-FALSE ANSWER MEANS CHANGED ON 2026-09-09 (operator, after the Joyce fault): it is
+// WHAT A NON-FALSE ANSWER MEANS CHANGED ON 2026-09-09 (operator, after the Julia fault): it is
 // `{ ack }`, not `true` — the bytes are on their way, and `ack` is what later says whether the
 // MODEL took them. The evidence itself is covered in tests/steer-ack.test.mjs; the cases below
 // only care that something/nothing was handed over, so they assert truthiness.
@@ -626,7 +626,7 @@ describe('redactSecrets — every pattern (a leaked stub cannot be unposted)', (
       'git clone https://***@github.com/siran/x.git');
     gone('curl http://admin:admin@speaker.local/play', 'admin:admin', 'curl http://***@speaker.local/play');
     // a bare username (no ':') is not a credential — keep it readable
-    expect(redactSecrets('ssh://an@dolly')).toBe('ssh://an@dolly');
+    expect(redactSecrets('ssh://user@dolly')).toBe('ssh://user@dolly');
   });
 
   it('self-identifying key shapes with nothing to anchor on', () => {
@@ -978,7 +978,7 @@ describe('warm-cli-session — a background task finishes', () => {
     s.close();
   });
 
-  // An #2971, 2026-10-31: "are you listing parent and child process in the same level? in that case why not
+  // operator 2026-10-31: "are you listing parent and child process in the same level? in that case why not
   // nest?". claude 2.1.309: parent_task_id — the live background agent that launched the task; ambient — "not
   // activity … hosts should exclude them from activity indicators" (liveness does; this session keeps them).
   it('keeps the agent that launched each task and the CLI\'s ambient mark — an ambient task is still its task: counted, ended with an outcome', async () => {
@@ -1021,10 +1021,10 @@ describe('warm-cli-session — a background task finishes', () => {
     adopted.close();
   });
 
-  // An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así". A background Bash with no
+  // operator 2026-11-01: "por qué los mensajes se están viendo así? … se van así". A background Bash with no
   // `description` is described by the CLI as its whole command: the status posted a heredoc, line by line.
-  const HEREDOC = `\n  cd /home/egpt/.egpt/conversations/telegram/EduWeb-2610240312/desktop/gestion-docente/e4;  python3 - <<'PY'\np='aws/job-boleta.ps1'; s=open(p,encoding='utf-8').read()\nold="Foto 'boleta-1' | Out-Null"\nPY`;
-  const HEREDOC_LINE = 'cd /home/egpt/.egpt/conversations/telegram/EduWeb-2610240312/desktop/gestion-do…';
+  const HEREDOC = `\n  cd /home/egpt/.egpt/conversations/telegram/Contoso-2610240312/desktop/gestion-docente/e4;  python3 - <<'PY'\np='aws/job-boleta.ps1'; s=open(p,encoding='utf-8').read()\nold="Foto 'boleta-1' | Out-Null"\nPY`;
+  const HEREDOC_LINE = 'cd /home/egpt/.egpt/conversations/telegram/Contoso-2610240312/desktop/gestion-d…';
   it('a task\'s description is ONE short line — its first, collapsed, redacted, cut at 80 with … — or its id; a finished one\'s summary too', async () => {
     const f = backgroundClaude();
     const done = [];
@@ -1106,7 +1106,7 @@ describe('warm-cli-session — a background task finishes', () => {
     s.close();
   });
 
-  // An #2944, 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
+  // operator 2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto
   // debe ser estructural, no pongas al SI a determinar el error cuando falla el proceso". Shapes from
   // claude 2.1.309: task_notification { status completed|failed|stopped, summary, reason? }; task_updated
   // { patch: { status completed|failed|killed, error? } } just before it.

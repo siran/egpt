@@ -470,8 +470,8 @@ describe('spine — the turn FIFO keys on the INSTANCE, not the chat', () => {
 // which room the group had been invited into.
 //
 // The envelope's `from:` carries the origin chat's NAME, and a NAME is the one part of a chat's
-// identity that crosses accounts (the same group is `!6ljZJkx0OaY9ZVhEzFgi` on anrodz42 and
-// `!HuXFQeZSY1X4khNDWTzz` on dolly.egpt — measured 2026-08-31). The responder resolves it to its
+// identity that crosses accounts (the same group is `!FakeRoomId0000000004` on anaprueba42 and
+// `!FakeRoomId0000000003` on mouth.acct — measured 2026-08-31). The responder resolves it to its
 // OWN id and answers there; the scope above then does the rest with no further change.
 const RELAY_CHANNEL = 'egpt-mesh-do-kg';
 
@@ -534,14 +534,14 @@ describe('the mesh is TRANSPORT, not identity — a relayed group turn lands on 
   });
 
   it('...and the pre-change behaviour beside it: an origin that does not resolve here still answers in the CHANNEL', async () => {
-    // The fallback, and the reason it must exist: this node is not in "Radio WnL", so there is
+    // The fallback, and the reason it must exist: this node is not in "Radio EFM", so there is
     // no local address for it. Guessing would key a live thread on a foreign account's id; the
     // turn runs in the transport chat instead, exactly as every relayed turn did before today.
     const { brain, pool } = await harness({ rooms: JOINED });
     const bridge = meshBridge({});                       // resolves nothing
     const mesh = meshOver(brain, bridge);
 
-    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope('Radio WnL', '@e pon musica'), isSender: true });
+    await mesh.handle({ surface: 'whatsapp', chatId: RELAY_CHANNEL, msgId: 'm1', body: envelope('Radio EFM', '@e pon musica'), isSender: true });
     await meshFlush();
 
     expect(pool.calls).toHaveLength(1);

@@ -2,7 +2,7 @@
 // named connection, is answered by that connection's agent (operator 2026-10-15, edw-marketer).
 //
 // The live shape: kg holds `primary` (An, the ear) and `secondary` (Rodz, a per-chat ear that wakes
-// only where An is absent). A visitor from the EduWeb site DMs Rodz. Before this rule the DM fell to
+// only where An is absent). A visitor from the Contoso site DMs Rodz. Before this rule the DM fell to
 // the persona in `accum`, which answers only when named, so "Hola" got nothing.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
@@ -31,9 +31,9 @@ const PRIMARY = 'TOK-primary';
 const SECONDARY = 'TOK-secondary';
 const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
 
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const VISITOR = '+584141234567';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const VISITOR = '+15550100010';
 const FRIEND = '+15551230000';
 
 const self = (id) => ({ id });
@@ -56,7 +56,7 @@ const DESKTOPS = {
     [GROUP]: [self('rodz@dolly.local'), member('v@dolly.local', VISITOR), member('f@dolly.local', FRIEND)],
   },
 };
-const SELF_IDENTITY = { [PRIMARY]: [AN, '@anrodriguez:beeper.com'], [SECONDARY]: [RODZ, '@dolly-egpt:beeper.com'] };
+const SELF_IDENTITY = { [PRIMARY]: [AN, '@anaprueba:beeper.com'], [SECONDARY]: [RODZ, '@mouth-acct:beeper.com'] };
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
 
 function fakeTransport() {
@@ -108,7 +108,7 @@ function fakeSession(opts) {
 }
 
 const MARKETER = () => ({
-  configuration: 'egpt', personality: 'edw-marketer', handles: [], name: 'EduWeb', body_emoji: '🎓',
+  configuration: 'egpt', personality: 'edw-marketer', handles: [], name: 'Contoso', body_emoji: '🎓',
   conversation_defaults: { access_level: 'regular', sandboxed: false, allowed_users: ['*'] },   // it answers strangers
 });
 
@@ -117,10 +117,10 @@ const KG = ({ rule = true } = {}) => ({
   node_name: 'kg',
   user_name: 'An',
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY },
   },
-  networks: { whatsapp: { allowed_users: [AN, '@anrodriguez:beeper.com'] } },
+  networks: { whatsapp: { allowed_users: [AN, '@anaprueba:beeper.com'] } },
   dispatch: { auto_default_mode: 'accum', ...(rule ? { stranger_agent: { secondary: 'edw-marketer' } } : {}) },
   agents: {
     egpt: { configuration: 'egpt', handles: ['e', 'egpt', 'rodz'], name: 'E', body_emoji: '🐶', conversation_defaults: { allowed_users: ['*'] } },   // kg after 0050
@@ -134,10 +134,10 @@ const DO = () => ({
   node_name: 'do',
   user_name: 'An',
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY, owner_node: 'do' },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY, owner_node: 'do' },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY },
   },
-  networks: { whatsapp: { allowed_users: [AN, '@anrodriguez:beeper.com'] } },
+  networks: { whatsapp: { allowed_users: [AN, '@anaprueba:beeper.com'] } },
   dispatch: { auto_default_mode: 'mention' },
   agents: {
     don: { configuration: 'egpt', handles: ['d', 'don', 'rodz'], name: 'D', body_emoji: '🤝', mode: 'accum' },
@@ -187,7 +187,7 @@ describe('a stranger\'s new 1:1 on the configured connection is answered by the 
     await deliver(byConnection.secondary, NEW_DM, 'Hola');
     await waitFor(() => replies().length > 0);
     expect(replies().map(({ connection, chatId }) => ({ connection, chatId }))).toEqual([{ connection: 'secondary', chatId: NEW_DM }]);
-    expect(replies()[0].text).toContain('🎓 EduWeb:');
+    expect(replies()[0].text).toContain('🎓 Contoso:');
     app.stop();
   });
 
@@ -196,10 +196,10 @@ describe('a stranger\'s new 1:1 on the configured connection is answered by the 
     await deliver(byConnection.secondary, NEW_DM, 'Hola');
     await waitFor(() => replies().length > 0);
     expect(getContact(state(), 'whatsapp', NEW_DM)?.entry?.agents?.['edw-marketer']?.default).toBe(true);
-    await deliver(byConnection.secondary, NEW_DM, '¿Qué es EduWeb?');
+    await deliver(byConnection.secondary, NEW_DM, '¿Qué es Contoso?');
     await waitFor(() => replies().length > 1);
     expect(replies()).toHaveLength(2);
-    expect(replies()[1].text).toContain('🎓 EduWeb:');
+    expect(replies()[1].text).toContain('🎓 Contoso:');
     app.stop();
   });
 
@@ -211,7 +211,7 @@ describe('a stranger\'s new 1:1 on the configured connection is answered by the 
     await waitFor(() => replies().length > 1);
     await waitFor(() => replies().length > 2, { timeoutMs: 200 });
     expect(replies()).toHaveLength(2);
-    for (const r of replies()) expect(r.text).toContain('🎓 EduWeb:');
+    for (const r of replies()) expect(r.text).toContain('🎓 Contoso:');
     app.stop();
   });
 

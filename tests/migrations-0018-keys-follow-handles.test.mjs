@@ -125,7 +125,7 @@ const DO_CONV_LINES = [
   '    # the agent-scope bookkeeping row: wren is pinned node-wide, so it has ONE conversation',
   '    wren:',
   '      conversation_path: .egpt/agents/wren',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ];
 const DO_CONV = crlf(DO_CONV_LINES);
 const DO_CONV_AFTER = crlf(DO_CONV_LINES.map((l, i) => {
@@ -142,7 +142,7 @@ const DO_ROOMS_LINES = [
   'rooms:',
   '  room/radio:',
   '    radio_service:',
-  '      wildnloyal:',
+  '      examplefm:',
   '        enabled: true',
   '    agents:',
   '      egpt: # the persona runs the station',
@@ -229,7 +229,7 @@ const KG_CONV = crlf([
   '  agent:',
   '    wren:',
   '      conversation_path: .egpt/agents/wren',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ]);
 const KG_AGENTS = crlf([
   'agents:',
@@ -335,7 +335,7 @@ describe('0018 on do - the beings keyed egpt / ken / wren are the ones that answ
       dren: { threadId: 'thread-wren-shell-fixture' },
     });
     // The agent-scope row: renamed, repointed, and nothing else in it touched.
-    expect(conv.contacts.agent).toEqual({ dren: { conversation_path: '.egpt/agents/dren', home_dir: '/c/Users/an' } });
+    expect(conv.contacts.agent).toEqual({ dren: { conversation_path: '.egpt/agents/dren', home_dir: '/c/Users/user' } });
     // The registry row and the per-being key inside it (src/rooms-file.mjs:38 - BOTH move).
     const reg = YAML.parse(readFileSync(agentsPath(h), 'utf8'));
     expect(Object.keys(reg.agents)).toEqual(['agent/dren']);
@@ -520,7 +520,7 @@ describe('0018 refuses, naming the place', () => {
   });
 
   it('the agent-scope row names the being somewhere this migration was not told about', async () => {
-    const extra = DO_CONV.replace('      home_dir: /c/Users/an', '      home_dir: /c/Users/an\r\n      slug: wren');
+    const extra = DO_CONV.replace('      home_dir: /c/Users/user', '      home_dir: /c/Users/user\r\n      slug: wren');
     const h = home({ conversations: extra });
     await expect(plan(ctxFor(h))).rejects
       .toThrow(/0018 refuses: contacts\.agent\.wren\.slug is "wren" in .* - it names the being by its old key/);

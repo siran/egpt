@@ -70,9 +70,9 @@ describe('emptyState / sanitizeSlug basics', () => {
   });
   it('sanitizeSlug keeps path-friendly chars, substitutes only Windows-illegal ones', () => {
     // accents + spaces + parens + @ + & + ! are all legal on Windows → kept
-    expect(sanitizeSlug('Tío Jesús Palma')).toBe('Tío Jesús Palma');
-    expect(sanitizeSlug('+1 (646) 821-7865')).toBe('+1 (646) 821-7865');
-    expect(sanitizeSlug('26087681749235@lid')).toBe('26087681749235@lid');
+    expect(sanitizeSlug('Tío Jesús Muestra')).toBe('Tío Jesús Muestra');
+    expect(sanitizeSlug('+1 (555) 010-0001')).toBe('+1 (555) 010-0001');
+    expect(sanitizeSlug('10000000000011@lid')).toBe('10000000000011@lid');
     expect(sanitizeSlug('  hello world!  ')).toBe('hello world!');   // trimmed, '!' kept
     // Windows-illegal chars (: / \ < > " | ? *) collapse to a single space
     expect(sanitizeSlug('premise-driven: bitcoin & evolution')).toBe('premise-driven bitcoin & evolution');
@@ -86,7 +86,7 @@ describe('emptyState / sanitizeSlug basics', () => {
     expect(sanitizeSlug('...')).toBe('');                      // dots-only → empty
   });
   it('sanitizeSlug is idempotent on an already-clean slug', () => {
-    for (const s of ['morgan-2606101622', 'Tío Jesús Palma', '+1 (646) 821-7865', 'a b c d']) {
+    for (const s of ['morgan-2606101622', 'Tío Jesús Muestra', '+1 (555) 010-0001', 'a b c d']) {
       expect(sanitizeSlug(s)).toBe(s);
     }
   });
@@ -144,16 +144,16 @@ describe('aliasContact / aliasTargetOf / dropContact + the ensureContact alias g
 describe('ensureContact — surface-aware, new contact, multi-JID merge', () => {
   it('creates a fresh contact under the named surface', () => {
     const s0 = emptyState();
-    const jid = '26087681749235@lid';
+    const jid = '10000000000011@lid';
     const { state, jid: primary, slug, entry, isNew, surface } = ensureContact(s0, WA, jid, {
-      pushedName: 'Diego Pérez (Koma)',
+      pushedName: 'Diego Pruéba (Kilo)',
       slugHint: 'diego',
     });
     expect(isNew).toBe(true);
     expect(surface).toBe(WA);
     expect(primary).toBe(jid);
     // slug follows the TITLE (pushedName), path-safe — accents/spaces/parens kept
-    expect(slug).toMatch(/^Diego Pérez \(Koma\)-\d{10}$/);
+    expect(slug).toMatch(/^Diego Pruéba \(Kilo\)-\d{10}$/);
     expect(entry.slug).toBe(slug);
     // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — a fresh
     // contact is NOT seeded with one; the identity feed is a property of the agent type.
@@ -166,55 +166,55 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect('identityInjectedAt' in entry).toBe(false);
     expect(entry.home_dir).toBe(homeDirMsys());
     expect(entry.conversation_path).toBe(conversationPathOf(WA, slug));
-    expect(entry.pushedName).toBe('Diego Pérez (Koma)');
+    expect(entry.pushedName).toBe('Diego Pruéba (Kilo)');
     expect(entry.jids).toBeUndefined();
     expect(state.contacts[WA][jid]).toEqual(entry);
   });
 
   it('a second JID with matching slugHint becomes an alias within the same surface', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
+    const r1 = ensureContact(s, WA, '10000000000011@lid', { pushedName: 'Diego Pruéba (Kilo)', slugHint: 'diego' });
     s = r1.state;
     // same person's 2nd JID carries the same title → same candidate slug → alias
-    const r2 = ensureContact(s, WA, '584122182178@s.whatsapp.net', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
+    const r2 = ensureContact(s, WA, '15550100006@s.whatsapp.net', { pushedName: 'Diego Pruéba (Kilo)', slugHint: 'diego' });
     expect(r2.slug).toBe(r1.slug);
     expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
-    expect(r2.state.contacts[WA]['584122182178@s.whatsapp.net']).toEqual({ aliasOf: r1.jid });
+    expect(r2.state.contacts[WA]['15550100006@s.whatsapp.net']).toEqual({ aliasOf: r1.jid });
   });
 
   it('same JID under different surfaces is independent', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, WA, '88164392', { slugHint: 'an-wa' });
+    const r1 = ensureContact(s, WA, '100000001', { slugHint: 'an-wa' });
     s = r1.state;
-    const r2 = ensureContact(s, TG, '88164392', { slugHint: 'an-tg' });
+    const r2 = ensureContact(s, TG, '100000001', { slugHint: 'an-tg' });
     expect(r1.slug).not.toBe(r2.slug);
-    expect(r2.state.contacts[WA]['88164392'].slug).toMatch(/^an-wa-\d{10}$/);
-    expect(r2.state.contacts[TG]['88164392'].slug).toMatch(/^an-tg-\d{10}$/);
+    expect(r2.state.contacts[WA]['100000001'].slug).toMatch(/^an-wa-\d{10}$/);
+    expect(r2.state.contacts[TG]['100000001'].slug).toMatch(/^an-tg-\d{10}$/);
   });
 
   it('re-encountering a known JID with a new name re-slugs to the current name (not frozen)', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
+    const r1 = ensureContact(s, WA, '10000000000011@lid', { pushedName: '', slugHint: 'diego' });
     s = r1.state;
     const suffix = r1.slug.match(/-(\d{10})$/)[1];
-    const r2 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
+    const r2 = ensureContact(s, WA, '10000000000011@lid', { pushedName: 'Diego Pruéba (Kilo)' });
     expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
     expect(r2.changed).toBe(true);
-    expect(r2.entry.pushedName).toBe('Diego Pérez (Koma)');
+    expect(r2.entry.pushedName).toBe('Diego Pruéba (Kilo)');
     // slug tracks the current name (keeps the firstSeen suffix). A rename does NOT
     // reset the thread (operator ruling: a rename is the SAME conversation under a
     // new name), and there is no FLAT threadId slot to reset either way — creation
     // stopped minting it (2026-07-26); a thread lives in `entry[<being>].threadId`.
     expect(r2.renamedFrom).toBe(r1.slug);
-    expect(r2.slug).toBe(`Diego Pérez (Koma)-${suffix}`);
-    expect(r2.state.contacts[WA]['26087681749235@lid']).not.toHaveProperty('threadId');
+    expect(r2.slug).toBe(`Diego Pruéba (Kilo)-${suffix}`);
+    expect(r2.state.contacts[WA]['10000000000011@lid']).not.toHaveProperty('threadId');
   });
 
   it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
     const s = emptyState();
-    const jid = '584122182178@s.whatsapp.net';
+    const jid = '15550100006@s.whatsapp.net';
     const r = ensureContact(s, WA, jid, {});
     expect(r.slug).toMatch(/^contact-\d{10}$/);
     expect(r.state.contacts[WA][jid].slug).toBe(r.slug);
@@ -222,10 +222,10 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
 
   it('aliasOf resolves through findContactByJid', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, WA, '26087681749235@lid', { slugHint: 'diego' });
-    s = ensureContact(r1.state, WA, '584122182178@s.whatsapp.net', { slugHint: 'diego' }).state;
-    expect(findContactByJid(s, WA, '26087681749235@lid')).toBe(r1.slug);
-    expect(findContactByJid(s, WA, '584122182178@s.whatsapp.net')).toBe(r1.slug);
+    const r1 = ensureContact(s, WA, '10000000000011@lid', { slugHint: 'diego' });
+    s = ensureContact(r1.state, WA, '15550100006@s.whatsapp.net', { slugHint: 'diego' }).state;
+    expect(findContactByJid(s, WA, '10000000000011@lid')).toBe(r1.slug);
+    expect(findContactByJid(s, WA, '15550100006@s.whatsapp.net')).toBe(r1.slug);
   });
 
   it('ensureContact accepts a brand-new surface (surfaces are open, no whitelist)', () => {
@@ -243,7 +243,7 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
   it('IGNORES ctx.personality on new contact creation (key retired; signature stays compatible)', () => {
     // Legacy spine callers still PASS ctx.personality — it must be silently ignored, never
     // throw, and never seed a `personality` on the new entry (operator 2026-07-02).
-    const r = ensureContact(emptyState(), WA, '34836563681438@lid', {
+    const r = ensureContact(emptyState(), WA, '10000000000012@lid', {
       pushedName: 'self', slugHint: 'self', personality: 'system',
     });
     expect('personality' in r.entry).toBe(false);
@@ -294,8 +294,8 @@ describe('conversation_path (stored) backfill', () => {
   });
 
   it('a rename updates conversation_path to the new slug', () => {
-    const r1 = ensureContact(emptyState(), WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
-    const r2 = ensureContact(r1.state, WA, '26087681749235@lid', { pushedName: 'Diego Pérez' });
+    const r1 = ensureContact(emptyState(), WA, '10000000000011@lid', { pushedName: '', slugHint: 'diego' });
+    const r2 = ensureContact(r1.state, WA, '10000000000011@lid', { pushedName: 'Diego Pruéba' });
     expect(r2.renamedTo).toBeTruthy();
     expect(r2.entry.conversation_path).toBe(conversationPathOf(WA, r2.slug));
     expect('threadCwd' in r2.entry).toBe(false);   // never written by the rename either
@@ -385,7 +385,7 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   // The Morgan bug (operator 2026-06-14): a chat first seen before its Beeper
   // title resolved got slug 'contact-<ts>'; later the title was known but the
   // slug stayed nameless forever because path-1 only refreshed pushedName.
-  const ROOM = '!RdGUTtUiSNnirVXjHgP2:beeper.local';
+  const ROOM = '!FakeRoomId0000000020:beeper.local';
   function placeholderState() {
     const r = ensureContact(emptyState(), WA, ROOM, {});   // no name → contact-<ts>
     expect(r.slug).toMatch(/^contact-\d{10}$/);
@@ -409,9 +409,9 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   });
 
   it('does NOT re-slug a contact that already has a real name', () => {
-    let s = ensureContact(emptyState(), WA, '85555832479795@lid', { pushedName: 'le moi', slugHint: 'le moi' }).state;
-    const before = s.contacts[WA]['85555832479795@lid'].slug;
-    const r = ensureContact(s, WA, '85555832479795@lid', { pushedName: 'le moi', slugHint: 'le moi' });
+    let s = ensureContact(emptyState(), WA, '10000000000013@lid', { pushedName: 'le moi', slugHint: 'le moi' }).state;
+    const before = s.contacts[WA]['10000000000013@lid'].slug;
+    const r = ensureContact(s, WA, '10000000000013@lid', { pushedName: 'le moi', slugHint: 'le moi' });
     expect(r.renamedFrom).toBe(null);
     expect(r.renamedTo).toBe(null);
     expect(r.slug).toBe(before);
@@ -450,11 +450,11 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   });
 
   it('no rename when the name is unchanged (anti-flap / idempotent)', () => {
-    let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'Dando Ruiz' }).state;
+    let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'Dario Ensayo' }).state;
     const before = s.contacts[WA][ROOM].slug;
     // re-encounter with the same title, plus a lowercase-dash slugHint that must
     // NOT cause a flap (rename is driven off pushedName only)
-    const r = ensureContact(s, WA, ROOM, { pushedName: 'Dando Ruiz', slugHint: 'dando-ruiz' });
+    const r = ensureContact(s, WA, ROOM, { pushedName: 'Dario Ensayo', slugHint: 'dario-ensayo' });
     expect(r.renamedFrom).toBe(null);
     expect(r.slug).toBe(before);
   });
@@ -468,21 +468,21 @@ describe('findContactByJid (surface-scoped)', () => {
     const s = {
       contacts: {
         whatsapp: {
-          '26087681749235@lid':           { slug: 'diego', personality: 'default' },
-          '584122182178@s.whatsapp.net':  { aliasOf: '26087681749235@lid' },
+          '10000000000011@lid':           { slug: 'diego', personality: 'default' },
+          '15550100006@s.whatsapp.net':  { aliasOf: '10000000000011@lid' },
           '1@lid':                        { slug: 'bob', personality: 'default' },
         },
         telegram: {
-          '88164392': { slug: 'an-tg', personality: 'system' },
+          '100000001': { slug: 'an-tg', personality: 'system' },
         },
       },
     };
-    expect(findContactByJid(s, WA, '26087681749235@lid')).toBe('diego');
-    expect(findContactByJid(s, WA, '584122182178@s.whatsapp.net')).toBe('diego');
+    expect(findContactByJid(s, WA, '10000000000011@lid')).toBe('diego');
+    expect(findContactByJid(s, WA, '15550100006@s.whatsapp.net')).toBe('diego');
     expect(findContactByJid(s, WA, '1@lid')).toBe('bob');
-    expect(findContactByJid(s, WA, '88164392')).toBe(null);          // TG-only
-    expect(findContactByJid(s, TG, '88164392')).toBe('an-tg');
-    expect(findContactByJid(s, TG, '26087681749235@lid')).toBe(null); // WA-only
+    expect(findContactByJid(s, WA, '100000001')).toBe(null);          // TG-only
+    expect(findContactByJid(s, TG, '100000001')).toBe('an-tg');
+    expect(findContactByJid(s, TG, '10000000000011@lid')).toBe(null); // WA-only
   });
 });
 
@@ -599,12 +599,12 @@ describe('findContactsByName (cross-surface name search)', () => {
   const s = {
     contacts: {
       whatsapp: {
-        '1@lid': { slug: 'diego-2605200133', pushedName: 'Diego Pérez (Koma)' },
+        '1@lid': { slug: 'diego-2605200133', pushedName: 'Diego Pruéba (Kilo)' },
         '2@lid': { aliasOf: '1@lid' },
         '3@lid': { slug: 'jorge-2605200419', pushedName: 'Jorge' },
       },
       telegram: {
-        '88164392': { slug: 'an-self-2605211200', pushedName: 'An (TG)', personality: 'system' },
+        '100000001': { slug: 'an-self-2605211200', pushedName: 'An (TG)', personality: 'system' },
       },
     },
   };
@@ -674,7 +674,7 @@ describe('residentsOf — resident beings vs flat blocks', () => {
   it('an entry with a guard / loop_guard override lists no phantom resident', () => {
     const entry = {
       conversation_path: '.egpt/conversations/whatsapp/g-2606291919',
-      home_dir: '/c/Users/an',
+      home_dir: '/c/Users/user',
       posts_back_delay_ms: -1,
       guard: { turns: -1, window: 30 },
       loop_guard: { inbound: { turns: -1, window: 30 } },
@@ -694,7 +694,7 @@ describe('residentsOf — resident beings vs flat blocks', () => {
       conversation_path: '.egpt/conversations/whatsapp/some-group-2606291919',
       threadId: null,                                                       // dead flat slot
       readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] },
-      home_dir: '/c/Users/an',
+      home_dir: '/c/Users/user',
       egpt: {                                                               // THE REAL RESIDENT
         readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] },
         threadId: '1ef3663e-6ad9-4e99-a0d3-a2299f40f8fe',
@@ -727,20 +727,20 @@ describe('YAML parse / serialize round-trip', () => {
       system_thread: { threadId: 'sys-1', threadCreatedAt: '2026-05-21T22:00:00.000Z' },
       contacts: {
         whatsapp: {
-          '26087681749235@lid': mk(WA, 'diego-2605200133', {
+          '10000000000011@lid': mk(WA, 'diego-2605200133', {
             agents: { egpt: { threadId: 'abc', mode: 'auto' } },
-            pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
+            pushedName: 'Diego Pruéba (Kilo) 😀 "kilo": #1',
           }),
-          '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
+          '15550100006@s.whatsapp.net': { aliasOf: '10000000000011@lid' },
         },
         telegram: {
-          '88164392': mk(TG, 'an-self-2605211200', { pushedName: 'An' }),
+          '100000001': mk(TG, 'an-self-2605211200', { pushedName: 'An' }),
         },
       },
     };
     expect(parse(serialize(s))).toEqual(s);
     // The comment carries the exact name; the derived slug is the path basename.
-    expect(serialize(s)).toContain('# Diego Pérez (Koma) 😀 "koma": #1');
+    expect(serialize(s)).toContain('# Diego Pruéba (Kilo) 😀 "kilo": #1');
   });
 
   // Reproduce (2026-07-26, extended phase 1 2026-08-14): the same corpse class as the flat
@@ -912,9 +912,9 @@ describe('YAML parse / serialize round-trip', () => {
     const authored = [
       'contacts:',
       '  whatsapp:',
-      '    "26087681749235@lid": # Diego',
+      '    "10000000000011@lid": # Diego',
       '      conversation_path: .egpt/conversations/whatsapp/diego-2605200133',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
       '      # --- per-conversation options (uncomment to configure) ---',
       '      # transcribe: false     # default: true',
       '      loop_guard:',
@@ -926,9 +926,9 @@ describe('YAML parse / serialize round-trip', () => {
     const after = serialize(parse(authored));
 
     // the data is intact ...
-    expect(parse(after).contacts.whatsapp['26087681749235@lid']).toMatchObject({
+    expect(parse(after).contacts.whatsapp['10000000000011@lid']).toMatchObject({
       conversation_path: '.egpt/conversations/whatsapp/diego-2605200133',
-      home_dir: '/c/Users/an',
+      home_dir: '/c/Users/user',
       loop_guard: { inbound: { turns: 40 } },
     });
     // ... and every authored comment is gone.
@@ -944,18 +944,18 @@ describe('YAML parse / serialize round-trip', () => {
 describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   it('groups multiple JIDs with the same customName into one contact', () => {
     const json = {
-      '26087681749235@lid':         { pushedName: 'Diego Pérez (Koma)', customName: 'diego' },
-      '584122182178@s.whatsapp.net':{ pushedName: '',                    customName: 'diego' },
-      '120363407494846096@g.us':    { pushedName: 'premise-driven: bitcoin & evolution', customName: '' },
+      '10000000000011@lid':         { pushedName: 'Diego Pruéba (Kilo)', customName: 'diego' },
+      '15550100006@s.whatsapp.net':{ pushedName: '',                    customName: 'diego' },
+      '120363000000000009@g.us':    { pushedName: 'premise-driven: bitcoin & evolution', customName: '' },
     };
     const r = migrateJsonToYaml(json);
     expect(r.migrated).toBe(2);
     expect(r.jids).toBe(3);
     expect(r.state.contacts.diego.jids).toEqual([
-      '26087681749235@lid',
-      '584122182178@s.whatsapp.net',
+      '10000000000011@lid',
+      '15550100006@s.whatsapp.net',
     ]);
-    expect(r.state.contacts.diego.pushedName).toBe('Diego Pérez (Koma)');
+    expect(r.state.contacts.diego.pushedName).toBe('Diego Pruéba (Kilo)');
     expect(r.state.contacts['premise-driven bitcoin & evolution']).toBeTruthy();
   });
   it('preserves operator customNameSource flag', () => {
@@ -974,7 +974,7 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
 
 describe('stats module + msys path helpers', () => {
   it('toMsysPath renders a Windows path msys-style, leaves posix/UNC alone', () => {
-    expect(toMsysPath('C:\\Users\\an')).toBe('/c/Users/an');
+    expect(toMsysPath('C:\\Users\\user')).toBe('/c/Users/user');
     expect(toMsysPath('D:/work/x')).toBe('/d/work/x');
     expect(toMsysPath('/already/posix')).toBe('/already/posix');
   });
@@ -995,8 +995,8 @@ describe('stats module + msys path helpers', () => {
   });
 
   it('sanitizeStatKey escapes Windows-illegal chars collision-free, leaves clean ids intact', () => {
-    expect(sanitizeStatKey('26087681749235@lid')).toBe('26087681749235@lid');   // @ and digits are legal
-    expect(sanitizeStatKey('@anrodriguez:beeper.com')).toBe('@anrodriguez~3abeeper.com');   // ':' -> ~3a
+    expect(sanitizeStatKey('10000000000011@lid')).toBe('10000000000011@lid');   // @ and digits are legal
+    expect(sanitizeStatKey('@anaprueba:beeper.com')).toBe('@anaprueba~3abeeper.com');   // ':' -> ~3a
     // collision-safe: "a:b" and "a b" (which sanitizeSlug would fuse) stay distinct
     expect(sanitizeStatKey('a:b')).not.toBe(sanitizeStatKey('a b'));
     // a literal '~' is escaped FIRST so real input can't forge an escape sequence
@@ -1005,15 +1005,15 @@ describe('stats module + msys path helpers', () => {
   });
 
   it('unsanitizeStatKey round-trips sanitizeStatKey for ids with :, ~, /, and clean ids', () => {
-    for (const id of ['@anrodriguez:beeper.com', 'a~b', 'a/b:c', '26087681749235@lid', 'plainclean']) {
+    for (const id of ['@anaprueba:beeper.com', 'a~b', 'a/b:c', '10000000000011@lid', 'plainclean']) {
       expect(unsanitizeStatKey(sanitizeStatKey(id))).toBe(id);
     }
   });
 
   it('contactStatsPath resolves to the sanitized-sender-id fallback when no name is known', async () => {
     const noFs = { readdir: async () => [], existsSync: () => false, readFile: async () => { throw new Error('ENOENT'); } };
-    expect(await contactStatsPath('whatsapp', '@anrodriguez:beeper.com', { io: noFs }))
-      .toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '@anrodriguez~3abeeper.com.yaml'));
+    expect(await contactStatsPath('whatsapp', '@anaprueba:beeper.com', { io: noFs }))
+      .toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '@anaprueba~3abeeper.com.yaml'));
   });
 
   it('mergeStats fills absent scalars, unions threads by id, never clobbers', () => {
@@ -1687,7 +1687,7 @@ describe('readState/writeState — rooms.yaml and agents.yaml back their own sur
         '  agent:',
         '    wren:',
         '      conversation_path: .egpt/agents/wren',
-        '      home_dir: /c/Users/an',
+        '      home_dir: /c/Users/user',
         '      agents:',
         '        wren:',
         '          threadId: legacy-thread',

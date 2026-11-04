@@ -80,8 +80,8 @@ const REPLY_SESSION = (opts) => ({
 const config = (extra = {}) => ({
   node_name: 'kg',
   user_name: 'An',
-  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+16468217865'] } },
-  beeper: { primary: { account: 'anrodz42@example.com', token: TOKEN } },
+  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+15550100001'] } },
+  beeper: { primary: { account: 'anaprueba42@example.com', token: TOKEN } },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
   ...extra,
 });

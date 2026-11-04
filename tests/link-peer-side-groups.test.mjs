@@ -20,29 +20,29 @@ import { ensureContact, recordThread, aliasContact, forkContact, patchContact, s
 import { encodeNodeSignature, encodeChatCanary } from '../src/node-signature.mjs';
 import { peerSideGroups, linkPeerSideGroups, liveSpinePid, formatRow } from '../src/tools/link-peer-side-groups.mjs';
 
-const ORIGIN = 'palma1';
+const ORIGIN = 'muestra1';
 const AUTO = 'autoSide000000000001';
 const SPLIT = 'splitSide00000000001';
-const AUTO_TITLE = 'SI+PALMA';
-const SPLIT_TITLE = 'SI+PALMA-viaje';
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const AN_ID = '@anrodriguez:beeper.local';
+const AUTO_TITLE = 'SI+MUESTRA';
+const SPLIT_TITLE = 'SI+MUESTRA-viaje';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const AN_ID = '@anaprueba:beeper.local';
 const MOUTH = { [AUTO]: 'rodzAuto000000000001', [SPLIT]: 'rodzSplit00000000001' };
 
-// kg's state, as the copy of its conversations.yaml reads back: an automatic group and a /split of PALMA.
+// kg's state, as the copy of its conversations.yaml reads back: an automatic group and a /split of MUESTRA.
 function peerState() {
-  let st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: 'PALMA' }).state;
+  let st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: 'MUESTRA' }).state;
   st = recordThread(st, 'whatsapp', ORIGIN, 'kg-thread', '2026-10-01T00:00:00Z', 'e');
   st = aliasContact(st, 'whatsapp', AUTO, ORIGIN, { transcript: AUTO_TITLE, automatic: true });
-  st = forkContact(st, 'whatsapp', SPLIT, ORIGIN, { pushedName: SPLIT_TITLE, transcript: 'si-palma-viaje' });
+  st = forkContact(st, 'whatsapp', SPLIT, ORIGIN, { pushedName: SPLIT_TITLE, transcript: 'si-muestra-viaje' });
   st = patchContact(st, 'whatsapp', SPLIT, { split: { tunnel: false } });
   for (const id of [AUTO, SPLIT]) st = setAliasMouthChat(st, id, MOUTH[id]);
   return parse(serialize(st));
 }
-// This node (NU): PALMA heard, its being n with a thread there.
+// This node (NU): MUESTRA heard, its being n with a thread there.
 function nodeState() {
-  const st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: 'PALMA' }).state;
+  const st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: 'MUESTRA' }).state;
   return recordThread(st, 'whatsapp', ORIGIN, 'nu-thread', '2026-11-01T00:00:00Z', 'n');
 }
 const config = (extra = {}) => ({ beeper: { primary: { phone: AN }, secondary: { phone: RODZ } }, node_name: 'nu', agents: { n: { handles: ['n'] } }, ...extra });
@@ -119,7 +119,7 @@ describe('link-peer-side-groups: the replay is linkSideGroup', () => {
 
   it('dry run (no-op writes): the links are shown and nothing reaches the disk, the forked thread\'s stamp included', async () => {
     const m = memory(nodeState());
-    const folder = slugDir('whatsapp', getContact(m.get(), 'whatsapp', ORIGIN).slug);   // PALMA's folder, as on a live node
+    const folder = slugDir('whatsapp', getContact(m.get(), 'whatsapp', ORIGIN).slug);   // MUESTRA's folder, as on a live node
     mkdirSync(folder, { recursive: true });
     const rows = await linkPeerSideGroups(peerState(), { peer: 'kg', getConfig: () => config(), loadState: m.loadState, writeState: m.writeState, io: { mkdir: async () => {}, writeFile: async () => {} } });
     expect(rows.map((r) => r.outcome)).toEqual(['linked', 'linked']);

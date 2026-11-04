@@ -123,7 +123,7 @@ const transcriptOf = (io) => [...io.files].filter(([p]) => /transcript\.md$/.tes
 
 describe('toLine', () => {
   it('first line /to <chatId>, the rest (trimmed, multi-line, CRLF ok) is the text', () => {
-    expect(toLine('/to tg:-1004408163350/55\ned, hola\nsegunda línea\n')).toEqual({ chatId: 'tg:-1004408163350/55', text: 'ed, hola\nsegunda línea', files: [] });
+    expect(toLine('/to tg:-1000000000101/55\ned, hola\nsegunda línea\n')).toEqual({ chatId: 'tg:-1000000000101/55', text: 'ed, hola\nsegunda línea', files: [] });
     expect(toLine('/to !abc:beeper.com\r\ne, hi\r\n')).toEqual({ chatId: '!abc:beeper.com', text: 'e, hi', files: [] });
     expect(toLine('/to lobby')).toEqual({ chatId: 'lobby', text: '', files: [] });
   });
@@ -202,17 +202,17 @@ describe('/to <chatId> on a Beeper node', () => {
 });
 
 describe('/to a Telegram topic', () => {
-  const TOPIC = 'tg:-1004408163350/55';
+  const TOPIC = 'tg:-1000000000101/55';
 
   it('the topic id works: the line comes from the owner\'s Telegram id and the answer goes to that topic', async () => {
     await writeTgToken();
-    const { app, tg, handled } = await bootWith(TELEGRAM_ONLY(), { telegram: true, state: seed('telegram', TOPIC, 'EduWeb · Ventas') });
+    const { app, tg, handled } = await bootWith(TELEGRAM_ONLY(), { telegram: true, state: seed('telegram', TOPIC, 'Contoso · Ventas') });
     await drop(app, `/to ${TOPIC}\ne, hola`);
     expect(handled).toHaveBeenCalledTimes(1);
     await settled(handled);
     expect(handled.mock.calls[0][0].from).toMatchObject({ chatId: TOPIC, network: 'telegram', userId: 42, via: 'ingest' });
     expect(tg[0].streams.map((s) => s.chatId)).toEqual([TOPIC]);
-    expect(tg[0].streams[0].finals[0]).toContain('An@[EduWeb · Ventas].ingest (');
+    expect(tg[0].streams[0].finals[0]).toContain('An@[Contoso · Ventas].ingest (');
     app.stop();
   });
 });
@@ -435,11 +435,11 @@ describe('/file attachments', () => {
 });
 
 describe('the question on a Telegram topic', () => {
-  const TOPIC = 'tg:-1004408163350/55';
+  const TOPIC = 'tg:-1000000000101/55';
 
   it('a reply in the topic, or a 👍 that names no topic (after a restart), answers it', async () => {
     await writeTgToken();
-    const a = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'EduWeb · Ventas') });
+    const a = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'Contoso · Ventas') });
     await drop(a.app, `/to ${TOPIC}\ne, hola`);
     const ask = posts(a.tg[0], TOPIC)[0];
     expect(ask?.text).toContain('📥 An (ingest): e, hola');
@@ -448,9 +448,9 @@ describe('the question on a Telegram topic', () => {
     expect(ingestCalls(a.handled)[0]?.[0].from).toMatchObject({ chatId: TOPIC, network: 'telegram', userId: 42 });
     a.app.stop();
 
-    const b = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'EduWeb · Ventas') });
+    const b = await bootWith(TELEGRAM_ONLY(null), { telegram: true, state: seed('telegram', TOPIC, 'Contoso · Ventas') });
     await drop(b.app, `/to ${TOPIC}\ne, hola`);
-    await reactTo(b.app, posts(b.tg[0], TOPIC)[0]?.id, '👍', { chatId: 'tg:-1004408163350', network: 'telegram' });
+    await reactTo(b.app, posts(b.tg[0], TOPIC)[0]?.id, '👍', { chatId: 'tg:-1000000000101', network: 'telegram' });
     await settled(b.handled);
     expect(ingestCalls(b.handled)).toHaveLength(1);
     b.app.stop();

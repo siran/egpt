@@ -1,9 +1,9 @@
 // tests/transcript-day-boundary.test.mjs — THE TRANSCRIPT SAYS WHAT DAY IT IS
 // (operator 2026-09-01, from his own live SPOILER transcript):
 //
-//   Ron Tomkins@[SPOILER ALERT: chat de EyAy].wa (22:40) #204652: Ja
-//   Mauricio Castro@[SPOILER ALERT: chat de EyAy].wa (00:18) #204667: A la rondamón !
-//   José Velarde@[SPOILER ALERT: chat de EyAy].wa (06:20): reacted 👍 to #204628
+//   Ron Testeo@[SPOILER ALERT: chat de EyAy].wa (22:40) #204652: Ja
+//   Mauricio Ficcion@[SPOILER ALERT: chat de EyAy].wa (00:18) #204667: A la rondamón !
+//   José Supuesto@[SPOILER ALERT: chat de EyAy].wa (06:20): reacted 👍 to #204628
 //
 // Times only. Midnight passed between lines 35733 and 35737 and NOTHING marked it, so no
 // reader — human or model — can tell which day any line belongs to. A dispatch line carries

@@ -209,7 +209,7 @@ describe('PART 1 — a relayed turn runs on the SPINE\'S OWN turn machinery', ()
   it('DIFFERENT origin conversations still run FULLY CONCURRENTLY — the queue is per conversation, not per channel', async () => {
     const brain = countingBrain({ allow: 'none' });
     const { bridge, mesh } = responder({ brain });
-    const other = (body, post_id) => encodeMesh({ by: 'An', body, from: 'Radio WnL', from_node: 'kg', to: 'e.do', post_id });
+    const other = (body, post_id) => encodeMesh({ by: 'An', body, from: 'Radio EFM', from_node: 'kg', to: 'e.do', post_id });
 
     await mesh.handle({ surface: 'whatsapp', chatId: CHANNEL, msgId: 'm1', body: req('@e uno', 'p1') });
     await flush();

@@ -180,7 +180,7 @@ describe('warm-session pool', () => {
   // turn instead of queueing as a fresh turn behind it. The in-flight turn's single result
   // carries the combined reply, so there is nothing to return beyond "was anything handed
   // over" — and, since 2026-09-09, the session's promise of what the MODEL then did with it
-  // (`{ ack }`; see tests/steer-ack.test.mjs for the Joyce fault that made `true`-on-a-write
+  // (`{ ack }`; see tests/steer-ack.test.mjs for the Julia fault that made `true`-on-a-write
   // unacceptable). The caller emits nothing of its own either way.
   //
   // IT IS ASKED FOR BY NAME (pool.steer), never inferred from `busy`. The weave used to live

@@ -1,4 +1,4 @@
-// access_level `reader` (plans/2610261726-CHATBOXES.md, phase 1 step 3): a public chatbox being
+// access_level `reader` (the chatboxes plan, kept in the node profile; phase 1 step 3): a public chatbox being
 // reads its own conversation folder (its desk) and nothing else — Read/Glob/Grep only, no grant
 // beyond the folder, no internal cards, no MCP, no browser link. Real brains registry and real
 // config/permissions/*.md; a fake warm pool.
@@ -16,15 +16,15 @@ import { Room } from '../src/room-core.mjs';
 
 const EV = { surface: 'http', chatId: 'edw-s1', chatName: 'visitor', line: 'V@[visitor].http (14:05) #m1: hola', body: 'hola' };
 // A type that carries its own read grant and pins a workspace — both must be ignored for a reader.
-const TYPE = 'type: ccode\nmodel: haiku\neffort: high\npersonality: egpt\nallowed_paths:\n  C:/Users/an/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n';
+const TYPE = 'type: ccode\nmodel: haiku\neffort: high\npersonality: egpt\nallowed_paths:\n  C:/Users/user/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n';
 // The node's global read grants: 0015's node allowed_paths and 0034's global_read_paths.
 const NODE = {
   node_name: 'kg',
-  allowed_paths: { 'C:/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
-  global_read_paths: [{ repos: 'C:/Users/an/src/siran' }],
+  allowed_paths: { 'C:/Users/user/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+  global_read_paths: [{ repos: 'C:/Users/user/src/siran' }],
 };
 // ...and a /fork-style grant on this conversation's own block.
-const CONV_PATHS = { 'C:/Users/an/.egpt/conversations/whatsapp/other': { allowed_tools: ['Read', 'Glob', 'Grep'] } };
+const CONV_PATHS = { 'C:/Users/user/.egpt/conversations/whatsapp/other': { allowed_tools: ['Read', 'Glob', 'Grep'] } };
 const FEED_CFG = { agent_name: 'Fixture', node_name: 'kg', chrome: { bin: 'C:/fixture/chrome.exe', profile_dir: 'C:/fixture/profile' } };
 
 async function turnFor(level, { platform = 'win32', type = TYPE, conv = {}, cd = {}, loadFeed, loadPermission = loadPermissionLevel } = {}) {
@@ -100,7 +100,7 @@ describe('the CLI args a reader being gets', () => {
   });
 
   it('a pinned workspace is ignored: cwd is the conversation folder', async () => {
-    const { opts } = await turnFor('reader', { type: `${TYPE}cwd: C:/Users/an/elsewhere\n` });
+    const { opts } = await turnFor('reader', { type: `${TYPE}cwd: C:/Users/user/elsewhere\n` });
     expect(opts.cwd).not.toMatch(/elsewhere/);
     expect(basename(opts.cwd)).toMatch(/visitor/);
   });
@@ -171,7 +171,7 @@ const BYPASS = ['--dangerously-skip-permissions', '--permission-mode', 'bypassPe
 const TAIL = ['--model', 'haiku', '--effort', 'high'];
 const SETTINGS = ['--settings', '{"cleanupPeriodDays":3650000}'];
 const ALL_TOOLS = ['--allowedTools', 'Read Write Edit Glob Grep Bash Agent WebSearch WebFetch'];
-const RO = ['C:/Users/an/src/egpt', 'C:/Users/an/src', 'C:/Users/an/.egpt/conversations/whatsapp/other'];
+const RO = ['C:/Users/user/src/egpt', 'C:/Users/user/src', 'C:/Users/user/.egpt/conversations/whatsapp/other'];
 const deny = (d) => ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].map((t) => `${t}(${d}/**)`);
 const SNAP = {
   'regular/win32': { argv: [...HEAD, ...BYPASS, ...NO_MCP, ...TAIL, ...SETTINGS], boxed: true },
@@ -196,7 +196,7 @@ describe('regression lock — regular, all and sandbox run exactly as before, pl
       expect(opts.sandboxed).toBe(snap.boxed);
       expect(opts.tools).toBeUndefined();
       expect(opts.sandboxSharePathsReadOnly).toEqual(snap.boxed ? RO : undefined);
-      expect(opts.sandboxReadMounts).toEqual(snap.boxed ? [{ name: 'repos', path: 'C:/Users/an/src/siran' }] : undefined);
+      expect(opts.sandboxReadMounts).toEqual(snap.boxed ? [{ name: 'repos', path: 'C:/Users/user/src/siran' }] : undefined);
       expect(opts.beingLink).toBeDefined();
       expect(cards).toBe(1);
       expect(seeds[0].publicOnly).toBeFalsy();

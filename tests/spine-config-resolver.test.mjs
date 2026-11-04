@@ -280,7 +280,7 @@ describe('the registry rung contributes CONFIG, not the registry bookkeeping', (
       node: { agents: { egpt: { default: true } } },
       registry: registryWith({
         pushedName: 'HFM', conversation_path: 'conversations/whatsapp/hfm-2606201530',
-        home_dir: '/home/an', agents: { egpt: { mode: 'active' } },
+        home_dir: '/home/user', agents: { egpt: { mode: 'active' } },
         egpt: { threadId: 'abc', mode: 'mention' },
         warm: { idle_ttl: '5m' },
       }),

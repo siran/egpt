@@ -55,9 +55,9 @@ describe('reapPort only kills a holder its caller vouches for', () => {
     };
   }
 
-  const BEEPER = { pid: '6764', name: 'Beeper.exe', cmdline: 'C:\\Users\\an\\AppData\\Local\\Beeper\\Beeper.exe' };
-  const OUR_SPINE = { pid: '468', name: 'node.exe', cmdline: 'node C:\\Users\\an\\bin\\egpt\\egpt-spine.mjs' };
-  const OTHER_NODE = { pid: '9001', name: 'node.exe', cmdline: 'node C:\\Users\\an\\src\\something-else\\server.mjs' };
+  const BEEPER = { pid: '6764', name: 'Beeper.exe', cmdline: 'C:\\Users\\user\\AppData\\Local\\Beeper\\Beeper.exe' };
+  const OUR_SPINE = { pid: '468', name: 'node.exe', cmdline: 'node C:\\Users\\user\\bin\\egpt\\egpt-spine.mjs' };
+  const OTHER_NODE = { pid: '9001', name: 'node.exe', cmdline: 'node C:\\Users\\user\\src\\something-else\\server.mjs' };
 
   it('leaves Beeper alone, names it, and says what it did instead', () => {
     const w = world([BEEPER]);
@@ -193,8 +193,8 @@ describe('pidAlive', () => {
 
 describe('isOwnSpine', () => {
   it('is true only for a node process whose command line runs egpt-spine.mjs', () => {
-    expect(isOwnSpine({ name: 'node.exe', cmdline: 'node C:\\Users\\an\\bin\\egpt\\egpt-spine.mjs' })).toBe(true);
-    expect(isOwnSpine({ name: 'node', cmdline: '/usr/bin/node /home/an/src/egpt/egpt-spine.mjs' })).toBe(true);
+    expect(isOwnSpine({ name: 'node.exe', cmdline: 'node C:\\Users\\user\\bin\\egpt\\egpt-spine.mjs' })).toBe(true);
+    expect(isOwnSpine({ name: 'node', cmdline: '/usr/bin/node /home/user/src/egpt/egpt-spine.mjs' })).toBe(true);
     expect(isOwnSpine({ name: 'node.exe', cmdline: 'node C:\\other\\app.mjs' })).toBe(false);
     expect(isOwnSpine({ name: 'Beeper.exe', cmdline: 'Beeper.exe --egpt-spine.mjs' })).toBe(false);
     expect(isOwnSpine({ name: null, cmdline: null })).toBe(false);

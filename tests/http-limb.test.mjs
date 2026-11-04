@@ -473,12 +473,12 @@ describe('POST end: the visitor ends the conversation', () => {
 
 describe('widget.js and routing', () => {
   it('widget.js is served as JavaScript with the client\'s title and Spanish strings', async () => {
-    const { url } = await limb({ acme: { being: 'ed', title: 'EduWeb', strings: { send: 'Mandar' } } });
+    const { url } = await limb({ acme: { being: 'ed', title: 'Contoso', strings: { send: 'Mandar' } } });
     const r = await fetch(`${url()}widget.js`);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toMatch(/javascript/);
     const js = await r.text();
-    expect(js).toContain('"title":"EduWeb"');
+    expect(js).toContain('"title":"Contoso"');
     expect(js).toContain('"send":"Mandar"');
     expect(js).toContain(JSON.stringify(HTTP_STRINGS.placeholder));
     expect(() => new Function(js)).not.toThrow();

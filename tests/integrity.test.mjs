@@ -274,7 +274,7 @@ describe('the spine stays OS-agnostic (src/**, src/tools/** excluded)', () => {
     // is what stands between them and this repo's very chatty Windows prose.
     const asCode = [
       'const isMain = import.meta.url === `file:///${process.argv[1]}`;',
-      "const p = 'C:\\\\Users\\\\an\\\\bin\\\\whisper.exe';",
+      "const p = 'C:\\\\Users\\\\user\\\\bin\\\\whisper.exe';",
       "spawnSync('powershell.exe', a); spawnSync('nssm', b); spawnSync('schtasks', c);",
       "join(root, 'venv', 'Scripts', 'python.exe');",
     ].join('\n');

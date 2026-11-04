@@ -1,11 +1,11 @@
 // members-add-group-resolves-on-the-ear.test.mjs — A NAME THE OPERATOR TYPES IS A CHAT THE
 // OPERATOR CAN SEE, AND THE OPERATOR'S ACCOUNT IS THE EAR.
 //
-// THE LIVE FAULT ON kg (operator 2026-09-11). The ear is `primary` (anrodz42) and the default
-// mouth is `secondary` (dolly.egpt). `/members add group <name>` resolves that name through the
+// THE LIVE FAULT ON kg (operator 2026-09-11). The ear is `primary` (anaprueba42) and the default
+// mouth is `secondary` (mouth.acct). `/members add group <name>` resolves that name through the
 // `resolveChatId` seam src/spine/boot.mjs injects into createCommands — and that seam was taken
 // off the FAN-OUT FACADE, which delegates every non-inbound method to the default mouth. So the
-// name was looked up in dolly.egpt's chat list and an id from dolly.egpt's account was written
+// name was looked up in mouth.acct's chat list and an id from mouth.acct's account was written
 // into the roster.
 //
 // WHY THAT ROSTER ENTRY IS DEAD ON ARRIVAL, and why it is silent about it. One real group is a
@@ -57,8 +57,8 @@ afterEach(async () => {
 });
 
 // ── the two connections, named the way the live node names them ─────────────────────────────
-const PRIMARY = 'TOK-primary';       // anrodz42 — the EAR (boot's ear rule: 'primary' by name)
-const SECONDARY = 'TOK-secondary';   // dolly.egpt — the MOUTH the names resolve output to
+const PRIMARY = 'TOK-primary';       // anaprueba42 — the EAR (boot's ear rule: 'primary' by name)
+const SECONDARY = 'TOK-secondary';   // mouth.acct — the MOUTH the names resolve output to
 const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
 
 const SELF_DM = '!self-dm-as-primary-sees-it';
@@ -123,8 +123,8 @@ const KG = () => ({
   user_name: 'An',
   networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['u-1'] } },
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY },
   },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
 });
@@ -196,7 +196,7 @@ describe('/members add group <name> resolves the name on the EAR, not on the def
   });
 
   // ── AND THE FORM THAT SIMPLY REFUSED ──────────────────────────────────────────────────────
-  // A group only anrodz42 is in. The mouth's list has no such name, so the add was rejected
+  // A group only anaprueba42 is in. The mouth's list has no such name, so the add was rejected
   // outright — "no chat named …" for a chat the operator was looking at while typing it.
   it('a group only the EAR can see is ADDED, not refused', async () => {
     const { byConnection, posted } = await bootWith(KG(), {

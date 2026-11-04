@@ -29,7 +29,7 @@ describe('Room — abstract base', () => {
 });
 
 describe('ConversationRoom — byte-identical to the legacy slugDir root', () => {
-  const cases = [['whatsapp', 'diego'], ['telegram', 'Tío Jesús Palma'], ['whatsapp', 'a/b:c*d']];
+  const cases = [['whatsapp', 'diego'], ['telegram', 'Tío Jesús Muestra'], ['whatsapp', 'a/b:c*d']];
   for (const [surface, slug] of cases) {
     it(`baseDir matches legacy formula + slugDir for ${surface}/${slug}`, () => {
       const room = Room.forChat(surface, slug);

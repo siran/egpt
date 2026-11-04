@@ -551,7 +551,7 @@ describe('beeper bridge', () => {
   it("the owner's OWN sends are attributed to the owner's push name, NOT the node userName", async () => {
     const { incoming } = await startBridge({ userName: 'Don' });   // node user_name that must NOT be the author
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: true, senderPushName: 'An', senderName: '@anrodriguez:beeper.com', text: 'mío' }),
+      liveMsg({ isSender: true, senderPushName: 'An', senderName: '@anaprueba:beeper.com', text: 'mío' }),
       liveMsg({ isSender: false, senderName: 'Bea (mi vecina)', senderPushName: 'Bea', text: 'suyo' }),
     ] });
     await waitFor(() => incoming.length === 2);
@@ -565,14 +565,14 @@ describe('beeper bridge', () => {
   it("the owner with no push name falls to the phone number, then the matrix localpart — never userName", async () => {
     const { incoming } = await startBridge({ userName: 'Don' });
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ id: 'own-wa', isSender: true, senderID: '@whatsapp_16468217865:beeper.local', senderName: '@anrodriguez:beeper.com', text: 'wa' }),
-      liveMsg({ id: 'own-mx', isSender: true, senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'mx' }),
+      liveMsg({ id: 'own-wa', isSender: true, senderID: '@whatsapp_15550100001:beeper.local', senderName: '@anaprueba:beeper.com', text: 'wa' }),
+      liveMsg({ id: 'own-mx', isSender: true, senderID: '@anaprueba:beeper.com', senderName: '@anaprueba:beeper.com', text: 'mx' }),
     ] });
     await waitFor(() => incoming.length === 2);
     const wa = incoming.find((i) => i.text === 'wa').from;
     const mx = incoming.find((i) => i.text === 'mx').from;
-    expect(wa.senderName).toBe('+16468217865');   // owner, no push name, jid → number
-    expect(mx.senderName).toBe('anrodriguez');    // owner, no push name, matrix id → localpart (decoration stripped)
+    expect(wa.senderName).toBe('+15550100001');   // owner, no push name, jid → number
+    expect(mx.senderName).toBe('anaprueba');    // owner, no push name, matrix id → localpart (decoration stripped)
     for (const v of [wa.senderName, mx.senderName]) expect(v).not.toBe('Don');   // never the node userName
   });
 
@@ -587,10 +587,10 @@ describe('beeper bridge', () => {
     // load that guess loses. startBridge now awaits the fetch itself (startupReady).
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'owner' }),
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anaprueba:beeper.com', senderName: '@anaprueba:beeper.com', text: 'owner' }),
     ] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.senderName).toBe('An');   // account self-user fullName, not 'anrodriguez'
+    expect(incoming[0].from.senderName).toBe('An');   // account self-user fullName, not 'anaprueba'
   });
 
   // With no /v1/accounts fixture the map stays empty (fail-safe) — the owner falls back to
@@ -598,50 +598,50 @@ describe('beeper bridge', () => {
   it('with no /v1/accounts fixture, the owner falls back to the matrix-id localpart (unchanged)', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'owner' }),
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anaprueba:beeper.com', senderName: '@anaprueba:beeper.com', text: 'owner' }),
     ] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.senderName).toBe('anrodriguez');
+    expect(incoming[0].from.senderName).toBe('anaprueba');
   });
 
   // MATRIX-ID DECORATION STRIP (operator 2026-07-10): with no push name, a bare Matrix
   // stable id reads as its localpart (a public handle), not the raw '@localpart:domain'
-  // — An's own notes showed '@anrodriguez:beeper.com', wanted 'anrodriguez'. The WA-jid
+  // — An's own notes showed '@anaprueba:beeper.com', wanted 'anaprueba'. The WA-jid
   // number case still wins first; an id matching neither shape is unchanged.
   it('a matrix-shaped stable id resolves to its localpart; wa-jid → number; other id unchanged', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ id: 'mx1', isSender: false, senderID: '@anrodriguez:beeper.com', senderName: 'saved label', text: 'a' }),
+      liveMsg({ id: 'mx1', isSender: false, senderID: '@anaprueba:beeper.com', senderName: 'saved label', text: 'a' }),
       liveMsg({ id: 'mx2', isSender: false, senderID: '@user:beeper.local', senderName: 'saved label', text: 'b' }),
-      liveMsg({ id: 'wa1', isSender: false, senderID: '@whatsapp_16468217865:beeper.local', senderName: 'saved label', text: 'c' }),
+      liveMsg({ id: 'wa1', isSender: false, senderID: '@whatsapp_15550100001:beeper.local', senderName: 'saved label', text: 'c' }),
       liveMsg({ id: 'raw1', isSender: false, senderID: 'zoot-42', senderName: 'saved label', text: 'd' }),
     ] });
     await waitFor(() => incoming.length === 4);
     const by = (t) => incoming.find((i) => i.text === t).from.senderName;
-    expect(by('a')).toBe('anrodriguez');    // matrix id → localpart
+    expect(by('a')).toBe('anaprueba');    // matrix id → localpart
     expect(by('b')).toBe('user');           // matrix id → localpart
-    expect(by('c')).toBe('+16468217865');   // wa jid → number (the number case wins first)
+    expect(by('c')).toBe('+15550100001');   // wa jid → number (the number case wins first)
     expect(by('d')).toBe('zoot-42');        // matches neither shape → raw id unchanged
   });
 
   // The SENDER identity is the person's OWN pushed/profile name, NOT the operator's
-  // saved contact-list label — a 1:1 with the saved label "Ricki Mejia amigo diana
+  // saved contact-list label — a 1:1 with the saved label "Rita Modelo amigo diana
   // real estate" leaked that private annotation as the sender (operator 2026-07-03).
   // When the payload carries a distinct pushed name, the LINE is attributed to it;
   // the chat label ([chatname] / folder) stays the operator's label (chatName).
   it('prefers the sender\'s own pushed name over the contact-list label for the SENDER', async () => {
-    fake.chats.set(CHAT('chat-ricki'), { title: 'Ricki Mejia amigo diana real estate', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('chat-rita'), { title: 'Rita Modelo amiga de lola inmobiliaria', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      chatID: CHAT('chat-ricki'), isSender: false,
-      senderID: '@whatsapp_584122361030:beeper.local',
-      senderName: 'Ricki Mejia amigo diana real estate',   // Beeper's saved contact-list label
-      senderPushName: 'Ricki Mejia',                        // the person's OWN pushed name
+      chatID: CHAT('chat-rita'), isSender: false,
+      senderID: '@whatsapp_15550100007:beeper.local',
+      senderName: 'Rita Modelo amiga de lola inmobiliaria',   // Beeper's saved contact-list label
+      senderPushName: 'Rita Modelo',                        // the person's OWN pushed name
       text: 'Buenísimos quedo atento',
     })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.senderName).toBe('Ricki Mejia');                        // SENDER = pushed name
-    expect(incoming[0].from.chatName).toBe('Ricki Mejia amigo diana real estate');  // chat label unchanged
+    expect(incoming[0].from.senderName).toBe('Rita Modelo');                        // SENDER = pushed name
+    expect(incoming[0].from.chatName).toBe('Rita Modelo amiga de lola inmobiliaria');  // chat label unchanged
   });
 
   // HARD PRIVACY RULE (operator 2026-07-03): the sender attribution must NEVER be the
@@ -656,13 +656,13 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false,
-      senderID: '@whatsapp_584122361030:beeper.local',
-      senderName: 'Ricki Mejia amigo diana real estate',   // the private label — must never surface
+      senderID: '@whatsapp_15550100007:beeper.local',
+      senderName: 'Rita Modelo amiga de lola inmobiliaria',   // the private label — must never surface
       text: 'hola',
     })] });
     await waitFor(() => incoming.length === 1);
     const from = incoming[0].from;
-    expect(from.senderName).toBe('+584122361030');   // non-private phone, NOT the label
+    expect(from.senderName).toBe('+15550100007');   // non-private phone, NOT the label
     // the private label leaks through NONE of the sender-identity fields
     for (const v of [from.senderName, from.firstName, from.username]) {
       expect(v ?? '').not.toContain('amigo diana real estate');
@@ -676,11 +676,11 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       chatID: CHAT('chat-tg'), isSender: false,
-      senderID: '@telegram_88164392:beeper.local',
+      senderID: '@telegram_100000001:beeper.local',
       senderName: 'Primo (deudor)', text: 'hola',
     })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.senderName).toBe('telegram_88164392');   // matrix localpart, not the label
+    expect(incoming[0].from.senderName).toBe('telegram_100000001');   // matrix localpart, not the label
     expect(incoming[0].from.senderName).not.toContain('deudor');
   });
 
@@ -691,25 +691,25 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
-      senderName: 'Ricki Mejia amigo diana real estate', senderPushName: 'Ricki Mejia',
+      senderName: 'Rita Modelo amiga de lola inmobiliaria', senderPushName: 'Rita Modelo',
       attachments: [voiceAtt()],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 Ricki Mejia: fake transcript');  // pushed name leads the echo
-    expect(incoming[0].from.senderName).toBe('Ricki Mejia');            // …the model gets the same pushed name
+    expect(fake.posts[0].text).toBe('👂 Rita Modelo: fake transcript');  // pushed name leads the echo
+    expect(incoming[0].from.senderName).toBe('Rita Modelo');            // …the model gets the same pushed name
     expect(incoming[0].from.senderName).not.toContain('amigo diana');   // never the saved label
   });
 
   // LID PUSH NAME (operator 2026-07-08, morgan chat): a WhatsApp LID sender
   // (@whatsapp_lid-…) is an UNSAVED contact, so Beeper's senderName is the person's OWN
   // pushed name (not a saved label). The label must resolve to it, not fall back to the
-  // raw LID — the live 👂 posted "👂 @whatsapp_lid-85555832479795:beeper.local (92s): …".
+  // raw LID — the live 👂 posted "👂 @whatsapp_lid-10000000000013:beeper.local (92s): …".
   it('a LID-shaped sender uses its pushed name (senderName), not the raw LID', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false,
-      senderID: '@whatsapp_lid-85555832479795:beeper.local',
+      senderID: '@whatsapp_lid-10000000000013:beeper.local',
       senderName: 'le_moi',   // unsaved LID contact → senderName IS the push name
       text: 'hola',
     })] });
@@ -722,7 +722,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
-      senderID: '@whatsapp_lid-85555832479795:beeper.local',
+      senderID: '@whatsapp_lid-10000000000013:beeper.local',
       senderName: 'le_moi',
       attachments: [voiceAtt()],
     })] });
@@ -999,8 +999,8 @@ describe('beeper bridge', () => {
   it('a reformatted echo of our own menu (one line, re-marked) is STILL marked own output — by its id, not by its words', async () => {
     const { bridge, incoming } = await startBridge({ nodeName: 'kg' });
     const chat = CHAT('chat-1');
-    const menu = 'egpt · conversations (newest first)\n  0) ✦ @egpt — global default brain\n  1) Joyce Vicente · e:haiku/mention\n  2) SPOILER ALERT · e:sonnet/mention\n(reply a number · q quit)';
-    const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Joyce Vicente · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo
+    const menu = 'egpt · conversations (newest first)\n  0) ✦ @egpt — global default brain\n  1) Julia Demo · e:haiku/mention\n  2) SPOILER ALERT · e:sonnet/mention\n(reply a number · q quit)';
+    const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Julia Demo · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo
     await sendSettled(bridge, menu, { chatId: chat });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: fake.posts[0].confirmedID, chatID: chat, text: echo })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-menu', chatID: chat, text: 'a real human line' })] });
@@ -1116,7 +1116,7 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
-  // OWN VOICE REPLY RE-ENTERING (operator 2026-10-09) — REPRODUCE-FIRST, the live PALMA loop's voice
+  // OWN VOICE REPLY RE-ENTERING (operator 2026-10-09) — REPRODUCE-FIRST, the live MUESTRA loop's voice
   // face. A human sends a voice note; E replies in TEXT; the spine synthesizes that text to a .ogg and
   // sends it; that OWN .ogg re-enters, is re-transcribed, and — because whisper's re-transcription is
   // not byte-identical to the text and TTS carries no node signature — the text echo gates (the id
@@ -1169,7 +1169,7 @@ describe('beeper bridge', () => {
   // not transcribed, not surfaced, no 👂. A human voice note (sender ∉ ours) still transcribes + 👂s.
   // This replaces the deleted cross-bridge audio-hash fan.
   it('SOURCE: an incoming audio from a MOUTH identity is dropped before transcription; a human voice note still transcribes + 👂s', async () => {
-    const MOUTH = ['@dolly-egpt:beeper.com', '+13472576794'];   // what the mouth install reports for itself
+    const MOUTH = ['@mouth-acct:beeper.com', '+15550100002'];   // what the mouth install reports for itself
     const whisper = [];                                          // every file whisper is asked to transcribe
     const { bridge, incoming } = await startBridge({
       speakingIdentities: async () => MOUTH,                     // the EAR knows the mouth's identities (boot wires this)
@@ -1180,7 +1180,7 @@ describe('beeper bridge', () => {
 
     // 1) E's own synthesized reply echoes back — sender IS the mouth → dropped before whisper.
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      id: 'own-voice', senderID: '@dolly-egpt:beeper.com', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt('egpt-synth')],
+      id: 'own-voice', senderID: '@mouth-acct:beeper.com', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt('egpt-synth')],
     })] });
     // 2) A human's voice note — sender is NOT the mouth → transcribed + surfaced + 👂'd.
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -1472,7 +1472,7 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(0);                                        // … but too old to SPEAK
   });
 
-  // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): a Beeper resync re-delivered
+  // 👂 ACK AGE BOUND (operator 2026-07-08, Zurikar 1:1 incident): a Beeper resync re-delivered
   // 12-DAY-OLD voice notes; the backlog backfill correctly transcribed them for the record, but
   // the 👂 posted their transcriptions into the LIVE chat, stale and confusing ("ese era un
   // mensaje viejo"). The 👂 now only posts when the NOTE ITSELF is recent — transcription +
@@ -1672,7 +1672,7 @@ describe('beeper bridge', () => {
     // on a display name. The bridge calls resolveTranscriptionService with the
     // room id and NOTHING else, so a name/slug-based gate can't even be written
     // against it. A title-matching gate sees undefined → no ack.
-    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room9'), { title: 'Dário Ensayo', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const seen = [];
     const { incoming } = await startBridge({
       resolveTranscriptionService: async (...args) => { seen.push(args); return { enabled: true, postsBack: false }; },
@@ -1693,9 +1693,9 @@ describe('beeper bridge', () => {
   });
 
   it('send accepts a deterministic name/slug and resolves it to the room id', async () => {
-    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room9'), { title: 'Dário Ensayo', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const { bridge } = await startBridge();
-    const r = await bridge.send('hola por nombre', { chatId: 'dando-ruiz' });
+    const r = await bridge.send('hola por nombre', { chatId: 'dario-ensayo' });
     expect(r?.ok).toBe(true);
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('room9'));
@@ -1709,21 +1709,21 @@ describe('beeper bridge', () => {
     // The fake SERVER speaks full-form Matrix ids (CHAT('room9') = the wire
     // shape); listChats()/getChatName/getChatSlug are host-facing (downstream)
     // and must expose the SHORT id only (operator 2026-07-03).
-    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'group', isMuted: true, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room9'), { title: 'Dário Ensayo', type: 'group', isMuted: true, accountID: 'whatsapp' });
     const { bridge } = await startBridge();
     const chats = await bridge.listChats();
     const r9 = chats.find((c) => c.id === 'room9');
-    expect(r9).toMatchObject({ name: 'Dándo Ruiz', slug: 'dando-ruiz', isGroup: true, isMuted: true });
+    expect(r9).toMatchObject({ name: 'Dário Ensayo', slug: 'dario-ensayo', isGroup: true, isMuted: true });
     // jid MUST alias the room id — the whole chat-resolution layer keys on `.jid`
     // (assignWaIndex/resolveChatTarget); without it /channels shows @wanull and
     // name-resolution sees a phantom undefined-jid duplicate (operator 2026-06-16).
     expect(r9.jid).toBe('room9');
-    expect(bridge.getChatName('room9')).toBe('Dándo Ruiz');
-    expect(bridge.getChatSlug('room9')).toBe('dando-ruiz');
+    expect(bridge.getChatName('room9')).toBe('Dário Ensayo');
+    expect(bridge.getChatSlug('room9')).toBe('dario-ensayo');
     // Defensive: a caller that still hands getChatName/getChatSlug the legacy
     // full-form id gets the same answer (shortChatId at the getter, not just at ingest).
-    expect(bridge.getChatName(CHAT('room9'))).toBe('Dándo Ruiz');
-    expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
+    expect(bridge.getChatName(CHAT('room9'))).toBe('Dário Ensayo');
+    expect(bridge.getChatSlug(CHAT('room9'))).toBe('dario-ensayo');
   });
 
   it('default verdict never surfaces: no resolver wired → transcribes but no 👂', async () => {
@@ -2076,7 +2076,7 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
 });
 
 // ── A PICKER MENTION OF THE ACCOUNT THIS NODE SPEAKS THROUGH IS AN ADDRESS (live, kg, 2026-09-16) ──
-// WhatsApp group "Reencuentro CRC 1991-2026": the operator picked "Rodz" from the @-mention picker
+// WhatsApp group "Reencuentro amigos 1990": the operator picked "Rodz" from the @-mention picker
 // and nothing woke; typing `@rodz` woke the being `rodz`. The picker sends an ANCHOR, which
 // htmlToMarkdown renders `[@Rodz](https://matrix.to/#/…)` — and mentionHits' '@' must follow
 // whitespace, so `[@Rodz]` never matched and `[Rodz]` has no '@' at all. The payloads below are the
@@ -2087,13 +2087,13 @@ describe('beeper bridge — wake words (own handles only, no injection)', () => 
 // an anchor is a real mention is Beeper's `mentions` list (a pasted matrix.to link is not one); the
 // proof that it is the mouth is the mentioned participant's identity in this account's roster.
 describe('beeper bridge — a picker @-mention addresses only when it names the account this node speaks through', () => {
-  const RODZ_LID = '@whatsapp_lid-69433129173200:beeper.local';     // Rodz, as the PRIMARY sees it
-  const ROGER_LID = '@whatsapp_lid-246741777563674:beeper.local';   // a HUMAN
+  const RODZ_LID = '@whatsapp_lid-10000000000015:beeper.local';     // Rodz, as the PRIMARY sees it
+  const ROGER_LID = '@whatsapp_lid-100000000000016:beeper.local';   // a HUMAN
   const CAROL_LID = '@whatsapp_lid-111122223333444:beeper.local';   // a HUMAN whose name IS a handle
   const E_LID = '@whatsapp_lid-555566667777888:beeper.local';       // …and one whose name is a ONE-LETTER handle
   // What the MOUTH's install reports for itself (/v1/accounts, the DOLLY fixture above) — handed to
   // the ear's bridge by boot, never guessed from a display name.
-  const MOUTH = ['+13472576794', '@dolly-egpt:beeper.com', 'dolly.egpt@gmail.com'];
+  const MOUTH = ['+15550100002', '@mouth-acct:beeper.com', 'mouth.acct@example.com'];
   const GROUP = CHAT('reencuentro');
   const AGENTS = {
     egpt: { handles: ['e', 'egpt'] },
@@ -2101,11 +2101,11 @@ describe('beeper bridge — a picker @-mention addresses only when it names the 
     carol: { handles: ['carol'] },
   };
   beforeEach(() => {
-    fake.chats.set(GROUP, { title: 'Reencuentro CRC 1991-2026', type: 'group', isMuted: false, accountID: 'whatsapp',
+    fake.chats.set(GROUP, { title: 'Reencuentro amigos 1990', type: 'group', isMuted: false, accountID: 'whatsapp',
       participants: { items: [
-        { id: '@anrodriguez:beeper.com', isSelf: true },                        // the viewing account — no phone
-        { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' },       // THE MOUTH, as this account sees it
-        { id: ROGER_LID, phoneNumber: '+584141112233', fullName: 'Roger Vzla' },
+        { id: '@anaprueba:beeper.com', isSelf: true },                        // the viewing account — no phone
+        { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' },       // THE MOUTH, as this account sees it
+        { id: ROGER_LID, phoneNumber: '+15550100009', fullName: 'Roger Demo' },
         { id: CAROL_LID, phoneNumber: '+15550001234', fullName: 'Carol' },
         { id: E_LID, phoneNumber: '+15550005678', fullName: 'E' },
       ] } });
@@ -2135,16 +2135,16 @@ describe('beeper bridge — a picker @-mention addresses only when it names the 
 
   // The SAME mention seen from the mouth's own account: a different id (its own Beeper user id) and a
   // different display name. Its own identity is reported directly, no roster needed.
-  it('the mouth\'s OWN view of that mention (`[@rodz.b](…@dolly-egpt…)`) addresses rodz as well', async () => {
-    const m = await arrive('no sé si <a href="https://matrix.to/#/@dolly-egpt:beeper.com">@rodz.b</a>', ['@dolly-egpt:beeper.com']);
+  it('the mouth\'s OWN view of that mention (`[@rodz.b](…@mouth-acct…)`) addresses rodz as well', async () => {
+    const m = await arrive('no sé si <a href="https://matrix.to/#/@mouth-acct:beeper.com">@rodz.b</a>', ['@mouth-acct:beeper.com']);
     expect(who(m)).toEqual(['rodz']);
   });
 
-  it('LOCK: a picker mention of a HUMAN (Roger Vzla) addresses nobody, and its anchor is recorded as today', async () => {
-    const m = await arrive(`<a href="https://matrix.to/#/${ROGER_LID}">@Roger Vzla</a> pilla como…`, [ROGER_LID]);
+  it('LOCK: a picker mention of a HUMAN (Roger Demo) addresses nobody, and its anchor is recorded as today', async () => {
+    const m = await arrive(`<a href="https://matrix.to/#/${ROGER_LID}">@Roger Demo</a> pilla como…`, [ROGER_LID]);
     expect(who(m)).toEqual([]);
     expect(m.from.atEAnywhere).toBe(false);
-    expect(m.text).toBe(`[@Roger Vzla](https://matrix.to/#/${ROGER_LID}) pilla como…`);
+    expect(m.text).toBe(`[@Roger Demo](https://matrix.to/#/${ROGER_LID}) pilla como…`);
   });
 
   it('LOCK: a HUMAN whose picker name equals a handle ("Carol", "E") addresses nobody', async () => {
@@ -2169,16 +2169,16 @@ describe('beeper bridge — a picker @-mention addresses only when it names the 
 });
 
 // ── A REACTION FROM AN ACCOUNT WE SPEAK THROUGH IS OUR OWN OUTPUT (live, kg, 2026-10-10) ──
-// "eGPT Rodz Lulu An", mode on: E steered the operator's #26445 into its live turn and acked it ✍️ then
+// "eGPT Rodz Lola An", mode on: E steered the operator's #26445 into its live turn and acked it ✍️ then
 // 👍 through the mouth. Both came back on the PRIMARY as reactions by Rodz's lid, read as a human, and
 // each queued a turn ("⏳ Queued (1 ahead)…", "(2 ahead)…"). Payloads below are the live ones.
 describe('beeper bridge — a reaction placed by an account this node speaks through wakes nobody', () => {
-  const RODZ_LID = '@whatsapp_lid-69433129173200:beeper.local';
-  const MOUTH = ['+13472576794', '@dolly-egpt:beeper.com', 'dolly.egpt@gmail.com'];
-  const EAR = ['+16468217865', '@anrodriguez:beeper.com', 'anrodz42@gmail.com'];
-  const GROUP = CHAT('89xiqJ8w1iDuKtD4a5BY');
+  const RODZ_LID = '@whatsapp_lid-10000000000015:beeper.local';
+  const MOUTH = ['+15550100002', '@mouth-acct:beeper.com', 'mouth.acct@example.com'];
+  const EAR = ['+15550100001', '@anaprueba:beeper.com', 'anaprueba@example.org'];
+  const GROUP = CHAT('FakeRoomId0000000008');
   const fromThisNode = (ev) => ev?.fromNode != null && !fromOtherNode({ node_name: 'kg' }, ev);
-  const opMsg = (over = {}) => ({ id: '26445', chatID: GROUP, accountID: 'whatsapp', type: 'TEXT', senderID: '@anrodriguez:beeper.com',
+  const opMsg = (over = {}) => ({ id: '26445', chatID: GROUP, accountID: 'whatsapp', type: 'TEXT', senderID: '@anaprueba:beeper.com',
     isSender: true, text: 'cuigmar, also yes', timestamp: Date.now(), ...over });
   const reacted = (msg, participantID, reactionKey) => ({ ...msg, reactions: [{ id: participantID, participantID, reactionKey }] });
 
@@ -2201,12 +2201,12 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
     const feed = (body, from) => { fed.push(from); pending.push(spine.handleInbound({ body, from })); };
     return { brain, opens, notes, fed, recorded, feed, release, settled: () => Promise.all(pending) };
   }
-  const roster = (items) => fake.chats.set(GROUP, { title: 'eGPT Rodz Lulu An', type: 'group', isMuted: false, accountID: 'whatsapp', participants: { items } });
+  const roster = (items) => fake.chats.set(GROUP, { title: 'eGPT Rodz Lola An', type: 'group', isMuted: false, accountID: 'whatsapp', participants: { items } });
   const dropped = (logs) => logs.some((l) => /a mouth's own — dropped/.test(l));
 
   // A being's reaction is OUTPUT (operator 2026-10-18): it never re-enters, not even as a record.
   it('REPRODUCE: the mouth\'s ✍️ steer-ack on the operator\'s message never reaches the spine — no turn, no ingestion line', async () => {
-    roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
+    roster([{ id: '@anaprueba:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' }]);
     const s = onSpine();
     const logs = [];
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed, onLog: (m) => logs.push(m) });
@@ -2223,14 +2223,14 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
   });
 
   it('the mouth seeing its OWN reaction (its Beeper id, no roster) is dropped on that connection too', async () => {
-    roster([{ id: '@dolly-egpt:beeper.com', isSelf: true }, { id: '@whatsapp_lid-1:beeper.local', phoneNumber: '+16468217865' }]);
+    roster([{ id: '@mouth-acct:beeper.com', isSelf: true }, { id: '@whatsapp_lid-1:beeper.local', phoneNumber: '+15550100001' }]);
     const s = onSpine();
     const logs = [];
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed, onLog: (m) => logs.push(m) });
     const msg = opMsg({ id: '10006', senderID: '@whatsapp_lid-1:beeper.local', isSender: false });
     fake.emit({ type: 'message.upserted', entries: [msg] });
     await waitFor(() => s.brain.calls.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@dolly-egpt:beeper.com', '👍')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@mouth-acct:beeper.com', '👍')] });
     await waitFor(() => dropped(logs));
     expect(s.fed.filter((f) => f.isReaction)).toEqual([]);
     expect(s.opens).toHaveLength(1);
@@ -2238,12 +2238,12 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
 
   // A co-account PEER node's being speaks through the same Rodz account: its 👍 is output too.
   it('a peer node\'s reaction through Rodz (nothing live here) is dropped, never input', async () => {
-    roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
+    roster([{ id: '@anaprueba:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' }]);
     const s = onSpine();
     s.release();
     const logs = [];
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed, onLog: (m) => logs.push(m) });
-    const msg = opMsg({ id: '26450', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lulu', isSender: false, text: 'ya llegué' });
+    const msg = opMsg({ id: '26450', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lola', isSender: false, text: 'ya llegué' });
     fake.emit({ type: 'message.upserted', entries: [msg] });
     await waitFor(() => s.brain.calls.length === 1);
     fake.emit({ type: 'message.upserted', entries: [reacted(msg, RODZ_LID, '👍')] });
@@ -2256,14 +2256,14 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
   // A person's reaction to a being's post carries what a text reply to it would: replyToBeing off the
   // post's frame, replyToBot — and the frame stays off the snippet, so it is not read as provenance.
   it('the operator\'s reaction to a BEING\'s post reaches the spine like a text reply to it would', async () => {
-    roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
+    roster([{ id: '@anaprueba:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' }]);
     const s = onSpine();
     s.release();
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed });
     const post = opMsg({ id: '26460', senderID: RODZ_LID, isSender: false, text: `🐶 e: listo${encodeNodeSignature('kg', 'e')}` });
     fake.emit({ type: 'message.upserted', entries: [post] });
     await waitFor(() => s.fed.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [reacted(post, '@anrodriguez:beeper.com', '❤️')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(post, '@anaprueba:beeper.com', '❤️')] });
     await waitFor(() => s.fed.some((f) => f.isReaction));
     const r = s.fed.find((f) => f.isReaction);
     expect(r).toMatchObject({ replyToBeing: 'e', replyToNode: 'kg', replyToBot: true, atEAnywhere: false });
@@ -2273,29 +2273,29 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
   });
 
   it('LOCK: the operator\'s own reaction on the ear still wakes E in mode on', async () => {
-    roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
+    roster([{ id: '@anaprueba:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' }]);
     const s = onSpine();
     s.release();
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => MOUTH, earIdentities: async () => EAR, onIncoming: s.feed });
-    const msg = opMsg({ id: '26444', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lulu', isSender: false, text: 'ya llegué' });
+    const msg = opMsg({ id: '26444', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lola', isSender: false, text: 'ya llegué' });
     fake.emit({ type: 'message.upserted', entries: [msg] });
     await waitFor(() => s.brain.calls.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@anrodriguez:beeper.com', '❤️')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@anaprueba:beeper.com', '❤️')] });
     await waitFor(() => s.brain.calls.length === 2);
     expect(s.brain.calls[1].kind).toBe('reaction');
   });
 
   it('LOCK: a one-connection node (the ear IS the mouth) — the operator\'s reaction still wakes E', async () => {
-    roster([{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+13472576794', fullName: 'Rodz' }]);
-    fake.accounts.push({ accountID: 'matrix', user: { id: '@anrodriguez:beeper.com', email: 'anrodz42@gmail.com', isSelf: true } },
-      { accountID: 'whatsapp', user: { id: '16468217865', phoneNumber: '+16468217865', isSelf: true } });
+    roster([{ id: '@anaprueba:beeper.com', isSelf: true }, { id: RODZ_LID, phoneNumber: '+15550100002', fullName: 'Rodz' }]);
+    fake.accounts.push({ accountID: 'matrix', user: { id: '@anaprueba:beeper.com', email: 'anaprueba@example.org', isSelf: true } },
+      { accountID: 'whatsapp', user: { id: '15550100001', phoneNumber: '+15550100001', isSelf: true } });
     const s = onSpine();
     s.release();
     await startBridge({ nodeName: 'kg', speakingIdentities: async () => EAR, onIncoming: s.feed });   // no earIdentities: this bridge is its own ear
-    const msg = opMsg({ id: '26444', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lulu', isSender: false, text: 'ya llegué' });
+    const msg = opMsg({ id: '26444', senderID: '@whatsapp_lid-2:beeper.local', senderName: 'Lola', isSender: false, text: 'ya llegué' });
     fake.emit({ type: 'message.upserted', entries: [msg] });
     await waitFor(() => s.brain.calls.length === 1);
-    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@anrodriguez:beeper.com', '❤️')] });
+    fake.emit({ type: 'message.upserted', entries: [reacted(msg, '@anaprueba:beeper.com', '❤️')] });
     await waitFor(() => s.brain.calls.length === 2);
     expect(s.brain.calls[1].kind).toBe('reaction');
   });
@@ -2308,16 +2308,16 @@ describe('beeper bridge — a reaction placed by an account this node speaks thr
 // the anchor is the roster's, for the chat being POSTED TO (the sending account's own view of that
 // human), and that anything short of a unique match is left as the literal text the being wrote.
 describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of that chat member', () => {
-  const FAVEL = '@whatsapp_lid-100000000000001:beeper.local';   // Favel, AS THIS ACCOUNT SEES HER
+  const FIONA = '@whatsapp_lid-100000000000001:beeper.local';   // Fiona, AS THIS ACCOUNT SEES HER
   const ROGER = '@whatsapp_lid-100000000000002:beeper.local';   // a two-word roster name
   const DAN_A = '@whatsapp_lid-100000000000003:beeper.local';   // two members, one name…
   const DAN_B = '@whatsapp_lid-100000000000004:beeper.local';   // …the "two Daniels" case
   const HUMAN_E = '@whatsapp_lid-100000000000005:beeper.local'; // a human whose name IS a handle this node wakes on
   const GRP = CHAT('familia');
   const ROSTER = { items: [
-    { id: '@anrodriguez:beeper.com', isSelf: true },            // the viewing account — no phone, no fullName, as live
-    { id: FAVEL, phoneNumber: '+15550001111', fullName: 'Favel' },
-    { id: ROGER, phoneNumber: '+15550002222', fullName: 'Roger Vzla' },
+    { id: '@anaprueba:beeper.com', isSelf: true },            // the viewing account — no phone, no fullName, as live
+    { id: FIONA, phoneNumber: '+15550001111', fullName: 'Fiona' },
+    { id: ROGER, phoneNumber: '+15550002222', fullName: 'Roger Demo' },
     { id: DAN_A, phoneNumber: '+15550003333', fullName: 'Daniel' },
     { id: DAN_B, phoneNumber: '+15550004444', fullName: 'Daniel' },
     { id: HUMAN_E, phoneNumber: '+15550005555', fullName: 'E' },
@@ -2337,19 +2337,19 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
 
   it('a UNIQUE roster name converts, carrying that member\'s id — and the send still confirms its own id', async () => {
     const { bridge } = await start();
-    const r = await sendSettled(bridge, 'gracias @Favel 🙏', { chatId: GRP });
-    expect(fake.posts.at(-1).text).toBe(`gracias [Favel](https://matrix.to/#/${FAVEL}) 🙏`);
+    const r = await sendSettled(bridge, 'gracias @Fiona 🙏', { chatId: GRP });
+    expect(fake.posts.at(-1).text).toBe(`gracias [Fiona](https://matrix.to/#/${FIONA}) 🙏`);
     // The confirmed-id resolution matches on what was SENT: _matchKey collapses `[t](url)`→`t` on
     // both sides, so a mention-carrying send is still recognized as ours (no SEND ID UNCONFIRMED).
     expect(await r.confirmedId).toBe(fake.posts.at(-1).confirmedID);
   });
 
   it('the match is case-insensitive, and the text the being typed is what stays visible', async () => {
-    expect(await sent('@favel ya vienes?')).toBe(`[favel](https://matrix.to/#/${FAVEL}) ya vienes?`);
+    expect(await sent('@fiona ya vienes?')).toBe(`[fiona](https://matrix.to/#/${FIONA}) ya vienes?`);
   });
 
   it('a two-word roster name matches whole, and its FIRST WORD alone matches it too', async () => {
-    expect(await sent('@Roger Vzla pilla esto')).toBe(`[Roger Vzla](https://matrix.to/#/${ROGER}) pilla esto`);
+    expect(await sent('@Roger Demo pilla esto')).toBe(`[Roger Demo](https://matrix.to/#/${ROGER}) pilla esto`);
     expect(await sent('@Roger pilla esto')).toBe(`[Roger](https://matrix.to/#/${ROGER}) pilla esto`);
   });
 
@@ -2364,7 +2364,7 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
 
   it('NO ROSTER is UNKNOWN, not "nobody": left as typed and logged', async () => {
     fake.chats.set(CHAT('sinroster'), { title: 'Sin roster', type: 'group', isMuted: false, accountID: 'whatsapp' });
-    expect(await sent('@Favel hola', CHAT('sinroster'))).toBe('@Favel hola');
+    expect(await sent('@Fiona hola', CHAT('sinroster'))).toBe('@Fiona hola');
     expect(logs.join('\n')).toMatch(/no roster in the chat payload/);
   });
 
@@ -2376,45 +2376,45 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
   });
 
   it('text that is ALREADY an anchor passes through untouched — in both forms, never double-converted', async () => {
-    const already = `mira [Favel](https://matrix.to/#/${FAVEL}) y [@Favel](https://matrix.to/#/${FAVEL})`;
+    const already = `mira [Fiona](https://matrix.to/#/${FIONA}) y [@Fiona](https://matrix.to/#/${FIONA})`;
     expect(await sent(already)).toBe(already);
   });
 
   it('an `@` that is not a mention is not touched: email, `@here`, a URL path', async () => {
-    const line = 'escríbele a favel@casa.com — @here no aplica — https://ejemplo.com/@Favel';
+    const line = 'escríbele a fiona@casa.example — @here no aplica — https://ejemplo.com/@Fiona';
     expect(await sent(line)).toBe(line);
   });
 
   it('a code span / fence is left alone (mentionHits strips code before it answers)', async () => {
-    expect(await sent('usa `@Favel` así')).toBe('usa `@Favel` así');
-    expect(await sent('```\n@Favel\n```')).toBe('```\n@Favel\n```');
+    expect(await sent('usa `@Fiona` así')).toBe('usa `@Fiona` así');
+    expect(await sent('```\n@Fiona\n```')).toBe('```\n@Fiona\n```');
   });
 
   it('THE ID IS THE ONE FROM THE ROSTER OF THE CHAT BEING POSTED TO — the sending account\'s view, not another', async () => {
     // The SAME human, seen under a DIFFERENT id in a second chat (which is what a per-account
     // namespace does). Posting into that chat must use THAT chat's id, with nobody choosing it.
-    const FAVEL_OTRA = '@whatsapp_lid-999999999999999:beeper.local';
+    const FIONA_OTRA = '@whatsapp_lid-999999999999999:beeper.local';
     fake.chats.set(CHAT('otra'), { title: 'Otra', type: 'group', isMuted: false, accountID: 'whatsapp',
-      participants: { items: [{ id: '@anrodriguez:beeper.com', isSelf: true }, { id: FAVEL_OTRA, phoneNumber: '+15550001111', fullName: 'Favel' }] } });
-    expect(await sent('@Favel aquí', CHAT('otra'))).toBe(`[Favel](https://matrix.to/#/${FAVEL_OTRA}) aquí`);
-    expect(await sent('@Favel allá', GRP)).toBe(`[Favel](https://matrix.to/#/${FAVEL}) allá`);
+      participants: { items: [{ id: '@anaprueba:beeper.com', isSelf: true }, { id: FIONA_OTRA, phoneNumber: '+15550001111', fullName: 'Fiona' }] } });
+    expect(await sent('@Fiona aquí', CHAT('otra'))).toBe(`[Fiona](https://matrix.to/#/${FIONA_OTRA}) aquí`);
+    expect(await sent('@Fiona allá', GRP)).toBe(`[Fiona](https://matrix.to/#/${FIONA}) allá`);
   });
 
   it('an EDIT re-sends the text, so it converts the same way — a streamed reply cannot lose its mention', async () => {
     const { bridge } = await start();
-    expect(await bridge.editMessage(GRP, 'm-77', 'ya casi @Favel')).toBe(true);
-    expect(fake.edits.at(-1).text).toBe(`ya casi [Favel](https://matrix.to/#/${FAVEL})`);
+    expect(await bridge.editMessage(GRP, 'm-77', 'ya casi @Fiona')).toBe(true);
+    expect(fake.edits.at(-1).text).toBe(`ya casi [Fiona](https://matrix.to/#/${FIONA})`);
   });
 
   // A CAPTION IS THE SAME TEXT (2026-09-21): sendMedia builds its OWN body rather than going
-  // through sendMessage, so without its own call a being captioning a photo `@Favel mira` would
-  // post a dead `@Favel` while the identical line sent on its own became a mention.
+  // through sendMessage, so without its own call a being captioning a photo `@Fiona mira` would
+  // post a dead `@Fiona` while the identical line sent on its own became a mention.
   const pic = () => { const p = join(stateDir, `pic-${Math.random().toString(36).slice(2)}.png`); writeFileSync(p, 'fake-image-bytes'); return p; };
 
   it('a media CAPTION converts exactly like a sent line — and the media send still confirms its id', async () => {
     const { bridge } = await start();
-    const r = await bridge.sendMedia(GRP, pic(), { caption: 'mira esto @Favel' });
-    expect(fake.posts.at(-1).text).toBe(`mira esto [Favel](https://matrix.to/#/${FAVEL})`);
+    const r = await bridge.sendMedia(GRP, pic(), { caption: 'mira esto @Fiona' });
+    expect(fake.posts.at(-1).text).toBe(`mira esto [Fiona](https://matrix.to/#/${FIONA})`);
     expect(await r.confirmedId).toBe(fake.posts.at(-1).confirmedID);   // matched on the CONVERTED caption
   });
 
@@ -2439,9 +2439,9 @@ describe('beeper bridge — an outbound `@Nombre` leaves as a real mention of th
     const before = fake.chatGets.length;
     await sendSettled(bridge, 'listo, nos vemos', { chatId: GRP });
     expect(fake.chatGets.length).toBe(before);
-    await sendSettled(bridge, 'gracias @Favel', { chatId: GRP });          // …and the one that does pays ONE GET,
+    await sendSettled(bridge, 'gracias @Fiona', { chatId: GRP });          // …and the one that does pays ONE GET,
     expect(fake.chatGets.length).toBe(before + 1);
-    await sendSettled(bridge, 'otra vez @Favel', { chatId: GRP });          // …cached from then on (chatRaw's TTL)
+    await sendSettled(bridge, 'otra vez @Fiona', { chatId: GRP });          // …cached from then on (chatRaw's TTL)
     expect(fake.chatGets.length).toBe(before + 1);
   });
 });
@@ -3767,7 +3767,7 @@ describe('beeper bridge — startupReady', () => {
     fake.accounts.push({ accountID: 'whatsapp', user: { fullName: 'An', isSelf: true } });
     const { incoming } = await startBridge();   // startBridge awaits startupReady — exact, no sleep
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'mine' }),
+      liveMsg({ isSender: true, accountID: 'whatsapp', senderID: '@anaprueba:beeper.com', senderName: '@anaprueba:beeper.com', text: 'mine' }),
     ] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.senderName).toBe('An');
@@ -3787,21 +3787,21 @@ describe('beeper bridge — startupReady', () => {
 // owner-name map above rides; the fixtures below are the LIVE payload measured 2026-09-12 on both
 // of the operator's installs, field for field.
 describe("beeper bridge — selfIdentities: every identifier this install answers to", () => {
-  // dolly.egpt's install, verbatim shape: a matrix entry carrying the Beeper user id and the
+  // mouth.acct's install, verbatim shape: a matrix entry carrying the Beeper user id and the
   // email, and a whatsapp entry carrying the phone. `loginID` duplicated `user.id` in all five
   // measured entries; it is here so a reading that preferred it would still be exercised.
   const DOLLY = () => ([
-    { accountID: 'matrix', loginID: '@dolly-egpt:beeper.com', network: 'Beeper',
-      user: { id: '@dolly-egpt:beeper.com', email: 'dolly.egpt@gmail.com', fullName: 'Beeper User', username: 'dolly-egpt:beeper.com', isSelf: true } },
-    { accountID: 'whatsapp', loginID: '13472576794', network: 'WhatsApp',
-      user: { id: '13472576794', fullName: 'rodz', phoneNumber: '+13472576794', displayText: '+1 347-257-6794', isSelf: true } },
+    { accountID: 'matrix', loginID: '@mouth-acct:beeper.com', network: 'Beeper',
+      user: { id: '@mouth-acct:beeper.com', email: 'mouth.acct@example.com', fullName: 'Beeper User', username: 'mouth-acct:beeper.com', isSelf: true } },
+    { accountID: 'whatsapp', loginID: '15550100002', network: 'WhatsApp',
+      user: { id: '15550100002', fullName: 'rodz', phoneNumber: '+15550100002', displayText: '+1 555-010-0002', isSelf: true } },
   ]);
 
   it('reports the phone, the Beeper user id AND the email — the three the payload actually carries', async () => {
     fake.accounts.push(...DOLLY());
     const { bridge } = await startBridge();
     expect(await bridge.selfIdentities()).toEqual(
-      expect.arrayContaining(['+13472576794', '@dolly-egpt:beeper.com', 'dolly.egpt@gmail.com']),
+      expect.arrayContaining(['+15550100002', '@mouth-acct:beeper.com', 'mouth.acct@example.com']),
     );
   });
 
@@ -3812,7 +3812,7 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
     const { bridge } = await startBridge();
     const mine = await bridge.selfIdentities();
     expect(mine).toHaveLength(3);
-    expect(mine.filter((v) => v.replace(/\D/g, '') === '13472576794')).toHaveLength(1);
+    expect(mine.filter((v) => v.replace(/\D/g, '') === '15550100002')).toHaveLength(1);
   });
 
   // THE DISPLAY NAME IS OUT, deliberately (see _selfIdentities' header). "Rodz" is what the
@@ -3835,7 +3835,7 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
   // ── THE REPRODUCTION (operator 2026-09-12) ──────────────────────────────────────────────────
   // A Beeper-NATIVE room: every participant is a '@name:beeper.com' Matrix user and NOBODY
   // carries a phoneNumber (the live shape of the operator's own "Beeper Updates" room). The mouth
-  // is in it — as '@dolly-egpt:beeper.com', the id its own /v1/accounts payload reports — and
+  // is in it — as '@mouth-acct:beeper.com', the id its own /v1/accounts payload reports — and
   // before this change selfIdentities() offered only the phone, so the membership loop in
   // src/spine/boot.mjs routeLocally asked the one question the roster could not answer and
   // concluded the mouth was absent.
@@ -3843,8 +3843,8 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
     fake.accounts.push(...DOLLY());
     fake.chats.set(CHAT('beeper-native'), { title: 'Beeper Updates', type: 'group', isMuted: false, accountID: 'matrix',
       participants: { items: [
-        { id: '@anrodriguez:beeper.com', isSelf: true },     // the viewing account — no phone, as always
-        { id: '@dolly-egpt:beeper.com' },                    // THE MOUTH, and no phone anywhere on it
+        { id: '@anaprueba:beeper.com', isSelf: true },     // the viewing account — no phone, as always
+        { id: '@mouth-acct:beeper.com' },                    // THE MOUTH, and no phone anywhere on it
         { id: '@help:beeper.com', fullName: 'Beeper Help' },
       ] } });
     const { bridge } = await startBridge();
@@ -3862,8 +3862,8 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
     fake.accounts.push(...DOLLY());
     fake.chats.set(CHAT('by-email'), { title: 'Addressed', type: 'group', isMuted: false, accountID: 'matrix',
       participants: { items: [
-        { id: '@anrodriguez:beeper.com', isSelf: true },
-        { id: 'dolly.egpt@gmail.com' },
+        { id: '@anaprueba:beeper.com', isSelf: true },
+        { id: 'mouth.acct@example.com' },
         { id: 'someone@else.example' },
       ] } });
     const { bridge } = await startBridge();
@@ -3876,7 +3876,7 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
 
 // ── CHAT MEMBERSHIP (operator 2026-08-31) — "is <identity> a participant of this chat?", the ONE
 //    question a `fallback_handle:` asks before waking (src/spine/router.mjs fallbackWake). kg and do
-//    stopped sharing a Beeper account: `e` is now a handle on do's account (+1 347…, "Rodz") only,
+//    stopped sharing a Beeper account: `e` is now a handle on do's account (+1 555…, "Rodz") only,
 //    so kg wakes on @e as a fallback ONLY where that identity is not in the chat.
 //
 //    It rides the EXISTING chat-info GET — same /v1/chats/:id call, same _chatCache entry the
@@ -3890,7 +3890,7 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
     participants: { items: [
       { id: 'an@beeper.local', phoneNumber: '+15551112222', fullName: 'An' },
-      { id: 'rodz@beeper.local', phoneNumber: '+1 (347) 257-6794', fullName: 'Rodz' },
+      { id: 'rodz@beeper.local', phoneNumber: '+1 (555) 010-0002', fullName: 'Rodz' },
     ] },
     ...extra,
   });
@@ -3900,8 +3900,8 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     fake.chats.set(CHAT('no-peer'), { title: 'Solo', type: 'group', isMuted: false, accountID: 'whatsapp',
       participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'bea@beeper.local', phoneNumber: '+15559998888' }] } });
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('with-peer', '+13472576794')).toBe(true);
-    expect(await bridge.chatHasParticipant('no-peer', '+13472576794')).toBe(false);
+    expect(await bridge.chatHasParticipant('with-peer', '+15550100002')).toBe(true);
+    expect(await bridge.chatHasParticipant('no-peer', '+15550100002')).toBe(false);
   });
 
   // AN ACCOUNT'S OWN ENTRY IN ITS OWN ROSTER CARRIES NO phoneNumber — only a matrix id (measured
@@ -3912,28 +3912,28 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
   // discriminate between two connections — see tests/multi-connection-wake.test.mjs for what it
   // actually does on a node holding both accounts.
   it("an account's OWN entry has no phoneNumber, so its own number reads ABSENT from its own roster", async () => {
-    fake.chats.set(CHAT('own-view'), { title: 'An y Dando', type: 'group', isMuted: false, accountID: 'whatsapp',
+    fake.chats.set(CHAT('own-view'), { title: 'An y Dario', type: 'group', isMuted: false, accountID: 'whatsapp',
       participants: { items: [
         { id: 'an@beeper.local', fullName: 'An', isSelf: true },          // self — no phoneNumber at all
-        { id: 'dando@beeper.local', phoneNumber: '+34658515045' },
-        { id: 'rodz@beeper.local', phoneNumber: '+13472576794' },
+        { id: 'dario@beeper.local', phoneNumber: '+15550100005' },
+        { id: 'rodz@beeper.local', phoneNumber: '+15550100002' },
       ] } });
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('own-view', '+16468217865')).toBe(false);   // An's own number
-    expect(await bridge.chatHasParticipant('own-view', '+13472576794')).toBe(true);    // a real member's
+    expect(await bridge.chatHasParticipant('own-view', '+15550100001')).toBe(false);   // An's own number
+    expect(await bridge.chatHasParticipant('own-view', '+15550100002')).toBe(true);    // a real member's
   });
 
-  // The fixture stores the peer as "+1 (347) 257-6794" and the config declares "+13472576794".
+  // The fixture stores the peer as "+1 (555) 010-0002" and the config declares "+15550100002".
   // A phone-shaped identity compares on DIGITS ONLY, so punctuation/spacing on either side is
-  // irrelevant. The country code is NOT guessed: a bare national form (3472576794) is a DIFFERENT
+  // irrelevant. The country code is NOT guessed: a bare national form (5550100002) is a DIFFERENT
   // digit string and does not match — declare the full international number, as the operator does.
   it('phone numbers compare on DIGITS — punctuation/spacing on either side is irrelevant', async () => {
     fake.chats.set(CHAT('with-peer'), group());
     const { bridge } = await startBridge();
-    for (const form of ['+13472576794', '13472576794', '+1 347-257-6794', '+1 (347) 257 6794']) {
+    for (const form of ['+15550100002', '15550100002', '+1 555-010-0002', '+1 (555) 010 0002']) {
       expect(await bridge.chatHasParticipant('with-peer', form), form).toBe(true);
     }
-    expect(await bridge.chatHasParticipant('with-peer', '3472576794')).toBe(false);   // no country code ⇒ not the same identity
+    expect(await bridge.chatHasParticipant('with-peer', '5550100002')).toBe(false);   // no country code ⇒ not the same identity
   });
 
   it('a raw participant id still works (shortChatId-normalized, same as allowed_users)', async () => {
@@ -3946,7 +3946,7 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
   it('CACHED: repeated lookups on one group cost exactly ONE round trip', async () => {
     fake.chats.set(CHAT('with-peer'), group());
     const { bridge } = await startBridge();
-    for (let i = 0; i < 5; i++) await bridge.chatHasParticipant('with-peer', '+13472576794');
+    for (let i = 0; i < 5; i++) await bridge.chatHasParticipant('with-peer', '+15550100002');
     expect(fake.chatGets.filter((id) => id === CHAT('with-peer'))).toHaveLength(1);
   });
 
@@ -3959,25 +3959,25 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     fake.chats.set(CHAT('dm-bea'), { title: 'Bea', type: 'single', isMuted: false, accountID: 'whatsapp',
       participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'bea@beeper.local', phoneNumber: '+15559998888' }] } });
     const { bridge } = await startBridge({ participantsTtlMs: 0 });
-    for (let i = 0; i < 5; i++) expect(await bridge.chatHasParticipant('dm-bea', '+13472576794')).toBe(false);
+    for (let i = 0; i < 5; i++) expect(await bridge.chatHasParticipant('dm-bea', '+15550100002')).toBe(false);
     expect(fake.chatGets.filter((id) => id === CHAT('dm-bea'))).toHaveLength(1);
   });
 
   it('the operator\'s own 1:1 WITH the peer answers TRUE — a single chat is read, never assumed empty', async () => {
     fake.chats.set(CHAT('dm-rodz'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'whatsapp',
-      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'rodz@beeper.local', phoneNumber: '+13472576794' }] } });
+      participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }, { id: 'rodz@beeper.local', phoneNumber: '+15550100002' }] } });
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('dm-rodz', '+13472576794')).toBe(true);
+    expect(await bridge.chatHasParticipant('dm-rodz', '+15550100002')).toBe(true);
   });
 
   it('TTL EXPIRY: a group roster IS re-read once it goes stale (ttl 0 ⇒ every lookup refreshes)', async () => {
     fake.chats.set(CHAT('grp'), group());
     const { bridge } = await startBridge({ participantsTtlMs: 0 });
-    await bridge.chatHasParticipant('grp', '+13472576794');
+    await bridge.chatHasParticipant('grp', '+15550100002');
     // the peer LEAVES the group; the next lookup past the TTL must see it
     fake.chats.set(CHAT('grp'), { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
       participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }] } });
-    expect(await bridge.chatHasParticipant('grp', '+13472576794')).toBe(false);
+    expect(await bridge.chatHasParticipant('grp', '+15550100002')).toBe(false);
     expect(fake.chatGets.filter((id) => id === CHAT('grp')).length).toBeGreaterThan(1);
   });
 
@@ -3986,13 +3986,13 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
   it('a FAILING chat GET answers null (UNKNOWN), never false', async () => {
     fake.chats.set(CHAT('boom'), () => { throw new Error('beeper down'); });
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('boom', '+13472576794')).toBeNull();
+    expect(await bridge.chatHasParticipant('boom', '+15550100002')).toBeNull();
   });
 
   it('a payload carrying NO participants shape answers null (UNKNOWN), never false', async () => {
     fake.chats.set(CHAT('bare'), { title: 'Bare', type: 'group', isMuted: false, accountID: 'whatsapp' });
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('bare', '+13472576794')).toBeNull();
+    expect(await bridge.chatHasParticipant('bare', '+15550100002')).toBeNull();
   });
 
   // The arrival path (dispatch → chatInfo) already GETs the chat for every inbound message, and the
@@ -4003,7 +4003,7 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('grp2'), text: '@e hola' })] });
     await waitFor(() => incoming.length === 1);
     const before = fake.chatGets.filter((id) => id === CHAT('grp2')).length;
-    expect(await bridge.chatHasParticipant('grp2', '+13472576794')).toBe(true);
+    expect(await bridge.chatHasParticipant('grp2', '+15550100002')).toBe(true);
     expect(fake.chatGets.filter((id) => id === CHAT('grp2'))).toHaveLength(before);   // no extra round trip
   });
 
@@ -4012,14 +4012,14 @@ describe('beeper bridge — chat membership (fallback_handle, operator 2026-08-3
   it('a chat.upserted without participants PRESERVES the cached roster (and one carrying it wins)', async () => {
     fake.chats.set(CHAT('grp3'), group());
     const { bridge } = await startBridge();
-    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(true);
+    expect(await bridge.chatHasParticipant('grp3', '+15550100002')).toBe(true);
     fake.emit({ type: 'chat.upserted', entries: [{ id: CHAT('grp3'), title: 'Familia renamed', type: 'group' }] });
     await waitFor(() => bridge.getChatName('grp3') === 'Familia renamed');
-    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(true);       // roster survived the rename
+    expect(await bridge.chatHasParticipant('grp3', '+15550100002')).toBe(true);       // roster survived the rename
     fake.emit({ type: 'chat.upserted', entries: [{ id: CHAT('grp3'), title: 'Familia smaller', type: 'group',
       participants: { items: [{ id: 'an@beeper.local', phoneNumber: '+15551112222' }] } }] });
     await waitFor(() => bridge.getChatName('grp3') === 'Familia smaller');
-    expect(await bridge.chatHasParticipant('grp3', '+13472576794')).toBe(false);      // a live departure is seen at once, not at the end of the TTL
+    expect(await bridge.chatHasParticipant('grp3', '+15550100002')).toBe(false);      // a live departure is seen at once, not at the end of the TTL
   });
 });
 
@@ -4293,12 +4293,12 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
   });
 
   const NOTE_TS = '2026-09-15T15:33:38.000Z';
-  const MOUTH_ROOM = 'lHZ44tI32W0eEtbwMutM';
+  const MOUTH_ROOM = 'FakeRoomId0000000009';
   // The note's attachment as a Beeper API lists it (measured 2026-09-15): the mxc id is per account.
   const listedAtt = (id) => ({ type: 'audio', mimeType: 'audio/ogg; codecs=opus', fileName: 'Voice message.ogg', fileSize: 22740, isVoiceNote: true, id: `mxc://local.beeper.com/${id}` });
   const CLI = { type: 'whisper-cli', command: 'wc', model_path: 'm' };
   // kg's chain: dolly's worker, then its own cli. do's chain: ITS OWN worker, then its own cli.
-  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.0.2.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
   const DO = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
   const DO_OWN = { at: 'transcription_service.do.worker', endpoint: 'http://127.0.0.1:23390' };
   const chain = ({ profile, own = null, remote = async () => 'fake transcript', cli = async () => 'fake transcript' }) => buildTranscriptionPipeline({
@@ -4311,7 +4311,7 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
     const reactions = [], unreactions = [];
     return {
       reactions, unreactions,
-      recentMessages() { return holdsNote ? [{ id: '2404', timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt('dolly-egpt_2404')] }] : []; },
+      recentMessages() { return holdsNote ? [{ id: '2404', timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt('mouth-acct_2404')] }] : []; },
       async react(chatId, msgId, emoji) { reactions.push({ chatId, msgId, emoji }); return true; },
       async unreact(chatId, msgId, emoji) { unreactions.push({ chatId, msgId, emoji }); return true; },
     };
@@ -4345,7 +4345,7 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
     return started;
   }
   const emitNote = (id, over = {}) => {
-    fake.messages.set(CHAT('chat-1'), [{ id, timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt(`anrodriguez_${id}`)] }]);
+    fake.messages.set(CHAT('chat-1'), [{ id, timestamp: NOTE_TS, type: 'VOICE', text: null, attachments: [listedAtt(`anaprueba_${id}`)] }]);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt(`bytes of ${id}`)], ...over })] });
   };
 
@@ -4557,13 +4557,13 @@ describe('beeper bridge — 🎧 listening mark: placed where the decode runs, t
 // single remote rungs, as live. Nothing hand-writes the record: the message arrives, the node
 // decodes and records it, and the operator's `e` is answered from that record.
 //
-// Two chats, the two shapes the operator named: a 1:1 on the ear the mouth is not in (Favel), and
+// Two chats, the two shapes the operator named: a 1:1 on the ear the mouth is not in (Fiona), and
 // a group both accounts are in, which is two rooms with two ids and so two arrivals of every message.
 // contract 8.4
 describe('the whole node — replying `e` reads the message back (ear, mouth, record, workers)', () => {
   const KEY = 'dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDA';
-  const AN = '+15550000001', RODZ = '+15550000002', FAVEL = '+15550000003', DON = '+15550000004';
-  const FAVEL_CHAT = CHAT('favel-an-only');
+  const AN = '+15550000001', RODZ = '+15550000002', FIONA = '+15550000003', DON = '+15550000004';
+  const FIONA_CHAT = CHAT('fiona-an-only');
   const SHARED_ON_EAR = CHAT('shared-as-an-sees-it');
   const SHARED_ON_MOUTH = CHAT('shared-as-rodz-sees-it');
   // An account's OWN roster entry carries no phoneNumber, only its matrix id (measured; see
@@ -4592,12 +4592,12 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
     const mouth = await startFakeBeeper();
     fake.accounts.push({ accountID: 'whatsapp', user: { isSelf: true, fullName: 'An', phoneNumber: AN, id: '@an:beeper.com' } });
     mouth.accounts.push({ accountID: 'whatsapp', user: { isSelf: true, fullName: 'Rodz', phoneNumber: RODZ, id: '@rodz:beeper.com' } });
-    fake.chats.set(FAVEL_CHAT, { title: 'Favel "Elena" Konefka', type: 'single', isMuted: false, accountID: 'whatsapp',
-      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('favel-as-an-sees-her', FAVEL)] } });
+    fake.chats.set(FIONA_CHAT, { title: 'Fiona "Elena" Ejemplar', type: 'single', isMuted: false, accountID: 'whatsapp',
+      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('fiona-as-an-sees-her', FIONA)] } });
     fake.chats.set(SHARED_ON_EAR, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
-      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('rodz-as-an-sees-him', RODZ), memberEntry('favel-as-an-sees-her', FAVEL)] } });
+      participants: { items: [selfEntry('@an:beeper.com'), memberEntry('rodz-as-an-sees-him', RODZ), memberEntry('fiona-as-an-sees-her', FIONA)] } });
     mouth.chats.set(SHARED_ON_MOUTH, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp',
-      participants: { items: [memberEntry('favel-as-rodz-sees-her', FAVEL), selfEntry('@rodz:beeper.com'), memberEntry('an-as-rodz-sees-him', AN)] } });
+      participants: { items: [memberEntry('fiona-as-rodz-sees-her', FIONA), selfEntry('@rodz:beeper.com'), memberEntry('an-as-rodz-sees-him', AN)] } });
 
     // dolly's two workers, real endpoints: only the engines behind them are fakes.
     const heard = [], spoken = [];
@@ -4638,20 +4638,20 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
   const RUN = Math.random().toString(36).slice(2, 8);
   const I = (id) => `${id}-${RUN}`;
   // One real message as each account's Desktop delivers it: its own id, the same timestamp.
-  const voiceNote = (id, chatID, att, ts, over = {}) => ({ id, chatID, type: 'VOICE', text: null, attachments: [att], isSender: false, senderName: 'Favel', senderID: 'favel', timestamp: ts, ...over });
-  const textFrom = (id, chatID, text, ts, over = {}) => ({ id, chatID, text, isSender: false, senderName: 'Favel', senderID: 'favel', timestamp: ts, ...over });
+  const voiceNote = (id, chatID, att, ts, over = {}) => ({ id, chatID, type: 'VOICE', text: null, attachments: [att], isSender: false, senderName: 'Fiona', senderID: 'fiona', timestamp: ts, ...over });
+  const textFrom = (id, chatID, text, ts, over = {}) => ({ id, chatID, text, isSender: false, senderName: 'Fiona', senderID: 'fiona', timestamp: ts, ...over });
   const replyE = (id, chatID, quoted, over = {}) => ({ id, chatID, text: 'e', isSender: true, senderName: 'An', senderID: '@an:beeper.com', linkedMessageID: quoted, timestamp: Date.now(), ...over });
   const upsert = (desk, ...entries) => desk.emit({ type: 'message.upserted', entries });
   const isReveal = (p) => (p.text ?? '').startsWith(ECHO_MARKER);
   const BOOTS_A_NODE = { timeout: 15_000 };   // a whole boot, two bridges and two workers per case
 
-  it('Favel shape — a 1:1 on the ear the mouth is not in: `e` on a VOICE NOTE returns its transcript as a reply to the note', BOOTS_A_NODE, async () => {
+  it('Fiona shape — a 1:1 on the ear the mouth is not in: `e` on a VOICE NOTE returns its transcript as a reply to the note', BOOTS_A_NODE, async () => {
     const node = await bootKg();
     try {
-      upsert(fake, voiceNote(I('fv-note-1'), FAVEL_CHAT, voiceAtt('bytes of the favel note'), Date.now()));
+      upsert(fake, voiceNote(I('fv-note-1'), FIONA_CHAT, voiceAtt('bytes of the fiona note'), Date.now()));
       await waitFor(() => node.transcriptWith(`[re #${I('fv-note-1')}] (voice transcription`));
       expect(node.transcriptWith(`#${I('fv-note-1')}:`)).toContain(`#${I('fv-note-1')}: (voice note`);   // its arrival, then its transcription (2026-10-16)
-      upsert(fake, replyE(I('fv-reply-1'), FAVEL_CHAT, I('fv-note-1')));
+      upsert(fake, replyE(I('fv-reply-1'), FIONA_CHAT, I('fv-note-1')));
       await waitFor(() => fake.posts.some(isReveal));
       const reveal = fake.posts.filter(isReveal);
       expect(reveal).toHaveLength(1);
@@ -4662,12 +4662,12 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
     } finally { await node.close(); }
   });
 
-  it('Favel shape — `e` on a WRITTEN message: the 🔊 reading goes out as audio replying to it, and the ack is edited to 🔊', BOOTS_A_NODE, async () => {
+  it('Fiona shape — `e` on a WRITTEN message: the 🔊 reading goes out as audio replying to it, and the ack is edited to 🔊', BOOTS_A_NODE, async () => {
     const node = await bootKg();
     try {
-      upsert(fake, textFrom(I('fv-text-1'), FAVEL_CHAT, 'nos vemos a las cinco', Date.now()));
+      upsert(fake, textFrom(I('fv-text-1'), FIONA_CHAT, 'nos vemos a las cinco', Date.now()));
       await waitFor(() => node.transcriptWith(`#${I('fv-text-1')}:`));
-      upsert(fake, replyE(I('fv-reply-2'), FAVEL_CHAT, I('fv-text-1')));
+      upsert(fake, replyE(I('fv-reply-2'), FIONA_CHAT, I('fv-text-1')));
       await waitFor(() => fake.posts.some((p) => p.attachment));
       expect(node.spoken).toEqual(['nos vemos a las cinco']);
       expect(fake.posts.find((p) => p.attachment).replyToMessageID).toBe(I('fv-text-1'));
@@ -4685,7 +4685,7 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
       const ts = Date.now();
       const att = voiceAtt('bytes of the shared note');
       upsert(fake, voiceNote(I('sh-note-ear'), SHARED_ON_EAR, att, ts));
-      upsert(node.mouth, voiceNote(I('sh-note-mouth'), SHARED_ON_MOUTH, att, ts, { senderID: 'favel-as-rodz-sees-her' }));
+      upsert(node.mouth, voiceNote(I('sh-note-mouth'), SHARED_ON_MOUTH, att, ts, { senderID: 'fiona-as-rodz-sees-her' }));
       await waitFor(() => node.transcriptWith(`[re #${I('sh-note-ear')}] (voice transcription`));
       await waitFor(() => node.lines.some((l) => /voice transcribed \[shared-as-rodz-sees-it\]/.test(l)));
       // The operator's `e`, as each account sees it: his own send on the ear, a member's message on the
@@ -4709,7 +4709,7 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
   async function sharedTextReply(node, tag, mouthSeesOperatorAs) {
     const ts = Date.now();
     upsert(fake, textFrom(I(`${tag}-text-ear`), SHARED_ON_EAR, 'llego tarde', ts));
-    upsert(node.mouth, textFrom(I(`${tag}-text-mouth`), SHARED_ON_MOUTH, 'llego tarde', ts, { senderID: 'favel-as-rodz-sees-her' }));
+    upsert(node.mouth, textFrom(I(`${tag}-text-mouth`), SHARED_ON_MOUTH, 'llego tarde', ts, { senderID: 'fiona-as-rodz-sees-her' }));
     await waitFor(() => node.transcriptWith(`#${I(`${tag}-text-ear`)}:`));
     upsert(fake, replyE(I(`${tag}-reply-ear`), SHARED_ON_EAR, I(`${tag}-text-ear`)));
     upsert(node.mouth, replyE(I(`${tag}-reply-mouth`), SHARED_ON_MOUTH, I(`${tag}-text-mouth`), { isSender: false, senderID: mouthSeesOperatorAs }));
@@ -4757,7 +4757,7 @@ describe('the whole node — replying `e` reads the message back (ear, mouth, re
 // was SUSPENDED, not restarted, so the backlog gate's cutoff — fixed at bridge construction — still
 // read 09-20. On waking, Beeper delivered ~35 hours of missed messages within seconds: the 09-20 ones
 // were backfilled as designed, and every one from the sleep window arrived as live traffic. Being D
-// answered them one after another in "Dagiely Palma" ("me acaba de llegar de golpe una tanda de
+// answered them one after another in "Dalia Muestra" ("me acaba de llegar de golpe una tanda de
 // mensajes"), steered them into its live turn, and six posts in two minutes tripped the other node's
 // loop guard. It had only ever worked by accident: until 2026-09-03 the daemon killed the spine on
 // every resume, which reset bridge start ("SLEEP IS NOT A WEDGE" stopped that, correctly).
@@ -4837,7 +4837,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
       rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
     };
   }
-  const GROUP = CHAT('dagiely-palma');
+  const GROUP = CHAT('dalia-muestra');
   const CHATTER = CHAT('charla');
   const RUN = Math.random().toString(36).slice(2, 8);   // boot's bridge keeps seen-ids in the profile's state/, which outlives a run
   const ID = (s) => `${s}-${RUN}`;
@@ -4846,7 +4846,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
   const BOOTS_A_NODE = { timeout: 15_000 };
 
   async function bootDo() {
-    fake.chats.set(GROUP, { title: 'Dagiely Palma', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(GROUP, { title: 'Dalia Muestra', type: 'group', isMuted: false, accountID: 'whatsapp' });
     fake.chats.set(CHATTER, { title: 'Charla', type: 'group', isMuted: false, accountID: 'whatsapp' });
     const turns = [];
     const makeSession = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(m, onUpdate) { turns.push(String(m)); onUpdate?.('↩'); return { text: '↩', sessionId: this.sessionId }; }, close() {} });
@@ -4979,7 +4979,7 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
 //
 // "messages sent shouldn't be lost by eGPT during a restart. beeper delivers on first connection."
 // reve, 2026-10-19 18:37 (a deploy): last alive beat 18:36:50Z, /upgrade exit 18:37:42Z, bridge start
-// 18:37:57Z — and Diego Pérez's 18:37:45Z message, delivered on connect, was backfilled as backlog
+// 18:37:57Z — and Diego Pruéba's 18:37:45Z message, delivered on connect, was backfilled as backlog
 // because the cutoff was bridge start. The previous spine's last alive beat (state/alive.txt mtime)
 // is the last moment the node surely ingested; within the wake window it is the cutoff.
 describe('a restart is not an outage — the backlog cutoff is the last alive beat', () => {
@@ -5101,11 +5101,11 @@ describe('createGroup (Beeper async group-create)', () => {
 // E's reply were DROPPED: the send searched the chat list for the id, and Beeper does not list a new
 // group until it has a message. An id we hold goes straight to the API; only a NAME is searched for.
 describe('beeper bridge — a chat id is addressed as is, never through the chat list', () => {
-  const NEW = 'aheLwZ0u6CpjePxSdbG9';   // the live id
+  const NEW = 'FakeRoomId0000000012';   // the live id
   const ORIGIN = 'origin';
   // The live create: the POST 404s with the new id, the first GET 404s, the second 200s — and the
   // chat list never shows the group.
-  const asyncCreate = (participants = [{ id: '@an:beeper.local', isSelf: true }, { id: '@whatsapp_lid-lulu:beeper.local', phoneNumber: '+34600000000' }]) => {
+  const asyncCreate = (participants = [{ id: '@an:beeper.local', isSelf: true }, { id: '@whatsapp_lid-lola:beeper.local', phoneNumber: '+34600000000' }]) => {
     fake.createChatOpts.status = 404;
     fake.createChatOpts.body = JSON.stringify({ message: `Chat not found: ${CHAT(NEW)}`, code: 'NOT_FOUND' });
     let gets = 0;
@@ -5147,14 +5147,14 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
 
   it('REPRODUCE (the live SI+ drop): an automatic side group just created — the opener and E\'s reply and /reply land in it by id', async () => {
     asyncCreate();
-    fake.chats.set(CHAT(ORIGIN), { title: 'Origen', type: 'group', isMuted: false, accountID: 'whatsapp', participants: { items: [{ id: '@an:beeper.local', isSelf: true }, { id: '@whatsapp_lid-lulu:beeper.local', phoneNumber: '+34600000000' }] } });
+    fake.chats.set(CHAT(ORIGIN), { title: 'Origen', type: 'group', isMuted: false, accountID: 'whatsapp', participants: { items: [{ id: '@an:beeper.local', isSelf: true }, { id: '@whatsapp_lid-lola:beeper.local', phoneNumber: '+34600000000' }] } });
     const { bridge } = await startBridge({ sleep: async () => {} });
     const port = await createBeeperBridgePort({}, { start: async () => bridge });
     let st = ensureContact(emptyState(), 'whatsapp', ORIGIN, { pushedName: 'Origen' }).state;
     st = patchContact(st, 'whatsapp', ORIGIN, { reply_in_side_group: true });
     const logs = [];
     const commands = createCommands({
-      getConfig: () => ({ node_name: 'kg', node_role: 'primary', beeper: { primary: { phone: '+16468217865' } } }),
+      getConfig: () => ({ node_name: 'kg', node_role: 'primary', beeper: { primary: { phone: '+15550100001' } } }),
       send: async () => {}, loadState: async () => st, writeState: async (s) => { st = s; },
       forkBridge: {
         createGroup: (o, { origin = null } = {}) => port.createGroup(origin, o),
@@ -5166,7 +5166,7 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
       },
       onLog: (m) => logs.push(m),
     });
-    const at = await commands.autoSideGroup({ chatId: ORIGIN, surface: 'whatsapp', chatName: 'Origen', senderId: '@whatsapp_lid-lulu:beeper.local', senderName: 'Lulu', msgId: '7', body: 'e eso es cierto?' });
+    const at = await commands.autoSideGroup({ chatId: ORIGIN, surface: 'whatsapp', chatName: 'Origen', senderId: '@whatsapp_lid-lola:beeper.local', senderName: 'Lola', msgId: '7', body: 'e eso es cierto?' });
     expect(at).toBe(NEW);
     expect(fake.posts.map((p) => p.chatID)).toEqual([CHAT(NEW)]);   // the opener
     expect(logs.some((m) => m.includes('opener posted by the primary'))).toBe(true);
@@ -5185,7 +5185,7 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
   it('the 404 the create poll sees before the group syncs is never read as "the group is gone"', async () => {
     asyncCreate();
     const { bridge } = await startBridge({ sleep: async () => {} });
-    const r = await bridge.createGroup({ accountID: 'whatsapp', participantIDs: ['@whatsapp_lid-lulu:beeper.local'], type: 'group', title: 'SI+Origen' });
+    const r = await bridge.createGroup({ accountID: 'whatsapp', participantIDs: ['@whatsapp_lid-lola:beeper.local'], type: 'group', title: 'SI+Origen' });
     expect(shortChatId(r?.chatID)).toBe(NEW);
     expect(await bridge.chatRaw(NEW)).toBeTruthy();
     expect(await superChannelAlive(NEW, { chatRaw: bridge.chatRaw, config: {} })).not.toBe(false);
@@ -5208,7 +5208,7 @@ describe('beeper bridge — a chat id is addressed as is, never through the chat
 // stamped with THAT time; while transcribing, the record held no trace of the note. ──
 describe('beeper bridge — a voice note is two lines: its arrival now, its transcription when ready', () => {
   const deferred = () => { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; };
-  const note = (over = {}) => liveMsg({ id: '31503', isSender: false, senderName: 'Diego Pérez', senderPushName: 'Diego Pérez', text: null, type: 'VOICE', attachments: [{ ...voiceAtt(), duration: 11 }], ...over });
+  const note = (over = {}) => liveMsg({ id: '31503', isSender: false, senderName: 'Diego Pruéba', senderPushName: 'Diego Pruéba', text: null, type: 'VOICE', attachments: [{ ...voiceAtt(), duration: 11 }], ...over });
 
   it('REPRODUCE: the arrival is delivered at once — its own id, its duration — before whisper returns; the transcription follows under the same id', async () => {
     const heard = deferred();
@@ -5295,13 +5295,13 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
       settled: () => Promise.all(pending),
     };
   }
-  const ARRIVAL = 'Diego Pérez@[Diego Pérez].wa (16:12) #31503: (voice note, 11s — being transcribed…)';
-  const CHATTER = 'Bea@[Diego Pérez].wa (16:13) #31504: jaja';
-  const OUTCOME = 'Diego Pérez@[Diego Pérez].wa (16:15): [re #31503] (voice transcription) Mira marico';
+  const ARRIVAL = 'Diego Pruéba@[Diego Pruéba].wa (16:12) #31503: (voice note, 11s — being transcribed…)';
+  const CHATTER = 'Bea@[Diego Pruéba].wa (16:13) #31504: jaja';
+  const OUTCOME = 'Diego Pruéba@[Diego Pruéba].wa (16:15): [re #31503] (voice transcription) Mira marico';
 
   // contract 9.1
   it('end to end: the record gets the arrival at arrival time, then the chatter, then the transcription — appended, nothing rewritten, only the transcription prompts', async () => {
-    fake.chats.set(CHAT('chat-1'), { title: 'Diego Pérez', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('chat-1'), { title: 'Diego Pruéba', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const s = recordingSpine();
     const heard = deferred();
     await startBridge({ transcribe: () => heard.p, onIncoming: s.feed });
@@ -5327,7 +5327,7 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
   // Only one node DECODES a note (decode-once; the peer's request is served the same text by the
   // shared worker), but each node hears the note on its own account and writes its own record.
   it('the node that does NOT decode writes the same two lines as the one that does', async () => {
-    fake.chats.set(CHAT('chat-1'), { title: 'Diego Pérez', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('chat-1'), { title: 'Diego Pruéba', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const lines = {};
     const identity = createIdentity({ now: () => Date.UTC(2026, 9, 16, 16, 12) });
     const run = async (name, id, transcribe) => {
@@ -5343,8 +5343,8 @@ describe('beeper bridge — a voice note is two lines: its arrival now, its tran
     await run('do', '2901', async () => 'Mira marico');   // served by the peer's decode — its hook is never called
     expect(decoded).toEqual(['kg']);
     expect(lines.kg).toEqual([
-      'Diego Pérez@[Diego Pérez].wa (16:12) #N: (voice note, 11s — being transcribed…)',
-      'Diego Pérez@[Diego Pérez].wa (16:12): [re #N] (voice transcription) Mira marico',
+      'Diego Pruéba@[Diego Pruéba].wa (16:12) #N: (voice note, 11s — being transcribed…)',
+      'Diego Pruéba@[Diego Pruéba].wa (16:12): [re #N] (voice transcription) Mira marico',
     ]);
     expect(lines.do).toEqual(lines.kg);
   });

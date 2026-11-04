@@ -13,11 +13,11 @@ const BRIDGE = { send: async () => ({}), react: async () => true };
 
 describe('parse', () => {
   it('/book <date> <time> <summary> and /email <text> are actions, stripped from the prose', () => {
-    const { prose, run, stripped } = parseReplyActions('Perfecto, lo agendo.\n/book 2026-10-20 10:00 Demo EduWeb — Colegio San José\n/email Lead: Juan, Colegio San José, 0414-000', EV);
+    const { prose, run, stripped } = parseReplyActions('Perfecto, lo agendo.\n/book 2026-10-20 10:00 Demo Contoso — Colegio San José\n/email Lead: Juan, Colegio San José, 0414-000', EV);
     expect(prose).toBe('Perfecto, lo agendo.');
     expect(stripped).toEqual([]);
     expect(run).toEqual([
-      { type: 'book', chatId: EV.chatId, date: '2026-10-20', time: '10:00', summary: 'Demo EduWeb — Colegio San José' },
+      { type: 'book', chatId: EV.chatId, date: '2026-10-20', time: '10:00', summary: 'Demo Contoso — Colegio San José' },
       { type: 'email', chatId: EV.chatId, text: 'Lead: Juan, Colegio San José, 0414-000' },
     ]);
   });
@@ -112,25 +112,25 @@ describe('execute — enabled agents only, outcome back through the wake', () =>
 
 describe('transcript stage-direction', () => {
   it('records what the limb did, outcome included', () => {
-    expect(limbAction({ type: 'book', date: '2026-10-20', time: '10:00', summary: 'Demo EduWeb', outcome: 'booked' })).toBe('/book 2026-10-20 10:00 "Demo EduWeb" → booked');
+    expect(limbAction({ type: 'book', date: '2026-10-20', time: '10:00', summary: 'Demo Contoso', outcome: 'booked' })).toBe('/book 2026-10-20 10:00 "Demo Contoso" → booked');
     expect(limbAction({ type: 'email', text: 'Lead: Juan', outcome: 'not-configured' })).toBe('/email "Lead: Juan" → not-configured');
-    expect(limbAction({ type: 'group', what: 'title', value: 'EduWeb · Ventas', outcome: 'set' })).toBe('/group title "EduWeb · Ventas" → set');
+    expect(limbAction({ type: 'group', what: 'title', value: 'Contoso · Ventas', outcome: 'set' })).toBe('/group title "Contoso · Ventas" → set');
   });
 });
 
 // /group (2026-10-26): the being changes ITS OWN chat's photo, title or description. Gated and woken
 // back exactly like /book and /email; the photo is held to the conversation folder by the /media check.
 describe('/group — parse', () => {
-  const TG = { chatId: 'tg:-1001234/77', surface: 'telegram', chatName: 'SI+EduWeb' };
+  const TG = { chatId: 'tg:-1001234/77', surface: 'telegram', chatName: 'SI+Contoso' };
 
   it('photo <path>, title <text>, description <text> are actions on ev.chatId, stripped from the prose', () => {
-    const { prose, run, stripped } = parseReplyActions('Listo, lo cambio.\n/group photo media/logo.png\n/group title EduWeb · Ventas\n/group description Demos y ventas de EduWeb', TG);
+    const { prose, run, stripped } = parseReplyActions('Listo, lo cambio.\n/group photo media/logo.png\n/group title Contoso · Ventas\n/group description Demos y ventas de Contoso', TG);
     expect(prose).toBe('Listo, lo cambio.');
     expect(stripped).toEqual([]);
     expect(run).toEqual([
       { type: 'group', chatId: TG.chatId, what: 'photo', value: 'media/logo.png' },
-      { type: 'group', chatId: TG.chatId, what: 'title', value: 'EduWeb · Ventas' },
-      { type: 'group', chatId: TG.chatId, what: 'description', value: 'Demos y ventas de EduWeb' },
+      { type: 'group', chatId: TG.chatId, what: 'title', value: 'Contoso · Ventas' },
+      { type: 'group', chatId: TG.chatId, what: 'description', value: 'Demos y ventas de Contoso' },
     ]);
   });
 
@@ -163,7 +163,7 @@ describe('/group — parse', () => {
 });
 
 describe('/group — gated, outcome back through the wake', () => {
-  const TG = { chatId: 'tg:-1001234/77', surface: 'telegram', chatName: 'SI+EduWeb' };
+  const TG = { chatId: 'tg:-1001234/77', surface: 'telegram', chatName: 'SI+Contoso' };
   const mk = ({ actions = { ed: ['group'] }, group, wake = vi.fn(async () => true) } = {}) => {
     const logs = [], calls = [];
     const ra = createReplyActions({

@@ -557,7 +557,7 @@ describe('addressed({ isVoice }) — a spoken alias wakes only at the START (ope
 // ── fallback_handle — ONE conditional wake token, gated on CHAT MEMBERSHIP (operator 2026-08-31).
 //
 //    THE PRODUCTION PROBLEM: kg and do stopped sharing one Beeper account. `do` now runs on a
-//    second account (+1 347…, "Rodz") and carries a relay agent `e` forwarding to ekg.kg — so @e is
+//    second account (+1 555…, "Rodz") and carries a relay agent `e` forwarding to ekg.kg — so @e is
 //    ANSWERED by kg's brain but POSTED from a visibly different account, which is the whole point.
 //    The cost: `e` became a handle on do ONLY, so in every chat the 347 account is not a member of
 //    — most of the operator's chats, and EVERY room, which is not a Beeper chat at all — @e reached
@@ -575,7 +575,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   // `assistant` is a bystander with no mode: a MISSED @e reaches nobody (targets: []).
   const AGENTS = {
     assistant: { configuration: 'sonnet-high', handles: ['a'] },
-    egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+    egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' } },
   };
   const chat = (body, extra = {}) => ({ body, surface: 'whatsapp', chatId: '!grp', senderId: 'op', authorized: true, ...extra });
   // A spy for the injected membership seam: records what was asked, answers what the test says.
@@ -589,7 +589,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
     const r = await createRouter({ getAgents: () => AGENTS, isPresent: s.fn }).resolve(chat('@e can you check this'));
     expect(r.being).toBe('egpt');                       // the fallback handle woke the agent…
     expect(r.targets).toHaveLength(1);                  // …and nothing else
-    expect(s.asked).toEqual([{ identity: '+13472576794', chatId: '!grp' }]);   // asked EXACTLY the declared identity
+    expect(s.asked).toEqual([{ identity: '+15550100002', chatId: '!grp' }]);   // asked EXACTLY the declared identity
   });
 
   it('REPRODUCE-FIRST: @e in a chat the peer IS in does NOT wake it — the token is the other account\'s', async () => {
@@ -621,7 +621,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
     const lines = [];
     const r = await createRouter({ getAgents: () => AGENTS, isPresent: async () => null, onLog: (m) => lines.push(m) }).resolve(chat('@e hola'));
     expect(r.targets).toEqual([]);
-    expect(lines.join('\n')).toMatch(/fallback_handle.*NOT woken.*\+13472576794/s);
+    expect(lines.join('\n')).toMatch(/fallback_handle.*NOT woken.*\+15550100002/s);
   });
 
   it('a THROWING membership lookup is the same unknown — silent, logged, never a crashed resolve', async () => {
@@ -635,8 +635,8 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   it('ONE membership answer per resolve() call, never per hit — two guarded agents, one lookup', async () => {
     const two = {
       assistant: { configuration: 'sonnet-high', handles: ['a'] },
-      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
-      wren: { handles: ['wren'], fallback_handle: { handle: 'w', unless_present: '+13472576794' } },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' } },
+      wren: { handles: ['wren'], fallback_handle: { handle: 'w', unless_present: '+15550100002' } },
     };
     const s = seam(false);
     const r = await createRouter({ getAgents: () => two, isPresent: s.fn }).resolve(chat('@e and @w both'));
@@ -656,7 +656,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   it('the guard runs LAST — a hit already dropped by allowed_users costs no lookup', async () => {
     const gated = {
       assistant: { configuration: 'sonnet-high', handles: ['a'] },
-      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' }, conversation_defaults: { allowed_users: ['someone-else'] } },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' }, conversation_defaults: { allowed_users: ['someone-else'] } },
     };
     const s = seam(false);
     const r = await createRouter({ getAgents: () => gated, isPresent: s.fn }).resolve(chat('@e hola'));
@@ -667,7 +667,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   it('a DECLARED handle beats another agent\'s fallback for the same token (unconditional wins over conditional)', async () => {
     const clash = {
       assistant: { configuration: 'sonnet-high', handles: ['a'] },
-      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' } },
       ed: { handles: ['e'] },   // owns @e outright
     };
     const s = seam(false);
@@ -680,7 +680,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   // unconditional extra wake token, which is what `handles:` is for; promoting a half-written
   // declaration to one is how a second spine starts answering. Fail closed.
   it('a half-written declaration is IGNORED, never half-honoured', async () => {
-    expect(fallbackWake(AGENTS.egpt)).toEqual({ handles: ['e'], unlessPresent: '+13472576794' });   // a plain string is a ONE-element list (operator 2026-09-01)
+    expect(fallbackWake(AGENTS.egpt)).toEqual({ handles: ['e'], unlessPresent: '+15550100002' });   // a plain string is a ONE-element list (operator 2026-09-01)
     expect(fallbackWake({ fallback_handle: { handle: 'e' } })).toBeNull();
     expect(fallbackWake({ fallback_handle: { unless_present: '+1347' } })).toBeNull();
     expect(fallbackWake({ fallback_handle: 'e' })).toBeNull();
@@ -693,11 +693,11 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
   });
 
   // kg's REAL shape, asserted on addressed().
-  const KG = { egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } } };
+  const KG = { egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' } } };
 
   it('the fallback token rides THE ONE matcher: withFallback:true puts @e in the vocabulary, carrying its guard', () => {
     expect(addressed('@e hola', KG, { withFallback: true }))
-      .toEqual([{ name: 'egpt', agent: KG.egpt, token: 'e', atStart: true, anywhere: true, unlessPresent: '+13472576794' }]);
+      .toEqual([{ name: 'egpt', agent: KG.egpt, token: 'e', atStart: true, anywhere: true, unlessPresent: '+15550100002' }]);
     // …and it inherits every protection a real handle has (bare form, mid-sentence, glued-token, case)
     expect(addressed('e hola', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
     expect(addressed('please @E look', KG, { withFallback: true }).map((h) => h.name)).toEqual(['egpt']);
@@ -743,7 +743,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
 //    EVERY token carries the SAME unless_present, because the list is one peer's ADDRESSES, not
 //    several independent policies: one identity in the chat pre-empts the whole set. ──
 describe('fallback_handle — `handle:` accepts a LIST of tokens (operator 2026-09-01)', () => {
-  const PEER = '+13472576794';
+  const PEER = '+15550100002';
   // kg's shape for reaching do: a RELAY agent carrying do's persona's WHOLE address set, gated on
   // do's own account being absent (where do IS present, do hears @d/@don directly and answers).
   const AGENTS = {
@@ -844,7 +844,7 @@ describe('fallback_handle — `handle:` accepts a LIST of tokens (operator 2026-
 //    running the routed mention through the REAL gate (auto-mode replyAllowed, the same call
 //    gating.decide makes), with ev.mention built by the REAL bridge chain rather than hardcoded. ──
 describe('fallback_handle on the PERSONA — from the bridge\'s atE to the reply gate (operator 2026-08-31)', () => {
-  const PEER = '+13472576794';
+  const PEER = '+15550100002';
   // kg's LIVE shape: the persona ITSELF carries the fallback.
   const KG = { egpt: { configuration: 'sonnet-high', handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: PEER } } };
 
@@ -1004,7 +1004,7 @@ describe('fallback_handle — unless_peer_alive (operator 2026-09-02)', () => {
   describe('both predicates declared', () => {
     const BOTH = {
       assistant: { handles: ['a'] },
-      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+13472576794', unless_peer_alive: 23376 } },
+      egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+15550100002', unless_peer_alive: 23376 } },
     };
     const present = (v) => async () => v;
 

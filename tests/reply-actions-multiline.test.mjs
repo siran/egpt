@@ -1,17 +1,17 @@
 // A /reply's text runs on over the lines below it (operator 2026-09-25). King Ken's quote-replies in
-// Dagiely Palma arrived as one flat paragraph with "1) ... 2) ... 3)" inline, because the text of
+// Dalia Muestra arrived as one flat paragraph with "1) ... 2) ... 3)" inline, because the text of
 // `/reply #<id> <text>` was the rest of ONE line; the same beings' plain messages keep their
 // paragraphs and lists. The live shape below is Ken's own reply, cut down.
 import { describe, it, expect } from 'vitest';
 import { parseReplyActions, partialProse } from '../src/spine/reply-actions.mjs';
 
-const ev = { surface: 'whatsapp', chatId: 'CYQ7eFSczWl1nuzQaGCX' };
+const ev = { surface: 'whatsapp', chatId: 'FakeRoomId0000000021' };
 const KEN = [
-  '/reply #14499 Dagie, Michel dice que ya casi está todo. Falta esto:',
+  '/reply #14499 Dali, Mateo dice que ya casi está todo. Falta esto:',
   '1) Conecta Proton.',
   '2) Abre Terminal y escribe claude --resume.',
   '',
-  'Si al clonar sale "Repository not found", Michel tiene que darte permiso.',
+  'Si al clonar sale "Repository not found", Mateo tiene que darte permiso.',
 ].join('\n');
 const KEN_TEXT = KEN.slice('/reply #14499 '.length);
 
@@ -39,8 +39,8 @@ describe('a /reply keeps its line breaks', () => {
   });
 
   it('prose BEFORE the first action is still the plain message', () => {
-    const { run, prose } = parseReplyActions('Hola Dagie.\n/reply #5 uno\ndos', ev);
-    expect(prose).toBe('Hola Dagie.');
+    const { run, prose } = parseReplyActions('Hola Dali.\n/reply #5 uno\ndos', ev);
+    expect(prose).toBe('Hola Dali.');
     expect(run.map((a) => a.text)).toEqual(['uno\ndos']);
   });
 

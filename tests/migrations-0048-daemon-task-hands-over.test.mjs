@@ -10,7 +10,7 @@ import { plan, elevated, onlyRunnerDescription } from '../migrations/0048-the-da
 import { runMigrations, listMigrations, MIGRATIONS_DIR, runPowerShell } from '../setup/migrate.mjs';
 
 const REPO = join(import.meta.dirname, '..');
-const SID = { kg: 'S-1-5-21-2140830422-4106283080-3982958092-1001', do: 'S-1-5-21-2659214498-2217865581-3355271446-1001' };
+const SID = { kg: 'S-1-5-21-1000000001-1000000002-1000000003-1001', do: 'S-1-5-21-1000000004-1000000005-1000000006-1001' };
 const daclOf = (node) => `D:(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;${SID[node]})(A;;FR;;;${SID[node]})`;
 const ONLY_RUNNER = 'eGPT spine supervisor (egpt-daemon.mjs) in session 1, started at logon - the only eGPT runner on this node. Disable it and the node stays silent.';
 // What setup/egpt-daemon-task-labels.ps1 returns - checked against the real module below, on Windows.
@@ -35,7 +35,7 @@ const taskXml = ({ node = 'kg', description = ONLY_RUNNER } = {}) => [
   '  <Actions Context="Author">',
   '    <Exec>',
   '      <Command>C:\\WINDOWS\\System32\\wscript.exe</Command>',
-  '      <Arguments>"C:\\Users\\an\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\an\\bin\\egpt" "C:\\Users\\an\\.egpt" "C:\\Users\\an\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
+  '      <Arguments>"C:\\Users\\user\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\bin\\egpt" "C:\\Users\\user\\.egpt" "C:\\Users\\user\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
   '    </Exec>',
   '  </Actions>',
   '</Task>',
@@ -62,7 +62,7 @@ function fakeScheduler(tasks, { onUpdate = (name, xml, prev) => ({ ...prev, xml 
   return { store, calls, ps };
 }
 
-const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\an\\.egpt', repo: 'C:\\Users\\an\\bin\\egpt', log: () => {}, ps: sched.ps, ...over });
+const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\user\\.egpt', repo: 'C:\\Users\\user\\bin\\egpt', log: () => {}, ps: sched.ps, ...over });
 const LIVE = (node, state = 4, description = ONLY_RUNNER) => ({ 'egpt-daemon': { xml: taskXml({ node, description }), dacl: daclOf(node), state } });
 
 describe('0048 - the task Description says it takes over from the egpt-daemon service', () => {
@@ -151,7 +151,7 @@ describe('0048 through the runner', () => {
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0048');
     writeFileSync(join(h, 'state', 'migrations-applied.json'), JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-10-18T00:00:00Z' }]))));
     const sched = fakeScheduler(LIVE('kg'));
-    const { exitCode, results } = await runMigrations({ through: '0048', egptHome: h, elevated: false, platform: 'win32', ctx: { ps: sched.ps, repo: 'C:\\Users\\an\\bin\\egpt' }, log: () => {} });
+    const { exitCode, results } = await runMigrations({ through: '0048', egptHome: h, elevated: false, platform: 'win32', ctx: { ps: sched.ps, repo: 'C:\\Users\\user\\bin\\egpt' }, log: () => {} });
     expect(exitCode).toBe(0);
     expect(results.filter((r) => r.outcome !== 'in-ledger').map((r) => [r.id, r.outcome])).toEqual([['0048-the-daemon-task-hands-over', 'applied']]);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0048-the-daemon-task-hands-over'].outcome).toBe('applied');

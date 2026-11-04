@@ -70,11 +70,11 @@ const srcLines = (sid) => [
 ].join('\n') + '\n';
 
 // AN's primary + Rodz's secondary phones, named by config.beeper.{primary,secondary}.phone.
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const RODZ_DIGITS = '13472576794';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const RODZ_DIGITS = '15550100002';
 // Rodz's BEEPER USER ID — what the WhatsApp create actually wants (a `+phone` is rejected).
-const RODZ_USER_ID = '@whatsapp_lid-69433129173200:beeper.local';
+const RODZ_USER_ID = '@whatsapp_lid-10000000000015:beeper.local';
 const beeperCfg = (primary, secondary) => ({ beeper: { primary: { phone: primary }, secondary: { phone: secondary } } });
 
 class TmpRoom extends Room {
@@ -393,7 +393,7 @@ describe('/split — new conversation with each resident being\'s thread COPIED 
     expect(getContact(st, 'whatsapp', SPLIT_CHAT).entry.parent_chat).toBe(C_CHAT);
   });
 
-  // Live 2026-10-26: EduWeb's ed.allowed_users ['*'] did not reach its forks, so the team could not talk to ED there.
+  // Live 2026-10-26: Contoso's ed.allowed_users ['*'] did not reach its forks, so the team could not talk to ED there.
   it('the fork inherits each being\'s chat settings from the parent; thread bookkeeping stays its own', async () => {
     seedSourceThreads('e');
     let state = seedState();
@@ -752,7 +752,7 @@ describe('/send — relays the live message, line breaks intact', () => {
   const sendCfg = () => ({ ...cfg({ send: { post_back_from: 'primary' } }), agents: { egpt: { body_emoji: '🐶', name: 'E' } }, bridge_signature_close: '🏰' });
   const EV = { chatId: JOIN_CHAT, surface: 'whatsapp', msgId: '26881', body: '/send', isSender: true };
   const CHAT = 'SPOILER ALERT: chat de EyAy-super 1457-10112026';
-  const FLAT = '🐶 E: ¡Qué lindo, Caro! Te dejo un texto listo para reenviar 👇 📚 *Este miércoles 14 de octubre, 18 h*, presento *Yo te cielo* junto a otras cuatro autoras de Metrópolis, en un encuentro íntimo para conversar, narrar y compartirnos. 📍 Casa PAM!, Aguirre 130, Villa Crespo (CABA) Me encantaría verles ahí. Traigan a quien quieran 💙 Si me dices el tono que buscas, más formal o más canchero, o si es para Instagram, lo adapto. 🏰<kg>';
+  const FLAT = '🐶 E: ¡Qué lindo, Caro! Te dejo un texto listo para reenviar 👇 📚 *Este miércoles 14 de octubre, 18 h*, presento *Libro de Prueba* junto a otras cuatro autoras de la editorial, en un encuentro íntimo para conversar, narrar y compartirnos. 📍 Casa Ejemplo, Calle Falsa 123, Barrio Ejemplo Me encantaría verles ahí. Traigan a quien quieran 💙 Si me dices el tono que buscas, más formal o más canchero, o si es para Instagram, lo adapto. 🏰<kg>';
   const TRANSCRIPT = [
     `Rodz@[${CHAT}].wa (15:09) #26875: 🐶 E: ⏳ Thinking… 🏰<kg>`, '',
     `[ Rodz@[${CHAT}].wa (15:09): edited #26875`,
@@ -762,7 +762,7 @@ describe('/send — relays the live message, line breaks intact', () => {
   // Beeper's payload for #26875, verbatim (GET /v1/chats/{c}/messages): HTML, close + invisible node frame.
   const LIVE = {
     id: '26875', senderName: 'Rodz', type: 'TEXT', isSender: false,
-    text: '🐶 E: ¡Qué lindo, Caro! Te dejo un texto listo para reenviar 👇<br><br>📚 <em>Este miércoles 14 de octubre, 18 h</em>, presento <em>Yo te cielo</em> junto a otras cuatro autoras de Metrópolis, en un encuentro íntimo para conversar, narrar y compartirnos.<br>📍 Casa PAM!, Aguirre 130, Villa Crespo (CABA)<br>Me encantaría verles ahí. Traigan a quien quieran 💙<br><br>Si me dices el tono que buscas, más formal o más canchero, o si es para Instagram, lo adapto. 🏰'
+    text: '🐶 E: ¡Qué lindo, Caro! Te dejo un texto listo para reenviar 👇<br><br>📚 <em>Este miércoles 14 de octubre, 18 h</em>, presento <em>Libro de Prueba</em> junto a otras cuatro autoras de la editorial, en un encuentro íntimo para conversar, narrar y compartirnos.<br>📍 Casa Ejemplo, Calle Falsa 123, Barrio Ejemplo<br>Me encantaría verles ahí. Traigan a quien quieran 💙<br><br>Si me dices el tono que buscas, más formal o más canchero, o si es para Instagram, lo adapto. 🏰'
       + encodeNodeSignature('kg', 'egpt'),
   };
 
@@ -773,8 +773,8 @@ describe('/send — relays the live message, line breaks intact', () => {
     expect(calls.post[0].text).toBe([
       '¡Qué lindo, Caro! Te dejo un texto listo para reenviar 👇',
       '',
-      '📚 *Este miércoles 14 de octubre, 18 h*, presento *Yo te cielo* junto a otras cuatro autoras de Metrópolis, en un encuentro íntimo para conversar, narrar y compartirnos.',
-      '📍 Casa PAM!, Aguirre 130, Villa Crespo (CABA)',
+      '📚 *Este miércoles 14 de octubre, 18 h*, presento *Libro de Prueba* junto a otras cuatro autoras de la editorial, en un encuentro íntimo para conversar, narrar y compartirnos.',
+      '📍 Casa Ejemplo, Calle Falsa 123, Barrio Ejemplo',
       'Me encantaría verles ahí. Traigan a quien quieran 💙',
       '',
       'Si me dices el tono que buscas, más formal o más canchero, o si es para Instagram, lo adapto.',
@@ -792,13 +792,13 @@ describe('/send — relays the live message, line breaks intact', () => {
 // ── /send names the side group it came from (config.send.origin, 2026-10-16) ───────────────────────
 describe('/send — origin prefix (send.origin auto|always|never, send.origin_template)', () => {
   const originCfg = (send = {}) => ({ ...cfg({ send }), group_title: '{group}-{name}' });
-  const inC = (body, over = {}) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'EduWeb', senderName: 'An', isSender: true, authorized: true, raw: { chatType: 'group' }, body, ...over });
+  const inC = (body, over = {}) => ({ chatId: C_CHAT, surface: 'whatsapp', msgId: 'cmd1', chatName: 'Contoso', senderName: 'An', isSender: true, authorized: true, raw: { chatType: 'group' }, body, ...over });
   const sendFrom = (chatId, over = {}) => ({ chatId, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send', isSender: true, ...over });
   const relayed = (calls) => calls.post.filter((p) => p.chatId === C_CHAT);
 
-  // An existing /join room "SI+EduWeb-nue11", as /join stored it. discreet: what a retired phrase trigger stored (still read).
+  // An existing /join room "SI+Contoso-nue11", as /join stored it. discreet: what a retired phrase trigger stored (still read).
   async function joined({ send, discreet = false } = {}) {
-    const state = stateWithJoin({ transcript: 'SI+EduWeb-nue11', join_name: 'nue11', join_by: 'An', ...(discreet ? { discreet: true } : {}) });
+    const state = stateWithJoin({ transcript: 'SI+Contoso-nue11', join_name: 'nue11', join_by: 'An', ...(discreet ? { discreet: true } : {}) });
     return harness({ config: originCfg(send), state, rooms: roomWith(JOIN_CHAT) });
   }
   async function splitted({ send, discreet = false } = {}) {
@@ -808,11 +808,11 @@ describe('/send — origin prefix (send.origin auto|always|never, send.origin_te
     return h;
   }
 
-  it('an existing /join room nue11: the relay starts with "↪ from SI+EduWeb-nue11:" (title from the stored alias)', async () => {
+  it('an existing /join room nue11: the relay starts with "↪ from SI+Contoso-nue11:" (title from the stored alias)', async () => {
     const { cmds, calls } = await joined();
     await cmds.run(sendFrom(JOIN_CHAT));
     expect(relayed(calls)).toHaveLength(1);
-    expect(relayed(calls)[0].text).toBe('↪ from SI+EduWeb-nue11:\nla respuesta elegida');
+    expect(relayed(calls)[0].text).toBe('↪ from SI+Contoso-nue11:\nla respuesta elegida');
   });
 
   it('the live chat name wins over the stored title', async () => {
@@ -836,7 +836,7 @@ describe('/send — origin prefix (send.origin auto|always|never, send.origin_te
   it('origin always: prefix even when discreet', async () => {
     const { cmds, calls } = await joined({ send: { origin: 'always' }, discreet: true });
     await cmds.run(sendFrom(JOIN_CHAT));
-    expect(relayed(calls)[0].text).toBe('↪ from SI+EduWeb-nue11:\nla respuesta elegida');
+    expect(relayed(calls)[0].text).toBe('↪ from SI+Contoso-nue11:\nla respuesta elegida');
   });
 
   it('an empty origin_template: no prefix', async () => {
@@ -848,14 +848,14 @@ describe('/send — origin prefix (send.origin auto|always|never, send.origin_te
   it('a custom origin_template fills {group}; an invalid origin falls back to auto', async () => {
     const { cmds, calls } = await joined({ send: { origin: 'sometimes', origin_template: '[{group}] ' } });
     await cmds.run(sendFrom(JOIN_CHAT));
-    expect(relayed(calls)[0].text).toBe('[SI+EduWeb-nue11] la respuesta elegida');
+    expect(relayed(calls)[0].text).toBe('[SI+Contoso-nue11] la respuesta elegida');
   });
 
   it('a normal /split: prefixed with the split group\'s title', async () => {
     const { cmds, calls, getState } = await splitted();
     expect(getContact(getState(), 'whatsapp', SPLIT_CHAT).entry.discreet).toBeUndefined();
     await cmds.run(sendFrom(SPLIT_CHAT));
-    expect(relayed(calls)[0].text).toBe('↪ from SI+EduWeb-nue11:\nla respuesta elegida');
+    expect(relayed(calls)[0].text).toBe('↪ from SI+Contoso-nue11:\nla respuesta elegida');
   });
 
   it('a legacy discreet /split room (discreet: true beside parent_chat): auto adds no prefix', async () => {
@@ -870,15 +870,15 @@ describe('/send — origin prefix (send.origin auto|always|never, send.origin_te
       const st = seedState();
       return aliasContact(st, 'whatsapp', JOIN_CHAT, getContact(st, 'whatsapp', C_CHAT).jid, { transcript });
     };
-    const a = harness({ config: originCfg(), state: legacy('SI+EduWeb-3fa9c'), rooms: roomWith(JOIN_CHAT) });
+    const a = harness({ config: originCfg(), state: legacy('SI+Contoso-3fa9c'), rooms: roomWith(JOIN_CHAT) });
     await a.cmds.run(sendFrom(JOIN_CHAT));
     expect(a.calls.post[0].text).toBe('la respuesta elegida');
-    const b = harness({ config: originCfg(), state: legacy('SI+EduWeb-3fa9c 1048-10042026'), rooms: roomWith(JOIN_CHAT) });
+    const b = harness({ config: originCfg(), state: legacy('SI+Contoso-3fa9c 1048-10042026'), rooms: roomWith(JOIN_CHAT) });
     await b.cmds.run(sendFrom(JOIN_CHAT));
     expect(b.calls.post[0].text).toBe('la respuesta elegida');
-    const c = harness({ config: originCfg(), state: legacy('SI+EduWeb-emely'), rooms: roomWith(JOIN_CHAT) });
+    const c = harness({ config: originCfg(), state: legacy('SI+Contoso-emely'), rooms: roomWith(JOIN_CHAT) });
     await c.cmds.run(sendFrom(JOIN_CHAT));
-    expect(c.calls.post[0].text).toBe('↪ from SI+EduWeb-emely:\nla respuesta elegida');
+    expect(c.calls.post[0].text).toBe('↪ from SI+Contoso-emely:\nla respuesta elegida');
   });
 
   it('no title anywhere: no prefix', async () => {
@@ -1012,7 +1012,7 @@ describe('resolveSecondaryParticipantId — the two config.beeper phones, non-se
   });
   it('fewer than two phones ⇒ null (refuse)', () => {
     expect(resolveSecondaryParticipantId(beeperCfg(AN, undefined), [AN])).toBe(null);
-    expect(resolveSecondaryParticipantId(beeperCfg(AN, '@dolly-egpt:beeper.com'), [AN])).toBe(null);
+    expect(resolveSecondaryParticipantId(beeperCfg(AN, '@mouth-acct:beeper.com'), [AN])).toBe(null);
     expect(resolveSecondaryParticipantId({}, [AN])).toBe(null);
   });
   it('no unique partner after excluding self ⇒ null', () => {
@@ -1020,7 +1020,7 @@ describe('resolveSecondaryParticipantId — the two config.beeper phones, non-se
     expect(resolveSecondaryParticipantId(beeperCfg(AN, AN), [])).toBe(null);
   });
   it('normalizes phone shapes (digits-only compare) when excluding self', () => {
-    expect(resolveSecondaryParticipantId(beeperCfg('+1 (646) 821-7865', RODZ), ['16468217865'])).toBe(RODZ);
+    expect(resolveSecondaryParticipantId(beeperCfg('+1 (555) 010-0001', RODZ), ['15550100001'])).toBe(RODZ);
   });
 });
 
@@ -1044,9 +1044,9 @@ describe('templates — every variable of each key, today\'s exact text; the cal
   });
 
   it('send.origin_template', async () => {
-    const h = harness({ config: texts({ send: { origin_template: '{group}|{x} ' } }), state: stateWithJoin({ transcript: 'SI+EduWeb-nue11', join_name: 'nue11' }), rooms: roomWith(JOIN_CHAT) });
+    const h = harness({ config: texts({ send: { origin_template: '{group}|{x} ' } }), state: stateWithJoin({ transcript: 'SI+Contoso-nue11', join_name: 'nue11' }), rooms: roomWith(JOIN_CHAT) });
     await h.cmds.run({ chatId: JOIN_CHAT, surface: 'whatsapp', msgId: 'snd1', replyToId: 'M1', body: '/send', isSender: true });
-    expect(h.calls.post.filter((p) => p.chatId === C_CHAT)[0].text).toBe('SI+EduWeb-nue11|{x} la respuesta elegida');
+    expect(h.calls.post.filter((p) => p.chatId === C_CHAT)[0].text).toBe('SI+Contoso-nue11|{x} la respuesta elegida');
     expect(filled.get('{group}|{x} ')).toEqual(documented('send.origin_template'));
   });
 });

@@ -333,7 +333,7 @@ describe('transcription pipeline — a 413 from the worker', () => {
 });
 
 // ── THE SAME BYTES ARE DECODED ONCE (operator 2026-09-16) ──
-// do, 2026-09-15 11:33:59-11:34:10: one 22,740-byte note from "An y Dando" arrived on two chat IDs -
+// do, 2026-09-15 11:33:59-11:34:10: one 22,740-byte note from "An y Dario" arrived on two chat IDs -
 // the ear's and the mouth's view of the same chat - and was decoded twice (24.4 s, then 10.3 s,
 // identical 160-char transcripts). The downloaded bytes are identical on every arrival; only the
 // file names differ.
@@ -446,7 +446,7 @@ describe('transcription pipeline — the decode says when it runs on this node',
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const CLI = { type: 'whisper-cli', command: 'wc', model_path: 'm' };
   // kg's chain: dolly's worker, then its own cli.
-  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
+  const KG = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://192.0.2.102:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
   // do's chain: its OWN worker, then its own cli.
   const DO = { fallback_order: ['worker', 'cli'], worker: { type: 'whisper-server-remote', endpoint: 'http://127.0.0.1:23390', token: 'k', cooldown_ms: 1000 }, cli: CLI };
   const DO_OWN = { at: 'transcription_service.do.worker', endpoint: 'http://127.0.0.1:23390' };

@@ -30,14 +30,14 @@ const SURFACE = 'whatsapp';
 const C = '!grpC';
 const SIDE_A = '!sideEmely';
 const SIDE_B = '!sideNue';
-const KEY_A = 'si-eduweb-emely';
-const KEY_B = 'si-eduweb-nue11';
+const KEY_A = 'si-contoso-emely';
+const KEY_B = 'si-contoso-nue11';
 
 beforeEach(() => { rmSync(EGPT_HOME, { recursive: true, force: true }); });
 afterAll(() => { rmSync(_HOME, { recursive: true, force: true }); });
 
 function seed() {
-  let st = ensureContact(emptyState(), SURFACE, C, { pushedName: 'SI EduWeb', slugHint: 'si-eduweb' }).state;
+  let st = ensureContact(emptyState(), SURFACE, C, { pushedName: 'SI Contoso', slugHint: 'si-contoso' }).state;
   st = patchContact(st, SURFACE, C, { agents: { e: { mode: 'mention', threadId: 'thread-old', access_level: 'sandbox' } } });
   const jid = getContact(st, SURFACE, C).jid;
   st = aliasContact(st, SURFACE, SIDE_A, jid, { transcript: KEY_A, join_name: 'emely' });
@@ -63,7 +63,7 @@ describe('/agents rethread inside a /join side-room — (a) one thread, every tr
   it('clears C\'s thread (not a block on the alias) and rolls transcript.md plus every transcript-<key>.md', async () => {
     const { st, room } = seed();
     mkdirSync(room.directivesDir, { recursive: true });
-    const head = '---\nname: SI EduWeb\nthread_id: thread-old\n---\n\n';
+    const head = '---\nname: SI Contoso\nthread_id: thread-old\n---\n\n';
     writeFileSync(room.transcriptPath, `${head}An (10:00) #a: hola\n\n`, 'utf8');
     writeFileSync(room.transcriptPathFor(KEY_A), 'Emely (10:01) #b: en el side-room\n\n', 'utf8');
     writeFileSync(room.transcriptPathFor(KEY_B), 'Nue (10:02) #c: otro side-room\n\n', 'utf8');
@@ -132,14 +132,14 @@ describe('/agents rethread inside a /join side-room — (b) one new thread for C
     const at = (chatId, chatName) => ({ surface: SURFACE, chatId, chatName, line: `Emely@[${chatName}].wa (10:00) #m: hola`, body: 'hola' });
 
     await brain.turn('e', at(SIDE_A, 'side emely'));
-    await brain.turn('e', at(C, 'SI EduWeb'));
+    await brain.turn('e', at(C, 'SI Contoso'));
     expect(made).toHaveLength(1);                                    // one warm process for the conversation
     expect(made[0].opts.sessionId).toBe('thread-old');
 
     const { cmds } = commands(store);
     await cmds.run({ chatId: SIDE_A, surface: SURFACE, isSender: true, body: '/agents rethread e' });
 
-    await brain.turn('e', at(C, 'SI EduWeb'));                      // (c) the old session is closed, a fresh one opens
+    await brain.turn('e', at(C, 'SI Contoso'));                      // (c) the old session is closed, a fresh one opens
     expect(made[0].closed).toBe(true);
     expect(made).toHaveLength(2);
     expect(made[1].opts.sessionId).toBeNull();

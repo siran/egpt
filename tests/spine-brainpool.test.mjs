@@ -267,7 +267,7 @@ describe('brainpool.turn', () => {
     let seenCfg = null;
     const config = {
       node_name: 'do',
-      agents: { egpt: { name: 'don', handles: ['d', 'don'], fallback_handle: { handle: 'e', unless_present: '+13472576794' } } },
+      agents: { egpt: { name: 'don', handles: ['d', 'don'], fallback_handle: { handle: 'e', unless_present: '+15550100002' } } },
     };
     const { brain } = harness([{ text: 'ok', sessionId: 's' }], {
       config,
@@ -967,7 +967,7 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
 //
 //    THE LIVE FAILURE. The `egpt` mount shipped, and a sandboxed being asked `pwd` in WhatsApp
 //    still answered
-//      /c/Users/an/.egpt/conversations/whatsapp/Reencuentro CRC 1991-2026-2607161314
+//      /c/Users/user/.egpt/conversations/whatsapp/Reencuentro amigos 1990-2607161314
 //    The lease really happened and the process cwd really WAS the junction — the leak was the
 //    ARGV. confinementFor sent `confineToDirs: [cwd]` with the Room's REAL path, claude-args
 //    unions every confine root into `--add-dir`, and the CLI reports the spelling it was told
@@ -1007,7 +1007,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
   // under the operator's profile and IS deliberately declared, beside a cwd that is neither.
   const declaresSrc = { resolve: () => ({
     name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'],
-    allowed_paths: { '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+    allowed_paths: { '/c/Users/user/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
   }) };
   const declaresNothing = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
   // Every argv element that names somewhere under a user profile. The assertion the ruling is
@@ -1032,7 +1032,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
 
   it("REPRODUCE: a declared allowed_path reaches the OS layer and NOTHING in argv — no operator path is quotable", async () => {
     // THE LEAK THIS CLOSES, and the reason the 2026-09-23 ruling finished the job the cwd root
-    // started: `C:/Users/an/src` was the node-level grant on this machine, so EVERY sandboxed
+    // started: `C:/Users/user/src` was the node-level grant on this machine, so EVERY sandboxed
     // being's argv carried the operator's username — the last one that did.
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: declaresSrc, platform: 'win32' });
     await brain.turn('e', ev);
@@ -1046,7 +1046,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
 
     // ...and the OS half is untouched, which is what keeps this from being 0015 in reverse: the
     // launcher still gets the path and still ACEs it ReadAndExecute for the leased account.
-    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/user/src']);
   });
 
   it('a FULL-ACCESS allowed_path is granted at the kernel and named in no flag', async () => {
@@ -1055,7 +1055,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     // of the permission.
     const both = { resolve: () => ({
       name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
-      allowed_paths: { '/c/work/project': null, '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+      allowed_paths: { '/c/work/project': null, '/c/Users/user/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
     }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains: both, platform: 'win32' });
     await brain.turn('e', ev);
@@ -1064,7 +1064,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     // but it reaches the OS consumer ONLY (2026-09-23; see the describe below this one).
     expect(opts.addDirs).toBeUndefined();
     expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);          // -SharePath  -> Modify
-    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // -SharePathReadOnly -> RX
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/user/src']);  // -SharePathReadOnly -> RX
     const args = buildClaudeArgs(opts);
     expect(argVals(args, '--add-dir')).toEqual([]);
     expect(args.some((a) => typeof a === 'string' && a.includes(opts.cwd))).toBe(false);
@@ -1078,7 +1078,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
     expect(opts.readOnlyDirs).toBeUndefined();                            // no CLI list at all...
-    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);  // ...and still ACE'd
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/user/src']);  // ...and still ACE'd
     // --settings now ALWAYS rides along for session retention (cleanupPeriodDays — threads must
     // stay --resume-able, operator 2026-10-04), but it carries NO `permissions` key in the box:
     // still no deny rules, still silent on gating.
@@ -1116,7 +1116,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     expect(opts.osConfined).toBeUndefined();
 
     const args = buildClaudeArgs(opts);
-    expect(argVals(args, '--add-dir')).toEqual([opts.cwd, 'C:/Users/an/src']);
+    expect(argVals(args, '--add-dir')).toEqual([opts.cwd, 'C:/Users/user/src']);
     expect(argVals(args, '--setting-sources')).toEqual(['']);
     expect(argVals(args, '--permission-mode')).toEqual(['default']);
     // THE GUARD (operator 2026-09-23, in capitals): the bypass belongs to the OS box and to
@@ -1130,8 +1130,8 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
     expect(allow).not.toContain('Grep');
     // ...and the read-only deny rules, which the boxed tier drops, are still written here.
     const deny = JSON.parse(argVals(args, '--settings')[0]).permissions.deny;
-    expect(deny).toContain('Write(C:/Users/an/src/**)');
-    expect(deny).toContain('Edit(C:/Users/an/src/**)');
+    expect(deny).toContain('Write(C:/Users/user/src/**)');
+    expect(deny).toContain('Edit(C:/Users/user/src/**)');
   });
 
   it('REGRESSION: the unconfined tier is byte-identical, boxed or not', async () => {
@@ -1184,7 +1184,7 @@ describe('brainpool.turn — a sandboxed turn hands the CLI no path it should no
 describe('brainpool.turn — the boxed tier feeds the CLI nothing at all (operator 2026-09-23)', () => {
   const declares = { resolve: () => ({
     name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Grep', 'WebFetch'],
-    allowed_paths: { '/c/work/project': null, '/c/Users/an/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+    allowed_paths: { '/c/work/project': null, '/c/Users/user/src': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
   }) };
 
   it('REPRODUCE-FIRST: a BOXED being carried addDirs/readOnlyDirs into the CLI options — now it carries neither', async () => {
@@ -1196,7 +1196,7 @@ describe('brainpool.turn — the boxed tier feeds the CLI nothing at all (operat
     expect(opts).not.toHaveProperty('readOnlyDirs');
     // ...and the ONE surviving consumer has both classes, in their own classes.
     expect(opts.sandboxSharePaths).toEqual(['C:/work/project']);
-    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src']);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/user/src']);
   });
 
   it('REPRODUCE-FIRST: a BOXED being\'s argv named a tool list — now it names none', async () => {
@@ -1244,12 +1244,12 @@ describe('brainpool.turn — the boxed tier feeds the CLI nothing at all (operat
     expect(opts.sandboxed).toBe(false);
     expect(opts.confineToDirs).toEqual([opts.cwd]);
     expect(opts.addDirs).toEqual(['C:/work/project']);
-    expect(opts.readOnlyDirs).toEqual(['C:/Users/an/src']);
+    expect(opts.readOnlyDirs).toEqual(['C:/Users/user/src']);
     const args = buildClaudeArgs(opts);
-    expect(argVals(args, '--add-dir')).toEqual(['C:/work/project', opts.cwd, 'C:/Users/an/src']);
+    expect(argVals(args, '--add-dir')).toEqual(['C:/work/project', opts.cwd, 'C:/Users/user/src']);
     expect(argVals(args, '--allowedTools')).toEqual(['WebFetch']);   // file tools NOT pre-approved
     expect(argVals(args, '--permission-mode')).toEqual(['default']);
-    expect(JSON.parse(argVals(args, '--settings')[0]).permissions.deny).toContain('Write(C:/Users/an/src/**)');
+    expect(JSON.parse(argVals(args, '--settings')[0]).permissions.deny).toContain('Write(C:/Users/user/src/**)');
   });
 
   it('TIER LOCK — the UNCONFINED tier still spells its verbatim tool list, boxed or not', async () => {
@@ -2411,7 +2411,7 @@ describe('brainpool.turn — dangerously_skip_permissions:true escalation hole i
     const tmpBase = mkdtempSync(join(tmpdir(), 'egpt-brains-box-'));
     const builtinDir = join(tmpBase, 'builtin');
     const convDir = join(tmpBase, 'conv');
-    const spine = join(tmpBase, 'spine-profile').replace(/\\/g, '/');   // stands in for C:/Users/an/.egpt
+    const spine = join(tmpBase, 'spine-profile').replace(/\\/g, '/');   // stands in for C:/Users/user/.egpt
     mkdirSync(builtinDir, { recursive: true });
     mkdirSync(join(convDir, 'brains'), { recursive: true });
     writeFileSync(join(builtinDir, 'sonnet-high.yaml'), 'type: ccode\nmodel: sonnet\neffort: high\n', 'utf8');
@@ -2762,7 +2762,7 @@ describe('brainpool — outbox_to names a KEY into outbox_targets, and rides the
   // becomes a destination. This is the case the key indirection exists for — under the raw-path
   // model each of these WOULD have been a real place on the operator's disk.
   it('a PATH or TRAVERSAL written into the conversation record resolves to NO destination', async () => {
-    for (const attempt of ['../../../Windows/System32', 'G:/My Drive/jose-lorenzo/ACIM-ES.v2', 'acim-drive/sub', 'C:/Users/an/.egpt', '__proto__']) {
+    for (const attempt of ['../../../Windows/System32', 'G:/My Drive/jose-lorenzo/ACIM-ES.v2', 'acim-drive/sub', 'C:/Users/user/.egpt', '__proto__']) {
       const t = await ranWith({ config: node(), seedAgents: { e: { outbox_to: attempt } } });
       expect(t.outbox.target.to, `"${attempt}" must not resolve to a path`).toBe(null);
     }
@@ -2880,17 +2880,17 @@ describe('globalReadPathsOf — the one reading of config.yaml global_read_paths
   const read = (value, platform = 'win32') => { const logs = []; return { mounts: globalReadPathsOf(value, (l) => logs.push(l), platform), logs }; };
 
   it('on linux an absolute path is a POSIX one (the EDW box mounts it at its own path)', () => {
-    const { mounts, logs } = read([{ repos: '/srv/repos' }, { win: 'C:/Users/an' }, { rel: 'src' }], 'linux');
+    const { mounts, logs } = read([{ repos: '/srv/repos' }, { win: 'C:/Users/user' }, { rel: 'src' }], 'linux');
     expect(mounts).toEqual([{ name: 'repos', path: '/srv/repos' }]);
     expect(logs).toHaveLength(2);
     for (const l of logs) expect(l).toMatch(/not an absolute path/);
   });
 
   it('a good entry, in either path form, comes back as { name, path } in config order', () => {
-    const { mounts, logs } = read([{ repos: 'C:/Users/an/src/siran' }, { notes: '/c/Users/an/Documents/notes' }]);
+    const { mounts, logs } = read([{ repos: 'C:/Users/user/src/siran' }, { notes: '/c/Users/user/Documents/notes' }]);
     expect(mounts).toEqual([
-      { name: 'repos', path: 'C:/Users/an/src/siran' },
-      { name: 'notes', path: 'C:/Users/an/Documents/notes' },
+      { name: 'repos', path: 'C:/Users/user/src/siran' },
+      { name: 'notes', path: 'C:/Users/user/Documents/notes' },
     ]);
     expect(logs).toEqual([]);
   });
@@ -2900,8 +2900,8 @@ describe('globalReadPathsOf — the one reading of config.yaml global_read_paths
   });
 
   it('a bad mount name is skipped with one line naming it; the good entry beside it survives', () => {
-    const { mounts, logs } = read([{ 'my repos': 'C:/x' }, { 'a/b': 'C:/y' }, { repos: 'C:/Users/an/src/siran' }]);
-    expect(mounts).toEqual([{ name: 'repos', path: 'C:/Users/an/src/siran' }]);
+    const { mounts, logs } = read([{ 'my repos': 'C:/x' }, { 'a/b': 'C:/y' }, { repos: 'C:/Users/user/src/siran' }]);
+    expect(mounts).toEqual([{ name: 'repos', path: 'C:/Users/user/src/siran' }]);
     expect(logs).toHaveLength(2);
     expect(logs[0]).toMatch(/global_read_paths entry 1 .*"my repos".* skipped - the mount name must be letters, digits, - or _/);
     expect(logs[1]).toMatch(/global_read_paths entry 2 .* skipped/);
@@ -2915,7 +2915,7 @@ describe('globalReadPathsOf — the one reading of config.yaml global_read_paths
   });
 
   it('a RELATIVE path (or a drive-less rooted one, or none) is skipped', () => {
-    const { mounts, logs } = read([{ a: 'src/siran' }, { b: '\\Users\\an' }, { c: null }, { d: 42 }]);
+    const { mounts, logs } = read([{ a: 'src/siran' }, { b: '\\Users\\user' }, { c: null }, { d: 42 }]);
     expect(mounts).toEqual([]);
     expect(logs).toHaveLength(4);
     for (const l of logs) expect(l).toMatch(/not an absolute path/);
@@ -2935,7 +2935,7 @@ describe('globalReadPathsOf — the one reading of config.yaml global_read_paths
 
   it('an entry that is not ONE `<name>: <path>` pair, and a value that is not a list, say so', () => {
     expect(read([{ a: 'C:/a', b: 'C:/b' }, 'C:/c']).logs).toHaveLength(2);
-    const notList = read({ repos: 'C:/Users/an/src/siran' });
+    const notList = read({ repos: 'C:/Users/user/src/siran' });
     expect(notList.mounts).toEqual([]);
     expect(notList.logs[0]).toMatch(/global_read_paths is not a list/);
   });
@@ -2943,12 +2943,12 @@ describe('globalReadPathsOf — the one reading of config.yaml global_read_paths
 
 describe('brainpool.turn — global_read_paths reaches brainOptions ONLY for a sandboxed turn', () => {
   const defaults = (sandboxed) => ({ agents: { e: { conversation_defaults: { access_level: 'regular', sandboxed } } } });
-  const KG = [{ repos: 'C:/Users/an/src/siran' }];
+  const KG = [{ repos: 'C:/Users/user/src/siran' }];
 
   it('sandboxed:true with the key set → brainOptions.sandboxReadMounts is the validated list', async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: { ...defaults(true), global_read_paths: KG }, platform: 'win32' });
     await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sandboxReadMounts).toEqual([{ name: 'repos', path: 'C:/Users/an/src/siran' }]);
+    expect(pool.calls[0].brainOptions.sandboxReadMounts).toEqual([{ name: 'repos', path: 'C:/Users/user/src/siran' }]);
   });
 
   it('THE COMMON CASE: the key unset (or empty, or all invalid) → no sandboxReadMounts at all, so the launcher argv is unchanged', async () => {
@@ -2982,12 +2982,12 @@ describe('brainpool.turn — sandbox_pin: the pinned being-in-conversation is ha
     e: { conversation_defaults: { access_level: 'regular', sandboxed } },
     don: { conversation_defaults: { access_level: 'regular', sandboxed } },
   } });
-  const PIN = { 'C:/Users/an/Documents': { allowed_tools: ['Read', 'Glob', 'Grep'] }, 'C:/work': null };
+  const PIN = { 'C:/Users/user/Documents': { allowed_tools: ['Read', 'Glob', 'Grep'] }, 'C:/work': null };
 
   it('the pinned conversation\'s turn carries { key, writable, readOnly }', async () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: defaults(true), platform: 'win32', seedAgents: { e: { sandbox_pin: PIN } } });
     await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sandboxPin).toEqual({ key: `e:whatsapp:${ev.chatId}`, writable: ['C:/work'], readOnly: ['C:/Users/an/Documents'] });
+    expect(pool.calls[0].brainOptions.sandboxPin).toEqual({ key: `e:whatsapp:${ev.chatId}`, writable: ['C:/work'], readOnly: ['C:/Users/user/Documents'] });
   });
 
   it('sandbox_pin: {} pins the account with no standing paths', async () => {
@@ -3194,7 +3194,7 @@ describe('brainpool.turn — allowed_paths reach the OS layer as brainOptions.sa
 //    OS share lists — so these read the merge off the share lists; the CLI lists are asserted
 //    ABSENT once, below, and in full on the unboxed tier in its own describe. ──
 describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
-  const SRC = 'C:/Users/an/src';
+  const SRC = 'C:/Users/user/src';
   const NODE = { [SRC]: { allowed_tools: ['Read', 'Glob', 'Grep'] } };
 
   it('REPRODUCE-FIRST: a being whose type file declares NO allowed_paths is granted the node\'s — and the kernel is where it lands', async () => {
@@ -3218,7 +3218,7 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     // The node grants src/ READ-ONLY; this being's type file claims the same folder with write
     // tools. Two spellings of one folder landing in two classes is the double-ACE the launcher
     // must never be handed — so the def's entry is the only one that survives.
-    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'], allowed_paths: { '/c/Users/an/src': null } }) };
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'], allowed_paths: { '/c/Users/user/src': null } }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, platform: 'win32',
       config: { allowed_paths: NODE, agents: { e: {} } },
@@ -3234,7 +3234,7 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     // E's live shape: the type file grants src/egpt read-only, the node grants all of src/.
     const brains = { resolve: () => ({
       name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
-      allowed_paths: { 'C:/Users/an/src/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
+      allowed_paths: { 'C:/Users/user/src/egpt': { allowed_tools: ['Read', 'Glob', 'Grep'] } },
     }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
       brains, platform: 'win32',
@@ -3243,7 +3243,7 @@ describe('brainpool — a NODE-LEVEL allowed_paths reaches every being', () => {
     });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/an/src/egpt', SRC]);
+    expect(opts.sandboxSharePathsReadOnly).toEqual(['C:/Users/user/src/egpt', SRC]);
   });
 
   it('the widest tier gets it too: a skip-permissions being has no CLI layer at all, and the ACE is the only reachability there is', async () => {

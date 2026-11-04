@@ -93,7 +93,7 @@ function build({ config = {}, mem, cost = 0, freeMem, rssOf, profileHolder = () 
   return { cmds, calls, handles, logs };
 }
 
-const SHARED = { key: 'Reinie-2607150057', name: 'Reinie', group: 'shared' };
+const SHARED = { key: 'Renata-2607150057', name: 'Renata', group: 'shared' };
 const sharedDir = join(dirname(CHROME_BRAIN_PROFILE), 'shared');
 const BRAIN = { key: 'eGPT Admin-2601010000', name: 'eGPT Admin', group: 'brain' };
 
@@ -125,8 +125,8 @@ describe('chromePipeArgs — pipe, non-default profile, no port/origins', () => 
   });
   it('--window-name only when a name is given, before the trailing url', () => {
     expect(args.some((a) => a.startsWith('--window-name'))).toBe(false);
-    const named = chromePipeArgs({ userDataDir: 'C:/x/p', windowName: 'eduweb-si' });
-    expect(named).toContain('--window-name=eduweb-si');
+    const named = chromePipeArgs({ userDataDir: 'C:/x/p', windowName: 'contoso-si' });
+    expect(named).toContain('--window-name=contoso-si');
     expect(named.at(-1)).toBe('about:blank');
   });
 });
@@ -210,16 +210,16 @@ describe('FAIL CLOSED: a chat the lookup refused gets NO browser and one log lin
 });
 
 describe('browsers.yaml end to end — an operator edit moves a chat without a restart', () => {
-  it('eGPT Rodz Lulu An: brain\'s Chrome → removed from brain → shared\'s Chrome', async () => {
+  it('eGPT Rodz Lola An: brain\'s Chrome → removed from brain → shared\'s Chrome', async () => {
     const home = mkdtempSync(join(tmpdir(), 'egpt-browsers-'));
     const saved = process.env.EGPT_HOME;
     try {
       process.env.EGPT_HOME = home;
       mkdirSync(join(home, 'config'));
       const file = join(home, 'config', 'browsers.yaml');
-      writeFileSync(file, 'groups:\n  brain: [ "eGPT Admin", "eGPT Rodz Lulu An" ]\n');
+      writeFileSync(file, 'groups:\n  brain: [ "eGPT Admin", "eGPT Rodz Lola An" ]\n');
       const { cmds, calls } = build({ mem: { free: 8192 * MB } });
-      const entry = { conversation_path: '.egpt/conversations/whatsapp/eGPT Rodz Lulu An-2609201419' };   // live shape: no pushedName
+      const entry = { conversation_path: '.egpt/conversations/whatsapp/eGPT Rodz Lola An-2609201419' };   // live shape: no pushedName
 
       const before = await cmds.chromeClientFor(chromeConversationOf(entry, await readBrowserGroups()));
       expect(before.profileDir).toBe(CHROME_BRAIN_PROFILE);

@@ -27,11 +27,11 @@ afterAll(async () => {
   try { await fs.rm(_PRIVATE_HOME, { recursive: true, force: true }); } catch {}
 });
 
-const PRIMARY = 'TOK-primary';       // anrodz42 — the ear, and the account that makes every side group
-const SECONDARY = 'TOK-secondary';   // dolly.egpt — Rodz, the mouth
+const PRIMARY = 'TOK-primary';       // anaprueba42 — the ear, and the account that makes every side group
+const SECONDARY = 'TOK-secondary';   // mouth.acct — Rodz, the mouth
 const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
-const AN = '+16468217865';
-const RODZ = '+13472576794';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
 const RODZ_ID = '@whatsapp_lid-rodz:beeper.local';
 const ORIGIN = '!origin-as-primary-sees-it';
 const P_FULL = '!sidegroup:beeper.local';    // what the primary's create returns
@@ -46,16 +46,16 @@ const self = (id) => ({ id, isSelf: true });
 const member = (id, phoneNumber) => ({ id, phoneNumber, fullName: id });
 const WORLD = {
   [PRIMARY]: {
-    [ORIGIN]: [self('an@beeper.local'), member(RODZ_ID, RODZ), member('lulu@beeper.local', '+34600000000')],
+    [ORIGIN]: [self('an@beeper.local'), member(RODZ_ID, RODZ), member('lola@beeper.local', '+34600000000')],
     [P]: [self('an@beeper.local'), member(RODZ_ID, RODZ)],
   },
   [SECONDARY]: {
-    [R]: [self('rodz@dolly.local'), member('an@dolly.local', AN)],
-    [DECOY]: [self('rodz@dolly.local'), member('an@dolly.local', AN)],
+    [R]: [self('rodz@dolly.local'), member('user@dolly.local', AN)],
+    [DECOY]: [self('rodz@dolly.local'), member('user@dolly.local', AN)],
   },
 };
 const TITLE_OF = { [R]: 'SI+Origen-x', [DECOY]: 'SI+Origen-x' };
-const SELF_IDENTITY = { [PRIMARY]: [AN, '@anrodriguez:beeper.com'], [SECONDARY]: [RODZ, '@dolly-egpt:beeper.com'] };
+const SELF_IDENTITY = { [PRIMARY]: [AN, '@anaprueba:beeper.com'], [SECONDARY]: [RODZ, '@mouth-acct:beeper.com'] };
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
 const rawChat = (token, id) => (WORLD[token][id] ? { id, type: 'group', accountID: 'whatsapp', title: TITLE_OF[id] ?? id, participants: { items: WORLD[token][id] } } : null);
 
@@ -128,8 +128,8 @@ const fakeSession = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async tu
 const KG = () => ({
   node_name: 'kg', node_role: 'primary', user_name: 'An',
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY, phone: AN },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY, phone: RODZ },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY, phone: AN },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY, phone: RODZ },
   },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
 });
@@ -156,7 +156,7 @@ const seed = () => {
   const st = ensureContact(emptyState(), 'whatsapp', ORIGIN, { pushedName: 'Origen' }).state;
   return recordThread(st, 'whatsapp', ORIGIN, 'th-1', '2026-10-18T00:00:00Z', 'egpt');
 };
-const say = (spy, chatId, body, extra = {}) => spy.onIncoming(body, { chatId, chatName: chatId === ORIGIN ? 'Origen' : 'SI+Origen-x', network: 'whatsapp', userId: '@anrodriguez:beeper.com', senderName: 'An', authorized: true, isSender: true, msgKey: `k-${body}`, ...extra });
+const say = (spy, chatId, body, extra = {}) => spy.onIncoming(body, { chatId, chatName: chatId === ORIGIN ? 'Origen' : 'SI+Origen-x', network: 'whatsapp', userId: '@anaprueba:beeper.com', senderName: 'An', authorized: true, isSender: true, msgKey: `k-${body}`, ...extra });
 
 describe('a side group\'s mouth room is learned from Rodz\'s copy of the opener, by id', () => {
   it('/split: the primary makes P and posts the opener there; Rodz\'s copy in R makes R the mouth room; replies in P go out in R', async () => {
@@ -241,8 +241,8 @@ function sharedAccounts({ secondaryFirst = false, gapMs = 30 } = {}) {
     for (const w of [...spy.waiters]) if ((w.chat == null || w.chat === chatId) && w.test(raw)) { spy.waiters.splice(spy.waiters.indexOf(w), 1); w.done(raw); }
     return spy.onIncoming(text, { chatId, chatName: chatId === ORIGIN ? 'Origen' : 'SI+Origen-x', network: 'whatsapp', authorized: true, msgKey: raw.id, ...from });
   };
-  const asAn = { userId: '@anrodriguez:beeper.com', senderName: 'An', isSender: true };
-  const toRodz = { userId: 'an@dolly.local', senderName: 'An', isSender: false };
+  const asAn = { userId: '@anaprueba:beeper.com', senderName: 'An', isSender: true };
+  const toRodz = { userId: 'user@dolly.local', senderName: 'An', isSender: false };
   const fanOut = (from, text) => {
     const same = () => spies.filter((s) => s !== from && s.token === from.token).forEach((s) => deliver(s, P, text, asAn));
     const rodz = () => spies.filter((s) => s.token === SECONDARY).forEach((s) => deliver(s, R, text, toRodz));

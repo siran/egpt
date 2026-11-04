@@ -8,22 +8,22 @@ import { shortChatId, fullChatId } from '../src/bridges/chat-id.mjs';
 
 describe('shortChatId', () => {
   it('strips the leading "!" and trailing ":beeper.local"', () => {
-    expect(shortChatId('!yz3kJjWXsQJofK9naaVb:beeper.local')).toBe('yz3kJjWXsQJofK9naaVb');
+    expect(shortChatId('!FakeRoomId0000000001:beeper.local')).toBe('FakeRoomId0000000001');
   });
 
   it('is idempotent — a short id passes through unchanged', () => {
-    expect(shortChatId('yz3kJjWXsQJofK9naaVb')).toBe('yz3kJjWXsQJofK9naaVb');
-    expect(shortChatId(shortChatId('!yz3kJjWXsQJofK9naaVb:beeper.local'))).toBe('yz3kJjWXsQJofK9naaVb');
+    expect(shortChatId('FakeRoomId0000000001')).toBe('FakeRoomId0000000001');
+    expect(shortChatId(shortChatId('!FakeRoomId0000000001:beeper.local'))).toBe('FakeRoomId0000000001');
   });
 
   it('never touches a Matrix USER id — different sigil ("@"), different server (":beeper.com")', () => {
-    expect(shortChatId('@anrodriguez:beeper.com')).toBe('@anrodriguez:beeper.com');
-    expect(shortChatId('@whatsapp_584122361030:beeper.local')).toBe('@whatsapp_584122361030:beeper.local');
+    expect(shortChatId('@anaprueba:beeper.com')).toBe('@anaprueba:beeper.com');
+    expect(shortChatId('@whatsapp_15550100007:beeper.local')).toBe('@whatsapp_15550100007:beeper.local');
   });
 
   it('never touches a phone number or a plain name/slug', () => {
-    expect(shortChatId('16468217865')).toBe('16468217865');
-    expect(shortChatId('dando-ruiz')).toBe('dando-ruiz');
+    expect(shortChatId('15550100001')).toBe('15550100001');
+    expect(shortChatId('dario-ensayo')).toBe('dario-ensayo');
   });
 
   it('tolerates null/undefined/empty', () => {
@@ -40,13 +40,13 @@ describe('shortChatId', () => {
 
 describe('fullChatId', () => {
   it('re-adds the "!" prefix and ":beeper.local" suffix', () => {
-    expect(fullChatId('yz3kJjWXsQJofK9naaVb')).toBe('!yz3kJjWXsQJofK9naaVb:beeper.local');
+    expect(fullChatId('FakeRoomId0000000001')).toBe('!FakeRoomId0000000001:beeper.local');
   });
 
   it('is idempotent — a full id passes through unchanged', () => {
-    const full = '!yz3kJjWXsQJofK9naaVb:beeper.local';
+    const full = '!FakeRoomId0000000001:beeper.local';
     expect(fullChatId(full)).toBe(full);
-    expect(fullChatId(fullChatId('yz3kJjWXsQJofK9naaVb'))).toBe(full);
+    expect(fullChatId(fullChatId('FakeRoomId0000000001'))).toBe(full);
   });
 
   it('tolerates null/undefined/empty (no bare "!:beeper.local")', () => {
@@ -57,9 +57,9 @@ describe('fullChatId', () => {
 
   // contract 4.5
   it('round-trips through shortChatId', () => {
-    const full = '!aYFq5skcCliVAmwIhRqH:beeper.local';
+    const full = '!FakeRoomId0000000013:beeper.local';
     expect(fullChatId(shortChatId(full))).toBe(full);
-    const short = 'aYFq5skcCliVAmwIhRqH';
+    const short = 'FakeRoomId0000000013';
     expect(shortChatId(fullChatId(short))).toBe(short);
   });
 
@@ -91,16 +91,16 @@ describe('isAllowedUser short/full equivalence (boot.mjs pattern)', () => {
   const isAllowedUser = (id, allowedUsers) => allowedUsers.map(shortChatId).includes(shortChatId(id));
 
   it('a SHORT config entry authorizes a FULL-form delivered id', () => {
-    expect(isAllowedUser('!yz3kJjWXsQJofK9naaVb:beeper.local', ['yz3kJjWXsQJofK9naaVb'])).toBe(true);
+    expect(isAllowedUser('!FakeRoomId0000000001:beeper.local', ['FakeRoomId0000000001'])).toBe(true);
   });
 
   it('a legacy FULL-form config entry authorizes a SHORT delivered id', () => {
-    expect(isAllowedUser('yz3kJjWXsQJofK9naaVb', ['!yz3kJjWXsQJofK9naaVb:beeper.local'])).toBe(true);
+    expect(isAllowedUser('FakeRoomId0000000001', ['!FakeRoomId0000000001:beeper.local'])).toBe(true);
   });
 
   it('phone numbers and "@user:beeper.com" ids compare unaffected (not room-id shaped)', () => {
-    expect(isAllowedUser('16468217865', ['16468217865'])).toBe(true);
-    expect(isAllowedUser('@anrodriguez:beeper.com', ['@anrodriguez:beeper.com'])).toBe(true);
-    expect(isAllowedUser('@anrodriguez:beeper.com', ['16468217865'])).toBe(false);
+    expect(isAllowedUser('15550100001', ['15550100001'])).toBe(true);
+    expect(isAllowedUser('@anaprueba:beeper.com', ['@anaprueba:beeper.com'])).toBe(true);
+    expect(isAllowedUser('@anaprueba:beeper.com', ['15550100001'])).toBe(false);
   });
 });

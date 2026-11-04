@@ -98,7 +98,7 @@ describe('beeper-port adapter', () => {
   });
 
   it('exposes NO delete — not as a limb, not on a status, not on a stream: nothing is ever deleted', async () => {
-    // operator 2026-08-24: no delete limb. 2026-10-27 (An, #780): "nadie borra nunca nada, ningún bot,
+    // operator 2026-08-24: no delete limb. 2026-10-27 (operator): "nadie borra nunca nada, ningún bot,
     // ni el spine" — a limb-only turn's ⏳ placeholder is EDITED (src/spine/sender.mjs), never deleted.
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
@@ -476,10 +476,10 @@ describe('beeper-port adapter — layered signatures (bridge + agent wrap)', () 
     expect(calls).toContainEqual(['info', '!room', { title: 'T' }]);
     expect(port.getChatName('!room')).toBe('Proyecto X');
     // the create's participant is resolved from a phone → the person's Beeper user id
-    expect(await port.resolveUserIdByPhone('13472576794', { accountID: 'wa' })).toBe('@whatsapp_lid-99:beeper.local');
+    expect(await port.resolveUserIdByPhone('15550100002', { accountID: 'wa' })).toBe('@whatsapp_lid-99:beeper.local');
     // RAW: the /fork marker edit is NOT persona-wrapped (no bridge signature stapled on)
     expect(calls[0]).toEqual(['edit', '!room', 'm1', '🤖↔️🤔 ...']);
-    expect(calls).toContainEqual(['resolve', '13472576794', { accountID: 'wa' }]);
+    expect(calls).toContainEqual(['resolve', '15550100002', { accountID: 'wa' }]);
   });
 
   it('editMessage / createGroup / archiveChat / getChatName / resolveUserIdByPhone answer false/null on a transport without them', async () => {

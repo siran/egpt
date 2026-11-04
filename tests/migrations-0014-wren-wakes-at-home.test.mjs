@@ -10,7 +10,7 @@
 // the only check that can see it. The identity file is asserted the same way — the appended line
 // is the rules wren stops picking up for free the moment it wakes outside the checkout.
 //
-// The HOME is read off the fixture (`dirname(egptHome)`), never spelled C:/Users/an: a migration
+// The HOME is read off the fixture (`dirname(egptHome)`), never spelled C:/Users/user: a migration
 // that hardcoded the operator's box would pass a test that hardcoded it too.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
@@ -75,7 +75,7 @@ const WREN_TYPE_LINES = [
   'model: opus',
   'effort: xhigh',
   'personality: wren',
-  'cwd: C:/Users/an/bin/egpt # wren\'s job is the system, so it runs in the deployed tree',
+  'cwd: C:/Users/user/bin/egpt # wren\'s job is the system, so it runs in the deployed tree',
   'allowed_tools: [ "*" ]',
 ];
 const CWD_LINE_NO = 6;
@@ -130,7 +130,7 @@ describe('0014 on kg - wren is pinned to the deployed tree', () => {
       `${typePath(h, 'wren')}:${CWD_LINE_NO}`,
       `  - ${WREN_TYPE_LINES[CWD_LINE_NO - 1]}`,
       `  + ${cwdAfter(h)}`,
-      `wren wakes at ${homeOf(h)} - the operator's own session folder, the parent of ${h} - instead of C:/Users/an/bin/egpt`,
+      `wren wakes at ${homeOf(h)} - the operator's own session folder, the parent of ${h} - instead of C:/Users/user/bin/egpt`,
       `${idPath(h, 'wren')}:${ID_APPEND_LINE_NO}  append the rules ${typePath(h, 'wren')} no longer wakes inside:`,
       `  + ${lineOf(h)}`,
       'backup first, beside each: <file>.bak-0014-<timestamp>',
@@ -163,12 +163,12 @@ describe('0014 on kg - wren is pinned to the deployed tree', () => {
   });
 
   it('a cwd line with NO trailing comment gets its value moved and no comment invented', async () => {
-    const bare = WREN_TYPE.replace(WREN_TYPE_LINES[CWD_LINE_NO - 1], 'cwd: C:/Users/an/bin/egpt');
+    const bare = WREN_TYPE.replace(WREN_TYPE_LINES[CWD_LINE_NO - 1], 'cwd: C:/Users/user/bin/egpt');
     const h = home({ types: { ...TYPES, wren: bare } });
     const p = await plan(ctxFor(h));
-    expect(p.changes.slice(1, 3)).toEqual(['  - cwd: C:/Users/an/bin/egpt', `  + cwd: ${homeOf(h)}`]);
+    expect(p.changes.slice(1, 3)).toEqual(['  - cwd: C:/Users/user/bin/egpt', `  + cwd: ${homeOf(h)}`]);
     await p.apply();
-    expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(bare.replace('cwd: C:/Users/an/bin/egpt', `cwd: ${homeOf(h)}`));
+    expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(bare.replace('cwd: C:/Users/user/bin/egpt', `cwd: ${homeOf(h)}`));
   });
 
   it('the identity line is added once: a re-run of the move over an identity that already names the rules appends nothing', async () => {
@@ -179,7 +179,7 @@ describe('0014 on kg - wren is pinned to the deployed tree', () => {
       `${typePath(h, 'wren')}:${CWD_LINE_NO}`,
       `  - ${WREN_TYPE_LINES[CWD_LINE_NO - 1]}`,
       `  + ${cwdAfter(h)}`,
-      `wren wakes at ${homeOf(h)} - the operator's own session folder, the parent of ${h} - instead of C:/Users/an/bin/egpt`,
+      `wren wakes at ${homeOf(h)} - the operator's own session folder, the parent of ${h} - instead of C:/Users/user/bin/egpt`,
       `${idPath(h, 'wren')} already names ${rulesOf(h)} - left alone`,
       'backup first, beside each: <file>.bak-0014-<timestamp>',
     ]);
@@ -199,7 +199,7 @@ describe('0014 on kg - wren is pinned to the deployed tree', () => {
     ];
     const h = home({
       config: crlf(twoLines),
-      types: { ...TYPES, ken: 'type: ccode\ncwd: C:/Users/an/bin/egpt\n' },
+      types: { ...TYPES, ken: 'type: ccode\ncwd: C:/Users/user/bin/egpt\n' },
     });
     await (await plan(ctxFor(h))).apply();
     expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(typeAfter(h));
@@ -279,12 +279,12 @@ describe('0014 refuses, naming the place', () => {
     ];
     const h = home({
       config: crlf(twoLines),
-      types: { ...TYPES, ken: 'type: ccode\ncwd: C:/Users/an/src/egpt\n' },
+      types: { ...TYPES, ken: 'type: ccode\ncwd: C:/Users/user/src/egpt\n' },
     });
     await expect(plan(ctxFor(h))).rejects
       .toThrow(/0014 refuses: this node has more than one meta engineer and they disagree about where they wake .* - which one is the operator's own folder is a human decision, not a guess/);
     expect(readFileSync(typePath(h, 'wren'), 'utf8')).toBe(WREN_TYPE);
-    expect(readFileSync(typePath(h, 'ken'), 'utf8')).toBe('type: ccode\ncwd: C:/Users/an/src/egpt\n');
+    expect(readFileSync(typePath(h, 'ken'), 'utf8')).toBe('type: ccode\ncwd: C:/Users/user/src/egpt\n');
   });
 
   // The whole second half of this migration is "the rules must still reach it". With no identity

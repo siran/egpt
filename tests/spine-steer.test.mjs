@@ -177,7 +177,7 @@ describe('spine — allow_new_input steers the live turn (operator 2026-08-30)',
   //
   // TWO REACTIONS SINCE 2026-09-09, in this order and for two different reasons: ✍️ the bridge
   // has it (placed on arrival, true by construction) and 👍 the model took it (placed only once
-  // the session's ack says so). See tests/steer-ack.test.mjs for the Joyce fault behind the split.
+  // the session's ack says so). See tests/steer-ack.test.mjs for the Julia fault behind the split.
   it('a successful steer ACKs the steered message with a reaction (not a new placeholder/reply)', async () => {
     const { bridge, sender, brain } = build({ allow: 'any' });
     const p1 = bridge.emit(msg('one', 'm1', 'an'));

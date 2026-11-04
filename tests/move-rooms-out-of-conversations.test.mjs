@@ -146,7 +146,7 @@ const CONV_YAML_FIXTURE = `contacts:
   shell:
     main: # console
       conversation_path: .egpt/conversations/shell/lobby
-      home_dir: /c/Users/an
+      home_dir: /c/Users/user
       agents:
         egpt:
           threadId: egpt-thread-1
@@ -157,11 +157,11 @@ const CONV_YAML_FIXTURE = `contacts:
   room:
     dj-son: # DJ Son
       conversation_path: .egpt/rooms/dj-son
-      home_dir: /c/Users/an
+      home_dir: /c/Users/user
   whatsapp:
     "1234567890":
       conversation_path: .egpt/conversations/whatsapp/diego-2606291919
-      home_dir: /c/Users/an
+      home_dir: /c/Users/user
 `;
 
 function seedShellLobbyFolder() {

@@ -89,7 +89,7 @@ function start(api, extra = {}) {
 
 const NOW_S = Math.floor(Date.now() / 1000);
 const privateMsg = (over = {}) => ({ message_id: 7, date: NOW_S, chat: { id: 42, type: 'private', first_name: 'An', last_name: 'R' }, from: { id: 42, is_bot: false, first_name: 'An', last_name: 'R', username: 'anr' }, text: '@ed hola', ...over });
-const groupMsg = (over = {}) => ({ message_id: 8, date: NOW_S, chat: { id: -1001234, type: 'supergroup', title: 'SI+EduWeb' }, from: { id: 77, is_bot: false, first_name: 'Diego' }, text: 'buenas', ...over });
+const groupMsg = (over = {}) => ({ message_id: 8, date: NOW_S, chat: { id: -1001234, type: 'supergroup', title: 'SI+Contoso' }, from: { id: 77, is_bot: false, first_name: 'Diego' }, text: 'buenas', ...over });
 
 describe('telegram limb — boot: getMe names the bot, never the token', () => {
   it('logs @username and polls; no line carries the token', async () => {
@@ -148,7 +148,7 @@ describe('telegram limb — inbound', () => {
     await bridge.startupReady;
     api.updates(groupMsg());
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
-    expect(incoming[0].from).toMatchObject({ chatId: 'tg:-1001234', chatName: 'SI+EduWeb', chatType: 'group', userId: '77', authorized: false });
+    expect(incoming[0].from).toMatchObject({ chatId: 'tg:-1001234', chatName: 'SI+Contoso', chatType: 'group', userId: '77', authorized: false });
     bridge.stop();
   });
 
@@ -675,12 +675,12 @@ describe('telegram limb — outbound', () => {
       const { bridge } = start(api);
       const p = join(dir, 'logo.png'); writeFileSync(p, 'png');
       expect(await bridge.setChatInfo('tg:-1001234/77', { photo: p })).toEqual({ ok: true });
-      expect(await bridge.setChatInfo('tg:-1001234/77', { title: 'EduWeb · Ventas' })).toEqual({ ok: true });
+      expect(await bridge.setChatInfo('tg:-1001234/77', { title: 'Contoso · Ventas' })).toEqual({ ok: true });
       expect(await bridge.setChatInfo('tg:-1001234', { description: 'Demos y ventas' })).toEqual({ ok: true });
       const [photo] = api.of('setChatPhoto');
       expect(photo.body).toEqual({ chat_id: '-1001234', photo: { name: 'logo.png', type: 'image/png', size: 3 } });
       expect(photo.headers).toBeNull();
-      expect(api.of('setChatTitle').map((c) => c.body)).toEqual([{ chat_id: '-1001234', title: 'EduWeb · Ventas' }]);
+      expect(api.of('setChatTitle').map((c) => c.body)).toEqual([{ chat_id: '-1001234', title: 'Contoso · Ventas' }]);
       expect(api.of('setChatDescription').map((c) => c.body)).toEqual([{ chat_id: '-1001234', description: 'Demos y ventas' }]);
       bridge.stop();
     } finally { rmSync(dir, { recursive: true, force: true }); }

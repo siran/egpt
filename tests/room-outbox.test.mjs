@@ -2,7 +2,7 @@
 //
 // THE CASE (measured 2026-09-22): a sandboxed being running as pool account egpt-sbx-NN finished
 // six translation files and could not deliver them to `G:\My Drive\jose-lorenzo\ACIM-ES.v2`. The
-// volume reports FAT32 — no ACLs exist on it to grant — and GoogleDriveFS.exe runs as `reve\an`,
+// volume reports FAT32 — no ACLs exist on it to grant — and GoogleDriveFS.exe runs as `reve\user`,
 // so the drive letter lives in that user's session and the pool account has no `G:` at all. There
 // was no permission to grant; the path is simply absent from the being's world. The spine already
 // runs as the operator, so the operator ruled a SPINE-SIDE COPY: the being writes into its own
@@ -13,7 +13,7 @@
 // it ever could, a sandboxed account would have a write path onto the operator's disk and the
 // sandbox would be worth nothing — so the link/junction/directory cases here are not tidiness,
 // they are the sandbox boundary, and "never overwrite" is what keeps a filename (the one thing
-// the being DOES choose) from being able to destroy the operator's or Joyce's work.
+// the being DOES choose) from being able to destroy the operator's or Julia's work.
 //
 // Real temp dirs (mkdtempSync) where the filesystem behaviour IS the thing under test — a link is
 // only refused for real if a real link is refused — and injected `io` seams for the failures a
@@ -370,7 +370,7 @@ describe('WHERE: a key into the node’s approved map, resolved through the tier
       'acim-drive\\sub',
       'G:/My Drive/jose-lorenzo/ACIM-ES.v2',        // the real path, typed where the KEY goes
       '/etc/passwd',
-      'C:\\Users\\an\\.egpt',
+      'C:\\Users\\user\\.egpt',
       '__proto__',
       'constructor',
       'toString',

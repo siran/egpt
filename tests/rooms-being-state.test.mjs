@@ -33,9 +33,9 @@ const readYaml = (p) => (existsSync(p) ? (YAML.parse(readFileSync(p, 'utf8')) ??
 const roomsRows = () => { const d = readYaml(ROOMS); return d?.rooms ?? d ?? {}; };
 
 // A registered room, exactly as ensureContact mints one (surface `room`, slug = the name).
-const ROOM_ENTRY = { slug: 'radio', conversation_path: '.egpt/conversations/room/radio', home_dir: '/c/Users/an' };
+const ROOM_ENTRY = { slug: 'radio', conversation_path: '.egpt/conversations/room/radio', home_dir: '/c/Users/user' };
 // …and a Beeper-backed conversation, the regression lock's subject.
-const WA_ENTRY = { slug: 'morgan-2607011609', conversation_path: '.egpt/conversations/whatsapp/morgan-2607011609', home_dir: '/c/Users/an' };
+const WA_ENTRY = { slug: 'morgan-2607011609', conversation_path: '.egpt/conversations/whatsapp/morgan-2607011609', home_dir: '/c/Users/user' };
 
 describe('a room writes its per-being state to rooms.yaml, not conversations.yaml', () => {
   it('recordThread on surface `room` lands the thread in rooms.yaml', async () => {
@@ -69,14 +69,14 @@ describe('a room writes its per-being state to rooms.yaml, not conversations.yam
       rooms: {
         'room/radio': {
           heartbeats: { dj: false },
-          agents: { egpt: { access_level: 'all', allowed_users: ['16468217865'], sandboxed: false, mode: 'auto' } },
+          agents: { egpt: { access_level: 'all', allowed_users: ['15550100001'], sandboxed: false, mode: 'auto' } },
         },
       },
     }), 'utf8');
 
     const b = getBeing(await readState(CONV), 'room', 'radio', 'egpt');
     expect(b.accessLevel).toBe('all');
-    expect(b.allowedUsers).toEqual(['16468217865']);
+    expect(b.allowedUsers).toEqual(['15550100001']);
     expect(b.sandboxed).toBe(false);
     expect(b.mode).toBe('auto');
   });
@@ -153,7 +153,7 @@ describe('a room with LEGACY state in conversations.yaml keeps its thread', () =
     threadCreatedAt: '2026-08-20T02:47:41.779Z',
     identityInjectedAt: '2026-08-20T02:47:41.779Z',
     access_level: 'all',
-    allowed_users: ['16468217865', '@anrodriguez:beeper.com'],
+    allowed_users: ['15550100001', '@anaprueba:beeper.com'],
   };
 
   it('reads through to the legacy block — no rooms.yaml row yet, no fresh session', async () => {

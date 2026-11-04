@@ -104,7 +104,7 @@ describe('fanoutInbound', () => {
     const a = fakeBridge('a'), b = fakeBridge('b');
     a.chatHasParticipant = async () => null;        // An's Desktop has never seen Rodz's room
     b.chatHasParticipant = async () => false;       // Rodz's Desktop has it, and An is not in it
-    expect(await fanoutInbound(a, [a, b]).chatHasParticipant('!rodz-only', '+16468217865')).toBe(false);
+    expect(await fanoutInbound(a, [a, b]).chatHasParticipant('!rodz-only', '+15550100001')).toBe(false);
   });
 
   // NOT `.some()`, unlike wasSentByUs: true | false | null, and null must stay null. A definite

@@ -1098,7 +1098,7 @@ describe('/agents refresh|rethread|reset - the three conversation-lifecycle verb
     describe('a multi-word trailing conversation, fired from another chat', () => {
       const RODZ = '!rodz:beeper.local', ADMIN = '!admin:beeper.local';
       function seedTwo() {
-        const state = seedLifecycle(SURFACE, RODZ, { pushedName: 'eGPT Rodz Lulu An', slugHint: 'eGPT Rodz Lulu An' });
+        const state = seedLifecycle(SURFACE, RODZ, { pushedName: 'eGPT Rodz Lola An', slugHint: 'eGPT Rodz Lola An' });
         return ensureContact(state, SURFACE, ADMIN, { pushedName: 'eGPT Admin', slugHint: 'eGPT Admin' }).state;
       }
       const fire = async (body) => {
@@ -1109,38 +1109,38 @@ describe('/agents refresh|rethread|reset - the three conversation-lifecycle verb
         return h;
       };
 
-      it('/agents refresh e eGPT Rodz Lulu An refreshes THAT chat — not "don\'t know where to put"', async () => {
-        const { sent, getState } = await fire('/agents refresh e eGPT Rodz Lulu An');
+      it('/agents refresh e eGPT Rodz Lola An refreshes THAT chat — not "don\'t know where to put"', async () => {
+        const { sent, getState } = await fire('/agents refresh e eGPT Rodz Lola An');
         succeeded(sent);
-        expect(sent[0].text).toMatch(/for eGPT Rodz Lulu An/);
+        expect(sent[0].text).toMatch(/for eGPT Rodz Lola An/);
         expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.identityInjectedAt).toBeNull();
         expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.threadId).toBe('thread-abc');
         expect(getContact(getState(), SURFACE, ADMIN).entry.agents?.e).toBeUndefined();        // the chat it was typed in is untouched
       });
 
-      it('a value-taking verb takes the multi-word conversation too — /agents auto on e eGPT Rodz Lulu An', async () => {
-        const { sent, getState } = await fire('/agents auto on e eGPT Rodz Lulu An');
-        expect(sent[0].text).toMatch(/eGPT Rodz Lulu An.*→ on/);
+      it('a value-taking verb takes the multi-word conversation too — /agents auto on e eGPT Rodz Lola An', async () => {
+        const { sent, getState } = await fire('/agents auto on e eGPT Rodz Lola An');
+        expect(sent[0].text).toMatch(/eGPT Rodz Lola An.*→ on/);
         expect(getBeing(getState(), SURFACE, RODZ, 'e').mode).toBe('on');
       });
 
-      it('a single-word fragment still works — /agents refresh e lulu', async () => {
-        const { sent, getState } = await fire('/agents refresh e lulu');
+      it('a single-word fragment still works — /agents refresh e lola', async () => {
+        const { sent, getState } = await fire('/agents refresh e lola');
         succeeded(sent);
-        expect(sent[0].text).toMatch(/for eGPT Rodz Lulu An/);
+        expect(sent[0].text).toMatch(/for eGPT Rodz Lola An/);
         expect(getContact(getState(), SURFACE, RODZ).entry.agents.e.identityInjectedAt).toBeNull();
       });
 
       it('an ambiguous fragment is still refused with the matches — /agents refresh e eGPT, nothing written', async () => {
         const { sent, writes } = await fire('/agents refresh e eGPT');
-        expect(sent[0].text).toMatch(/"eGPT" matches 2: .*eGPT Rodz Lulu An/);
+        expect(sent[0].text).toMatch(/"eGPT" matches 2: .*eGPT Rodz Lola An/);
         expect(sent[0].text).toMatch(/eGPT Admin/);
         expect(writes).toHaveLength(0);
       });
 
       it('=<slug> AND a multi-word trailing name is still "named twice", nothing written', async () => {
-        const { sent, writes } = await fire('/agents=admin refresh e eGPT Rodz Lulu An');
-        expect(sent[0].text).toMatch(/conversation named twice \(=admin and eGPT Rodz Lulu An\)/);
+        const { sent, writes } = await fire('/agents=admin refresh e eGPT Rodz Lola An');
+        expect(sent[0].text).toMatch(/conversation named twice \(=admin and eGPT Rodz Lola An\)/);
         expect(writes).toHaveLength(0);
       });
     });
@@ -1459,7 +1459,7 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
 
 // ── THE SCOPE FIX (operator 2026-09-22, MEASURED LIVE) ─────────────────────────────────────
 // `/agents access_level all e` was typed in the WhatsApp group "perrito traduciones"
-// (whatsapp/0MP97ovrD6XvVovMVx6v). It answered `✅ e (egpt) access here → all` and DID
+// (whatsapp/FakeRoomId0000000002). It answered `✅ e (egpt) access here → all` and DID
 // NOTHING. That group is a `wa-group` member of room/acim, and identity-scope.mjs exists to
 // make exactly that mean ONE being: *"room/acim's E and the 'perrito traducciones' group's E
 // are one being: one thread, one warm CLI, one queue, one access_level"* — the live warm log
@@ -1474,7 +1474,7 @@ describe('/agents access_level all|regular <handle>|all — points access_level 
 // createTurns asks for the turn key) and `evict` for the warm entry (a lastKeyByConv lookup of
 // the key that being+conversation actually ran, never a second derivation).
 describe('/agents writes, evicts and REPORTS where the being actually lives (scope fix, operator 2026-09-22)', () => {
-  const GROUP = '0MP97ovrD6XvVovMVx6v';
+  const GROUP = 'FakeRoomId0000000002';
   const ACIM = Room.forChat('room', 'acim');
 
   // The live resolver's answer, faked at the brain's own seam: this ONE group is a `wa-group`
@@ -1772,17 +1772,17 @@ describe('onRoomChange — fires at every currentRoom mutation site (roomJoin/ro
 
 // resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
 // Self DM, "/agents auto on e miss" reported "no chat matches" even though a telegram chat
-// "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
+// "Miss Xena" was registered — resolveTarget only ever searched the command's own
 // surface. Own-surface hits still win with no ambiguity check against other surfaces;
 // only a ZERO own-surface hit falls through to every other surface registered in state.contacts.
 describe('/agents=<slug> …: cross-surface resolution', () => {
   it('a TELEGRAM chat targeted by name from the whatsapp Self DM resolves + patches the TELEGRAM entry', async () => {
-    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
+    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xena', slugHint: 'miss-xena' }).state;
     const { cmds, sent, getState } = harness({ state });
     await cmds.run({ body: '/agents=miss auto on e', chatId: '!self', surface: 'whatsapp' });
     expect(getBeing(getState(), 'telegram', '!miss:something', 'e').mode).toBe('on');   // the TELEGRAM entry
     expect(getBeing(getState(), 'whatsapp', '!miss:something', 'e')).toBe(null);         // whatsapp has no such being
-    expect(sent[0].text).toMatch(/Miss Xinyi.*→ on/);
+    expect(sent[0].text).toMatch(/Miss Xena.*→ on/);
   });
 
   it('a same-surface hit wins silently even when another surface ALSO matches the term', async () => {
@@ -1810,16 +1810,16 @@ describe('/agents=<slug> …: cross-surface resolution', () => {
 
 describe('/status <target>: cross-surface resolution', () => {
   it('/status <cross-surface target> reports the TELEGRAM conversation, not the whatsapp origin', async () => {
-    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
+    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xena', slugHint: 'miss-xena' }).state;
     // io.readFile always misses (no transcript/heartbeats fixtures) — every such probe
     // degrades independently (matches the /status <target> degrade tests); this test
     // only cares that the reported conversation is the resolved TARGET surface.
     const { cmds, sent } = harness({ state, io: { readFile: async () => { throw new Error('ENOENT'); } } });
     await cmds.run({ body: '/status miss', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
-    expect(text).toMatch(/name: Miss Xinyi/);
+    expect(text).toMatch(/name: Miss Xena/);
     expect(text).toMatch(/surface: telegram/);       // the resolved TARGET surface, not whatsapp
-    expect(text).toMatch(/slug: Miss Xinyi/);
+    expect(text).toMatch(/slug: Miss Xena/);
   });
 });
 
@@ -2000,7 +2000,7 @@ describe('/agents <verb> <handle> — the HANDLE names the being, the KEY is wha
 // Live, in a shared chat: do posted `/agents: no being here answers to "e"` while kg applied it; and
 // `/agents mode accum all` changed every kg being at once (egpt, codex, ken, eplus, pi).
 describe('/agents across two nodes — only the host answers; `all` refused, `force all` per node', () => {
-  const SURFACE = 'whatsapp', CHAT = 'UuY6K6ly3BV3Ye7QqIne', CTX = { pushedName: 'SPOILER ALERT', slugHint: 'spoiler' };
+  const SURFACE = 'whatsapp', CHAT = 'FakeRoomId0000000022', CTX = { pushedName: 'SPOILER ALERT', slugHint: 'spoiler' };
   const KG_BEINGS = ['egpt', 'codex', 'ken', 'eplus', 'pi'];
   const DO_BEINGS = ['egpt', 'dren'];
   const KG_CFG = { node_name: 'kg', node_role: 'primary', agents: {
@@ -2440,7 +2440,7 @@ describe('chromeProfileOf(c, conversation) — browser-group profiles', () => {
 
   it('group brain → the brain profile (chrome.profile_dir when set), whatever the chat is called', () => {
     expect(chromeProfileOf({}, { key: 'eGPT Admin-2601010000', name: 'eGPT Admin', group: 'brain' })).toBe(CHROME_BRAIN_PROFILE);
-    expect(chromeProfileOf({ chrome: { profile_dir: 'C:/x/brain' } }, { name: 'eGPT Rodz Lulu An', group: 'brain' })).toBe('C:/x/brain');
+    expect(chromeProfileOf({ chrome: { profile_dir: 'C:/x/brain' } }, { name: 'eGPT Rodz Lola An', group: 'brain' })).toBe('C:/x/brain');
   });
 
   it('admin_channel no longer decides the profile — an eGPT Admin chat outside brain is not brain', () => {
@@ -2449,7 +2449,7 @@ describe('chromeProfileOf(c, conversation) — browser-group profiles', () => {
   });
 
   it('any other group → <profiles-root>/<group> (shared, or an operator-named one)', () => {
-    expect(chromeProfileOf({}, { key: 'Reinie Alvino-2607150057', name: 'Reinie Alvino', group: 'shared' })).toBe(join(profilesRoot, 'shared'));
+    expect(chromeProfileOf({}, { key: 'Renata Ficticio-2607150057', name: 'Renata Ficticio', group: 'shared' })).toBe(join(profilesRoot, 'shared'));
     expect(chromeProfileOf({ chrome: { profile_dir: 'C:/x/brain' } }, { name: 'Diego', group: 'work' })).toBe(join(profilesRoot, 'work'));
   });
 
@@ -2767,21 +2767,21 @@ describe('/help', () => {
 // dispatched. The LIST is the spine's (src/spine/spine.mjs backlogOf, replaced at every wake); this
 // is the command that reads it out in the chat it was typed in — that chat's messages, nobody else's.
 describe('/recap — the backlog of the last wake, read out where it was written', () => {
-  const palma = { chatId: '!palma', surface: 'whatsapp', isSender: true };
+  const muestra = { chatId: '!muestra', surface: 'whatsapp', isSender: true };
   const BACKLOG = [
     { sender: 'An', ts: Date.UTC(2026, 8, 26, 9, 41), body: `mañana\n\tsin falta ${'x'.repeat(120)}` },
-    { sender: 'Dagiely', ts: Date.UTC(2026, 8, 25, 23, 5), body: '@e ¿me escuchas?' },
+    { sender: 'Dalia', ts: Date.UTC(2026, 8, 25, 23, 5), body: '@e ¿me escuchas?' },
   ];
 
   it('REPRODUCE-FIRST: lists THIS chat\'s backlog — sender, local time, the first ~100 chars, the day said where it changes', async () => {
     const asked = [];
     const { cmds, sent } = harness({ backlogOf: (ev) => { asked.push(`${ev.surface}:${ev.chatId}`); return BACKLOG; }, timeZone: 'America/New_York' });
-    await cmds.run({ ...palma, body: '/recap' });
-    expect(asked).toEqual(['whatsapp:!palma']);                 // the chat it was typed in, and only that one
-    expect(sent).toEqual([{ chatId: '!palma', text: [
+    await cmds.run({ ...muestra, body: '/recap' });
+    expect(asked).toEqual(['whatsapp:!muestra']);                 // the chat it was typed in, and only that one
+    expect(sent).toEqual([{ chatId: '!muestra', text: [
       '2 messages in the backlog:',
       '[ 2026-09-25 ]',
-      'Dagiely (19:05): @e ¿me escuchas?',                    // in stamp order, in the node's zone
+      'Dalia (19:05): @e ¿me escuchas?',                    // in stamp order, in the node's zone
       '[ 2026-09-26 ]',
       `An (05:41): ${`mañana sin falta ${'x'.repeat(120)}`.slice(0, 100)}…`,
     ].join('\n') }]);
@@ -2791,22 +2791,22 @@ describe('/recap — the backlog of the last wake, read out where it was written
   // slept hears the same /recap, and must not answer beside the one that did.
   it('stays SILENT when this node has nothing to list', async () => {
     const { cmds, sent } = harness({ backlogOf: () => [] });
-    await cmds.run({ ...palma, body: '/recap' });
-    await cmds.run({ ...palma, isSender: false, body: '/recap' });
+    await cmds.run({ ...muestra, body: '/recap' });
+    await cmds.run({ ...muestra, isSender: false, body: '/recap' });
     expect(sent).toEqual([]);
   });
 
   // Public only where public_commands lists it (operator 2026-10-19; it was public to anybody from
   // 2026-09-27). Every other command, lifecycle included, still needs the operator.
   it('a non-operator runs it only where public_commands lists it', async () => {
-    const stranger = { chatId: '!palma', surface: 'whatsapp' };   // not Self, not the owner, not on allowed_users
+    const stranger = { chatId: '!muestra', surface: 'whatsapp' };   // not Self, not the owner, not on allowed_users
     const closed = harness({ config: { ...AGENTS, whatsapp: { chat_id: '!self' } }, backlogOf: () => BACKLOG });
     expect(await closed.cmds.isCommand(typed(closed.cmds, { ...stranger, body: '/e recap' }))).toBe(false);
     const { cmds, sent, exits } = harness({ config: { ...AGENTS, whatsapp: { chat_id: '!self' }, public_commands: ['recap'] }, backlogOf: () => BACKLOG });
     const recap = typed(cmds, { ...stranger, body: '/e recap' });
     expect(await cmds.isCommand(recap)).toBe(true);
     await cmds.run(recap);
-    expect(sent.map((s) => s.chatId)).toEqual(['!palma']);
+    expect(sent.map((s) => s.chatId)).toEqual(['!muestra']);
     for (const body of ['/e restart', '/e status', '/e help', '/e agents e', '/e config', '/e recaps', 'recap', '/recap']) {
       expect(await cmds.isCommand(typed(cmds, { ...stranger, body })), body).toBe(false);
     }
@@ -2999,15 +2999,15 @@ describe('/agents grammar — verb first, target last, no legacy order', () => {
   });
 
   // (operator 2026-09-28: "please enable: /agent refresh <agent> <channel slug> so i can fire
-  // from eGPT Admin".) Chat names and slugs carry spaces (`eGPT Rodz Lulu An-2609201419`), but
-  // the conversation slot took ONE token: `refresh e eGPT Rodz Lulu An` read the conversation as
-  // "eGPT" and answered `don't know where to put "Rodz Lulu An"`. Every shape, same rule.
+  // from eGPT Admin".) Chat names and slugs carry spaces (`eGPT Rodz Lola An-2609201419`), but
+  // the conversation slot took ONE token: `refresh e eGPT Rodz Lola An` read the conversation as
+  // "eGPT" and answered `don't know where to put "Rodz Lola An"`. Every shape, same rule.
   it('everything after the handle is ONE conversation term, single-spaced, in every verb shape', () => {
-    expect(parse('refresh e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'refresh', undefined], slug: 'eGPT Rodz Lulu An' });
-    expect(parse('rethread all eGPT Rodz Lulu An')).toMatchObject({ args: ['all', 'rethread', undefined], slug: 'eGPT Rodz Lulu An' });
-    expect(parse('mode mention e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'mode', 'mention'], slug: 'eGPT Rodz Lulu An' });
-    expect(parse('access_level all e eGPT Rodz Lulu An')).toMatchObject({ args: ['e', 'access_level', 'all'], slug: 'eGPT Rodz Lulu An' });
-    expect(parse('e eGPT   Rodz Lulu An')).toMatchObject({ args: ['e'], slug: 'eGPT Rodz Lulu An' });
+    expect(parse('refresh e eGPT Rodz Lola An')).toMatchObject({ args: ['e', 'refresh', undefined], slug: 'eGPT Rodz Lola An' });
+    expect(parse('rethread all eGPT Rodz Lola An')).toMatchObject({ args: ['all', 'rethread', undefined], slug: 'eGPT Rodz Lola An' });
+    expect(parse('mode mention e eGPT Rodz Lola An')).toMatchObject({ args: ['e', 'mode', 'mention'], slug: 'eGPT Rodz Lola An' });
+    expect(parse('access_level all e eGPT Rodz Lola An')).toMatchObject({ args: ['e', 'access_level', 'all'], slug: 'eGPT Rodz Lola An' });
+    expect(parse('e eGPT   Rodz Lola An')).toMatchObject({ args: ['e'], slug: 'eGPT Rodz Lola An' });
   });
 
   it('the RETIRED object-first order is recognised as such — not misparsed, not silently accepted', () => {
@@ -3157,7 +3157,7 @@ describe('/agents compact|stop — recover a being without minting a new thread'
   });
 
   it("stop + compact act where an invited group's being LIVES (the room), not the typed chat", async () => {
-    const GROUP = '0MP97ovrD6XvVovMVx6v';
+    const GROUP = 'FakeRoomId0000000002';
     let state = ensureContact(emptyState(), 'room', 'acim', {}).state;
     state = ensureContact(state, 'whatsapp', GROUP, { pushedName: 'perrito', slugHint: 'perrito' }).state;
     state = patchContact(state, 'room', 'acim', { agents: { e: { threadId: 'thread-acim' } } });

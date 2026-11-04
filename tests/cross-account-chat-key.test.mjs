@@ -6,8 +6,8 @@
 // that same underlying chat. Nothing in the payload can do that. Measured live, the same machine,
 // the same WhatsApp group:
 //
-//   primary   sees  !6ljZJkx0OaY9ZVhEzFgi:beeper.local   localChatID 211
-//   secondary sees  !HuXFQeZSY1X4khNDWTzz:beeper.local   localChatID 3
+//   primary   sees  !FakeRoomId0000000004:beeper.local   localChatID 211
+//   secondary sees  !FakeRoomId0000000003:beeper.local   localChatID 3
 //
 // Beeper is Matrix: each account gets its own room, so the room id, the local id and every other
 // handle are per-account. The PEOPLE are not — which is the whole idea, and what this file locks.
@@ -35,7 +35,7 @@ const self = (id) => ({ id, isSelf: true });   // NO phoneNumber — measured li
 // these fixtures differ in every single id. If a participant id ever leaked into the key, the two
 // views below could not possibly compare equal.
 const AS_PRIMARY = {
-  id: '!6ljZJkx0OaY9ZVhEzFgi:beeper.local', title: 'Group', type: 'group',
+  id: '!FakeRoomId0000000004:beeper.local', title: 'Group', type: 'group',
   participants: { items: [
     self('@primary:beeper.com'),
     member('p-secondary@beeper.local', SECONDARY_NUM),
@@ -44,7 +44,7 @@ const AS_PRIMARY = {
   ] },
 };
 const AS_SECONDARY = {
-  id: '!HuXFQeZSY1X4khNDWTzz:beeper.local', title: 'Group', type: 'group',
+  id: '!FakeRoomId0000000003:beeper.local', title: 'Group', type: 'group',
   participants: { items: [
     member('s-m2@beeper.local', M2),                 // …and in a different ORDER, too
     self('@secondary:beeper.com'),
@@ -142,7 +142,7 @@ describe('crossAccountChatKey — different chats must not collide', () => {
   });
 });
 
-// ── THE LIVE TOPOLOGY THAT BROKE IT (operator 2026-09-06, "An y Dando") ─────────────────────
+// ── THE LIVE TOPOLOGY THAT BROKE IT (operator 2026-09-06, "An y Dario") ─────────────────────
 // Measured on BOTH Beeper endpoints the same day — the smallest real group there is: the two
 // accounts the node holds plus ONE other person. Roles, not people, but the SHAPE is verbatim:
 //
@@ -215,8 +215,8 @@ describe('crossAccountChatKey — the smallest real group: two accounts and one 
 // substituted for people as everywhere else in this file, but the TYPES, the TITLES and the
 // isSelf/phone shape are verbatim:
 //
-//   primary   !trYqoMoH7jETBozvcOQh   type group   title "eGPT Admin"   [ SECONDARY, self(no phone) ]
-//   secondary !nG3zZhXhJ0mZfmCu6s2f   type group   title "eGPT Admin"   [ PRIMARY,   self(no phone) ]
+//   primary   !FakeRoomId0000000005   type group   title "eGPT Admin"   [ SECONDARY, self(no phone) ]
+//   secondary !FakeRoomId0000000010   type group   title "eGPT Admin"   [ PRIMARY,   self(no phone) ]
 //
 // Each account sees the OTHER as the only phone-carrying member and ITSELF as the phone-less self
 // entry, so once BOTH held identities are excluded the surviving phone set is EMPTY on BOTH sides.
@@ -228,14 +228,14 @@ describe('crossAccountChatKey — the smallest real group: two accounts and one 
 // explicitly-named group's name is Matrix room state, so it is a property of the REAL chat rather
 // than of a view — the same standing `type` has, and the same reason it can be keyed on.
 const ADMIN_AS_PRIMARY = {
-  id: '!trYqoMoH7jETBozvcOQh:beeper.local', title: 'eGPT Admin', type: 'group',
+  id: '!FakeRoomId0000000005:beeper.local', title: 'eGPT Admin', type: 'group',
   participants: { items: [
     member('p-secondary@beeper.local', SECONDARY_NUM),
     self('@primary:beeper.com'),
   ] },
 };
 const ADMIN_AS_SECONDARY = {
-  id: '!nG3zZhXhJ0mZfmCu6s2f:beeper.local', title: 'eGPT Admin', type: 'group',
+  id: '!FakeRoomId0000000010:beeper.local', title: 'eGPT Admin', type: 'group',
   participants: { items: [
     member('s-primary@beeper.local', PRIMARY_NUM),
     self('@secondary:beeper.com'),
@@ -326,7 +326,7 @@ describe('crossAccountChatKey — the group whose ONLY members are the two accou
   // non-phone skip entry (idKey leaves it without the leading '#') cannot match one. Reasoning
   // said that made it unaffected; this asserts it.
   it('a non-phone exclusion (Beeper id, email) changes nothing — the title branch still fires', () => {
-    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', '@secondary:beeper.com', 'anrodz42@example.com', 'dolly.egpt@example.com'];
+    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', '@secondary:beeper.com', 'anaprueba42@example.com', 'mouth.acct@example.org'];
     expect(crossAccountChatKey(ADMIN_AS_PRIMARY, wide)).toBe('group,title:egpt-admin');
     expect(crossAccountChatKey(ADMIN_AS_SECONDARY, wide)).toBe('group,title:egpt-admin');
   });
@@ -334,13 +334,13 @@ describe('crossAccountChatKey — the group whose ONLY members are the two accou
   // …and the ordinary member key is equally untouched: a Beeper id in `exclude` can only ever
   // skip a Beeper id in the roster, which PHONE_KEY_RE never let into the key in the first place.
   it('a non-phone exclusion cannot remove a member from an ordinary member key', () => {
-    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', 'dolly.egpt@example.com'];
+    const wide = [...OWN_ACCOUNTS, '@primary:beeper.com', 'mouth.acct@example.org'];
     for (const chat of [AS_PRIMARY, AS_SECONDARY, LIVE_GROUP_AS_PRIMARY, LIVE_GROUP_AS_SECONDARY]) {
       expect(crossAccountChatKey(chat, wide)).toBe(crossAccountChatKey(chat, OWN_ACCOUNTS));
     }
   });
 
-  // The self entry in a roster IS the account's Beeper id (measured live: '@dolly-egpt:beeper.com'
+  // The self entry in a roster IS the account's Beeper id (measured live: '@mouth-acct:beeper.com'
   // with no phoneNumber at all), so a wide exclusion set now really does skip it. It carried no
   // phone, so nothing it could have contributed was ever in the key — the two views still agree.
   it('excluding the viewing account by its own Beeper id leaves both views keying alike', () => {

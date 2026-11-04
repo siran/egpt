@@ -1,7 +1,7 @@
 // THE RESTART DRAIN (operator 2026-09-28, verbatim: "yes, restart should wait for turns in progress").
 //
 // THE INCIDENT. kg, 16:10: a deploy (setup/upgrade.ps1 drops /upgrade into the ingest box) bounced
-// the spine while being Ken had a live turn in chat delen4 — the operator's steered message had just
+// the spine while being Ken had a live turn in chat user4 — the operator's steered message had just
 // been taken and Ken was running a WebSearch. /upgrade left the moment it was read; the turn died
 // with the process and the question was never answered.
 //

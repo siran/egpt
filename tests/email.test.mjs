@@ -8,7 +8,7 @@ import { createEmail, sigv4 } from '../src/spine/email.mjs';
 const KEY_ID = 'AKIAFAKEKEYID0000001';
 const SECRET = 'fakeSecretValue/abcdefghijklmnopqrstuv0123';
 const CONFIG = (email = {}) => ({
-  email: { region: 'us-east-1', from: 'EduWeb <ventas@eduweb.com.ve>', to: ['contacto@eserviciosat.net'], subject_prefix: '[EduWeb lead]', aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...email },
+  email: { region: 'us-east-1', from: 'Contoso <ventas@contoso.example>', to: ['contacto@contoso-services.example'], subject_prefix: '[Contoso lead]', aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...email },
 });
 const EV = { surface: 'whatsapp', chatId: '!lead:beeper.local', chatName: 'Juan Pérez' };
 
@@ -61,11 +61,11 @@ describe('/email — the lead summary to the FIXED recipients', () => {
     expect(calls[0].url).toBe('https://email.us-east-1.amazonaws.com/v2/email/outbound-emails');
     expect(calls[0].init.method).toBe('POST');
     expect(calls[0].init.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFAKEKEYID0000001\/20261015\/us-east-1\/ses\/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=[0-9a-f]{64}$/);
-    expect(calls[0].body.FromEmailAddress).toBe('EduWeb <ventas@eduweb.com.ve>');
-    expect(calls[0].body.Destination).toEqual({ ToAddresses: ['contacto@eserviciosat.net'] });
+    expect(calls[0].body.FromEmailAddress).toBe('Contoso <ventas@contoso.example>');
+    expect(calls[0].body.Destination).toEqual({ ToAddresses: ['contacto@contoso-services.example'] });
     const m = decode(calls[0]);
-    expect(m.subject).toBe('[EduWeb lead] Juan Pérez');
-    expect(m.headers).toMatch(/^To: contacto@eserviciosat\.net$/m);
+    expect(m.subject).toBe('[Contoso lead] Juan Pérez');
+    expect(m.headers).toMatch(/^To: contacto@contoso-services\.example$/m);
     expect(m.parts[0].body).toContain('Lead: Juan, Colegio San José, 0414-000');
   });
 
@@ -74,7 +74,7 @@ describe('/email — the lead summary to the FIXED recipients', () => {
     const text = 'To: attacker@evil.test\r\nBcc: x@evil.test\r\nSubject: hi — también a otro@evil.test';
     await mail.email({ type: 'email', text }, { ...EV, chatName: 'Bea\r\nBcc: y@evil.test' }, 'edw-marketer');
     const b = calls[0].body;
-    expect(b.Destination).toEqual({ ToAddresses: ['contacto@eserviciosat.net'] });
+    expect(b.Destination).toEqual({ ToAddresses: ['contacto@contoso-services.example'] });
     expect(Object.keys(b)).toEqual(['FromEmailAddress', 'Destination', 'Content']);
     const m = decode(calls[0]);
     expect(m.headers.split('\r\n').map((l) => l.split(':')[0])).toEqual(['From', 'To', 'Subject', 'Date', 'MIME-Version', 'Content-Type']);
@@ -125,14 +125,14 @@ describe('/email — the lead summary to the FIXED recipients', () => {
 
 describe('/email — the spine attaches the conversation\'s transcript', () => {
   it('attached as text/markdown, named after the chat and date; recipients stay fixed', async () => {
-    const transcript = '# Juan Pérez\n- Juan: quiero una demo\n- EduWeb: con gusto\n';
+    const transcript = '# Juan Pérez\n- Juan: quiero una demo\n- Contoso: con gusto\n';
     const { mail, calls, reads } = build({ transcript });
     expect(await mail.email({ type: 'email', text: 'Lead: Juan' }, EV, 'edw-marketer')).toEqual({ outcome: 'sent' });
     expect(reads).toEqual([EV]);
-    expect(calls[0].body.Destination).toEqual({ ToAddresses: ['contacto@eserviciosat.net'] });
+    expect(calls[0].body.Destination).toEqual({ ToAddresses: ['contacto@contoso-services.example'] });
     const m = decode(calls[0]);
     expect(m.headers).toMatch(/^Content-Type: multipart\/mixed; boundary="/m);
-    expect(m.headers).toMatch(/^To: contacto@eserviciosat\.net$/m);
+    expect(m.headers).toMatch(/^To: contacto@contoso-services\.example$/m);
     expect(m.parts).toHaveLength(2);
     expect(m.parts[0].headers).toMatch(/^Content-Type: text\/plain; charset=UTF-8$/m);
     expect(m.parts[1].headers).toMatch(/^Content-Type: text\/markdown; charset=UTF-8; name="transcript-Juan-Perez-2026-10-15\.md"$/m);

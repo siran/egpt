@@ -67,7 +67,7 @@ function build(surface, { closed = { [CLOSED]: { message: MSG } } } = {}) {
     remindClosed: async (ev) => { reminded.push(ev.body); },
   });
   spine.start();
-  const msg = (body, extra = {}) => ({ surface, chatId: CLOSED, chatName: 'SI+EduWeb', kind: 'text', raw: { chatType: 'group' }, senderId: '+1555', senderName: 'Ana', body, msgId: `m-${Math.random()}`, ts: 1, mention: {}, ...extra });
+  const msg = (body, extra = {}) => ({ surface, chatId: CLOSED, chatName: 'SI+Contoso', kind: 'text', raw: { chatType: 'group' }, senderId: '+1555', senderName: 'Ana', body, msgId: `m-${Math.random()}`, ts: 1, mention: {}, ...extra });
   const inbound = () => transcript.entries.filter((e) => e.reply == null).map((e) => e.ev.body);
   const settle = () => new Promise((r) => setTimeout(r, 20));
   return { state, config, bridge, brain, inbound, settle, msg, reminded };
@@ -298,7 +298,7 @@ function node() {
   const clock = { t: Date.UTC(2026, 9, 25, 12) };
   let config = BASE();
   let hash = 'h0';
-  const ens = ensureContact(emptyState(), 'whatsapp', CHAT, { pushedName: 'SI+EduWeb', slugHint: 'si' });
+  const ens = ensureContact(emptyState(), 'whatsapp', CHAT, { pushedName: 'SI+Contoso', slugHint: 'si' });
   ens.state.contacts.whatsapp[CHAT].agents = { egpt: { mode: 'on' } };
   const box = { state: ens.state };
   const sent = [];
@@ -324,7 +324,7 @@ function node() {
       now: () => clock.t,
       log: { line: () => {} },
     });
-    const say = (body, msgKey) => built[0].onIncoming(body, { chatId: CHAT, chatName: 'SI+EduWeb', network: 'whatsapp', userId: 'u-1', senderName: 'Ana', authorized: true, msgKey });
+    const say = (body, msgKey) => built[0].onIncoming(body, { chatId: CHAT, chatName: 'SI+Contoso', network: 'whatsapp', userId: 'u-1', senderName: 'Ana', authorized: true, msgKey });
     return { app, say };
   };
   const save = (edit) => { config = edit(structuredClone(config)); hash = `h${Number(hash.slice(1)) + 1}`; };

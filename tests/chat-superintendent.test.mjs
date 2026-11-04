@@ -42,13 +42,13 @@ const SIG_DO_D = encodeNodeSignature('do', 'egpt');
 const labelOf = (b) => AGENTS[b]?.name ?? '';
 const bodyEmojiOf = (b) => AGENTS[b]?.body_emoji ?? '🐶';
 // What the chat said before S was called: S's first turn is prompted with it (accum).
-const TRANSCRIPT = 'Lulu@[Grupo].wa (10:00) #h1: el deploy falló otra vez\n\nBob@[Grupo].wa (10:01) #h2: mismo error que ayer';
+const TRANSCRIPT = 'Lola@[Grupo].wa (10:00) #h1: el deploy falló otra vez\n\nBob@[Grupo].wa (10:01) #h2: mismo error que ayer';
 
 let seq = 0;
 const from = (over = {}) => ({ chatId: CHAT, chatName: 'Grupo', network: 'whatsapp', msgKey: `m${++seq}`, ...over });
 const OPERATOR = { userId: '@an:beeper.com', senderName: 'An', isSender: true, authorized: true };
-const MEMBER = { userId: '@whatsapp_lid-lulu42:beeper.local', senderName: 'Lulu' };
-const MOUTH = { userId: '@whatsapp_lid-69433129173200:beeper.local', senderName: 'Rodz' };   // a being's line comes through the mouth
+const MEMBER = { userId: '@whatsapp_lid-lola42:beeper.local', senderName: 'Lola' };
+const MOUTH = { userId: '@whatsapp_lid-10000000000015:beeper.local', senderName: 'Rodz' };   // a being's line comes through the mouth
 
 function streamingBridge() {
   const streams = [], sent = [];

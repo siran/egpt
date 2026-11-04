@@ -24,14 +24,14 @@ import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { encodeNodeSignature, encodeChatCanary } from '../src/node-signature.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
-const ORIGIN = 'palma1';
-const TITLE = 'PALMA';
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const RODZ_USER_ID = '@whatsapp_lid-69433129173200:beeper.local';
-const AN_ID = '@anrodriguez:beeper.com';
-const LULU = '@whatsapp_lid-lulu42:beeper.local';
-const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LULU, phoneNumber: '+34600000000' }] } };
+const ORIGIN = 'muestra1';
+const TITLE = 'MUESTRA';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const RODZ_USER_ID = '@whatsapp_lid-10000000000015:beeper.local';
+const AN_ID = '@anaprueba:beeper.com';
+const LOLA = '@whatsapp_lid-lola42:beeper.local';
+const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LOLA, phoneNumber: '+34600000000' }] } };
 const NODES = {
   kg: { role: 'primary', being: 'e', handles: ['e'] },
   do: { role: 'secondary', being: 'd', handles: ['d', 'don'] },
@@ -101,7 +101,7 @@ function node(name, { entry = {}, mode = 'mention', extra = {} } = {}) {
   });
   const say = (body, over = {}) => {
     const { atEStart, atEAnywhere } = mentionStatus(body, handles);
-    return spine.handleInbound({ body, from: { network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LULU, senderName: 'Lulu', isSender: false, msgKey: `k-${name}-${body}-${over.chatId ?? ''}`, atEStart, atEAnywhere, ...over } });
+    return spine.handleInbound({ body, from: { network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LOLA, senderName: 'Lola', isSender: false, msgKey: `k-${name}-${body}-${over.chatId ?? ''}`, atEStart, atEAnywhere, ...over } });
   };
   // Where this node's replies opened, in order.
   const repliedIn = () => [...bridge.streams.map((s) => s.chat), ...bridge.sent.map((s) => s.chat)];
@@ -117,7 +117,7 @@ const operator = { userId: AN_ID, senderName: 'An', isSender: true, authorized: 
 beforeEach(() => { rmSync(HOME, { recursive: true, force: true }); });
 
 describe('/split: the handle\'s node creates', () => {
-  it('/don split hi: dolly (node_role secondary) makes SI+PALMA-hi on its primary account; kg makes nothing', async () => {
+  it('/don split hi: dolly (node_role secondary) makes SI+MUESTRA-hi on its primary account; kg makes nothing', async () => {
     const kg = node('kg'), dolly = node('do');
     for (const n of [kg, dolly]) await n.say('/don split hi', operator);
     expect(dolly.calls.create).toEqual([{ title: `SI+${TITLE}-hi`, via: 'primary' }]);

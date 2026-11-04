@@ -53,8 +53,8 @@ const IN_BEING = BLOCK('        ');          // a being block's own keys sit at 
 const IN_COMPACTION = RATIO_ONLY('          ');  // an existing `compaction:` block's, at 10
 
 // ── kg's config.yaml as it reads after 0021, so nothing earlier has anything to do ───────────
-const OPERATOR = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com" ]';
-const DRIVEN = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com", "@dolly-egpt:beeper.com" ]';
+const OPERATOR = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com" ]';
+const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mouth-acct:beeper.com" ]';
 const KG_CONFIG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',

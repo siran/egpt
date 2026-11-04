@@ -30,7 +30,7 @@ function harness({ donReply = async () => 'yes, here' } = {}) {
 
 describe('mesh relay — YAML provenance over a shared channel', () => {
   // contract 16.1
-  it('encodes an OPAQUE base64 body with a READABLE tail, and round-trips (An 2026-06-20)', () => {
+  it('encodes an OPAQUE base64 body with a READABLE tail, and round-trips (operator 2026-06-20)', () => {
     const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
     expect(w).toMatch(/\nfrom: HFM\n/);            // routing tail stays readable
     expect(w).toMatch(/\nby: An\n/);
@@ -171,7 +171,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
   // the single turn-counter guard at the spine chokepoint, which counts every observed
   // envelope as a non-human turn; see tests/guard-provenance.test.mjs.)
 
-  // ── STREAMING — a LIVING MIRROR (An 2026-06-21): the responder edit-streams ONE
+  // ── STREAMING — a LIVING MIRROR (operator 2026-06-21): the responder edit-streams ONE
   //    relay-room message; the origin mirrors EVERY edit onto its placeholder. The
   //    being's body_emoji is stamped INTO the body by the responder (it owns the emoji;
   //    the origin can't look up a remote being's); the FINAL frame carries done:true so
@@ -666,13 +666,13 @@ describe('mesh relay — reply home (origin present in the terminal room)', () =
 describe('mesh relay — telegram fence-glue transmutation', () => {
   // htmlToMarkdown output for the telegram HTML with NO newline before </code></pre> (content-
   // dependent) — the exact form that reproduced the live nesting (glued opening AND closing fence).
-  const TELEGRAM_GLUED = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64``';
+  const TELEGRAM_GLUED = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (555) 010-0001\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64``';
   // The operator's literal capture (close tag on its own line → trailing `` is a lone line, harmless).
-  const TELEGRAM_OWNLINE = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n``';
+  const TELEGRAM_OWNLINE = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (555) 010-0001\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n``';
   // WhatsApp delivery — the fence stays on its OWN line (parses fine today; must stay identical).
-  const WHATSAPP = '``\nQGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64';
+  const WHATSAPP = '``\nQGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (555) 010-0001\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64';
   // Raw HTML (if parseMesh ever receives it un-normalized on some path — stripRender must strip the tags).
-  const TELEGRAM_HTML = '<pre><code>QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n</code></pre>';
+  const TELEGRAM_HTML = '<pre><code>QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (555) 010-0001\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n</code></pre>';
 
   it('REPRODUCE-FIRST: the glued opening+closing fence form decodes to the clean body (not the nested blob)', () => {
     const p = parseMesh(TELEGRAM_GLUED);

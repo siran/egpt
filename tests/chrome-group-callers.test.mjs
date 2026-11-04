@@ -21,13 +21,13 @@ const STATE = {
   contacts: {
     whatsapp: {
       '!admin': { slug: 'eGPT Admin-2609121344', conversation_path: '.egpt/conversations/whatsapp/eGPT Admin-2609121344' },
-      '!reinie': { slug: 'Reinie Alvino-2607150057', conversation_path: '.egpt/conversations/whatsapp/Reinie Alvino-2607150057' },
+      '!renata': { slug: 'Renata Ficticio-2607150057', conversation_path: '.egpt/conversations/whatsapp/Renata Ficticio-2607150057' },
       '!dup': { slug: 'Twice-2601010000', conversation_path: '.egpt/conversations/whatsapp/Twice-2601010000' },
     },
     room: { acim: { conversation_path: '.egpt/rooms/acim' } },
   },
 };
-const GROUPS = { brain: ['eGPT Admin', 'eGPT Rodz Lulu An', 'acim', 'tpoef'], work: ['Twice'] , other: ['Twice'] };
+const GROUPS = { brain: ['eGPT Admin', 'eGPT Rodz Lola An', 'acim', 'tpoef'], work: ['Twice'] , other: ['Twice'] };
 
 function build({ state = STATE, groups = GROUPS, requestLogin, ...seams } = {}) {
   const logs = [], sent = [], brainCloses = [], brainOpens = [];
@@ -66,7 +66,7 @@ describe('browserConversationOf — THE resolver every browser caller routes thr
   it('a chat → its registry row → its group; unlisted → shared; listed twice → null + why', async () => {
     const { cmds } = build();
     expect(await cmds.browserConversationOf('whatsapp', '!admin')).toEqual({ key: 'eGPT Admin-2609121344', name: 'eGPT Admin', group: 'brain' });
-    expect((await cmds.browserConversationOf('whatsapp', '!reinie')).group).toBe('shared');
+    expect((await cmds.browserConversationOf('whatsapp', '!renata')).group).toBe('shared');
     const dup = await cmds.browserConversationOf('whatsapp', '!dup');
     expect(dup.group).toBe(null);
     expect(dup.why).toMatch(/work, other/);
@@ -85,16 +85,16 @@ describe('browserConversationOf — THE resolver every browser caller routes thr
   });
 });
 
-// The live case (operator 2026-10-21): a /split of "eGPT Rodz Lulu An" (brain) is its own entry with
+// The live case (operator 2026-10-21): a /split of "eGPT Rodz Lola An" (brain) is its own entry with
 // parent_chat; a /join of it is an alias.
-const SPLIT_KEY = 'SI+eGPT Rodz Lulu An-lulu-amazon-2610220339';
+const SPLIT_KEY = 'SI+eGPT Rodz Lola An-lola-amazon-2610220339';
 const SPLIT_STATE = { contacts: { ...STATE.contacts, whatsapp: {
   ...STATE.contacts.whatsapp,
-  '!lulu': { slug: 'eGPT Rodz Lulu An-2609201419', conversation_path: '.egpt/conversations/whatsapp/eGPT Rodz Lulu An-2609201419' },
-  '!split': { slug: SPLIT_KEY, conversation_path: `.egpt/conversations/whatsapp/${SPLIT_KEY}`, parent_chat: '!lulu' },
-  '!split2': { slug: 'SI+lulu-amazon-cart-2610220400', conversation_path: '.egpt/conversations/whatsapp/SI+lulu-amazon-cart-2610220400', parent_chat: '!split' },
-  '!orphan': { slug: 'Reinie fork-2610220339', conversation_path: '.egpt/conversations/whatsapp/Reinie fork-2610220339', parent_chat: '!reinie' },
-  '!join': { aliasOf: '!lulu', transcript: 'eGPT Rodz Lulu An-gnossis', join_name: 'gnossis', join_by: 'An', mouth_chat: '!mouth' },
+  '!lola': { slug: 'eGPT Rodz Lola An-2609201419', conversation_path: '.egpt/conversations/whatsapp/eGPT Rodz Lola An-2609201419' },
+  '!split': { slug: SPLIT_KEY, conversation_path: `.egpt/conversations/whatsapp/${SPLIT_KEY}`, parent_chat: '!lola' },
+  '!split2': { slug: 'SI+lola-amazon-cart-2610220400', conversation_path: '.egpt/conversations/whatsapp/SI+lola-amazon-cart-2610220400', parent_chat: '!split' },
+  '!orphan': { slug: 'Renata fork-2610220339', conversation_path: '.egpt/conversations/whatsapp/Renata fork-2610220339', parent_chat: '!renata' },
+  '!join': { aliasOf: '!lola', transcript: 'eGPT Rodz Lola An-gnossis', join_name: 'gnossis', join_by: 'An', mouth_chat: '!mouth' },
 } } };
 
 describe('a /split inherits its parent\'s browser group; /end ends it', () => {
@@ -113,13 +113,13 @@ describe('a /split inherits its parent\'s browser group; /end ends it', () => {
 
   it('split → the parent\'s group under its own key/name, through the commands resolver and the being link', async () => {
     const { cmds } = build({ state: SPLIT_STATE });
-    expect(await cmds.browserConversationOf('whatsapp', '!split')).toEqual({ key: SPLIT_KEY, name: 'SI+eGPT Rodz Lulu An-lulu-amazon', group: 'brain' });
+    expect(await cmds.browserConversationOf('whatsapp', '!split')).toEqual({ key: SPLIT_KEY, name: 'SI+eGPT Rodz Lola An-lola-amazon', group: 'brain' });
     expect((await cmds.browserConversationOf('whatsapp', '!split2')).group).toBe('brain');
     expect(await beingGroup(SPLIT_STATE, SPLIT_KEY)).toBe('brain');
   });
 
   it('the split listed explicitly → that group', async () => {
-    const groups = { ...GROUPS, amazon: ['SI+eGPT Rodz Lulu An-lulu-amazon'] };
+    const groups = { ...GROUPS, amazon: ['SI+eGPT Rodz Lola An-lola-amazon'] };
     const { cmds } = build({ state: SPLIT_STATE, groups });
     expect((await cmds.browserConversationOf('whatsapp', '!split')).group).toBe('amazon');
     expect(await beingGroup(SPLIT_STATE, SPLIT_KEY, groups)).toBe('amazon');
@@ -141,7 +141,7 @@ describe('a /split inherits its parent\'s browser group; /end ends it', () => {
 
   it('a /join alias, by its own chat id, resolves to the parent\'s conversation; after /end → shared', async () => {
     const { cmds } = build({ state: SPLIT_STATE });
-    expect(await cmds.browserConversationOf('whatsapp', '!join')).toEqual({ key: 'eGPT Rodz Lulu An-2609201419', name: 'eGPT Rodz Lulu An', group: 'brain' });
+    expect(await cmds.browserConversationOf('whatsapp', '!join')).toEqual({ key: 'eGPT Rodz Lola An-2609201419', name: 'eGPT Rodz Lola An', group: 'brain' });
     const ended = dropContact(SPLIT_STATE, 'whatsapp', '!join');
     expect((await build({ state: ended }).cmds.browserConversationOf('whatsapp', '!join')).group).toBe('shared');
   });
@@ -158,7 +158,7 @@ describe('startBrowser(conversation)', () => {
 
   it('an unlisted chat → its shared group pipe Chrome', async () => {
     const { cmds, calls } = build();
-    const r = await cmds.startBrowser(await cmds.browserConversationOf('whatsapp', '!reinie'));
+    const r = await cmds.startBrowser(await cmds.browserConversationOf('whatsapp', '!renata'));
     expect(r).toMatchObject({ ok: true, launched: true });
     expect(calls.map((c) => c.profileDir)).toEqual([sharedDir]);
   });
@@ -191,7 +191,7 @@ describe('/chrome resolves the chat it was typed in', () => {
 
   it('in an unlisted chat → the shared group Chrome\'s tabs, not the brain\'s', async () => {
     const { cmds, sent, calls } = build();
-    await run(cmds, '!reinie', '/chrome kg');
+    await run(cmds, '!renata', '/chrome kg');
     expect(sent[0].text).toMatch(/PipeTab/);
     expect(sent[0].text).not.toMatch(/Gmail|9221/);
     expect(calls.map((c) => c.profileDir)).toEqual([sharedDir]);
@@ -210,7 +210,7 @@ describe('/tabs /close drive the chat\'s group Chrome', () => {
   it('/tabs in eGPT Admin lists the brain; in an unlisted chat the shared group', async () => {
     const { cmds, sent } = build();
     await run(cmds, '!admin', '/tabs');
-    await run(cmds, '!reinie', '/tabs');
+    await run(cmds, '!renata', '/tabs');
     expect(sent[0].text).toMatch(/1 · Gmail/);
     expect(sent[1].text).toMatch(/1 · PipeTab/);
     expect(sent[1].text).not.toMatch(/Gmail/);
@@ -219,7 +219,7 @@ describe('/tabs /close drive the chat\'s group Chrome', () => {
   it('/close 1 in an unlisted chat never touches a brain tab', async () => {
     const { cmds, sent, brainCloses } = build();
     await run(cmds, '!admin', '/tabs');   // brain's Chrome is up too
-    await run(cmds, '!reinie', '/close 1');
+    await run(cmds, '!renata', '/close 1');
     expect(sent[1].text).toMatch(/closed 1 · PipeTab/);
     expect(brainCloses).toEqual([]);
   });
@@ -247,7 +247,7 @@ describe('/login follows the chat\'s group', () => {
   it('an unlisted chat → the shared conversation + the shared pipe client', async () => {
     const rec = recorder();
     const { cmds } = build({ requestLogin: rec.requestLogin });
-    await run(cmds, '!reinie', '/login example.com');
+    await run(cmds, '!renata', '/login example.com');
     expect(rec.seen[0].conversation.group).toBe('shared');
     expect(await rec.seen[0].client.listTabs()).toEqual([{ id: 'P1', type: 'page', url: 'https://pipe.example/', title: 'PipeTab' }]);
   });
@@ -270,7 +270,7 @@ describe('/members, /activate and /status reach the chat\'s group Chrome', () =>
 
   it('/members add tab 1 in an unlisted chat adds the tab /tabs numbers there — shared\'s, never brain\'s', async () => {
     const { cmds, sent, calls, members } = withRoom();
-    await run(cmds, '!reinie', '/members add tab 1');
+    await run(cmds, '!renata', '/members add tab 1');
     expect(sent[0].text).toMatch(/added 'pipe'/);
     expect(members.map((m) => [m.url, m.targetId])).toEqual([['https://pipe.example/', 'P1']]);
     expect(calls.map((c) => c.profileDir)).toEqual([sharedDir]);
@@ -278,11 +278,11 @@ describe('/members, /activate and /status reach the chat\'s group Chrome', () =>
 
   it('/members reads presence from the group Chrome only when it is up — a roster never launches one', async () => {
     const { cmds, sent, calls } = withRoom([{ kind: 'brain', id: 'pipe', state: 'muted', adapter: 'pipe-cdp', url: 'https://pipe.example/', targetId: 'P1' }]);
-    await run(cmds, '!reinie', '/members');
+    await run(cmds, '!renata', '/members');
     expect(sent[0].text).toMatch(/pipe {3}brain {3}inactive/);
     expect(calls).toHaveLength(0);
-    await run(cmds, '!reinie', '/tabs');
-    await run(cmds, '!reinie', '/members');
+    await run(cmds, '!renata', '/tabs');
+    await run(cmds, '!renata', '/members');
     expect(sent[2].text).toMatch(/pipe {3}brain {3}active/);
   });
 
@@ -303,11 +303,11 @@ describe('/members, /activate and /status reach the chat\'s group Chrome', () =>
 
   it('/status reads the chat\'s group Chrome only when it is up — and never launches one', async () => {
     const { cmds, sent, calls } = withRoom();
-    await run(cmds, '!reinie', '/status');
+    await run(cmds, '!renata', '/status');
     expect(sent[0].text).toMatch(/chrome: off/);
     expect(calls).toHaveLength(0);
-    await run(cmds, '!reinie', '/tabs');
-    await run(cmds, '!reinie', '/status');
+    await run(cmds, '!renata', '/tabs');
+    await run(cmds, '!renata', '/status');
     expect(sent[2].text).toMatch(/chrome: up · 1 brain tabs/);
     expect(calls.map((c) => c.profileDir)).toEqual([sharedDir]);
   });
@@ -321,7 +321,7 @@ describe('loginProfilePathOf — the credential comes from the GROUP profile', (
     expect(loginProfilePathOf({})).toBe(CHROME_BRAIN_PROFILE);
   });
   it('another group → that group\'s profile dir, never the brain override', () => {
-    expect(loginProfilePathOf(cfg, { name: 'Reinie Alvino', group: 'shared' })).toBe(sharedDir);
+    expect(loginProfilePathOf(cfg, { name: 'Renata Ficticio', group: 'shared' })).toBe(sharedDir);
   });
   it('no group → null (no credential is read)', () => {
     expect(loginProfilePathOf(cfg, { name: 'Twice', group: null })).toBe(null);

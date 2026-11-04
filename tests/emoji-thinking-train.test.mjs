@@ -484,8 +484,8 @@ describe('canMark — can this chat carry a temporary mark', () => {
   it("REPRODUCE: an HTTP chat on a node that also has the Telegram bot — false; the bot's own chat — true", async () => {
     const facade = makeLimbAwareBridge(makeLimbAwareBridge(TG, HTTP), SHELL);   // a beeperless node, shell-aware
     const out = makeOutbound({ bridge: facade });
-    expect(out('egpt', 'http:eduweb-1').reacts()).toBe(false);
-    expect(await out('egpt', 'http:eduweb-1').canMark()).toBe(false);
+    expect(out('egpt', 'http:contoso-1').reacts()).toBe(false);
+    expect(await out('egpt', 'http:contoso-1').canMark()).toBe(false);
     expect(await out('egpt', 'tg:42').canMark()).toBe(true);
     expect(await out('egpt', 'lobby').canMark()).toBe(false);
   });
@@ -494,7 +494,7 @@ describe('canMark — can this chat carry a temporary mark', () => {
     const facade = makeLimbAwareBridge(makeLimbAwareBridge(port('beeper'), TG, HTTP), SHELL);
     const out = makeOutbound({ bridge: facade, peerMouth: MOUTH_HOLDS });
     expect(await out('egpt', 'lobby').canMark()).toBe(false);
-    expect(await out('egpt', 'http:eduweb-1').canMark()).toBe(false);
+    expect(await out('egpt', 'http:contoso-1').canMark()).toBe(false);
     expect(await out('egpt', 'tg:42').canMark()).toBe(true);
     expect(await out('egpt', '!room:beeper.local').canMark()).toBe(true);
   });

@@ -31,10 +31,10 @@ import { createRoomRelay } from '../src/spine/room-relay.mjs';
 // the peer account (do, on the second Beeper account "Rodz") is not a participant. Plus the
 // shell-pinned relay whose whole reason to exist is that `do` hears @don itself on Beeper.
 const KG = {
-  egpt: { handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+13472576794' }, conversation_defaults: { allowed_users: ['*'] } },   // the group's members reach E
+  egpt: { handles: ['ekg', 'egptkg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' }, conversation_defaults: { allowed_users: ['*'] } },   // the group's members reach E
   don: { configuration: 'relay', relay_channel: 'egpt-mesh-do-kg', to: 'don.do', surface: 'shell' },
 };
-const PEER = '+13472576794';
+const PEER = '+15550100002';
 const GROUP = '!perrito-traducciones';
 const ROOM = 'acim';
 

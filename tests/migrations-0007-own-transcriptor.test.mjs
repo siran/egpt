@@ -16,15 +16,15 @@ const DO = `transcriptor:
   port: 23390
   server:
     enabled: false
-    command: C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-server.exe
+    command: C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-server.exe
     host: 127.0.0.1
     port: 8089
 transcription:
   server:
     token: FIXTURE-TOKEN
   cli:
-    command: C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-cli.exe
-    model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin
+    command: C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-cli.exe
+    model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin
 transcription_service:
   enabled: true
   use_config: do
@@ -42,7 +42,7 @@ transcription_service:
 const KG = DO
   .replace('use_config: do', 'use_config: reve')
   .replace('  do:\n', '  reve:\n')
-  .replace('http://127.0.0.1:23390', 'http://192.168.1.102:23390');
+  .replace('http://127.0.0.1:23390', 'http://192.0.2.102:23390');
 
 function home(config) {
   const h = mkdtempSync(join(tmpdir(), 'egpt-0007-'));
@@ -125,7 +125,7 @@ describe('0007 refuses rather than guess', () => {
   });
 
   it('its own worker, but no model path anywhere for the worker to name', async () => {
-    const h = home(DO.replace('    model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin\n', ''));
+    const h = home(DO.replace('    model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin\n', ''));
     await expect(plan(ctxFor(h))).rejects.toThrow(/0007 refuses: neither transcriptor.server.model nor transcription.cli.model_path/);
   });
 

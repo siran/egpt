@@ -59,16 +59,16 @@ describe('rooms.yaml — the room rung', () => {
 
   it('sets a DOTTED key inside a row', async () => {
     const io2 = mkIO('rooms:\n');
-    await setRoomConfigKey('room/dj-son', 'radio_service.wildnloyal.enabled', false, io2);
+    await setRoomConfigKey('room/dj-son', 'radio_service.examplefm.enabled', false, io2);
     expect(await readRoomConfig('room/dj-son', io2))
-      .toEqual({ radio_service: { wildnloyal: { enabled: false } } });
+      .toEqual({ radio_service: { examplefm: { enabled: false } } });
   });
 
   it('never splits ns — a slug with dots and spaces stays ONE key', async () => {
     const io2 = mkIO('rooms:\n');
     const ns = 'whatsapp/HFM - high.frequency-2606300017';
-    await setRoomConfigKey(ns, 'radio.join', 'wildnloyal', io2);
-    expect(await readRoomConfig(ns, io2)).toEqual({ radio: { join: 'wildnloyal' } });
+    await setRoomConfigKey(ns, 'radio.join', 'examplefm', io2);
+    expect(await readRoomConfig(ns, io2)).toEqual({ radio: { join: 'examplefm' } });
     expect(Object.keys(await readRoomsFile(io2))).toEqual([ns]);
   });
 
@@ -203,8 +203,8 @@ describe('config/browsers.yaml — the browser-group map, same reader as rooms.y
       expect(await readBrowserGroups()).toEqual({});                       // no file → no groups
       mkdirSync(join(home, 'config'));
       const file = join(home, 'config', 'browsers.yaml');
-      writeFileSync(file, 'groups:\n  brain: [ "eGPT Admin", "eGPT Rodz Lulu An" ]\n');
-      expect(await readBrowserGroups()).toEqual({ brain: ['eGPT Admin', 'eGPT Rodz Lulu An'] });
+      writeFileSync(file, 'groups:\n  brain: [ "eGPT Admin", "eGPT Rodz Lola An" ]\n');
+      expect(await readBrowserGroups()).toEqual({ brain: ['eGPT Admin', 'eGPT Rodz Lola An'] });
       writeFileSync(file, 'groups:\n  brain: [ "eGPT Admin" ]\n  work: [ "Diego" ]\n');
       expect(await readBrowserGroups()).toEqual({ brain: ['eGPT Admin'], work: ['Diego'] });
     } finally {

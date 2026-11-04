@@ -200,11 +200,11 @@ describe('routesToOwnTranscriptor', () => {
   });
 
   it('kg: worker rung at dolly\'s LAN address → not its own worker', () => {
-    expect(routesToOwnTranscriptor(at('reve', rung('http://192.168.1.102:23390')), { localAddresses: new Set(['192.168.1.50']) })).toBeNull();
+    expect(routesToOwnTranscriptor(at('reve', rung('http://192.0.2.102:23390')), { localAddresses: new Set(['192.0.2.50']) })).toBeNull();
   });
 
   it('a rung at this machine\'s OWN interface address counts as its own', () => {
-    expect(routesToOwnTranscriptor(at('do', rung('http://192.168.1.102:23390')), { localAddresses: new Set(['192.168.1.102']) })).not.toBeNull();
+    expect(routesToOwnTranscriptor(at('do', rung('http://192.0.2.102:23390')), { localAddresses: new Set(['192.0.2.102']) })).not.toBeNull();
   });
 
   it('the port must be this node\'s transcriptor port (transcriptor.port, default 23390)', () => {

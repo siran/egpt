@@ -190,10 +190,10 @@ describe('clients.<c>.identity', () => {
 describe('renderTopicTitle', () => {
   const sid = 'a1b2c3';
   it("the default reproduces today's title: <title> · <6 of sid>", () => {
-    expect(renderTopicTitle(undefined, { title: 'EduWeb', sid })).toBe('EduWeb · a1b2c3');
+    expect(renderTopicTitle(undefined, { title: 'Contoso', sid })).toBe('Contoso · a1b2c3');
   });
 
-  it("EduWeb's template, filled from the identity", () => {
+  it("Contoso's template, filled from the identity", () => {
     expect(renderTopicTitle('{abrin} {user_type} {short_name} ({username})', { ...JP, title: 'Soporte', sid })).toBe('IEV P Juan Pérez (jperez)');
   });
 

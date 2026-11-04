@@ -1,4 +1,4 @@
-// http-ayde.test.mjs — /ayde: the EduWeb team's read-only browser of EGPT_HOME on the chatbox limb
+// http-ayde.test.mjs — /ayde: the Contoso team's read-only browser of EGPT_HOME on the chatbox limb
 // (limbs.http.ayde). HTTP Basic against secrets/ayde.users, each user with a level: team < devs < admin
 // < root. Below root a user reads only the scope's conversations (limbs.http.ayde.scope: chat ids, their
 // folders by conversations.yaml); a path above the user's level, or outside the scope, is 401 in that
@@ -48,10 +48,10 @@ user_name: John
 const TELEGRAM = '123456789:dummy-telegram-token-not-a-secret';
 
 const A = 'acme-00000000000000a1', B = 'acme-00000000000000b2', C = 'acme-00000000000000c3', D = 'zeta-00000000000000d4';
-// Telegram: the EduWeb group (its /split fork in its folder), a topic in a folder of its own, and an
-// unscoped group whose folder is only named like EduWeb's.
-const TG = 'tg:-1004408163350', OTHER = 'tg:-1009999999999';
-const G = 'eduweb-2610010101', T = 'eduweb-soporte-2610020202', U = 'eduweb-marketer-2610030303';
+// Telegram: the Contoso group (its /split fork in its folder), a topic in a folder of its own, and an
+// unscoped group whose folder is only named like Contoso's.
+const TG = 'tg:-1000000000101', OTHER = 'tg:-1009999999999';
+const G = 'contoso-2610010101', T = 'contoso-soporte-2610020202', U = 'contoso-marketer-2610030303';
 const SCOPE = ['http:acme-', TG];
 const httpRows = [A, B, C, D].map((id) => `    "http:${id}":
       conversation_path: .egpt/conversations/http/${id}`).join('\n');
@@ -59,12 +59,12 @@ const registry = ({ g = G } = {}) => `contacts:
   http:
 ${httpRows}
   telegram:
-    "${TG}": # EduWeb
+    "${TG}": # Contoso
       conversation_path: .egpt/conversations/telegram/${g}
-    "${TG}/42": # SI+EduWeb-an
+    "${TG}/42": # SI+Contoso-an
       conversation_path: .egpt/conversations/telegram/${g}
       parent_chat: "${TG}"
-      transcript: SI+EduWeb-an
+      transcript: SI+Contoso-an
     "${TG}/7": # Soporte
       conversation_path: .egpt/conversations/telegram/${T}
     "${OTHER}": # Marketer?
@@ -100,11 +100,11 @@ beforeEach(async () => {
   await conv(D, null, {}, '2026-10-24T10:00:00Z');
   await put('conversations/whatsapp/familia/transcript.md', 'familia\n');
   await put('conversations/whatsapp/familia/.notes.md', 'hidden notes\n');
-  await put(`conversations/telegram/${G}/transcript.md`, 'EduWeb\n');
-  await put(`conversations/telegram/${G}/transcript-SI+EduWeb-an.md`, 'the fork\n');
+  await put(`conversations/telegram/${G}/transcript.md`, 'Contoso\n');
+  await put(`conversations/telegram/${G}/transcript-SI+Contoso-an.md`, 'the fork\n');
   await put(`conversations/telegram/${G}/.notes.md`, 'hidden notes\n');
   await put(`conversations/telegram/${T}/transcript.md`, 'Soporte\n');
-  await put(`conversations/telegram/${U}/transcript.md`, 'not EduWeb\n');
+  await put(`conversations/telegram/${U}/transcript.md`, 'not Contoso\n');
   await put('config/conversations.yaml', registry());
 });
 
@@ -160,7 +160,7 @@ describe('limbs.http.ayde — the levels', () => {
     const { get } = await limb();
     const cases = [
       ['tree', `conversations/http/${A}`, 'team'], ['file', `conversations/http/${A}/gavetas/notas.md`, 'team'],
-      ['tree', `conversations/telegram/${G}`, 'team'], ['file', `conversations/telegram/${G}/transcript-SI+EduWeb-an.md`, 'team'],
+      ['tree', `conversations/telegram/${G}`, 'team'], ['file', `conversations/telegram/${G}/transcript-SI+Contoso-an.md`, 'team'],
       ['file', `conversations/telegram/${T}/transcript.md`, 'team'],
       ['tree', `conversations/http/${A}/.tools`, 'devs'], ['file', `conversations/http/${A}/.tools/run.sh`, 'devs'],
       ['tree', `conversations/http/${A}/.ssh`, 'devs'], ['file', `conversations/http/${A}/.ssh/id_rsa`, 'devs'],
@@ -220,8 +220,8 @@ describe('limbs.http.ayde — the levels', () => {
     const names = async (user, p) => (await get('tree', { p }, user)).body.entries.map((e) => e.name);
     expect(await names('tina', `conversations/http/${A}`)).toEqual(['admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
     for (const user of ['dev', 'ada']) expect(await names(user, `conversations/http/${A}`), user).toEqual(['.secrets', '.ssh', '.tools', 'admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
-    expect(await names('tina', `conversations/telegram/${G}`)).toEqual(['admin-access.log', 'transcript-SI+EduWeb-an.md', 'transcript.md']);
-    expect(await names('ada', `conversations/telegram/${G}`)).toEqual(['.notes.md', 'admin-access.log', 'transcript-SI+EduWeb-an.md', 'transcript.md']);
+    expect(await names('tina', `conversations/telegram/${G}`)).toEqual(['admin-access.log', 'transcript-SI+Contoso-an.md', 'transcript.md']);
+    expect(await names('ada', `conversations/telegram/${G}`)).toEqual(['.notes.md', 'admin-access.log', 'transcript-SI+Contoso-an.md', 'transcript.md']);
     const top = (await get('tree', { p: '' }, 'rob')).body;
     expect(top).toMatchObject({ user: 'rob', level: 'root', path: '' });
     expect(top.entries.find((e) => e.name === 'secrets')).toMatchObject({ dir: true, level: 'root' });
@@ -318,7 +318,7 @@ describe('limbs.http.ayde — the scope', () => {
   });
 
   it('a scope entry covers its chat id and that chat\'s topics (<id>/<n>); one ending in "-" is a prefix; anything else that id only', async () => {
-    const { get } = await limb({ ayde: { on: true, scope: [`${TG}/7`, 'tg:-100440816335', `http:${C}`, 'http:zeta', 'http:acme-00000000000000b'] } });
+    const { get } = await limb({ ayde: { on: true, scope: [`${TG}/7`, 'tg:-100000000010', `http:${C}`, 'http:zeta', 'http:acme-00000000000000b'] } });
     expect((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e.chats])).toEqual([[C, [`http:${C}`]], [T, [`${TG}/7`]]]);
     expect((await get('tree', { p: `conversations/telegram/${G}` }, 'tina')).realm).toBe(realm('root'));
     expect((await get('tree', { p: `conversations/http/${B}` }, 'tina')).realm).toBe(realm('root'));
@@ -326,14 +326,14 @@ describe('limbs.http.ayde — the scope', () => {
 
   it('by chat id, never by folder name: a renamed folder keeps its access, a folder named like a scoped one has none', async () => {
     const { get } = await limb();
-    expect((await get('file', { p: `conversations/telegram/${G}/transcript.md` }, 'tina')).body.text).toBe('EduWeb\n');
+    expect((await get('file', { p: `conversations/telegram/${G}/transcript.md` }, 'tina')).body.text).toBe('Contoso\n');
     const R = 'renamed-2610010101';
     await rename(at('conversations', 'telegram', G), at('conversations', 'telegram', R));
     await writeFile(at('config', 'conversations.yaml'), registry({ g: R }));
     const top = (await get('tree', {}, 'tina')).body.entries;
     expect(top.find((e) => e.name === R)).toMatchObject({ path: `conversations/telegram/${R}`, chats: [TG, `${TG}/42`] });
     expect(top.map((e) => e.name)).not.toContain(G);
-    expect((await get('file', { p: `conversations/telegram/${R}/transcript.md` }, 'tina')).body.text).toBe('EduWeb\n');
+    expect((await get('file', { p: `conversations/telegram/${R}/transcript.md` }, 'tina')).body.text).toBe('Contoso\n');
     expect((await get('tree', { p: `conversations/telegram/${G}` }, 'tina')).realm).toBe(realm('root'));
     expect((await get('tree', { p: `conversations/telegram/${U}` }, 'tina')).realm).toBe(realm('root'));
   });
@@ -372,7 +372,7 @@ describe('limbs.http.ayde — the conversation list', () => {
       [`conversations/http/${B}`, 'chatbox:acme', 'Acme chat', 'chatbox', 'María López'],
       [`conversations/http/${C}`, 'chatbox:acme', 'Acme chat', 'chatbox', 'Juan Pérez'],
       [`conversations/http/${D}`, 'chatbox:zeta', 'Zeta — support', 'chatbox', 'Visitor'],
-      [`conversations/telegram/${G}`, 'telegram', 'Team groups (Telegram)', 'telegram', 'EduWeb'],
+      [`conversations/telegram/${G}`, 'telegram', 'Team groups (Telegram)', 'telegram', 'Contoso'],
       [`conversations/telegram/${T}`, 'telegram', 'Team groups (Telegram)', 'telegram', 'Soporte'],
       ['conversations/whatsapp/familia', 'other', 'Other', 'other', 'Familia'],
     ]);
@@ -389,10 +389,10 @@ describe('limbs.http.ayde — the conversation list', () => {
   });
 
   it('a Telegram row\'s title: its chat\'s name in conversations.yaml (never a /split fork\'s), else the folder\'s without its -<datestamp>', async () => {
-    await writeFile(at('config', 'conversations.yaml'), registry().replace(' # Soporte', '').replace(' # EduWeb\n', '\n'));
+    await writeFile(at('config', 'conversations.yaml'), registry().replace(' # Soporte', '').replace(' # Contoso\n', '\n'));
     const { get } = await limb();
     const titles = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.filter((e) => e.kind === 'telegram').map((e) => [e.name, e.title]));
-    expect(titles).toEqual({ [G]: 'eduweb', [T]: 'eduweb-soporte' });
+    expect(titles).toEqual({ [G]: 'contoso', [T]: 'contoso-soporte' });
   });
 
   it('a signed session\'s row: its usuario.json (short_name, username, school, user type), no preview', async () => {
@@ -529,8 +529,8 @@ describe('limbs.http.ayde — the login', () => {
     const r = await fetch(`${root}/ayde?x=1`, { redirect: 'manual' });
     expect(r.status).toBe(308);
     expect(r.headers.get('location')).toBe('ayde/?x=1');
-    const other = await limb({ ayde: { on: true, path: '/eduweb/ayde' } });
-    expect((await fetch(`${other.root}/eduweb/ayde/`, { headers: { Authorization: basic('tina') } })).status).toBe(200);
+    const other = await limb({ ayde: { on: true, path: '/contoso/ayde' } });
+    expect((await fetch(`${other.root}/contoso/ayde/`, { headers: { Authorization: basic('tina') } })).status).toBe(200);
   });
 
   it('no login: 401 in the team realm, whatever the path (nothing about the scope before a login)', async () => {
@@ -687,8 +687,8 @@ describe('limbs.http.ayde — log out', () => {
     expect((await fetch(`${base}logout`, { method: 'POST' })).status).toBe(405);
     expect((await fetch(`${root}/ayde/logout/`)).status).toBe(404);
     for (const opts of [{ ayde: null }, { users: null }]) expect((await out((await limb(opts)).base, 'rob')).status).toBe(404);
-    const other = await limb({ ayde: { on: true, path: '/eduweb/ayde' } });
-    expect((await out(`${other.root}/eduweb/ayde/`, 'tina')).status).toBe(401);
+    const other = await limb({ ayde: { on: true, path: '/contoso/ayde' } });
+    expect((await out(`${other.root}/contoso/ayde/`, 'tina')).status).toBe(401);
   });
 });
 

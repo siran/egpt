@@ -727,7 +727,7 @@ describe('boot() — config-shape migration', () => {
   // THE NODE'S WAKE SET (2026-10-22): every agent's declared handles ∪ its fallback tokens — the
   // limbs' own mention flag only (atE no longer routes anything; the router decides who answers).
   it('wakeWords = every agent\'s declared handles ∪ its fallback tokens; a half-written fallback adds nothing', async () => {
-    const kg = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+13472576794' } } } });
+    const kg = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ekg', 'egptkg'], fallback_handle: { handle: ['e', 'egpt'], unless_present: '+15550100002' } } } });
     expect([...kg.opts.wakeWords].sort()).toEqual(['e', 'egpt', 'egptkg', 'ekg']);
     kg.app.stop();
     const half = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ekg'], fallback_handle: { handle: ['e'] } } } });
@@ -740,7 +740,7 @@ describe('boot() — config-shape migration', () => {
   // contract 8.4
   it('replyWakeWords = every local being\'s wake + fallback + voice tokens; a relay contributes none', async () => {
     const r = await captureBoot({ agents: {
-      egpt: { configuration: 'egpt', handles: ['ekg'], fallback_handle: { handle: ['e'], unless_present: '+13472576794' } },
+      egpt: { configuration: 'egpt', handles: ['ekg'], fallback_handle: { handle: ['e'], unless_present: '+15550100002' } },
       wren: { configuration: 'egpt', handles: ['w'], voice_handles: ['ren'] },
       don: { relay_channel: '!relay:beeper.local', handles: ['d'] },
     } });
@@ -754,7 +754,7 @@ describe('boot() — config-shape migration', () => {
   it('wakeWordsIn: the override chat\'s sets drop `e` (declared AND fallback) and keep `ekg`; any other chat → null', async () => {
     const state = { contacts: { telegram: { 'team-tg': { slug: 'team', agents: { egpt: { handles: ['ekg'] } } } } } };
     const r = await captureBoot({ agents: {
-      egpt: { configuration: 'egpt', handles: ['egpt', 'ekg'], fallback_handle: { handle: ['e'], unless_present: '+13472576794' }, voice_handles: ['perro'] },
+      egpt: { configuration: 'egpt', handles: ['egpt', 'ekg'], fallback_handle: { handle: ['e'], unless_present: '+15550100002' }, voice_handles: ['perro'] },
       wren: { configuration: 'egpt', handles: ['w'] },
     } }, { state });
     const here = await r.opts.wakeWordsIn('telegram', 'team-tg');

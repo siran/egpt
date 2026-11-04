@@ -1,5 +1,5 @@
 // tests/browser-refresh.test.mjs — /<handle> browser refresh [group] [url] (operator 2026-10-26): sites refuse
-// eGPT's pipe Chrome (Google sign-in, NYSCEF's captcha), so a human signs in in a PLAIN Chrome on the
+// eGPT's pipe Chrome (Google sign-in, LOGIN_PORTAL's captcha), so a human signs in in a PLAIN Chrome on the
 // group's profile. The command closes eGPT's Chrome through the pool, opens the plain one through the
 // daemon, and holds the group until that window's Chrome exits. Fake chrome-host (fake-pipe-chrome.mjs).
 import { describe, it, expect, afterEach } from 'vitest';
@@ -12,14 +12,14 @@ const MB = 1024 * 1024;
 const conv = (slug) => ({ slug, conversation_path: `.egpt/conversations/whatsapp/${slug}` });
 const STATE = { contacts: { whatsapp: {
   '!admin': conv('eGPT Admin-2609121344'),
-  '!nys': conv('NYSCEF case-2610200000'),
+  '!nys': conv('LOGIN_PORTAL case-2610200000'),
   '!dup': conv('Twice-2601010000'),
   '!bad': conv('Bad-2601010000'),
 } } };
-const GROUPS = { brain: ['eGPT Admin'], work: ['NYSCEF case', 'Twice'], other: ['Twice'], 'no/good': ['Bad'] };
-const WORK = { key: 'NYSCEF case-2610200000', name: 'NYSCEF case', group: 'work' };
+const GROUPS = { brain: ['eGPT Admin'], work: ['LOGIN_PORTAL case', 'Twice'], other: ['Twice'], 'no/good': ['Bad'] };
+const WORK = { key: 'LOGIN_PORTAL case-2610200000', name: 'LOGIN_PORTAL case', group: 'work' };
 const workDir = join(dirname(CHROME_BRAIN_PROFILE), 'work');
-const NYSCEF = 'https://iapps.courts.state.ny.us/nyscef/Login';
+const LOGIN_PORTAL = 'https://portal.example.gov/login';
 const FOLDERS = ['brain', 'Old Chrome', 'legacy'];
 
 function build({ profileHolder = () => null, chromeHost } = {}) {
@@ -45,13 +45,13 @@ describe('/browser refresh — the plain sign-in window', () => {
   it('closes eGPT\'s Chrome through the pool, THEN opens a plain Chrome on the same profile, and says what to do', async () => {
     const w = build();
     await w.cmds.startBrowser(WORK);
-    await run(w.cmds, '!nys', `/browser refresh ${NYSCEF}`);
+    await run(w.cmds, '!nys', `/browser refresh ${LOGIN_PORTAL}`);
     expect(w.handles[0].child.killed).toBe(true);
     expect(w.events).toEqual(['launch:work', 'kill:work', 'plain:work']);
     expect(w.plain).toHaveLength(1);
-    expect(w.plain[0]).toMatchObject({ group: 'work', profileDir: workDir, bin: 'C:/x/chrome.exe', argv: chromePlainArgs({ userDataDir: workDir, url: NYSCEF }) });
-    expect(w.plain[0].argv).toEqual([`--user-data-dir=${workDir}`, '--no-first-run', NYSCEF]);
-    expect(lastText(w.sent)).toMatch(new RegExp(`^I closed my browser for work\\. A normal Chrome window opened on kg at ${NYSCEF.replace(/[.?/]/g, '\\$&')}: sign in / pass the check yourself, then close that window — I'll use the session next time\\.`));
+    expect(w.plain[0]).toMatchObject({ group: 'work', profileDir: workDir, bin: 'C:/x/chrome.exe', argv: chromePlainArgs({ userDataDir: workDir, url: LOGIN_PORTAL }) });
+    expect(w.plain[0].argv).toEqual([`--user-data-dir=${workDir}`, '--no-first-run', LOGIN_PORTAL]);
+    expect(lastText(w.sent)).toMatch(new RegExp(`^I closed my browser for work\\. A normal Chrome window opened on kg at ${LOGIN_PORTAL.replace(/[.?/]/g, '\\$&')}: sign in / pass the check yourself, then close that window — I'll use the session next time\\.`));
     expect(lastText(w.sent).includes('VNC')).toBe(process.platform !== 'win32');
   });
 
@@ -124,7 +124,7 @@ describe('/browser refresh — the plain sign-in window', () => {
 
   it('the url is a page, never a Chrome switch; anything but refresh is the usage line', async () => {
     const w = build();
-    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser', '/browser open https://x', `/browser refresh ${NYSCEF} extra`, '/browser refresh --remote-debugging-port=9222', '/browser refresh work file:///C:/x', `/browser refresh work ${NYSCEF} extra`]) {
+    for (const bad of ['/browser refresh file:///C:/x', '/browser refresh chrome://settings', '/browser', '/browser open https://x', `/browser refresh ${LOGIN_PORTAL} extra`, '/browser refresh --remote-debugging-port=9222', '/browser refresh work file:///C:/x', `/browser refresh work ${LOGIN_PORTAL} extra`]) {
       await run(w.cmds, '!nys', bad);
       expect(lastText(w.sent)).toMatch(/^usage: \/e browser refresh \[group\] \[url\]/);
     }
@@ -184,7 +184,7 @@ describe("/browser refresh <group> — a named profile, not this chat's", () => 
 });
 
 describe('/browser refresh — who may run it', () => {
-  const ev = (over) => ({ surface: 'whatsapp', chatId: '!nys', senderId: '@lulu:beeper.local', isSender: false, authorized: false, body: '/e browser refresh', ...over });
+  const ev = (over) => ({ surface: 'whatsapp', chatId: '!nys', senderId: '@lola:beeper.local', isSender: false, authorized: false, body: '/e browser refresh', ...over });
 
   it('an owner runs it; anyone else is refused (not a public command)', async () => {
     const { cmds } = build();

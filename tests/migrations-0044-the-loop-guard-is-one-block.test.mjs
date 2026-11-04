@@ -33,7 +33,7 @@ const REVE = [
   '  window: 2      # minutes',
   '# THE FOLDERS EVERY SANDBOXED BEING MAY READ',
   'global_read_paths:',
-  '  - repos: C:\\Users\\an\\src\\siran',
+  '  - repos: C:\\Users\\user\\src\\siran',
 ];
 // Both old keys, lasso: first, flow + block, comments above and inside.
 const BOTH = [
@@ -148,18 +148,18 @@ describe('0044 — guard: / lasso: → one loop_guard: block', () => {
     const conv = lf([
       'contacts:',
       '  whatsapp:',
-      '    yz3kJjWXsQJofK9naaVb: # @anrodz',
-      '      conversation_path: .egpt/conversations/whatsapp/@anrodz-2606291919',
-      '      home_dir: /c/Users/an',
-      '    vcRg7Jh6cLBnQaceeyCP:',
+      '    FakeRoomId0000000001: # @anapru',
+      '      conversation_path: .egpt/conversations/whatsapp/@anapru-2606291919',
+      '      home_dir: /c/Users/user',
+      '    FakeRoomId0000000016:',
       '      guard:',
       '        turns: -1',
       '      conversation_path: .egpt/conversations/whatsapp/egpt-mesh-do-kg-2607051633',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
       '  telegram:',
       '    -1001234:',
       '      guard: { turns: -1, window: 30 }',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
     ]);
     writeReg('conversations.yaml', conv);
     const p = await plan(ctx());
@@ -168,20 +168,20 @@ describe('0044 — guard: / lasso: → one loop_guard: block', () => {
     expect(readReg('conversations.yaml')).toBe(lf([
       'contacts:',
       '  whatsapp:',
-      '    yz3kJjWXsQJofK9naaVb: # @anrodz',
-      '      conversation_path: .egpt/conversations/whatsapp/@anrodz-2606291919',
-      '      home_dir: /c/Users/an',
-      '    vcRg7Jh6cLBnQaceeyCP:',
+      '    FakeRoomId0000000001: # @anapru',
+      '      conversation_path: .egpt/conversations/whatsapp/@anapru-2606291919',
+      '      home_dir: /c/Users/user',
+      '    FakeRoomId0000000016:',
       '      loop_guard:',
       '        inbound:',
       '          turns: -1',
       '      conversation_path: .egpt/conversations/whatsapp/egpt-mesh-do-kg-2607051633',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
       '  telegram:',
       '    -1001234:',
       '      loop_guard:',
       '        inbound: { turns: -1, window: 30 }',
-      '      home_dir: /c/Users/an',
+      '      home_dir: /c/Users/user',
     ]));
     const [vault] = vaults();
     expect(readdirSync(join(egptHome, 'disposable', vault))).toEqual(['conversations.yaml']);

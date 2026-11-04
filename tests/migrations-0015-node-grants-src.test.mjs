@@ -5,7 +5,7 @@
 // there are not part of the parse, and "byte-identical apart from the inserted lines" is the only
 // check that can see them. CRLF throughout, as kg's own config.yaml is.
 //
-// THE PATH IS READ OFF THE FIXTURE (`dirname(egptHome) + '/src'`), never spelled C:/Users/an: a
+// THE PATH IS READ OFF THE FIXTURE (`dirname(egptHome) + '/src'`), never spelled C:/Users/user: a
 // migration that hardcoded the operator's box would pass a test that hardcoded it too. The home is
 // therefore a `.egpt` INSIDE a temp dir, so the test owns whether `<home>/src` exists.
 import { describe, it, expect } from 'vitest';
@@ -133,10 +133,10 @@ describe('0015 on a node that grants nothing yet', () => {
 
   it('a node whose profile lives elsewhere grants ITS OWN src/, never the operator\'s box', async () => {
     const h = home();
-    expect(srcOf(h)).not.toBe('C:/Users/an/src');
+    expect(srcOf(h)).not.toBe('C:/Users/user/src');
     const p = await plan(ctxFor(h));
     expect(p.changes.join('\n')).toContain(srcOf(h));
-    expect(p.changes.join('\n')).not.toContain('C:/Users/an/src');
+    expect(p.changes.join('\n')).not.toContain('C:/Users/user/src');
   });
 });
 

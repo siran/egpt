@@ -39,7 +39,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 // The one path this migration spells, and the key that is the only thing a conversation names.
 const DEST = 'G:/My Drive/jose-lorenzo/ACIM-ES.v2';
 const KEY = 'acim-drive';
-const KG_CHAT = '0MP97ovrD6XvVovMVx6v';       // kg's account's view of "perrito traduciones"
+const KG_CHAT = 'FakeRoomId0000000002';       // kg's account's view of "perrito traduciones"
 
 // ── what the migration writes, at the columns it writes it at ────────────────────────────────
 const ENTRY_LINES = (pad) => [
@@ -77,8 +77,8 @@ const IN_MAP = ENTRY_LINES('  ');           // an existing `outbox_targets:` blo
 const IN_BEING = OUTBOX_LINES('        ');  // a room being block's own keys sit at column 8
 
 // ── kg's config.yaml as it reads after 0022/0023 ─────────────────────────────────────────────
-const OPERATOR = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com" ]';
-const DRIVEN = '[ "16468217865", "34836563681438", "@anrodriguez:beeper.com", "@dolly-egpt:beeper.com" ]';
+const OPERATOR = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com" ]';
+const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mouth-acct:beeper.com" ]';
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
@@ -109,7 +109,7 @@ const KG_LINES = [
   '# kg names its own browser already - a 64-bit install, and its own brain profile',
   'chrome:',
   '  bin: C:/Program Files/Google/Chrome/Application/chrome.exe',
-  '  profile_dir: C:/Users/an/.egpt/chrome/profiles/brain',
+  '  profile_dir: C:/Users/user/.egpt/chrome/profiles/brain',
   'compaction:',
   '  ratio: 0.80 # the node default',
   '  cooling_ms: 600000',
@@ -156,14 +156,14 @@ const KG_CONV = crlf([
   '  whatsapp:',
   `    ${KG_CHAT}: # perrito traduciones`,
   '      conversation_path: .egpt/conversations/whatsapp/perrito-traduciones',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '  room:',
   '    acim:',
   '      conversation_path: .egpt/rooms/acim',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
   '    lobby:',
   '      conversation_path: .egpt/rooms/lobby',
-  '      home_dir: /c/Users/an',
+  '      home_dir: /c/Users/user',
 ]);
 
 // ── do: `room/acim-do` and no `room/acim`, and no such drive letter either ────────────────────
@@ -184,7 +184,7 @@ const DO_ROOMS = crlf([
   '          ratio: 0.50',
   '    members:',
   '      - kind: wa-group',
-  '        id: MMF7iTSSiR3fc7UbbgM9',
+  '        id: FakeRoomId0000000007',
   '        state: active',
 ]);
 

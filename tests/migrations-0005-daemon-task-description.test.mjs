@@ -18,8 +18,8 @@ import { runMigrations, runPowerShell } from '../setup/migrate.mjs';
 
 const REPO = join(import.meta.dirname, '..');
 const NODES = {
-  kg: { sid: 'S-1-5-21-2140830422-4106283080-3982958092-1001', machine: 'reve' },
-  do: { sid: 'S-1-5-21-2659214498-2217865581-3355271446-1001', machine: 'DOLLY' },
+  kg: { sid: 'S-1-5-21-1000000001-1000000002-1000000003-1001', machine: 'reve' },
+  do: { sid: 'S-1-5-21-1000000004-1000000005-1000000006-1001', machine: 'DOLLY' },
 };
 const daclOf = (sid) => `D:(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;${sid})(A;;FR;;;${sid})`;
 // What setup/egpt-daemon-task-labels.ps1 returns - checked against the real module below, on Windows.
@@ -57,14 +57,14 @@ const taskXml = ({ name = 'egpt-daemon', node = 'kg', description } = {}) => [
   '  </Settings>',
   '  <Triggers>',
   '    <LogonTrigger>',
-  `      <UserId>${NODES[node].machine}\\an</UserId>`,
+  `      <UserId>${NODES[node].machine}\\user</UserId>`,
   '    </LogonTrigger>',
   '  </Triggers>',
   '  <Actions Context="Author">',
   '    <Exec>',
   '      <Command>C:\\WINDOWS\\System32\\wscript.exe</Command>',
-  '      <Arguments>"C:\\Users\\an\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\an\\bin\\egpt" "C:\\Users\\an\\.egpt" "C:\\Users\\an\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
-  '      <WorkingDirectory>C:\\Users\\an\\bin\\egpt</WorkingDirectory>',
+  '      <Arguments>"C:\\Users\\user\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\bin\\egpt" "C:\\Users\\user\\.egpt" "C:\\Users\\user\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
+  '      <WorkingDirectory>C:\\Users\\user\\bin\\egpt</WorkingDirectory>',
   '    </Exec>',
   '  </Actions>',
   '</Task>',
@@ -92,7 +92,7 @@ function fakeScheduler(tasks, { target = () => TARGET, onUpdate = (name, xml, pr
   return { store, calls, ps };
 }
 
-const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\an\\.egpt', repo: 'C:\\Users\\an\\bin\\egpt', log: () => {}, ps: sched.ps, ...over });
+const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\user\\.egpt', repo: 'C:\\Users\\user\\bin\\egpt', log: () => {}, ps: sched.ps, ...over });
 const LIVE = (node, state = 3) => ({ 'egpt-daemon': { xml: taskXml({ node }), dacl: daclOf(NODES[node].sid), state } });
 
 describe('0005 on kg and do - both tasks measured with an empty Description', () => {
@@ -134,7 +134,7 @@ describe('0005 on kg and do - both tasks measured with an empty Description', ()
 
   it('a second profile folder derives its own task', async () => {
     const sched = fakeScheduler({ 'egpt-secondary-daemon': { xml: taskXml({ name: 'egpt-secondary-daemon' }), dacl: daclOf(NODES.kg.sid), state: 3 } });
-    const p = await plan(ctxWith(sched, { egptHome: 'C:\\Users\\an\\.egpt-secondary' }));
+    const p = await plan(ctxWith(sched, { egptHome: 'C:\\Users\\user\\.egpt-secondary' }));
     expect(p.changes[0]).toContain('re-register scheduled task egpt-secondary-daemon ');
   });
 });
@@ -224,8 +224,8 @@ describe('0005 and the registrar stamp the same Description', () => {
   const registrar = readFileSync(join(REPO, 'setup', 'register-session1-daemon-task.ps1'), 'utf8');
 
   it('the probe takes it from setup/egpt-daemon-task-labels.ps1, for the name derived from the profile', () => {
-    const s = probeScript('C:\\Users\\an\\bin\\egpt', 'egpt-daemon');
-    expect(s).toContain(". 'C:\\Users\\an\\bin\\egpt\\setup\\egpt-daemon-task-labels.ps1'");
+    const s = probeScript('C:\\Users\\user\\bin\\egpt', 'egpt-daemon');
+    expect(s).toContain(". 'C:\\Users\\user\\bin\\egpt\\setup\\egpt-daemon-task-labels.ps1'");
     expect(s).toContain("$name = 'egpt-daemon'");
     expect(s).toContain('target = (Get-EgptDaemonTaskDescription)');
   });

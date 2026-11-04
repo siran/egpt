@@ -1,6 +1,6 @@
 // tests/command-audit.test.mjs — the per-command audit → log_to_group (operator 2026-10-08).
 //
-// THE MOTIVATING CASE: the operator typed /end in a plain group ("conversas con favel") and NOTHING
+// THE MOTIVATING CASE: the operator typed /end in a plain group ("conversas con fiona") and NOTHING
 // happened — end() returns SILENTLY when the chat is neither a /join alias nor a /split parent, and
 // posts nothing on a successful archive either. The ruling: notify on the no-op; notify on the
 // archive; notify on EVERY '/'-command outcome. The audit is emitted from the ONE dispatch chokepoint
@@ -25,14 +25,14 @@ const JOIN_CHAT = '!chatJoin';
 const SPLIT_CHAT = '!chatSplit';
 const CFG = { node_name: 'kg' };
 
-function seedC() { return ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'conversas con favel' }).state; }
+function seedC() { return ensureContact({ contacts: {} }, 'whatsapp', C_CHAT, { pushedName: 'conversas con fiona' }).state; }
 function stateWithJoin() {
   const st = seedC();
   return aliasContact(st, 'whatsapp', JOIN_CHAT, getContact(st, 'whatsapp', C_CHAT).jid);
 }
 function stateWithSplit() {
   let st = seedC();
-  st = ensureContact(st, 'whatsapp', SPLIT_CHAT, { pushedName: 'split of favel' }).state;
+  st = ensureContact(st, 'whatsapp', SPLIT_CHAT, { pushedName: 'split of fiona' }).state;
   return patchContact(st, 'whatsapp', SPLIT_CHAT, { parent_chat: C_CHAT });
 }
 
@@ -73,25 +73,25 @@ const ev = (chatId, body, chatName) => ({ chatId, surface: 'whatsapp', msgId: 'm
 describe('/end audit — the motivating case', () => {
   it('/end in a PLAIN group (no /join alias, no /split parent): the chat gets NOTHING, the log group gets a "no-op" audit line', async () => {
     const { cmds, sent, audit, calls } = harness({ state: seedC() });
-    await cmds.run(ev(C_CHAT, '/end', 'conversas con favel'));
+    await cmds.run(ev(C_CHAT, '/end', 'conversas con fiona'));
     expect(calls.archive).toHaveLength(0);                 // nothing archived
     expect(sent).toHaveLength(0);                          // the chat itself still gets nothing (unchanged)
     expect(audit).toHaveLength(1);                         // but the no-op is now VISIBLE in the log group
-    expect(audit[0]).toBe('/end in conversas con favel by An → no-op — not a /join or /split side channel');
+    expect(audit[0]).toBe('/end in conversas con fiona by An → no-op — not a /join or /split side channel');
   });
 
   it('/end in a /join alias group: archives AND posts an "archived" audit line', async () => {
     const { cmds, sent, audit, calls } = harness({ state: stateWithJoin() });
-    await cmds.run(ev(JOIN_CHAT, '/end', 'favel (mirror)'));
+    await cmds.run(ev(JOIN_CHAT, '/end', 'fiona (mirror)'));
     expect(calls.archive).toEqual([{ chatId: JOIN_CHAT }]);
     expect(sent).toHaveLength(0);
     expect(audit).toHaveLength(1);
-    expect(audit[0]).toBe('/end in favel (mirror) by An → archived favel (mirror)');
+    expect(audit[0]).toBe('/end in fiona (mirror) by An → archived fiona (mirror)');
   });
 
   it('/end in a /split parent group: archives AND posts an "archived" audit line', async () => {
     const { cmds, audit, calls } = harness({ state: stateWithSplit() });
-    await cmds.run(ev(SPLIT_CHAT, '/end', 'split of favel'));
+    await cmds.run(ev(SPLIT_CHAT, '/end', 'split of fiona'));
     expect(calls.archive).toEqual([{ chatId: SPLIT_CHAT }]);
     expect(audit).toHaveLength(1);
     expect(audit[0]).toContain('→ archived');
@@ -102,12 +102,12 @@ describe('the audit is METADATA ONLY — a reply body can never leak into the lo
   it('/recap (a sensitive/large reply) posts an audit line with NO part of the reply body', async () => {
     const SECRET = 'SECRET-BACKLOG-BODY-xyz';
     const { cmds, sent, audit } = harness({ backlogOf: () => [{ sender: 'Alice', ts: 0, body: SECRET }] });
-    await cmds.run(ev(C_CHAT, '/recap', 'conversas con favel'));
+    await cmds.run(ev(C_CHAT, '/recap', 'conversas con fiona'));
     // the reply (with the sensitive body) went to the CHAT …
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toContain(SECRET);
     // … and the audit got ONLY the invocation line — no outcome, no body, ever
-    expect(audit).toEqual(['/recap in conversas con favel by An']);
+    expect(audit).toEqual(['/recap in conversas con fiona by An']);
     expect(audit[0]).not.toContain(SECRET);
   });
 });
@@ -115,14 +115,14 @@ describe('the audit is METADATA ONLY — a reply body can never leak into the lo
 describe('the audit is fail-closed — it never changes a command', () => {
   it('log_to_group OFF (the sink returns false): /end still archives and still posts nothing to the chat', async () => {
     const { cmds, sent, calls } = harness({ state: stateWithJoin(), logToGroup: async () => false });
-    await cmds.run(ev(JOIN_CHAT, '/end', 'favel'));
+    await cmds.run(ev(JOIN_CHAT, '/end', 'fiona'));
     expect(calls.archive).toEqual([{ chatId: JOIN_CHAT }]);   // behavior byte-identical to today
     expect(sent).toHaveLength(0);
   });
 
   it('a THROWING sink is swallowed — the command still runs to completion', async () => {
     const { cmds, calls } = harness({ state: stateWithJoin(), logToGroup: async () => { throw new Error('beeper down'); } });
-    await expect(cmds.run(ev(JOIN_CHAT, '/end', 'favel'))).resolves.toBeUndefined();
+    await expect(cmds.run(ev(JOIN_CHAT, '/end', 'fiona'))).resolves.toBeUndefined();
     expect(calls.archive).toEqual([{ chatId: JOIN_CHAT }]);
   });
 });
@@ -131,16 +131,16 @@ describe('the cross-account key is threaded to the sink (two-node convergence, 2
   it('auditCommand forwards ev.msgHash as { key } so boot can converge the two nodes onto one message', async () => {
     const calls = [];
     const { cmds } = harness({ state: stateWithJoin(), logToGroup: async (text, opts) => { calls.push({ text, opts }); return true; } });
-    await cmds.run({ ...ev(JOIN_CHAT, '/end', 'favel'), msgHash: 'deadbeef'.repeat(8) });
+    await cmds.run({ ...ev(JOIN_CHAT, '/end', 'fiona'), msgHash: 'deadbeef'.repeat(8) });
     expect(calls).toHaveLength(1);
-    expect(calls[0].text).toBe('/end in favel by An → archived favel');     // metadata only, unchanged
+    expect(calls[0].text).toBe('/end in fiona by An → archived fiona');     // metadata only, unchanged
     expect(calls[0].opts).toEqual({ key: 'deadbeef'.repeat(8) });           // the content hash, never a body
   });
 
   it('a command with no msgHash (a synthetic) forwards key:null — the sink then posts plainly', async () => {
     const calls = [];
     const { cmds } = harness({ state: seedC(), logToGroup: async (text, opts) => { calls.push({ text, opts }); return true; } });
-    await cmds.run(ev(C_CHAT, '/end', 'conversas con favel'));              // the ev helper carries no msgHash
+    await cmds.run(ev(C_CHAT, '/end', 'conversas con fiona'));              // the ev helper carries no msgHash
     expect(calls[0].opts).toEqual({ key: null });
   });
 });
@@ -148,14 +148,14 @@ describe('the cross-account key is threaded to the sink (two-node convergence, 2
 describe('what is NOT audited', () => {
   it('a non-"/"-message (reaches the catch-all) is never audited', async () => {
     const { cmds, sent, audit } = harness({ state: seedC() });
-    await cmds.run(ev(C_CHAT, 'hola, como estas', 'conversas con favel'));
+    await cmds.run(ev(C_CHAT, 'hola, como estas', 'conversas con fiona'));
     expect(audit).toHaveLength(0);                           // not a '/'-command → no audit
     expect(sent).toHaveLength(1);                            // (the catch-all still replied, unchanged)
   });
 
   it('a command naming ANOTHER node\'s being (/don status) is no command here — nothing runs, nothing is audited', async () => {
     const { cmds, audit, sent } = harness({ state: seedC() });
-    const cmd = cmds.commandOf({ ...ev(C_CHAT, '/don status', 'conversas con favel'), authorized: true });
+    const cmd = cmds.commandOf({ ...ev(C_CHAT, '/don status', 'conversas con fiona'), authorized: true });
     expect(cmd.commandElsewhere).toBe('don');                // the spine records it and runs nothing
     expect(await cmds.isCommand(cmd)).toBe(false);
     expect(audit).toHaveLength(0);

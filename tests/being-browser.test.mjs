@@ -216,7 +216,7 @@ describe('the link: a secret per boxed session, and one request', () => {
     const logs = [];
     let starts = 0;
     const link = createBeingLink({ port: 1, startBrowser: async () => { starts++; return { ok: true }; }, onLog: (m) => logs.push(m) });
-    for (const extra of [{ executable: 'C:/evil.exe' }, { args: ['--remote-debugging-port=1'] }, { port: 9999 }, { profile: 'C:/Users/an/AppData' }, { url: 'https://x' }]) {
+    for (const extra of [{ executable: 'C:/evil.exe' }, { args: ['--remote-debugging-port=1'] }, { port: 9999 }, { profile: 'C:/Users/user/AppData' }, { url: 'https://x' }]) {
       const r = await link.ask(E_IN_ACIM, parseAskFrame(JSON.stringify({ ask: 'browser', action: 'start', ...extra })));
       expect(r.ok).toBe(false);
       expect(r.reason).toBe('bad-request');
@@ -733,7 +733,7 @@ describe('the link: browser login runs /login\'s own limb for the being\'s group
   it('a being CANNOT name another chat/group/profile — a group field is refused as an argument, login never runs', async () => {
     let ran = 0;
     const { link } = loginLink({ requestLogin: () => { ran++; return 'logged-in'; } });
-    for (const extra of [{ site: 'x', group: 'other' }, { site: 'x', chatId: '!other' }, { site: 'x', profile: 'C:/Users/an' }]) {
+    for (const extra of [{ site: 'x', group: 'other' }, { site: 'x', chatId: '!other' }, { site: 'x', profile: 'C:/Users/user' }]) {
       const r = await login(link, extra);
       expect(r).toMatchObject({ ok: false, reason: 'bad-request' });
     }

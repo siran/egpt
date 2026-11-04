@@ -31,19 +31,19 @@ import { makeWrapPersona } from '../src/bridges/persona-wrap.mjs';
 import { replyLine } from '../src/transcript-log.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
-const ORIGIN = 'palma1';
-const TITLE = '🌴FAMILIA PALMA🌴';
+const ORIGIN = 'muestra1';
+const TITLE = '🌴FAMILIA MUESTRA🌴';
 const SPLIT = shortChatId('!side1:beeper.local');
 const SPLIT2 = shortChatId('!side2:beeper.local');
 const SPLIT_TITLE = `SI+${TITLE}-viaje`;
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const RODZ_DIGITS = '13472576794';
-const RODZ_USER_ID = '@whatsapp_lid-69433129173200:beeper.local';
-const AN_ID = '@anrodriguez:beeper.com';
-const LULU = '@whatsapp_lid-lulu42:beeper.local';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const RODZ_DIGITS = '15550100002';
+const RODZ_USER_ID = '@whatsapp_lid-10000000000015:beeper.local';
+const AN_ID = '@anaprueba:beeper.com';
+const LOLA = '@whatsapp_lid-lola42:beeper.local';
 const PEPE = '@whatsapp_lid-pepe7:beeper.local';
-const FULVIO = '@whatsapp_lid-fulvio9:beeper.local';
+const FABIO = '@whatsapp_lid-fulvio9:beeper.local';
 const SPEAKER = `E from [${TITLE}]`;
 
 const OPEN = { e: { handles: ['e'], conversation_defaults: { allowed_users: ['*'] } } };   // E answers anyone
@@ -54,11 +54,11 @@ const cfg = ({ agents = OPEN, mode = 'mention', tunnel = true } = {}) => ({
   node_name: 'kg', group_title: '{group}-{name}', agents, dispatch: { auto_default_mode: mode },
   ...(tunnel == null ? {} : { split: { tunnel } }),
 });
-const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LULU, phoneNumber: '+34600000000' }, { id: PEPE, phoneNumber: '+34611111111' }] } };
+const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LOLA, phoneNumber: '+34600000000' }, { id: PEPE, phoneNumber: '+34611111111' }] } };
 
 function seedState(entry = {}) {
   let st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: TITLE }).state;
-  st = recordThread(st, 'whatsapp', ORIGIN, 'palma-e-thread', '2026-10-01T00:00:00Z', 'e');
+  st = recordThread(st, 'whatsapp', ORIGIN, 'muestra-e-thread', '2026-10-01T00:00:00Z', 'e');
   return Object.keys(entry).length ? patchContact(st, 'whatsapp', ORIGIN, entry) : st;
 }
 
@@ -86,7 +86,7 @@ function harness({ config = cfg(), state = seedState(), chatRaw = async () => LI
   });
   return { cmds, calls, logs, config, getState: () => st };
 }
-const inChat = (chatId, chatName, body, extra = {}) => ({ chatId, surface: 'whatsapp', chatName, senderId: LULU, senderName: 'Lulu', msgId: 'm1', body, raw: { chatType: 'group' }, ...extra });
+const inChat = (chatId, chatName, body, extra = {}) => ({ chatId, surface: 'whatsapp', chatName, senderId: LOLA, senderName: 'Lola', msgId: 'm1', body, raw: { chatType: 'group' }, ...extra });
 const inOrigin = (body, extra) => inChat(ORIGIN, TITLE, body, extra);
 const asOperator = { senderId: AN_ID, senderName: 'An', isSender: true, authorized: true };
 async function typed(h, ev) {
@@ -139,7 +139,7 @@ function buildSpine(h, { replies = {}, timers = null, limbs = false } = {}) {
   const opened = () => [...bridge.streams.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null, canary: s.opts?.canary ?? null })), ...bridge.sent.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null, canary: s.opts?.canary ?? null }))];
   return { spine, brain, bridge, files, logs, opened, chats: () => opened().map((o) => o.chatId) };
 }
-const from = (over = {}) => ({ network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LULU, senderName: 'Lulu', isSender: false, ...over });
+const from = (over = {}) => ({ network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LOLA, senderName: 'Lola', isSender: false, ...over });
 let n = 0;
 const say = (spine, body, over = {}) => { const { atEStart, atEAnywhere } = mentionStatus(body, ['e']); return spine.handleInbound({ body, from: from({ msgKey: `k${++n}`, atEStart, atEAnywhere, ...over }) }); };
 const inSplit = (over = {}) => ({ chatId: SPLIT, chatName: SPLIT_TITLE, userId: PEPE, senderName: 'Pepe', ...over });
@@ -338,7 +338,7 @@ describe('in the split, anyone may call the being /split was typed to', () => {
 
   it('only that being: another resident keeps the rules it had in X', async () => {
     let st = seedState();
-    st = recordThread(st, 'whatsapp', ORIGIN, 'palma-ken-thread', '2026-10-01T00:00:00Z', 'ken');
+    st = recordThread(st, 'whatsapp', ORIGIN, 'muestra-ken-thread', '2026-10-01T00:00:00Z', 'ken');
     const h = harness({ config: cfg({ agents: { ...OWNERS, ken: { handles: ['ken'] } } }), state: st });
     await typed(h, inOrigin('/e split viaje'));
     expect(h.getState().contacts.whatsapp[SPLIT].agents.ken.allowed_users).toBeUndefined();
@@ -354,34 +354,34 @@ describe('in the split, anyone may call the being /split was typed to', () => {
 
 // ── 4. /split invite ─────────────────────────────────────────────────────────────────────────────
 describe('/<handle> split invite [<name>] also invites the members of X', () => {
-  it('REPRODUCE: a member\'s `/e split invite fulvio` invites Rodz + every member; the name is fulvio', async () => {
+  it('REPRODUCE: a member\'s `/e split invite fabio` invites Rodz + every member; the name is fabio', async () => {
     const h = harness();
-    await typed(h, inOrigin('/e split invite fulvio'));
-    expect(h.calls.create.map((c) => [c.title, c.participantIDs])).toEqual([[`SI+${TITLE}-fulvio`, [RODZ_USER_ID, LULU, PEPE]]]);
+    await typed(h, inOrigin('/e split invite fabio'));
+    expect(h.calls.create.map((c) => [c.title, c.participantIDs])).toEqual([[`SI+${TITLE}-fabio`, [RODZ_USER_ID, LOLA, PEPE]]]);
   });
 
-  it('REPRODUCE: the operator\'s `/e split invite fulvio` in a 1:1 with Fulvio invites Rodz + Fulvio', async () => {
-    const ONE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: FULVIO, phoneNumber: '+39300000000' }] } };
-    let st = ensureContact({ contacts: {} }, 'whatsapp', 'fulvio1', { pushedName: 'Fulvio' }).state;
-    st = recordThread(st, 'whatsapp', 'fulvio1', 'fulvio-e-thread', '2026-10-01T00:00:00Z', 'e');
+  it('REPRODUCE: the operator\'s `/e split invite fabio` in a 1:1 with Fabio invites Rodz + Fabio', async () => {
+    const ONE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: FABIO, phoneNumber: '+39300000000' }] } };
+    let st = ensureContact({ contacts: {} }, 'whatsapp', 'fulvio1', { pushedName: 'Fabio' }).state;
+    st = recordThread(st, 'whatsapp', 'fulvio1', 'fabio-e-thread', '2026-10-01T00:00:00Z', 'e');
     const h = harness({ state: st, chatRaw: async () => ONE });
-    await typed(h, inChat('fulvio1', 'Fulvio', '/e split invite fulvio', { ...asOperator, raw: { chatType: 'single' } }));
-    expect(h.calls.create.map((c) => [c.title, c.participantIDs])).toEqual([['SI+Fulvio-fulvio', [RODZ_USER_ID, FULVIO]]]);
+    await typed(h, inChat('fulvio1', 'Fabio', '/e split invite fabio', { ...asOperator, raw: { chatType: 'single' } }));
+    expect(h.calls.create.map((c) => [c.title, c.participantIDs])).toEqual([['SI+Fabio-fabio', [RODZ_USER_ID, FABIO]]]);
   });
 
   it('`invite` alone: every member, a random name', async () => {
     const h = harness();
     await typed(h, inOrigin('/e split INVITE'));
     const [c] = h.calls.create;
-    expect(c.participantIDs).toEqual([RODZ_USER_ID, LULU, PEPE]);
+    expect(c.participantIDs).toEqual([RODZ_USER_ID, LOLA, PEPE]);
     expect(/^[a-z0-9]{5}$/.test(c.title.slice(`SI+${TITLE}-`.length))).toBe(true);
   });
 
   it('regression lock: without `invite`, today\'s behaviour — the requester + Rodz (the operator: Rodz alone)', async () => {
     for (const [ev, ids, title] of [
-      [inOrigin('/e split fulvio'), [RODZ_USER_ID, LULU], 'fulvio'],
-      [inOrigin('/e split invited'), [RODZ_USER_ID, LULU], 'invited'],
-      [inOrigin('/e split fulvio', asOperator), [RODZ_USER_ID], 'fulvio'],
+      [inOrigin('/e split fabio'), [RODZ_USER_ID, LOLA], 'fabio'],
+      [inOrigin('/e split invited'), [RODZ_USER_ID, LOLA], 'invited'],
+      [inOrigin('/e split fabio', asOperator), [RODZ_USER_ID], 'fabio'],
     ]) {
       const h = harness();
       await typed(h, ev);

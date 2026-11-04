@@ -30,20 +30,20 @@ const KG = [
   "    fallback_order: [ remote, cli ] # dolly's worker first, local whisper-cli second",
   '    remote:',
   '      type: whisper-server-remote',
-  '      endpoint: http://192.168.1.102:23390',
+  '      endpoint: http://192.0.2.102:23390',
   '      token: FIXTURE-TOKEN',
   '      connect_timeout_ms: 3000',
   '      timeout_ms: 120000',
   '      cooldown_ms: 30000',
   '    cli:',
   '      type: whisper-cli',
-  '      command: C:\\Users\\an\\bin\\whisper.cpp\\whisper-cli.exe',
-  '      model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
+  '      command: C:\\Users\\user\\bin\\whisper.cpp\\whisper-cli.exe',
+  '      model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
   "      language: auto # NOT absent: whisper.cpp defaults to 'en', and a pinned language makes it mis-hear the other one fluently",
   '      threads: 12',
   '',
   'radio_service:',
-  '  wildnloyal:',
+  '  examplefm:',
   '    enabled: true',
   '',
 ].join('\r\n');
@@ -55,7 +55,7 @@ const DO = `transcriptor:
     enabled: true
 transcription:
   cli:
-    model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin
+    model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin
 transcription_service:
   enabled: true
   use_config: do
@@ -75,7 +75,7 @@ transcription_service:
     cli:
       type: whisper-cli
       # base (142MB), NOT large-v3 (2.9GB): hand-applied operator 2026-09-15.
-      model_path: C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-base.bin
+      model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-base.bin
       language: auto   # auto-detect (operator 2026-09-02).
 `;
 

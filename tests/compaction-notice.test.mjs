@@ -80,8 +80,8 @@ describe('compaction: the notice', () => {
 
 describe('compactedNotice: the line itself', () => {
   it('names the node, the being, the conversation and the size - every node posts into one channel', () => {
-    expect(compactedNotice({ node: 'kg', label: 'E', chat: 'Favel Konefka', tokens: 480_000 }))
-      .toBe('🗜️ kg · E in Favel Konefka compacted its context (was 480k tokens). The full history stays in its transcript.md.');
+    expect(compactedNotice({ node: 'kg', label: 'E', chat: 'Fiona Ejemplar', tokens: 480_000 }))
+      .toBe('🗜️ kg · E in Fiona Ejemplar compacted its context (was 480k tokens). The full history stays in its transcript.md.');
   });
   it('rounds to thousands', () => {
     expect(compactedNotice({ node: 'do', label: 'Ken', chat: 'acim', tokens: 213_499 }))
@@ -99,8 +99,8 @@ describe('compactedNotice: the line itself', () => {
 // pure builder only adds the same node · chat prefix compactedNotice uses.
 describe('warnNotice: the pre-compaction line itself', () => {
   it('prefixes node · chat, then the service-built body', () => {
-    expect(warnNotice({ node: 'kg', label: 'E', chat: 'Favel Konefka', text: 'the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md' }))
-      .toBe('🗜️ kg · E in Favel Konefka: the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md');
+    expect(warnNotice({ node: 'kg', label: 'E', chat: 'Fiona Ejemplar', text: 'the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md' }))
+      .toBe('🗜️ kg · E in Fiona Ejemplar: the conversation is at 17%, handoff being written, compaction next. you can read the handoff here: /c/handoffs/e.handoff.md');
   });
   it('leaves out an unknown node or chat rather than inventing it', () => {
     expect(warnNotice({ label: 'E', chat: 'acim', text: 'at 18%' })).toBe('🗜️ E in acim: at 18%');

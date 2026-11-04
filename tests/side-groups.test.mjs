@@ -35,21 +35,21 @@ import { shortChatId } from '../src/bridges/chat-id.mjs';
 import { encodeNodeSignature, encodeChatCanary, decodeChatCanary } from '../src/node-signature.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
-const ORIGIN = 'palma1';
-const TITLE = '🌴FAMILIA PALMA🌴';
+const ORIGIN = 'muestra1';
+const TITLE = '🌴FAMILIA MUESTRA🌴';
 const SIDE_FULL = '!side1:beeper.local';
 const SIDE = shortChatId(SIDE_FULL);
 const SIDE2_FULL = '!side2:beeper.local';
 const SEC = (id) => `!sec-${id}`;      // Rodz's own room for the group the primary made as `id`
 const ADMIN = 'admin1';
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const RODZ_DIGITS = '13472576794';
-const RODZ_USER_ID = '@whatsapp_lid-69433129173200:beeper.local';
-const AN_ID = '@anrodriguez:beeper.com';
-const LULU = '@whatsapp_lid-lulu42:beeper.local';
-const LULU_DIGITS = '34600000000';
-const LULU_ON_SEC = '@whatsapp_34600000000:beeper.local';   // the secondary's own id for Lulu
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const RODZ_DIGITS = '15550100002';
+const RODZ_USER_ID = '@whatsapp_lid-10000000000015:beeper.local';
+const AN_ID = '@anaprueba:beeper.com';
+const LOLA = '@whatsapp_lid-lola42:beeper.local';
+const LOLA_DIGITS = '34600000000';
+const LOLA_ON_SEC = '@whatsapp_34600000000:beeper.local';   // the secondary's own id for Lola
 const PEPE = '@whatsapp_lid-pepe7:beeper.local';
 
 const cfg = ({ node_role = 'primary', secondary = true, extra = {} } = {}) => ({
@@ -59,14 +59,14 @@ const cfg = ({ node_role = 'primary', secondary = true, extra = {} } = {}) => ({
 
 function seedState({ entry = {} } = {}) {
   let st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: TITLE }).state;
-  st = recordThread(st, 'whatsapp', ORIGIN, 'palma-e-thread', '2026-10-01T00:00:00Z', 'e');
+  st = recordThread(st, 'whatsapp', ORIGIN, 'muestra-e-thread', '2026-10-01T00:00:00Z', 'e');
   if (Object.keys(entry).length) st = patchContact(st, 'whatsapp', ORIGIN, entry);
   return ensureContact(st, 'whatsapp', ADMIN, { pushedName: 'eGPT Admin' }).state;
 }
 const AUTOMATIC = { reply_in_side_group: true };
 
 // The chat as the primary sees it: the operator (self), Rodz, two members.
-const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LULU, phoneNumber: `+${LULU_DIGITS}` }, { id: PEPE, phoneNumber: '+34611111111' }] } };
+const LIVE = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }, { id: LOLA, phoneNumber: `+${LOLA_DIGITS}` }, { id: PEPE, phoneNumber: '+34611111111' }] } };
 
 // secIds: digits → the secondary's own id for that phone (its rosters); absent → no match there.
 // copyArrives: Rodz's account receives its copy of what the primary posts, in its own room SEC(<id>).
@@ -118,8 +118,8 @@ function harness({ config = cfg(), state, chatRaw = async () => LIVE, created = 
   return { cmds, sent, logs, calls, config, getState: () => st, setState: (s) => { st = s; }, rodzGot: (chatId, text) => rodzSaw.push({ chatID: SEC(chatId), text }) };
 }
 
-// Lulu: a member of the group, not the operator, not on any allowed_users list.
-const inOrigin = (body, extra = {}) => ({ chatId: ORIGIN, surface: 'whatsapp', chatName: TITLE, senderId: LULU, senderName: 'Lulu', msgId: 'm1', body, raw: { chatType: 'group' }, ...extra });
+// Lola: a member of the group, not the operator, not on any allowed_users list.
+const inOrigin = (body, extra = {}) => ({ chatId: ORIGIN, surface: 'whatsapp', chatName: TITLE, senderId: LOLA, senderName: 'Lola', msgId: 'm1', body, raw: { chatType: 'group' }, ...extra });
 const asOperator = { senderId: AN_ID, senderName: 'An', isSender: true, authorized: true };
 async function typed(h, ev) {
   const cmd = h.cmds.commandOf(ev) ?? ev;
@@ -195,10 +195,10 @@ describe('who may run the side-group commands', () => {
 });
 
 describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the requester', () => {
-  it('/split viaje by a member: made on the primary with Rodz + Lulu, a new conversation, its mouth room by id', async () => {
+  it('/split viaje by a member: made on the primary with Rodz + Lola, a new conversation, its mouth room by id', async () => {
     const h = harness();
     await typed(h, inOrigin('/e split viaje'));
-    expect(h.calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_USER_ID, LULU], type: 'group', title: `SI+${TITLE}-viaje`, via: 'primary' }]);
+    expect(h.calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_USER_ID, LOLA], type: 'group', title: `SI+${TITLE}-viaje`, via: 'primary' }]);
     const split = getContact(h.getState(), 'whatsapp', SIDE);
     expect(split.jid).toBe(SIDE);
     expect(split.entry.parent_chat).toBe(ORIGIN);
@@ -228,14 +228,14 @@ describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the reques
     const h = harness({ state: seedState({ entry: AUTOMATIC }), created: [SIDE_FULL, '!side3:beeper.local'] });
     expect(await h.cmds.autoSideGroup(inOrigin('e, hola'))).toBe(SIDE);   // before the split: an open split takes the replies (2026-10-31)
     await typed(h, inOrigin('/e split viaje'));
-    await typed(h, { chatId: SIDE, surface: 'whatsapp', chatName: 'x', senderId: LULU, senderName: 'Lulu', msgId: 's1', body: '/e send', replyToId: 'q1', raw: { chatType: 'group' } });
+    await typed(h, { chatId: SIDE, surface: 'whatsapp', chatName: 'x', senderId: LOLA, senderName: 'Lola', msgId: 's1', body: '/e send', replyToId: 'q1', raw: { chatType: 'group' } });
     expect(h.calls.create).toHaveLength(2);
     expect(h.calls.post.map((p) => [p.chatId, p.via])).toEqual([[SIDE, 'primary'], [shortChatId('!side3:beeper.local'), 'primary'], [ORIGIN, 'secondary']]);
     expect(h.calls.byTitle).toEqual([]);
   });
 
-  // Live 2026-10-19: a /join in "SI+EduWeb" made "SI+SI+EduWeb-facturacion"; /split shares the title.
-  for (const [origin, title] of [['SI+EduWeb', 'SI+EduWeb-x'], ['si+EduWeb', 'si+EduWeb-x'], ['Familia', 'SI+Familia-x']]) {
+  // Live 2026-10-19: a /join in "SI+Contoso" made "SI+SI+Contoso-facturacion"; /split shares the title.
+  for (const [origin, title] of [['SI+Contoso', 'SI+Contoso-x'], ['si+Contoso', 'si+Contoso-x'], ['Familia', 'SI+Familia-x']]) {
     it(`REPRODUCE: /split x in "${origin}" makes "${title}" — the SI+ prefix once`, async () => {
       const h = harness();
       await typed(h, inOrigin('/e split x', { chatName: origin }));
@@ -254,7 +254,7 @@ describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the reques
   it('no secondary configured: the primary creates it with only the requester', async () => {
     const h = harness({ config: cfg({ secondary: false }) });
     await typed(h, inOrigin('/e split viaje'));
-    expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [LULU]]]);
+    expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [LOLA]]]);
     expect(h.calls.post.map((p) => p.via)).toEqual(['primary']);
   });
 
@@ -267,9 +267,9 @@ describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the reques
 
   it('the requester is invited as heard, whichever connection heard them: nothing is looked up on the secondary', async () => {
     for (const connection of ['primary', 'secondary']) {
-      const h = harness({ secIds: { [LULU_DIGITS]: LULU_ON_SEC } });
+      const h = harness({ secIds: { [LOLA_DIGITS]: LOLA_ON_SEC } });
       await typed(h, inOrigin('/e split viaje', { connection }));
-      expect(h.calls.create[0].participantIDs).toEqual([RODZ_USER_ID, LULU]);
+      expect(h.calls.create[0].participantIDs).toEqual([RODZ_USER_ID, LOLA]);
       expect(h.calls.resolve.filter((r) => r.via === 'secondary')).toEqual([]);
     }
   });
@@ -283,9 +283,9 @@ describe('/split: the primary creates "SI+<group>-<name>" with Rodz + the reques
 });
 
 describe('/send and /end work for whoever is in the side group', () => {
-  const inSide = (body, extra = {}) => ({ chatId: SIDE, surface: 'whatsapp', chatName: `SI+${TITLE}-viaje`, senderId: LULU, senderName: 'Lulu', msgId: 's1', body, raw: { chatType: 'group' }, connection: 'secondary', ...extra });
+  const inSide = (body, extra = {}) => ({ chatId: SIDE, surface: 'whatsapp', chatName: `SI+${TITLE}-viaje`, senderId: LOLA, senderName: 'Lola', msgId: 's1', body, raw: { chatType: 'group' }, connection: 'secondary', ...extra });
   // A room /join made before it was retired (2026-10-25), as /join wrote it.
-  const joinRoom = () => aliasContact(seedState(), 'whatsapp', SIDE, ORIGIN, { transcript: `SI+${TITLE}-viaje`, join_name: 'viaje', join_by: 'Lulu', join_by_id: LULU });
+  const joinRoom = () => aliasContact(seedState(), 'whatsapp', SIDE, ORIGIN, { transcript: `SI+${TITLE}-viaje`, join_name: 'viaje', join_by: 'Lola', join_by_id: LOLA });
 
   it('/send from a member: handed to the mouth (via secondary) by the origin\'s own id, signed, never as the operator', async () => {
     const h = harness({ state: joinRoom() });
@@ -407,7 +407,7 @@ function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 
   const opened = () => [...bridge.streams.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null })), ...bridge.sent.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null }))];
   return { spine, brain, bridge, opened, notes };
 }
-const from = (over = {}) => ({ network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LULU, senderName: 'Lulu', isSender: false, ...over });
+const from = (over = {}) => ({ network: 'whatsapp', chatId: ORIGIN, chatName: TITLE, userId: LOLA, senderName: 'Lola', isSender: false, ...over });
 // The bridge stamps the mention (atEStart/atEAnywhere) on the arrival; so does this.
 const say = (spine, body, over = {}) => { const { atEStart, atEAnywhere } = mentionStatus(body, ['e']); return spine.handleInbound({ body, from: from({ msgKey: `k-${body}`, atEStart, atEAnywhere, ...over }) }); };
 const ASK = 'e, hola a todos';   // addressed
@@ -460,10 +460,10 @@ describe('reply_in_side_group: the switch on the chat\'s own entry', () => {
     }
   });
 
-  it('REPRODUCE: the automatic group of "SI+EduWeb" is "SI+EduWeb", the same title as its origin (titles may repeat)', async () => {
+  it('REPRODUCE: the automatic group of "SI+Contoso" is "SI+Contoso", the same title as its origin (titles may repeat)', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
-    expect(await h.cmds.autoSideGroup(inOrigin('e, hola', { chatName: 'SI+EduWeb' }))).toBe(SIDE);
-    expect(h.calls.create.map((c) => c.title)).toEqual(['SI+EduWeb']);
+    expect(await h.cmds.autoSideGroup(inOrigin('e, hola', { chatName: 'SI+Contoso' }))).toBe(SIDE);
+    expect(h.calls.create.map((c) => c.title)).toEqual(['SI+Contoso']);
   });
 
   it('a title that already exists is used as is: no suffix, no lookup by title', async () => {
@@ -562,7 +562,7 @@ describe('config.yaml reply_in_side_group: the node default for group chats (ope
   });
 
   it('on, a Telegram group (the bot\'s or one Beeper bridges) → in place', async () => {
-    for (const chatId of ['tg:-1004301923150', 'tgBeeperRoom00000001']) {
+    for (const chatId of ['tg:-1000000000104', 'tgBeeperRoom00000001']) {
       const st = ensureContact(seedState(), 'telegram', chatId, { pushedName: 'TG' }).state;
       const h = harness({ config: ON, state: st });
       expect(await h.cmds.autoSideGroup({ chatId, surface: 'telegram', chatName: 'TG', raw: GROUP }), chatId).toBe(null);
@@ -621,7 +621,7 @@ describe('the automatic group: made on the primary with Rodz + every member of t
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
     const b = buildSpine(h);
     await say(b.spine, ASK);
-    expect(h.calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_USER_ID, LULU, PEPE], type: 'group', title: `SI+${TITLE}`, via: 'primary' }]);
+    expect(h.calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_USER_ID, LOLA, PEPE], type: 'group', title: `SI+${TITLE}`, via: 'primary' }]);
     expect(h.getState().contacts.whatsapp[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true });
     expect(b.brain.calls).toEqual([{ being: 'e', chatId: ORIGIN }]);
     expect(b.opened()).toEqual([{ chatId: SIDE, replyTo: null }]);
@@ -632,17 +632,17 @@ describe('the automatic group: made on the primary with Rodz + every member of t
       const h = harness({ state: seedState({ entry: AUTOMATIC }) });
       const b = buildSpine(h);
       await say(b.spine, `e, estas?${over.isSender ? '' : encodeNodeSignature('do', 'don')}`, over);
-      expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [RODZ_USER_ID, LULU, PEPE]]]);
+      expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [RODZ_USER_ID, LOLA, PEPE]]]);
       expect(chatsOf(b)).toEqual([SIDE]);
     }
   });
 
   it('no secondary: the primary creates it with the members alone', async () => {
-    const roster = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: LULU, phoneNumber: `+${LULU_DIGITS}` }, { id: PEPE, phoneNumber: '+34611111111' }] } };
+    const roster = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: LOLA, phoneNumber: `+${LOLA_DIGITS}` }, { id: PEPE, phoneNumber: '+34611111111' }] } };
     const h = harness({ config: cfg({ secondary: false }), state: seedState({ entry: AUTOMATIC }), chatRaw: async () => roster });
     const b = buildSpine(h);
     await say(b.spine, ASK);
-    expect(h.calls.create.map((c) => [c.via, c.participantIDs, c.title])).toEqual([['primary', [LULU, PEPE], `SI+${TITLE}`]]);
+    expect(h.calls.create.map((c) => [c.via, c.participantIDs, c.title])).toEqual([['primary', [LOLA, PEPE], `SI+${TITLE}`]]);
     expect(chatsOf(b)).toEqual([SIDE]);
   });
 
@@ -779,7 +779,7 @@ describe('every mode replies in the side group; a turn that stays silent makes n
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
     const b = buildSpine(h, { reply: 'Hola a todos', partials: ['…', 'Hola', 'Hola a todos'] });
     await say(b.spine, 'hola a todos');
-    expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [RODZ_USER_ID, LULU, PEPE]]]);
+    expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [RODZ_USER_ID, LOLA, PEPE]]]);
     expect(b.bridge.streams.map((s) => [s.chat, s.init, s.frames, s.finals])).toEqual([[SIDE, 'Hola a todos', [], ['Hola a todos']]]);
     expect(b.bridge.sent).toEqual([]);
   });

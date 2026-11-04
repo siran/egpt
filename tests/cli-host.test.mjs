@@ -114,7 +114,7 @@ describe('a spine restart never ends a claude session', () => {
     expect(two.woken).toEqual([{ key: KEY, summaries: ['audit — completed'], reply: 'the audit is done' }]);
   });
 
-  it('(b) a task still running at the reconnect keeps the agent that launched it and the CLI\'s ambient mark (An #2971)', async () => {
+  it('(b) a task still running at the reconnect keeps the agent that launched it and the CLI\'s ambient mark (operator 2026-10-31)', async () => {
     const w = world();
     const one = w.spine();
     await run(one, 'bg: run the audit');
@@ -345,7 +345,7 @@ describe('the host, across more than one restart', () => {
   });
 });
 
-// Live 2026-10-21 (kg, E in SI+EduWeb): a sandboxed session LRU-evicted, its launcher gone, the host still
+// Live 2026-10-21 (kg, E in SI+Contoso): a sandboxed session LRU-evicted, its launcher gone, the host still
 // listing it — adopted dead on every spine restart, the next turn written into nothing, the lane wedged for hours.
 describe('a dead held session never wedges a conversation', () => {
   const OTHER = 'egpt:ccode:whatsapp:other';

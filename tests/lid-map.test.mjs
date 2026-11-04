@@ -6,16 +6,16 @@ import { createLidMap } from '../src/lid-map.mjs';
 describe('createLidMap.learn / learnPair', () => {
   it('learns a lid↔pn pairing and resolves both directions', () => {
     const m = createLidMap();
-    expect(m.learn('34836563681438:45@lid', '16468217865:45@s.whatsapp.net')).toBe(true);
-    expect(m.pnForLid('34836563681438@lid')).toBe('16468217865');
-    expect(m.lidForPn('16468217865@s.whatsapp.net')).toBe('34836563681438');
+    expect(m.learn('10000000000012:45@lid', '15550100001:45@s.whatsapp.net')).toBe(true);
+    expect(m.pnForLid('10000000000012@lid')).toBe('15550100001');
+    expect(m.lidForPn('15550100001@s.whatsapp.net')).toBe('10000000000012');
     expect(m.size).toBe(1);
   });
   it('is device- and suffix-independent (canonicalizes both sides)', () => {
     const m = createLidMap();
-    m.learn('34836563681438:45@lid', '16468217865@s.whatsapp.net');
-    expect(m.pnForLid('34836563681438_2')).toBe('16468217865');   // group sender-key form
-    expect(m.pnForLid('34836563681438:99@lid')).toBe('16468217865'); // any device
+    m.learn('10000000000012:45@lid', '15550100001@s.whatsapp.net');
+    expect(m.pnForLid('10000000000012_2')).toBe('15550100001');   // group sender-key form
+    expect(m.pnForLid('10000000000012:99@lid')).toBe('15550100001'); // any device
   });
   it('learnPair detects which side is the @lid regardless of order', () => {
     const m1 = createLidMap();
@@ -48,9 +48,9 @@ describe('createLidMap.learn / learnPair', () => {
 describe('counterpart (authorization helper)', () => {
   it('returns the pn for a lid and the lid for a pn', () => {
     const m = createLidMap();
-    m.learn('34836563681438@lid', '16468217865@s.whatsapp.net');
-    expect(m.counterpart('34836563681438@lid')).toBe('16468217865');
-    expect(m.counterpart('16468217865@s.whatsapp.net')).toBe('34836563681438');
+    m.learn('10000000000012@lid', '15550100001@s.whatsapp.net');
+    expect(m.counterpart('10000000000012@lid')).toBe('15550100001');
+    expect(m.counterpart('15550100001@s.whatsapp.net')).toBe('10000000000012');
   });
   it('returns null for an unknown id', () => {
     expect(createLidMap().counterpart('999@lid')).toBe(null);
@@ -60,8 +60,8 @@ describe('counterpart (authorization helper)', () => {
 describe('pnJidForLid (self-DM delivery normalization)', () => {
   it('builds a sendable phone jid for a known lid', () => {
     const m = createLidMap();
-    m.learn('34836563681438@lid', '16468217865@s.whatsapp.net');
-    expect(m.pnJidForLid('34836563681438@lid')).toBe('16468217865@s.whatsapp.net');
+    m.learn('10000000000012@lid', '15550100001@s.whatsapp.net');
+    expect(m.pnJidForLid('10000000000012@lid')).toBe('15550100001@s.whatsapp.net');
     expect(m.pnJidForLid('999@lid')).toBe(null);
   });
 });

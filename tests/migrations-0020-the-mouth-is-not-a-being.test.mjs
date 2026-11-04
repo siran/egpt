@@ -39,7 +39,7 @@ const KG_BEFORE = [
 ];
 const RODZ = [
   '  # RODZ (operator) - a persona named after the mouth. `beeper.secondary` is the ACCOUNT',
-  '  # dolly.egpt@gmail.com, display name Rodz, and BOTH nodes speak through it.',
+  '  # mouth.acct@example.com, display name Rodz, and BOTH nodes speak through it.',
   '  rodz:',
   '    configuration: sonnet-high # config/agents/sonnet-high.yaml',
   '    personality: rodz # config/agents/identities/rodz.md',

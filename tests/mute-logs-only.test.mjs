@@ -9,7 +9,7 @@ import { createGating } from '../src/spine/gating.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
-const OP = '+16468217865';
+const OP = '+15550100001';
 const CHAT = { surface: 'whatsapp', chatId: '!g', chatName: 'grupo', kind: 'text', raw: { chatType: 'group' }, senderId: OP, senderName: 'An' };
 const msg = (body, extra = {}) => ({
   ...CHAT, body, msgId: `m-${Math.random()}`, ts: 1,

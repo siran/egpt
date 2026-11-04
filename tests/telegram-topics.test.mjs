@@ -79,14 +79,14 @@ function fakeApi() {
 }
 
 const now = () => Math.floor(Date.now() / 1000);
-const CHAT = { id: GROUP, type: 'supergroup', title: 'EduWeb', is_forum: true };
+const CHAT = { id: GROUP, type: 'supergroup', title: 'Contoso', is_forum: true };
 const AN = { id: 42, is_bot: false, first_name: 'An', last_name: 'R' };
 const DIEGO = { id: 77, is_bot: false, first_name: 'Diego' };
 let mid = 300;
 const inMain = (text, over = {}) => ({ message_id: ++mid, date: now(), chat: CHAT, from: AN, text, ...over });
 // The topic's creation message: every message in a topic that quotes nothing else quotes it.
 const root = (thread, name) => ({ message_id: thread, date: now(), chat: CHAT, from: ME, is_topic_message: true, message_thread_id: thread, forum_topic_created: { name, icon_color: 7322096 } });
-const inTopic = (thread, text, over = {}, name = 'SI+EduWeb-mygroup') => ({ message_id: ++mid, date: now(), chat: CHAT, from: AN, text, is_topic_message: true, message_thread_id: thread, reply_to_message: root(thread, name), ...over });
+const inTopic = (thread, text, over = {}, name = 'SI+Contoso-mygroup') => ({ message_id: ++mid, date: now(), chat: CHAT, from: AN, text, is_topic_message: true, message_thread_id: thread, reply_to_message: root(thread, name), ...over });
 
 const sends = (api) => api.of('sendMessage').map((c) => c.body);
 const inGeneral = (b) => b.chat_id === String(GROUP) && b.message_thread_id == null;
@@ -110,10 +110,10 @@ describe('telegram limb — a side room is a forum topic', () => {
     const api = fakeApi();
     const { bridge } = start(api);
     await bridge.startupReady;
-    const made = await bridge.createGroup({ title: 'SI+EduWeb-mygroup', participantIDs: [] }, { chatId: MAIN });
-    expect(api.of('createForumTopic')[0].body).toEqual({ chat_id: String(GROUP), name: 'SI+EduWeb-mygroup' });
+    const made = await bridge.createGroup({ title: 'SI+Contoso-mygroup', participantIDs: [] }, { chatId: MAIN });
+    expect(api.of('createForumTopic')[0].body).toEqual({ chat_id: String(GROUP), name: 'SI+Contoso-mygroup' });
     expect(made).toEqual({ success: true, chatID: TOPIC, link: LINK });
-    expect(bridge.getChatName(TOPIC)).toBe('SI+EduWeb-mygroup');
+    expect(bridge.getChatName(TOPIC)).toBe('SI+Contoso-mygroup');
     // made from inside a topic: still a topic of the group
     expect((await bridge.createGroup({ title: 'otro' }, { chatId: TOPIC })).chatID).toBe(`${MAIN}/78`);
     expect(api.of('createForumTopic')[1].body.chat_id).toBe(String(GROUP));
@@ -138,7 +138,7 @@ describe('telegram limb — a side room is a forum topic', () => {
     await bridge.startupReady;
     api.updates(inTopic(77, 'hola'));
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
-    expect(incoming[0].from).toMatchObject({ chatId: TOPIC, chatName: 'SI+EduWeb-mygroup', chatType: 'group', replyToId: null, replyToBot: false });
+    expect(incoming[0].from).toMatchObject({ chatId: TOPIC, chatName: 'SI+Contoso-mygroup', chatType: 'group', replyToId: null, replyToBot: false });
     expect(topicGroupOf(TOPIC)).toBe(MAIN);
     bridge.stop();
   });
@@ -152,7 +152,7 @@ describe('telegram limb — a side room is a forum topic', () => {
     await vi.waitFor(() => expect(incoming).toHaveLength(2));
     const byBody = Object.fromEntries(incoming.map((i) => [i.body, i.from]));
     expect(byBody.re).toMatchObject({ chatId: TOPIC, replyToId: '400', replyToBot: true });
-    expect(byBody.general).toMatchObject({ chatId: MAIN, chatName: 'EduWeb' });
+    expect(byBody.general).toMatchObject({ chatId: MAIN, chatName: 'Contoso' });
     bridge.stop();
   });
 
@@ -186,7 +186,7 @@ describe('telegram limb — a side room is a forum topic', () => {
     await vi.waitFor(() => expect(incoming).toHaveLength(1));
     api.raw({ message_reaction: { chat: CHAT, message_id: m.message_id, user: DIEGO, date: now(), old_reaction: [], new_reaction: [{ type: 'emoji', emoji: '👍' }] } });
     await vi.waitFor(() => expect(incoming).toHaveLength(2));
-    expect(incoming[1].from).toMatchObject({ chatId: TOPIC, chatName: 'SI+EduWeb-mygroup', isReaction: true });
+    expect(incoming[1].from).toMatchObject({ chatId: TOPIC, chatName: 'SI+Contoso-mygroup', isReaction: true });
     bridge.stop();
   });
 
@@ -222,8 +222,8 @@ const TELEGRAM_ONLY = () => ({ node_name: 'EDW', user_name: 'John', limbs: { tel
 const MIXED = () => ({ ...TELEGRAM_ONLY(), node_name: 'kg', limbs: { beeper: { main: { account: 'you@example.com', token: 'TOK-b' } }, telegram: { main: { account: 'edw_bot' } } } });
 
 function seeded() {
-  let s = ensureContact(emptyState(), 'telegram', MAIN, { pushedName: 'EduWeb', slugHint: 'EduWeb' }).state;
-  s = recordThread(s, 'telegram', MAIN, 'eduweb-thread', '2026-10-01T00:00:00Z', 'egpt');
+  let s = ensureContact(emptyState(), 'telegram', MAIN, { pushedName: 'Contoso', slugHint: 'Contoso' }).state;
+  s = recordThread(s, 'telegram', MAIN, 'contoso-thread', '2026-10-01T00:00:00Z', 'egpt');
   s.contacts.telegram[MAIN].agents.egpt.mode = 'on';
   return s;
 }
@@ -279,15 +279,15 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
   it('/e split mygroup: a topic forked from the chat (its own entry and thread, the chat\'s folder); the answer is its link; the opener goes into it', async () => {
     const n = await bootNode();
     await splitInto(n);
-    expect(n.api.of('createForumTopic')[0].body).toEqual({ chat_id: String(GROUP), name: 'SI+EduWeb-mygroup' });
+    expect(n.api.of('createForumTopic')[0].body).toEqual({ chat_id: String(GROUP), name: 'SI+Contoso-mygroup' });
     const topic = n.state().contacts.telegram[TOPIC];
     expect(topic.aliasOf).toBeUndefined();
     expect(topic.slug).toBe(n.state().contacts.telegram[MAIN].slug);
-    expect(topic.transcript).toBe('SI+EduWeb-mygroup');
+    expect(topic.transcript).toBe('SI+Contoso-mygroup');
     expect(topic.agents.egpt.threadId).toBeTruthy();
-    expect(topic.agents.egpt.threadId).not.toBe('eduweb-thread');
+    expect(topic.agents.egpt.threadId).not.toBe('contoso-thread');
     await vi.waitFor(() => expect(sends(n.api).some((b) => inGeneral(b) && b.text.includes(LINK))).toBe(true));
-    await vi.waitFor(() => expect(sends(n.api).some((b) => b.message_thread_id === 77 && /Fork of EduWeb/.test(b.text))).toBe(true));
+    await vi.waitFor(() => expect(sends(n.api).some((b) => b.message_thread_id === 77 && /Fork of Contoso/.test(b.text))).toBe(true));
     n.app.stop();
   });
 
@@ -305,7 +305,7 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
     n.app.stop();
   });
 
-  // Live 2026-10-26 (EduWeb): the chat's allowed_users ['*'] did not reach its topics, so only the operator reached the being there.
+  // Live 2026-10-26 (Contoso): the chat's allowed_users ['*'] did not reach its topics, so only the operator reached the being there.
   it('the topic inherits the chat\'s being settings (allowed_users, mode): a team member is answered there too', async () => {
     const state = seeded();
     state.contacts.telegram[MAIN].agents.egpt.allowed_users = ['*'];
@@ -313,11 +313,11 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
     await splitInto(n);
     const egpt = n.state().contacts.telegram[TOPIC].agents.egpt;
     expect(egpt).toMatchObject({ mode: 'on', allowed_users: ['*'] });
-    expect(egpt.threadId).not.toBe('eduweb-thread');
+    expect(egpt.threadId).not.toBe('contoso-thread');
     n.api.updates(inTopic(77, '@e hola soy Diego', { from: DIEGO }));
     await answered(n.api, 'hola soy Diego');
     const room = Room.forChat('telegram', n.state().contacts.telegram[TOPIC].slug);
-    await vi.waitFor(async () => expect(await fs.readFile(room.transcriptPathFor('SI+EduWeb-mygroup'), 'utf8')).toContain('hola soy Diego'));
+    await vi.waitFor(async () => expect(await fs.readFile(room.transcriptPathFor('SI+Contoso-mygroup'), 'utf8')).toContain('hola soy Diego'));
     expect(await fs.readFile(room.transcriptPath, 'utf8').catch(() => '')).not.toContain('hola soy Diego');
     n.app.stop();
   });
@@ -362,7 +362,7 @@ describe('a Telegram node: /split makes a topic through the shared side-group pa
   });
 });
 
-// ── a topic made outside /split (live 2026-10-27, EduWeb /585): topics always fork the chat ───────
+// ── a topic made outside /split (live 2026-10-27, Contoso /585): topics always fork the chat ───────
 const OUTSIDE = 'Agente de ventas · documentos';
 const T585 = `${MAIN}/585`;
 const tgDirOf = (slug) => join(HOME, 'conversations', 'telegram', slug);
@@ -381,8 +381,8 @@ describe('a Telegram node: a topic made outside /split is a fork of the chat', (
     expect(topic).toMatchObject({ slug: main.slug, conversation_path: main.conversation_path, parent_chat: MAIN, transcript: sanitizeSlug(OUTSIDE), pushedName: OUTSIDE });
     expect(topic.agents.egpt).toMatchObject({ mode: 'on', allowed_users: ['*'] });
     expect(topic.agents.egpt.threadId).toBeTruthy();
-    expect(topic.agents.egpt.threadId).not.toBe('eduweb-thread');
-    expect(main.agents.egpt.threadId).toBe('eduweb-thread');
+    expect(topic.agents.egpt.threadId).not.toBe('contoso-thread');
+    expect(main.agents.egpt.threadId).toBe('contoso-thread');
     expect(basename(turns[0].cwd)).toBe(main.slug);
     expect(turns[0].sessionId).toBe(topic.agents.egpt.threadId);
     const room = Room.forChat('telegram', main.slug);
@@ -428,13 +428,13 @@ describe('a Telegram node: a topic made outside /split is a fork of the chat', (
 });
 
 // ── Topics on turns a basic group into a supergroup under a NEW id (migrate_to/from_chat_id) ──────
-const BASIC = 'tg:-5256478300';
+const BASIC = 'tg:-5000000101';
 const SUPER = 'tg:-1009999';
-const basicChat = { id: -5256478300, type: 'group', title: 'EduWeb' };
-const superChat = { id: -1009999, type: 'supergroup', title: 'EduWeb', is_forum: true };
+const basicChat = { id: -5000000101, type: 'group', title: 'Contoso' };
+const superChat = { id: -1009999, type: 'supergroup', title: 'Contoso', is_forum: true };
 const migrated = () => [
   { message_id: 50, date: now(), chat: basicChat, from: AN, migrate_to_chat_id: -1009999 },
-  { message_id: 1, date: now(), chat: superChat, from: AN, migrate_from_chat_id: -5256478300 },
+  { message_id: 1, date: now(), chat: superChat, from: AN, migrate_from_chat_id: -5000000101 },
 ];
 // What the Bot API answers anything sent to a group that became a supergroup.
 const UPGRADED = () => ({ status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: group chat was upgraded to a supergroup chat', parameters: { migrate_to_chat_id: -1009999 } }) });
@@ -447,8 +447,8 @@ const mediaFile = async () => {
 
 describe('moveChatId — a conversation follows its chat to a new id', () => {
   const base = () => {
-    let s = ensureContact(emptyState(), 'telegram', BASIC, { pushedName: 'EduWeb' }).state;
-    s = recordThread(s, 'telegram', BASIC, 'eduweb-thread', '2026-10-01T00:00:00Z', 'egpt');
+    let s = ensureContact(emptyState(), 'telegram', BASIC, { pushedName: 'Contoso' }).state;
+    s = recordThread(s, 'telegram', BASIC, 'contoso-thread', '2026-10-01T00:00:00Z', 'egpt');
     s = patchBeing(s, 'telegram', BASIC, 'egpt', { mode: 'on', allowed_users: ['42'] });
     s = ensureContact(s, 'telegram', 'tg:-777', { pushedName: 'otro' }).state;
     s = aliasContact(s, 'telegram', 'tg:-888', BASIC, { transcript: 'side' });
@@ -518,12 +518,12 @@ describe('telegram limb — a group turned supergroup', () => {
   it('a send refused because the group moved goes once more to the new id and hands the move over (a move missed across a restart)', async () => {
     const api = fakeApi();
     const sendDocument = api.answers.sendDocument;
-    api.answers.sendDocument = (b) => (b.chat_id === '-5256478300' ? UPGRADED() : sendDocument(b));
+    api.answers.sendDocument = (b) => (b.chat_id === '-5000000101' ? UPGRADED() : sendDocument(b));
     const moves = [];
     const { bridge } = start(api, { onChatMoved: (from, to) => { moves.push([from, to]); } });
     await bridge.startupReady;
     expect((await bridge.sendMedia(BASIC, await mediaFile())).ok).toBe(true);
-    expect(api.of('sendDocument').map((c) => c.body.chat_id)).toEqual(['-5256478300', '-1009999']);
+    expect(api.of('sendDocument').map((c) => c.body.chat_id)).toEqual(['-5000000101', '-1009999']);
     expect(moves).toEqual([[BASIC, SUPER]]);
     await bridge.send('hola', { chatId: BASIC });   // known now: straight to the new id
     expect(api.of('sendMessage').map((c) => c.body.chat_id)).toEqual(['-1009999']);
@@ -533,8 +533,8 @@ describe('telegram limb — a group turned supergroup', () => {
 
 describe('a Telegram node: the conversation follows the chat to its new id', () => {
   const basicSeed = () => {
-    let s = ensureContact(emptyState(), 'telegram', BASIC, { pushedName: 'EduWeb', slugHint: 'EduWeb' }).state;
-    s = recordThread(s, 'telegram', BASIC, 'eduweb-thread', '2026-10-01T00:00:00Z', 'egpt');
+    let s = ensureContact(emptyState(), 'telegram', BASIC, { pushedName: 'Contoso', slugHint: 'Contoso' }).state;
+    s = recordThread(s, 'telegram', BASIC, 'contoso-thread', '2026-10-01T00:00:00Z', 'egpt');
     return patchBeing(s, 'telegram', BASIC, 'egpt', { mode: 'on', allowed_users: ['42'] });
   };
 
@@ -557,16 +557,16 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     expect(n.state().contacts.telegram[SUPER].slug).toBe(before.slug);
     // the migrate pair made no folder; the lines after the move carry the group's title
     expect((await dirs()).filter((d) => !dirsBefore.includes(d) && d !== before.slug)).toEqual([]);
-    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8')).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ /));
+    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8')).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): ↩ /));
     const tx = await fs.readFile(join(tgDir, before.slug, 'transcript.md'), 'utf8');
-    expect(tx).toMatch(/An R@\[EduWeb\]\.tg \(\d\d:\d\d\) #2: seguimos aquí/);
-    expect(tx).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ /);
+    expect(tx).toMatch(/An R@\[Contoso\]\.tg \(\d\d:\d\d\) #2: seguimos aquí/);
+    expect(tx).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): ↩ /);
     expect(tx).not.toMatch(/@\[telegram\]/);
     n.app.stop();
   });
 
   it('a turn still running in the old group when it moves files its reply in the moved conversation: nothing is registered for the old id', async () => {
-    const SLUG = 'EduWeb-2610240312';   // made days before the move, as live
+    const SLUG = 'Contoso-2610240312';   // made days before the move, as live
     const state = patchContact(basicSeed(), 'telegram', BASIC, { slug: SLUG, conversation_path: conversationPathOf('telegram', SLUG) });
     let release, started;
     const gate = new Promise((r) => { release = r; });
@@ -580,7 +580,7 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     await vi.waitFor(() => expect(n.state().contacts.telegram[SUPER]).toBeTruthy());
     release();
     await answered(n.api, 'hola antes');
-    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, SLUG, 'transcript.md'), 'utf8')).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): ↩ .*#49: hola antes/));
+    await vi.waitFor(async () => expect(await fs.readFile(join(tgDir, SLUG, 'transcript.md'), 'utf8')).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): ↩ .*#49: hola antes/));
     expect(Object.keys(n.state().contacts.telegram)).toEqual([SUPER]);
     expect(await dirs()).toEqual(dirsBefore);
     n.app.stop();
@@ -590,7 +590,7 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
     const n = await bootNode(TELEGRAM_ONLY(), { state: basicSeed() });
     const before = n.state().contacts.telegram[BASIC];
     const sendMessage = n.api.answers.sendMessage;
-    n.api.answers.sendMessage = (b) => (b.chat_id === '-5256478300' ? UPGRADED() : sendMessage(b));
+    n.api.answers.sendMessage = (b) => (b.chat_id === '-5000000101' ? UPGRADED() : sendMessage(b));
     n.api.updates({ message_id: 60, date: now(), chat: basicChat, from: AN, text: 'última en el grupo viejo' });
     await answered(n.api, 'última en el grupo viejo');
     expect(n.api.of('editMessageText').find((c) => c.body.text.includes('última en el grupo viejo')).body.chat_id).toBe('-1009999');
@@ -602,7 +602,7 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
   it('a closed_chats rule naming the old id is renamed to the new one in config.yaml, nothing else in the file changes', async () => {
     const cfgPath = join(HOME, 'config', 'config.yaml');
     await fs.mkdir(join(HOME, 'config'), { recursive: true });
-    const text = '# the node\nclosed_chats:\n  telegram:\n    "tg:-5256478300": { message: "cerrado" }   # EduWeb\n  whatsapp:\n    abc: {}\n';
+    const text = '# the node\nclosed_chats:\n  telegram:\n    "tg:-5000000101": { message: "cerrado" }   # Contoso\n  whatsapp:\n    abc: {}\n';
     await fs.writeFile(cfgPath, text);
     try {
       const n = await bootNode({ ...TELEGRAM_ONLY(), closed_chats: { telegram: { [BASIC]: { message: 'cerrado' } }, whatsapp: { abc: {} } } }, { state: basicSeed() });
@@ -621,21 +621,21 @@ describe('a Telegram node: a turn the spine starts names its chat like any other
     const n = await bootNode();
     const ns = `telegram/${slug(n)}`;
     await n.app.dispatchHeartbeatTurn({ being: 'egpt', ns, prompt: 'latido de prueba', name: `${ns}:latido` });
-    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): .*latido de prueba/);
+    expect(await tx(n)).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): .*latido de prueba/);
     n.app.stop();
   });
 
   it('a heartbeat post', async () => {
     const n = await bootNode();
     await n.app.dispatchHeartbeatPost({ ns: `telegram/${slug(n)}`, text: 'el primo es 1637' });
-    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): el primo es 1637/);
+    expect(await tx(n)).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): el primo es 1637/);
     n.app.stop();
   });
 
   it('a background wake', async () => {
     const n = await bootNode();
     await n.app.spine.wakeOnBackground({ being: 'egpt', surface: 'telegram', chatId: MAIN, summaries: ['benchmark — completed'] });
-    expect(await tx(n)).toMatch(/@\[EduWeb\]\.tg \(\d\d:\d\d\): .*finished: benchmark — completed/);
+    expect(await tx(n)).toMatch(/@\[Contoso\]\.tg \(\d\d:\d\d\): .*finished: benchmark — completed/);
     expect(await tx(n)).not.toMatch(/@\[telegram\]/);
     n.app.stop();
   });
@@ -647,10 +647,10 @@ describe('a node with Beeper and Telegram: each /split makes its room on the cha
     let state = ensureContact(seeded(), 'whatsapp', 'wachat', { pushedName: 'fam', slugHint: 'fam' }).state;
     state = recordThread(state, 'whatsapp', 'wachat', 'fam-thread', '2026-10-01T00:00:00Z', 'egpt');
     const n = await bootNode(MIXED(), { state, beeper });
-    const LULU = '@whatsapp_lid-1:beeper.local';
-    await beeper.built[0].onIncoming('/e split viaje', { chatId: 'wachat', chatName: 'fam', chatType: 'group', network: 'whatsapp', userId: LULU, senderName: 'Lulu', authorized: false, isSender: false, msgKey: 'w1' });
+    const LOLA = '@whatsapp_lid-1:beeper.local';
+    await beeper.built[0].onIncoming('/e split viaje', { chatId: 'wachat', chatName: 'fam', chatType: 'group', network: 'whatsapp', userId: LOLA, senderName: 'Lola', authorized: false, isSender: false, msgKey: 'w1' });
     await vi.waitFor(() => expect(beeper.built[0].groups).toHaveLength(1));
-    expect(beeper.built[0].groups[0].opts).toEqual({ accountID: 'whatsapp', participantIDs: [LULU], type: 'group', title: 'SI+fam-viaje' });
+    expect(beeper.built[0].groups[0].opts).toEqual({ accountID: 'whatsapp', participantIDs: [LOLA], type: 'group', title: 'SI+fam-viaje' });
     await vi.waitFor(() => expect(n.state().contacts.whatsapp.wanew?.parent_chat).toBe('wachat'));
     expect(n.state().contacts.whatsapp.wanew).not.toHaveProperty('link');
     await vi.waitFor(() => expect(beeper.built[0].sent.some((s) => s.chatId === 'wanew' && /Fork of fam/.test(s.text))).toBe(true));

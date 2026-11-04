@@ -44,14 +44,14 @@ const taskXml = (name) => [
   '  </Settings>',
   '  <Triggers>',
   '    <LogonTrigger>',
-  '      <UserId>DOLLY\\an</UserId>',
+  '      <UserId>DOLLY\\user</UserId>',
   '    </LogonTrigger>',
   '  </Triggers>',
   '  <Actions Context="Author">',
   '    <Exec>',
   '      <Command>C:\\WINDOWS\\System32\\wscript.exe</Command>',
-  '      <Arguments>"C:\\Users\\an\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\an\\bin\\egpt" "C:\\Users\\an\\.egpt" "C:\\Users\\an\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
-  '      <WorkingDirectory>C:\\Users\\an\\bin\\egpt</WorkingDirectory>',
+  '      <Arguments>"C:\\Users\\user\\bin\\egpt\\setup\\session1-daemon-launcher.vbs" "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\bin\\egpt" "C:\\Users\\user\\.egpt" "C:\\Users\\user\\.egpt\\config\\logs\\session1-daemon.log"</Arguments>',
+  '      <WorkingDirectory>C:\\Users\\user\\bin\\egpt</WorkingDirectory>',
   '    </Exec>',
   '  </Actions>',
   '</Task>',
@@ -85,7 +85,7 @@ function fakeScheduler(tasks, { onRegister = (name, xml) => ({ xml, dacl: DACL, 
   return { store, calls, ps };
 }
 
-const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\an\\.egpt', log: () => {}, ps: sched.ps, ...over });
+const ctxWith = (sched, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\user\\.egpt', log: () => {}, ps: sched.ps, ...over });
 const LIVE = () => ({ 'egpt-session1-daemon': { xml: taskXml('egpt-session1-daemon'), dacl: DACL, state: 4 } });
 
 describe('0002 plans the rename on kg and do (both still carry egpt-session1-daemon, running)', () => {
@@ -108,7 +108,7 @@ describe('0002 plans the rename on kg and do (both still carry egpt-session1-dae
 
   it('a second profile folder derives its own names', async () => {
     const sched = fakeScheduler({ 'egpt-secondary-session1-daemon': { xml: taskXml('egpt-secondary-session1-daemon'), dacl: DACL, state: 3 } });
-    const p = await plan(ctxWith(sched, { egptHome: 'C:\\Users\\an\\.egpt-secondary' }));
+    const p = await plan(ctxWith(sched, { egptHome: 'C:\\Users\\user\\.egpt-secondary' }));
     expect(p.changes[0]).toContain('register scheduled task egpt-secondary-daemon');
   });
 });

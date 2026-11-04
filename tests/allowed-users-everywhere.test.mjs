@@ -1,5 +1,5 @@
 // "No mode is above allowed_users" (operator 2026-10-16). Live on dg: the persona Queen D (agents.egpt,
-// handles [q], allowed_users [@dagiely]) woke on "q …" from a sender NOT on that list. The explicit `q`
+// handles [q], allowed_users [@dalia]) woke on "q …" from a sender NOT on that list. The explicit `q`
 // hit was dropped by allowed_users, and the persona fall-through then woke her anyway on the bridge's
 // atE. Every wake the router hands out is now tested against the woken being's allowed_users; a denied
 // line is still recorded and wakes nobody.
@@ -9,8 +9,8 @@ import { createGating } from '../src/spine/gating.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
-const X = '@dagiely:beeper.com';
-const Y = '@anrodriguez:beeper.com';
+const X = '@dalia:beeper.com';
+const Y = '@anaprueba:beeper.com';
 const CHAT = { surface: 'whatsapp', chatId: '!g', chatName: 'grupo', kind: 'text', raw: { chatType: 'group' } };
 
 const queen = (mode = 'mention', extra = {}) => ({

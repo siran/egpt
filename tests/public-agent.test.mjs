@@ -22,7 +22,7 @@ function fakeBridge() {
 function build({ isPublic = (b) => b === 'edw-marketer' } = {}) {
   const bridge = fakeBridge();
   const notices = [];
-  const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: (b) => (b === 'edw-marketer' ? 'EduWeb' : 'egpt'), publicOf: isPublic, noticeAdmin: async (n) => { notices.push(n); } });
+  const sender = createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: (b) => (b === 'edw-marketer' ? 'Contoso' : 'egpt'), publicOf: isPublic, noticeAdmin: async (n) => { notices.push(n); } });
   return { bridge, notices, open: (being, o = {}) => sender.open('!lead', { being, replyTo: 'm1', ...o }) };
 }
 
@@ -75,8 +75,8 @@ describe('sender — a public being: no placeholder, no error line, errors to th
 
   it('a reply that mentions an API error, even one opening with it, is delivered — no flag, no notice', async () => {
     const { bridge, notices, open } = build();
-    await open('edw-marketer').finish({ text: 'Si ves un "API Error" en EduWeb, escríbele a soporte.' });
-    await open('edw-marketer').finish({ text: 'API Error 403 en EduWeb significa que tu sesión expiró: vuelve a entrar.' });
+    await open('edw-marketer').finish({ text: 'Si ves un "API Error" en Contoso, escríbele a soporte.' });
+    await open('edw-marketer').finish({ text: 'API Error 403 en Contoso significa que tu sesión expiró: vuelve a entrar.' });
     expect(bridge.sent).toHaveLength(2);
     expect(notices).toEqual([]);
   });
@@ -118,12 +118,12 @@ describe('persona-wrap — a public being: no stamp, no visible layers; the invi
   const opts = { bridgeSignatureOpen: '', bridgeSignatureClose: '🏰', nodeName: 'kg' };
   const wrap = makeWrapPersona({ ...opts, plainOf: (p) => p === 'edw-marketer' });
   it('the reply text, then only the structural frame', () => {
-    const out = wrap({ bodyEmoji: '🐶', label: 'EduWeb', persona: 'edw-marketer', agentSigClose: '∎' }, 'Hola');
+    const out = wrap({ bodyEmoji: '🐶', label: 'Contoso', persona: 'edw-marketer', agentSigClose: '∎' }, 'Hola');
     expect(out).toBe(`Hola${encodeNodeSignature('kg', 'edw-marketer')}`);
-    expect(out).not.toMatch(/🐶|EduWeb|🏰|∎/);
+    expect(out).not.toMatch(/🐶|Contoso|🏰|∎/);
   });
   it('a limb caption or edit naming the being is plain too', () => {
-    expect(wrap({ bodyEmoji: '🐶', label: 'EduWeb', persona: 'edw-marketer' }, 'folleto.pdf')).toBe(`folleto.pdf${encodeNodeSignature('kg', 'edw-marketer')}`);
+    expect(wrap({ bodyEmoji: '🐶', label: 'Contoso', persona: 'edw-marketer' }, 'folleto.pdf')).toBe(`folleto.pdf${encodeNodeSignature('kg', 'edw-marketer')}`);
   });
   it('LOCK: E and system lines are wrapped exactly as without the flag', () => {
     const old = makeWrapPersona(opts);

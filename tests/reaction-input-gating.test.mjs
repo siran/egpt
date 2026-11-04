@@ -10,7 +10,7 @@ import { createIdentity } from '../src/spine/identity.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
 
-const OP = '+16468217865';
+const OP = '+15550100001';
 const base = { chatId: '!g', chatName: 'grupo', chatType: 'group', network: 'whatsapp', userId: OP, senderName: 'An', authorized: true, atEStart: false, atEAnywhere: false };
 // The two shapes the bridge hands the spine for one target message #m1.
 const reactionTo = (snippet, extra = {}) => ({ body: `reacted 👍 to #m1 "${snippet}"`, from: { ...base, isReaction: true, msgKey: 'm1', replyToBot: false, ...extra } });

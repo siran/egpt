@@ -146,7 +146,7 @@ async function bootWith(config) {
 // mention finding (this stub never computes it), so it is stated here.
 const deliver = (spy, body, chatId = '!room') => spy.onIncoming(body, {
   chatId, chatName: 'room', network: 'whatsapp',
-  userId: '+34658515045', senderName: 'Dando', authorized: true, msgKey: `m-${chatId}-${body.length}`,
+  userId: '+15550100005', senderName: 'Dario', authorized: true, msgKey: `m-${chatId}-${body.length}`,
   atEStart: true, atEAnywhere: true,
 });
 

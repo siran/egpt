@@ -31,7 +31,7 @@ const TOKEN = 'TOK-primary';
 const SELF_DM = '!self-dm';
 const ADMIN_ROOM = '!egpt-admin-room';
 const CHATS_BY_NAME = { 'eGPT Admin': ADMIN_ROOM };
-const NOTICE = '🗜️ kg · E in Favel Konefka compacted its context (was 480k tokens). The full history stays in its transcript.md.';
+const NOTICE = '🗜️ kg · E in Fiona Ejemplar compacted its context (was 480k tokens). The full history stays in its transcript.md.';
 
 function fakeTransport() {
   const built = [];
@@ -80,8 +80,8 @@ const QUIET_SESSION = (opts) => ({
 const config = (extra = {}) => ({
   node_name: 'kg',
   user_name: 'An',
-  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+16468217865'] } },
-  beeper: { primary: { account: 'anrodz42@example.com', token: TOKEN } },
+  networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+15550100001'] } },
+  beeper: { primary: { account: 'anaprueba42@example.com', token: TOKEN } },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
   ...extra,
 });
@@ -158,7 +158,7 @@ describe('the compaction notice goes to config.yaml\'s admin_channel', () => {
 // "reconfigure, don't add a second subsystem"). boot exposes it as app.logToGroup, so the resolve +
 // fail-closed behavior for the new key is assertable without running the whole command dispatch.
 describe('the per-command audit goes to config.yaml\'s log_to_group (generalized from admin_channel)', () => {
-  const AUDIT = '/end in Favel Konefka by An → no-op — not a /join or /split side channel';
+  const AUDIT = '/end in Fiona Ejemplar by An → no-op — not a /join or /split side channel';
 
   it('a NAME is resolved to its room (the SAME resolveChatId admin_channel uses) and the audit line is said there', async () => {
     const t = await bootWith(config({ log_to_group: 'eGPT Admin' }));

@@ -173,7 +173,7 @@ describe('renameStatsToNames (the garbled-filename → human-name pass)', () => 
     // Stamped (backfilled) id-based files: chat carries chat_id + a human `name`; contact carries
     // sender_id + a human `name` (a push name / number). The pass moves each to <name>.yaml.
     const chat = y({ chat_id: '!fam', name: 'Jorge Medina', members: { '@a:beeper.com': { count: 3, last_seen: 'T' } } });
-    const contact = y({ sender_id: '@a:beeper.com', name: '+13478703471', count: 3, last_seen: 'T' });
+    const contact = y({ sender_id: '@a:beeper.com', name: '+15550100003', count: 3, last_seen: 'T' });
     const { files, io } = memIo({
       'NEW/whatsapp/!fam.yaml': chat,
       'NEW/whatsapp/@a~3abeeper.com.yaml': contact,
@@ -187,7 +187,7 @@ describe('renameStatsToNames (the garbled-filename → human-name pass)', () => 
     expect(files.has('NEW/whatsapp/@a~3abeeper.com.yaml')).toBe(false);
     // PURE fs rename: the body value is byte-identical (same ref) — no re-serialize, NO former_names
     expect(files.get('NEW/whatsapp/Jorge Medina.yaml')).toBe(chat);
-    expect(files.get('NEW/whatsapp/+13478703471.yaml')).toBe(contact);
+    expect(files.get('NEW/whatsapp/+15550100003.yaml')).toBe(contact);
     expect(files.get('NEW/whatsapp/Jorge Medina.yaml')).not.toContain('former_names');
 
     // second run: every file already at its canonical name → no-op, byte-identical
@@ -247,14 +247,14 @@ describe('renameStatsToNames (the garbled-filename → human-name pass)', () => 
 });
 
 describe('same-id contact twin dedup (LIVE defect 2026-07-04: port ran 3x, duplicates grew 33→36)', () => {
-  const SID = '@whatsapp_584143069457:beeper.local';
+  const SID = '@whatsapp_15550100008:beeper.local';
   const T1 = '2026-07-01T10:00:00.000Z', T2 = '2026-07-04T12:00:00.000Z';
   // The live pair, verbatim: a stale id-based twin (stamped, NO name) + the canonical
   // live-written human-named file, plus a chat file whose members include the sender so
   // the rollup pass fires (the pre-fix twin factory).
   const seed = () => ({
-    'NEW/whatsapp/@whatsapp_584143069457~3abeeper.local.yaml': y({ sender_id: SID, count: 5, last_seen: T1 }),
-    'NEW/whatsapp/+584143069457.yaml': y({ sender_id: SID, name: '+584143069457', count: 7, last_seen: T2 }),
+    'NEW/whatsapp/@whatsapp_15550100008~3abeeper.local.yaml': y({ sender_id: SID, count: 5, last_seen: T1 }),
+    'NEW/whatsapp/+15550100008.yaml': y({ sender_id: SID, name: '+15550100008', count: 7, last_seen: T2 }),
     'NEW/whatsapp/Fam.yaml': y({ chat_id: '!fam', name: 'Fam', members: { [SID]: { count: 5, last_seen: T1 } } }),
   });
   const state = { contacts: { whatsapp: { '!fam': { slug: 'fam' } } } };
@@ -270,10 +270,10 @@ describe('same-id contact twin dedup (LIVE defect 2026-07-04: port ran 3x, dupli
     const r1 = await runAll(io);
     // truthful counters: the twin is reported MERGED, not lumped as "left id-based"
     expect(r1.ren).toEqual({ renamed: 0, deduped: 1, alreadyCanonical: 2, leftIdBased: 0 });
-    expect(files.has('NEW/whatsapp/@whatsapp_584143069457~3abeeper.local.yaml')).toBe(false);   // twin GONE
-    expect(load(files, 'NEW/whatsapp/+584143069457.yaml'))
-      .toEqual({ sender_id: SID, name: '+584143069457', count: 7, last_seen: T2 });             // survivor intact
-    expect([...files.keys()].sort()).toEqual(['NEW/whatsapp/+584143069457.yaml', 'NEW/whatsapp/Fam.yaml']);
+    expect(files.has('NEW/whatsapp/@whatsapp_15550100008~3abeeper.local.yaml')).toBe(false);   // twin GONE
+    expect(load(files, 'NEW/whatsapp/+15550100008.yaml'))
+      .toEqual({ sender_id: SID, name: '+15550100008', count: 7, last_seen: T2 });             // survivor intact
+    expect([...files.keys()].sort()).toEqual(['NEW/whatsapp/+15550100008.yaml', 'NEW/whatsapp/Fam.yaml']);
 
     // run 2: stable file count, NO new files, byte-identical
     const afterFirst = new Map(files);

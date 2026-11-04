@@ -615,8 +615,8 @@ describe('/members add group <chatId> — invite a WhatsApp group into this room
 // is canonical already and is never looked up, and an unresolvable name is an ERROR — never a
 // raw string added as an id, which would join a member the relay can never deliver to.
 describe('/members add group <name> — a chat NAME resolves through the bridge resolver', () => {
-  // 'radio' is the operator's real case: the chat is titled "Radio WnL".
-  const CHATS = { radio: '!t6et3mN89hsPKfVmjMBG:beeper.local', 'Radio WnL': '!t6et3mN89hsPKfVmjMBG:beeper.local' };
+  // 'radio' is the operator's real case: the chat is titled "Radio EFM".
+  const CHATS = { radio: '!FakeRoomId0000000006:beeper.local', 'Radio EFM': '!FakeRoomId0000000006:beeper.local' };
   const fakeResolver = () => {
     const calls = [];
     const fn = async (nameOrId) => { calls.push(nameOrId); return CHATS[nameOrId] ?? null; };
@@ -634,10 +634,10 @@ describe('/members add group <name> — a chat NAME resolves through the bridge 
     const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
     // the RESOLVED id is the member id — not the word the operator typed
     expect(ms).toHaveLength(1);
-    expect(ms[0]).toMatchObject({ kind: 'wa-group', id: '!t6et3mN89hsPKfVmjMBG:beeper.local', state: 'muted' });
+    expect(ms[0]).toMatchObject({ kind: 'wa-group', id: '!FakeRoomId0000000006:beeper.local', state: 'muted' });
     // both are named, so the id can be copied straight into `/members mode all <id>`
     expect(sent.at(-1).text).toMatch(/'radio'/);
-    expect(sent.at(-1).text).toMatch(/!t6et3mN89hsPKfVmjMBG:beeper\.local/);
+    expect(sent.at(-1).text).toMatch(/!FakeRoomId0000000006:beeper\.local/);
     expect(sent.at(-1).text).toMatch(/mode:disable/);
   });
 
@@ -645,24 +645,24 @@ describe('/members add group <name> — a chat NAME resolves through the bridge 
     const resolveChatId = fakeResolver();
     const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
 
-    await cmds.run({ ...self, body: '/members add group Radio WnL' });
+    await cmds.run({ ...self, body: '/members add group Radio EFM' });
 
-    expect(resolveChatId.calls).toEqual(['Radio WnL']);
+    expect(resolveChatId.calls).toEqual(['Radio EFM']);
     expect(sent.at(-1).text).not.toMatch(/usage:/);
     const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
-    expect(ms.map((m) => m.id)).toEqual(['!t6et3mN89hsPKfVmjMBG:beeper.local']);
+    expect(ms.map((m) => m.id)).toEqual(['!FakeRoomId0000000006:beeper.local']);
   });
 
   it('a `!…:beeper.local` id is canonical already — added as-is, resolver never called', async () => {
     const resolveChatId = fakeResolver();
     const { cmds, sent, resolveConvRoom } = harness({ resolveChatId });
 
-    await cmds.run({ ...self, body: '/members add group !t6et3mN89hsPKfVmjMBG:beeper.local' });
+    await cmds.run({ ...self, body: '/members add group !FakeRoomId0000000006:beeper.local' });
 
     expect(resolveChatId.calls).toEqual([]);            // no lookup at all
     const ms = await (await resolveConvRoom(self.surface, self.chatId)).members();
-    expect(ms.map((m) => m.id)).toEqual(['!t6et3mN89hsPKfVmjMBG:beeper.local']);
-    expect(sent.at(-1).text).toMatch(/added group '!t6et3mN89hsPKfVmjMBG:beeper\.local'/);
+    expect(ms.map((m) => m.id)).toEqual(['!FakeRoomId0000000006:beeper.local']);
+    expect(sent.at(-1).text).toMatch(/added group '!FakeRoomId0000000006:beeper\.local'/);
   });
 
   it('an UNRESOLVABLE name changes nothing and says so — never added as a raw id', async () => {
@@ -738,9 +738,9 @@ describe('/members remove <id>', () => {
 // `/members add group` gained a chat resolver (c63cdd6 + c84deac) and its siblings did not.
 //
 //   /members add group perrito traduciones
-//     → added group 'perrito traduciones' → '0MP97ovrD6XvVovMVx6v' — mode:disable
-//   /members mode all !0MP97ovrD6XvVovMVx6v:beeper.local
-//     → no member '!0MP97ovrD6XvVovMVx6v:beeper.local' in this conversation
+//     → added group 'perrito traduciones' → 'FakeRoomId0000000002' — mode:disable
+//   /members mode all !FakeRoomId0000000002:beeper.local
+//     → no member '!FakeRoomId0000000002:beeper.local' in this conversation
 //   /members mode all perrito traduciones
 //     → usage: /members | /members add tab … | /members mode <disable|mention|all> <id>
 //
@@ -748,12 +748,12 @@ describe('/members remove <id>', () => {
 // catch it: their fake resolver returns a FULL '!…:beeper.local' id, but the REAL one
 // (src/bridges/beeper.mjs resolveChatId) NORMALIZES to the SHORT form and returns that — a
 // '!' argument is run through shortChatId on its way out. So `add group <name>` stores
-// '0MP97ovrD6XvVovMVx6v' while /members listings, Beeper's UI, and the system's own error
-// message all show '!0MP97ovrD6XvVovMVx6v:beeper.local'. The resolver below returns SHORT
+// 'FakeRoomId0000000002' while /members listings, Beeper's UI, and the system's own error
+// message all show '!FakeRoomId0000000002:beeper.local'. The resolver below returns SHORT
 // ids, exactly as the bridge does, which is what makes these reproduce.
 describe('/members mode|remove take what add group takes — id (either form) or name (2026-08-31)', () => {
   // The operator's real chat: named with two c's, typed with one.
-  const GROUP_SHORT = '0MP97ovrD6XvVovMVx6v';
+  const GROUP_SHORT = 'FakeRoomId0000000002';
   const GROUP_FULL = `!${GROUP_SHORT}:beeper.local`;
   const GROUP_NAME = 'perrito traducciones';
 
@@ -771,7 +771,7 @@ describe('/members mode|remove take what add group takes — id (either form) or
   };
   const bridgeChats = () => async () => [
     { id: GROUP_SHORT, name: GROUP_NAME },
-    { id: 'r4d10', name: 'Radio WnL' },
+    { id: 'r4d10', name: 'Radio EFM' },
   ];
 
   // The room as `add group <name>` leaves it — and, identically, as it ALREADY SITS ON DISK
@@ -871,8 +871,8 @@ describe('/members mode|remove take what add group takes — id (either form) or
 // and `no chat named '<x>'` had just walked every chat page and offered no near-miss, on a
 // one-letter difference in a group name the operator did not choose.
 describe('/members errors say what IS here (2026-08-31)', () => {
-  const GROUP_SHORT = '0MP97ovrD6XvVovMVx6v';
-  const CHATS = [{ id: GROUP_SHORT, name: 'perrito traducciones' }, { id: 'r4d10', name: 'Radio WnL' }];
+  const GROUP_SHORT = 'FakeRoomId0000000002';
+  const CHATS = [{ id: GROUP_SHORT, name: 'perrito traducciones' }, { id: 'r4d10', name: 'Radio EFM' }];
   const listChats = async () => CHATS;
   const resolveChatId = async (n) => CHATS.find((c) => c.name === n)?.id ?? null;
 

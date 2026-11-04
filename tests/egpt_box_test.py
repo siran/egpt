@@ -17,7 +17,7 @@ box = importlib.util.module_from_spec(spec)
 loader.exec_module(box)
 
 HOME = '/home/egpt'
-CONV = '/home/egpt/.egpt/conversations/telegram/si-eduweb'
+CONV = '/home/egpt/.egpt/conversations/telegram/si-contoso'
 
 
 def argv(**kw):

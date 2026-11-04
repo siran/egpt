@@ -33,8 +33,8 @@ const CONFIG = (actions) => () => ({
   user_name: 'John',
   beeper: { use: 'main', main: { account: 'you@example.com', token: 'TOK' } },
   agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, ...(actions ? { actions } : {}) } },
-  email: { from: 'EduWeb <ventas@eduweb.com.ve>', to: ['contacto@eserviciosat.net'], subject_prefix: '[EduWeb lead]', aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET },
-  book: { ics_url: ICS_URL, calendar_email: 'demos@eserviciosat.net', timezone: 'America/Caracas', duration_minutes: 30 },
+  email: { from: 'Contoso <ventas@contoso.example>', to: ['contacto@contoso-services.example'], subject_prefix: '[Contoso lead]', aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET },
+  book: { ics_url: ICS_URL, calendar_email: 'demos@contoso-services.example', timezone: 'America/Caracas', duration_minutes: 30 },
 });
 
 function memIo() {
@@ -102,7 +102,7 @@ async function run(actions) {
       opts, sessionId: 'sess-1',
       async turn(m, onUpdate) {
         prompts.push(m);
-        const text = prompts.length === 1 ? 'Perfecto, le aviso al equipo.\n/email Lead: Bea, Colegio San José\n/book 2026-10-20 10:00 Demo EduWeb — Bea' : `↩ ${m}`;
+        const text = prompts.length === 1 ? 'Perfecto, le aviso al equipo.\n/email Lead: Bea, Colegio San José\n/book 2026-10-20 10:00 Demo Contoso — Bea' : `↩ ${m}`;
         onUpdate?.(text);
         return { text, sessionId: this.sessionId };
       },
@@ -130,7 +130,7 @@ describe('boot — /email and /book run for an enabled agent and wake it with th
     expect(spy.streams[0].finals[0]).not.toMatch(/\/email|\/book/);
     await vi.waitFor(() => expect(spy.streams[2]?.finals).toHaveLength(1), { timeout: 5000 });
 
-    expect(net.ses.map((c) => c.body.Destination.ToAddresses)).toEqual([['contacto@eserviciosat.net'], ['demos@eserviciosat.net']]);
+    expect(net.ses.map((c) => c.body.Destination.ToAddresses)).toEqual([['contacto@contoso-services.example'], ['demos@contoso-services.example']]);
     expect(net.feeds).toHaveLength(1);
     expect(spy.streams.map((s) => s.chatId)).toEqual([CHAT, CHAT, CHAT]);
     expect(prompts[1]).toContain('A background task you started has finished: /email → sent.');
@@ -142,7 +142,7 @@ describe('boot — /email and /book run for an enabled agent and wake it with th
 
     const transcript = [...io.files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
     expect(transcript).toContain('/email "Lead: Bea, Colegio San José" → sent');
-    expect(transcript).toContain('/book 2026-10-20 10:00 "Demo EduWeb — Bea" → booked');
+    expect(transcript).toContain('/book 2026-10-20 10:00 "Demo Contoso — Bea" → booked');
 
     const seen = [lines.join('\n'), prompts.join('\n'), transcript, ...spy.streams.flatMap((s) => s.finals)].join('\n');
     for (const s of [ICS_URL, 'private-feedface', KEY_ID, SECRET]) expect(seen).not.toContain(s);

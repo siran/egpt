@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { plan } from '../migrations/0001-beeper-services-carry-role.mjs';
 import { runMigrations } from '../setup/migrate.mjs';
 
-const BEEPER = 'C:\\Users\\an\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe';
+const BEEPER = 'C:\\Users\\user\\AppData\\Local\\Programs\\BeeperTexts\\Beeper.exe';
 const FLAGS = '--disable-gpu --disable-gpu-compositing --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows';
 const MAP = [
   { old: 'egpt-primary', new: 'egpt-beeper-primary' },
@@ -24,8 +24,8 @@ const MAP = [
   { old: 'BeeperRodz', new: 'egpt-beeper-secondary' },
 ];
 const svc = (name, appParameters, extra = {}) => ({ name, appParameters, application: BEEPER, startMode: 'Auto', state: 'Running', startName: 'LocalSystem', ...extra });
-const ANDIR = '--user-data-dir=C:/Users/an/.egpt/state/an-beeper/userdata';
-const RODZDIR = '--user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata';
+const ANDIR = '--user-data-dir=C:/Users/user/.egpt/state/an-beeper/userdata';
+const RODZDIR = '--user-data-dir=C:/Users/user/.egpt/state/rodz-beeper/userdata';
 
 const KG = {
   map: MAP,
@@ -53,7 +53,7 @@ function ctxFor(state, over = {}) {
   const calls = { ps: [], psFile: [] };
   const ctx = {
     platform: 'win32',
-    repo: 'C:\\Users\\an\\bin\\egpt',
+    repo: 'C:\\Users\\user\\bin\\egpt',
     log: () => {},
     ps: (script) => { calls.ps.push(script); return JSON.stringify(state.current ?? state); },
     psFile: (file, args) => { calls.psFile.push([file, ...args]); },
@@ -74,7 +74,7 @@ describe('0001 on kg - already the target, no CDP flag on either service', () =>
   it('the probe reads the legacy names from the ONE map, setup/beeper-s0-naming.ps1', async () => {
     const { ctx, calls } = ctxFor(KG);
     await plan(ctx);
-    expect(calls.ps[0]).toContain(". 'C:\\Users\\an\\bin\\egpt\\setup\\beeper-s0-naming.ps1'");
+    expect(calls.ps[0]).toContain(". 'C:\\Users\\user\\bin\\egpt\\setup\\beeper-s0-naming.ps1'");
     expect(calls.ps[0]).toContain('Get-BeeperS0LegacyNameMap');
   });
 
@@ -97,16 +97,16 @@ describe('0001 on an unmigrated node - the role is read from the name, no CDP po
     expect(p.satisfied).toBe(false);
     const text = p.changes.join('\n');
     expect(p.changes[0]).toBe('rename service egpt-secondary -> egpt-beeper-secondary   (Running, Auto, LocalSystem)');
-    expect(text).toContain('evidence: its name says secondary; --user-data-dir=C:/Users/an/.egpt/state/rodz-beeper/userdata');
+    expect(text).toContain('evidence: its name says secondary; --user-data-dir=C:/Users/user/.egpt/state/rodz-beeper/userdata');
     expect(text).toContain('rename service egpt-primary -> egpt-beeper-primary');
-    expect(text).toContain('evidence: its name says primary; --user-data-dir=C:/Users/an/.egpt/state/an-beeper/userdata');
+    expect(text).toContain('evidence: its name says primary; --user-data-dir=C:/Users/user/.egpt/state/an-beeper/userdata');
     expect(text.indexOf('egpt-secondary ->')).toBeLessThan(text.indexOf('egpt-primary ->'));
   });
 
   it('apply CALLS setup/rename-beeper-s0-service.ps1 - it does not reimplement the rename', async () => {
     const { ctx, calls } = ctxFor(LEGACY);
     await (await plan(ctx)).apply();
-    const script = join('C:\\Users\\an\\bin\\egpt', 'setup', 'rename-beeper-s0-service.ps1');
+    const script = join('C:\\Users\\user\\bin\\egpt', 'setup', 'rename-beeper-s0-service.ps1');
     expect(calls.psFile).toEqual([
       [script, '-From', 'egpt-secondary', '-To', 'egpt-beeper-secondary'],
       [script, '-From', 'egpt-primary', '-To', 'egpt-beeper-primary'],
@@ -163,12 +163,12 @@ describe('0001 refuses by name when the evidence is ambiguous', () => {
   });
 
   it('two services share one install', async () => {
-    expect(await refusal([svc('egpt-primary', `${ANDIR} ${FLAGS}`), svc('egpt-secondary', `--user-data-dir="C:\\Users\\an\\.egpt\\state\\an-beeper\\userdata\\" ${FLAGS}`)]))
+    expect(await refusal([svc('egpt-primary', `${ANDIR} ${FLAGS}`), svc('egpt-secondary', `--user-data-dir="C:\\Users\\user\\.egpt\\state\\an-beeper\\userdata\\" ${FLAGS}`)]))
       .toMatch(/egpt-primary and egpt-secondary share --user-data-dir/);
   });
 
   it('a service that does not run as LocalSystem - the rename script would stop to ask for a password', async () => {
-    expect(await refusal([svc('egpt-primary', `${ANDIR} ${FLAGS}`, { startName: '.\\an' })]))
-      .toMatch(/egpt-primary runs as \.\\an, not LocalSystem/);
+    expect(await refusal([svc('egpt-primary', `${ANDIR} ${FLAGS}`, { startName: '.\\user' })]))
+      .toMatch(/egpt-primary runs as \.\\user, not LocalSystem/);
   });
 });

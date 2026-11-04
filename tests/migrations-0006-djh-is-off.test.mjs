@@ -1,7 +1,7 @@
 // tests/migrations-0006-djh-is-off.test.mjs — migrations/0006-djh-is-off.mjs.
 //
 // Fixtures are miniatures of each node's REAL state on 2026-09-16: do defines djh with
-// `mode: mention` and its one conversation block (Radio WnL) sets no mode; kg defines no djh.
+// `mode: mention` and its one conversation block (Radio EFM) sets no mode; kg defines no djh.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,8 +28,8 @@ const DO = `agents:
 
 const DO_CONVERSATIONS = `contacts:
   whatsapp:
-    9M8DhdjMm3Qc3hFm3NVy: # Radio WnL
-      conversation_path: .egpt/conversations/whatsapp/Radio WnL
+    FakeRoomId0000000011: # Radio EFM
+      conversation_path: .egpt/conversations/whatsapp/Radio EFM
       agents:
         djh:
           threadId: 01a0-fixture
@@ -104,14 +104,14 @@ describe('0006 never reports djh off while it still answers somewhere', () => {
   it('refuses, naming the chat, when a conversation overrides the mode in its agents: block', async () => {
     const conv = DO_CONVERSATIONS.replace('          threadId: 01a0-fixture', '          threadId: 01a0-fixture\n          mode: mention');
     const h = home(DO, conv);
-    await expect(plan(ctxFor(h))).rejects.toThrow(/0006 refuses: a conversation overrides djh's mode.*9M8DhdjMm3Qc3hFm3NVy\.agents\.djh\.mode = "mention"/);
+    await expect(plan(ctxFor(h))).rejects.toThrow(/0006 refuses: a conversation overrides djh's mode.*FakeRoomId0000000011\.agents\.djh\.mode = "mention"/);
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);
   });
 
   it('refuses the other per-conversation shape too (<conv>.djh.mode)', async () => {
-    const conv = `contacts:\n  whatsapp:\n    9M8DhdjMm3Qc3hFm3NVy:\n      djh:\n        mode: auto\n`;
+    const conv = `contacts:\n  whatsapp:\n    FakeRoomId0000000011:\n      djh:\n        mode: auto\n`;
     const h = home(DO, conv);
-    await expect(plan(ctxFor(h))).rejects.toThrow(/9M8DhdjMm3Qc3hFm3NVy\.djh\.mode = "auto"/);
+    await expect(plan(ctxFor(h))).rejects.toThrow(/FakeRoomId0000000011\.djh\.mode = "auto"/);
   });
 
   it('a conversation that sets djh off is not an override - it agrees', async () => {

@@ -64,7 +64,7 @@ const audioMeta = (over = {}) => ({
   mime: 'audio/ogg', fileName: 'note.ogg', ...over,
 });
 
-const voiceEv = (over = {}) => ({ surface: 'whatsapp', chatId: 'chat-1', senderId: '16468217865', ts: Date.UTC(2026, 7, 8, 17, 51, 32), msgId: 'm1', ...over });
+const voiceEv = (over = {}) => ({ surface: 'whatsapp', chatId: 'chat-1', senderId: '15550100001', ts: Date.UTC(2026, 7, 8, 17, 51, 32), msgId: 'm1', ...over });
 
 function harness({ cfg, room, uploadNote, readFile, gate } = {}) {
   const log = [];
@@ -84,7 +84,7 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
     seed(room, 'members: []\n');
     const uploadNote = vi.fn();
-    const { relay } = harness({ cfg: { radio_service: { wildnloyal: { enabled: true } } }, room, uploadNote });
+    const { relay } = harness({ cfg: { radio_service: { examplefm: { enabled: true } } }, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
     expect(uploadNote).not.toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
     seed(room, 'radio:\n  join: someotherstation\n');
     const uploadNote = vi.fn();
-    const { relay } = harness({ cfg: { radio_service: { wildnloyal: { enabled: true } } }, room, uploadNote });
+    const { relay } = harness({ cfg: { radio_service: { examplefm: { enabled: true } } }, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
     expect(uploadNote).not.toHaveBeenCalled();
@@ -102,9 +102,9 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
 
   it('a joined radio with enabled:false uploads nothing', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
-    const { relay } = harness({ cfg: { radio_service: { wildnloyal: { enabled: false, endpoint: 'https://x', default_speaker: 'egpt' } } }, room, uploadNote });
+    const { relay } = harness({ cfg: { radio_service: { examplefm: { enabled: false, endpoint: 'https://x', default_speaker: 'egpt' } } }, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
     expect(uploadNote).not.toHaveBeenCalled();
@@ -112,26 +112,26 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
 
   it('a joined + enabled radio uploads, mapping the sender through radio.hosts', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n  hosts:\n    "16468217865": roger\n');
+    seed(room, 'radio:\n  join: examplefm\n  hosts:\n    "15550100001": roger\n');
     const uploadNote = vi.fn(async () => ({ ok: true, status: 201 }));
     const readFile = vi.fn(async () => Buffer.from('bytes'));
-    const cfg = { radio_service: { wildnloyal: { enabled: true, endpoint: 'https://radio.wildnloyal.org', relay_user: 'egpt', relay_password: 'x', default_speaker: 'default-voice' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, endpoint: 'https://radio.examplefm.example', relay_user: 'egpt', relay_password: 'x', default_speaker: 'default-voice' } } };
     const { relay } = harness({ cfg, room, uploadNote, readFile });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
     expect(uploadNote).toHaveBeenCalledTimes(1);
     const call = uploadNote.mock.calls[0][0];
     expect(call.speaker).toBe('roger');           // mapped via radio.hosts, not the default
-    expect(call.radio).toBe(cfg.radio_service.wildnloyal);
+    expect(call.radio).toBe(cfg.radio_service.examplefm);
     expect(call.filename).toMatch(/^2026-08-08T17-51-32-000Z-[0-9a-z]{6}\.ogg$/);
     expect(readFile).toHaveBeenCalledWith('/tmp/note.ogg');
   });
 
   it('a blocked sender (cfg.radio_blocked_senders) uploads nothing — operator ruling 2026-08-08: "/radio disable <person>"', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['16468217865'] };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['15550100001'] };
     const { relay, log } = harness({ cfg, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
@@ -141,9 +141,9 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
 
   it('a sender NOT on radio_blocked_senders is unaffected by an unrelated block', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn(async () => ({ ok: true, status: 201 }));
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['someone-else'] };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } }, radio_blocked_senders: ['someone-else'] };
     const { relay } = harness({ cfg, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
@@ -152,9 +152,9 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
 
   it('an unmapped sender falls back to the radio\'s default_speaker', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');   // no hosts at all
+    seed(room, 'radio:\n  join: examplefm\n');   // no hosts at all
     const uploadNote = vi.fn(async () => ({ ok: true, status: 201 }));
-    const cfg = { radio_service: { wildnloyal: { enabled: true, endpoint: 'https://x', default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, endpoint: 'https://x', default_speaker: 'egpt' } } };
     const { relay } = harness({ cfg, room, uploadNote });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
@@ -165,9 +165,9 @@ describe('createRadioNoteRelay — the joined+enabled gate', () => {
 describe('createRadioNoteRelay — reuses the SAME cached audio, never a second download', () => {
   it('with no cached audio for this note (e.g. download policy excluded it), uploads nothing', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
-    const { relay } = harness({ cfg: { radio_service: { wildnloyal: { enabled: true } } }, room, uploadNote });
+    const { relay } = harness({ cfg: { radio_service: { examplefm: { enabled: true } } }, room, uploadNote });
     // noteMedia never called for this chat/msgId — nothing was cached
     await relay.relay(voiceEv());
     expect(uploadNote).not.toHaveBeenCalled();
@@ -175,9 +175,9 @@ describe('createRadioNoteRelay — reuses the SAME cached audio, never a second 
 
   it('a non-audio attachment (kind !== "audio") is never cached', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
-    const { relay } = harness({ cfg: { radio_service: { wildnloyal: { enabled: true } } }, room, uploadNote });
+    const { relay } = harness({ cfg: { radio_service: { examplefm: { enabled: true } } }, room, uploadNote });
     relay.noteMedia(audioMeta({ kind: 'image' }));
     await relay.relay(voiceEv());
     expect(uploadNote).not.toHaveBeenCalled();
@@ -192,11 +192,11 @@ describe('createRadioNoteRelay — reuses the SAME cached audio, never a second 
 describe('createRadioNoteRelay — the upload is an outbound message: gated by the SAME send guard every send uses', () => {
   it('routes the upload THROUGH the injected gate, never calling uploadNote directly', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const order = [];
     const uploadNote = vi.fn(async () => { order.push('upload'); return { ok: true, status: 201 }; });
     const gate = vi.fn(async (fn) => { order.push('gate'); return fn(); });
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } } };
     const { relay } = harness({ cfg, room, uploadNote, gate });
     relay.noteMedia(audioMeta());
     await relay.relay(voiceEv());
@@ -206,10 +206,10 @@ describe('createRadioNoteRelay — the upload is an outbound message: gated by t
 
   it('a gate that refuses (the send guard already tripped) is honored — uploadNote is never invoked, and relay() does not throw', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
     const gate = vi.fn(async () => null);   // the real sendGuard.gate's shape when the ceiling is tripped
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } } };
     const { relay } = harness({ cfg, room, uploadNote, gate });
     relay.noteMedia(audioMeta());
     await expect(relay.relay(voiceEv())).resolves.toBeUndefined();
@@ -220,9 +220,9 @@ describe('createRadioNoteRelay — the upload is an outbound message: gated by t
     const { createSendGuard } = await import('../src/loop-guard.mjs');
     const sendGuard = createSendGuard({ messages: 1, windowMs: 10_000, now: () => 1000 });   // one message per window, like a busy-room trip
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn(async () => ({ ok: true, status: 201 }));
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } } };
     const { relay } = harness({ cfg, room, uploadNote, gate: sendGuard.gate });
 
     relay.noteMedia(audioMeta({ msgId: 'm1' }));
@@ -239,9 +239,9 @@ describe('createRadioNoteRelay — the upload is an outbound message: gated by t
 describe('createRadioNoteRelay — an upload failure does not throw (the surrounding path is untouched)', () => {
   it('uploadNote resolving { ok:false } does not throw, and is logged', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn(async () => ({ ok: false, status: 404, error: 'permanent' }));
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } } };
     const { relay, log } = harness({ cfg, room, uploadNote });
     relay.noteMedia(audioMeta());
     await expect(relay.relay(voiceEv())).resolves.toBeUndefined();
@@ -250,10 +250,10 @@ describe('createRadioNoteRelay — an upload failure does not throw (the surroun
 
   it('a readFile failure (the cached local file vanished) does not throw', async () => {
     const room = new TmpRoom(join(base, 'conv'), 'conv-1');
-    seed(room, 'radio:\n  join: wildnloyal\n');
+    seed(room, 'radio:\n  join: examplefm\n');
     const uploadNote = vi.fn();
     const readFile = vi.fn(async () => { throw new Error('ENOENT'); });
-    const cfg = { radio_service: { wildnloyal: { enabled: true, default_speaker: 'egpt' } } };
+    const cfg = { radio_service: { examplefm: { enabled: true, default_speaker: 'egpt' } } };
     const { relay } = harness({ cfg, room, uploadNote, readFile });
     relay.noteMedia(audioMeta());
     await expect(relay.relay(voiceEv())).resolves.toBeUndefined();

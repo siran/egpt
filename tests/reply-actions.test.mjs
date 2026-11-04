@@ -44,7 +44,7 @@ describe('parseReplyActions — the pure split', () => {
     expect(parseReplyActions('/reply hola', EV).stripped).toHaveLength(1);
   });
 
-  // REDUNDANCY GUARD (operator 2026-07-08, Zohykar #159710): when the reply E is already
+  // REDUNDANCY GUARD (operator 2026-07-08, Zurikar #159710): when the reply E is already
   // posting QUOTES the target, a /reply at that same id only posts a second, near-duplicate
   // message (a rogue twin). Stripped like any malformed limb.
   //
@@ -62,17 +62,17 @@ describe('parseReplyActions — the pure split', () => {
   // Still no second/duplicate post, so the 2026-07-08 rogue twin stays fixed.
   it('reply: targeting the message THIS REPLY ALREADY QUOTES is REDUNDANT — DEMOTES to prose, never executed', () => {
     const ev = { ...EV, msgId: '159710' };
-    const { prose, run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev, { quotedId: '159710' });
+    const { prose, run, stripped } = parseReplyActions('/reply #159710 Hola Zuri 👋', ev, { quotedId: '159710' });
     expect(run).toEqual([]);          // never executed — no repost, no twin
     expect(stripped).toEqual([]);     // not malformed: it carries content
-    expect(prose).toBe('Hola Zohy 👋');   // …and the content survives, in the already-quoting reply
+    expect(prose).toBe('Hola Zuri 👋');   // …and the content survives, in the already-quoting reply
   });
 
   it('reply: a redundant /reply demotes ALONGSIDE prose — its words join the reply, not a second post', () => {
     const ev = { ...EV, msgId: '159710' };
-    const { prose, run } = parseReplyActions('Vale, ya lo miro.\n/reply #159710 Hola Zohy 👋', ev, { quotedId: '159710' });
+    const { prose, run } = parseReplyActions('Vale, ya lo miro.\n/reply #159710 Hola Zuri 👋', ev, { quotedId: '159710' });
     expect(run).toEqual([]);
-    expect(prose).toBe('Vale, ya lo miro.\nHola Zohy 👋');
+    expect(prose).toBe('Vale, ya lo miro.\nHola Zuri 👋');
   });
 
   // The demoted text is CONTENT, never re-parsed — otherwise a /reply carrying an action-shaped
@@ -183,9 +183,9 @@ describe('parseReplyActions — the pure split', () => {
   // posts plain), so /reply at it is E's ONLY way to quote and MUST survive the guard.
   it('reply: targeting the trigger when the reply quotes NOTHING still executes (the guard has no premise)', () => {
     const ev = { ...EV, msgId: '159710' };
-    const { run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev);
+    const { run, stripped } = parseReplyActions('/reply #159710 Hola Zuri 👋', ev);
     expect(stripped).toEqual([]);
-    expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '159710', text: 'Hola Zohy 👋' }]);
+    expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '159710', text: 'Hola Zuri 👋' }]);
   });
 
   it('reply: targeting a DIFFERENT message than the one quoted still executes (regression-lock)', () => {
@@ -361,7 +361,7 @@ describe('partialProse — what a PARTIAL may safely stream', () => {
     for (const held of ['/', '/re', '/reply', '/reply ', '/reply #', '/reply #15971', '/reply #159710'])
       expect(partialProse(held, EV, opts)).toBe('');            // id not yet terminated — target still unknown
     expect(partialProse('/reply #159710 H', EV, opts)).toBe('H');          // id fixed → the text is prose
-    expect(partialProse('/reply #159710 Hola Zohy', EV, opts)).toBe('Hola Zohy');
+    expect(partialProse('/reply #159710 Hola Zuri', EV, opts)).toBe('Hola Zuri');
   });
 
   it('keeps WITHHOLDING a /reply aimed at a DIFFERENT id — that one is a real limb, never prose', () => {
@@ -372,12 +372,12 @@ describe('partialProse — what a PARTIAL may safely stream', () => {
 
   it('demoted streaming is a monotone prefix walk that lands on the delivered prose', () => {
     const opts = { quotedId: '159710' };
-    const full = '/reply #159710 Hola Zohy';
+    const full = '/reply #159710 Hola Zuri';
     const seen = [];
     for (let i = 1; i <= full.length; i++) seen.push(partialProse(full.slice(0, i), EV, opts));
     for (const s of seen) expect(s).not.toMatch(/\//);                             // no token, ever
     for (let i = 1; i < seen.length; i++) expect(seen[i].startsWith(seen[i - 1])).toBe(true);
-    expect(seen[seen.length - 1]).toBe(parseReplyActions(full, EV, opts).prose);   // == 'Hola Zohy'
+    expect(seen[seen.length - 1]).toBe(parseReplyActions(full, EV, opts).prose);   // == 'Hola Zuri'
   });
 });
 
@@ -587,7 +587,7 @@ describe('createReplyActions.execute — bridgeOf: per-being connection routing 
 // A LIMB THE BRIDGE REFUSES BUBBLES UP (operator 2026-10-19, live: "[actions] reply: → #34523 not
 // delivered" and nothing else, anywhere): ONE onUndeliverable per lost limb, with the bridge's reason.
 describe('createReplyActions.execute — a lost limb is reported once', () => {
-  const SIDE = 'aheLwZ0u6CpjePxSdbG9';
+  const SIDE = 'FakeRoomId0000000012';
   const EV_SIDE = { chatId: SIDE, surface: 'whatsapp' };
   const refusing = () => fakeBridge({ send: () => null, sendMedia: () => false, sendFailure: () => 'POST → 404 Chat not found' });
 

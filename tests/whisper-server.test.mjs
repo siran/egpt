@@ -338,7 +338,7 @@ describe('isStrayWhisperServer — the whisper reap\'s guard', () => {
 
 describe('parseWhisperServices — which service runs whisper-server on a port', () => {
   // The shape the Windows registry scan prints: <service name> TAB <image path + nssm Application + AppParameters>
-  const DOLLY = 'WhisperServer\tC:\\Users\\an\\AppData\\Local\\Microsoft\\WinGet\\Links\\nssm.exe C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-server.exe -m C:\\Users\\an\\bin\\whisper.cpp\\models\\ggml-large-v3.bin --host 127.0.0.1 --port 8089 -l auto -mc 0 -sns\r\n';
+  const DOLLY = 'WhisperServer\tC:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\nssm.exe C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-server.exe -m C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin --host 127.0.0.1 --port 8089 -l auto -mc 0 -sns\r\n';
   it('matches the service whose whisper-server listens on the port (measured dolly line)', () => {
     expect(parseWhisperServices(DOLLY, 8089)).toMatchObject({ name: 'WhisperServer' });
     expect(parseWhisperServices(DOLLY, 8090)).toBeNull();

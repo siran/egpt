@@ -154,7 +154,7 @@ describe('boot — a background task\'s completion wakes the being where it last
     app.stop();
   });
 
-  // An #2944 (2026-10-31): a finished task is marked as its session's CLI said it ended — boot reads it from
+  // operator 2026-10-31: a finished task is marked as its session's CLI said it ended — boot reads it from
   // the pool (pool.outcome → session.backgroundOutcome) of the conversation the task ran in.
   it("a failed task's line is ✗ with the CLI's own message, read from its warm session", async () => {
     const { start, built } = fakeTransport();

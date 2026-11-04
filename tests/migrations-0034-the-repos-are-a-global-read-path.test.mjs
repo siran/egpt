@@ -1,5 +1,5 @@
 // 0034 — the operator's repositories are a global read path. A kg-shaped config.yaml, CRLF like the
-// operator's file; whether C:/Users/an/src/siran is on "this node" is answered by the ctx seam, so
+// operator's file; whether C:/Users/user/src/siran is on "this node" is answered by the ctx seam, so
 // the suite never depends on the machine it runs on and never reads a real profile.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
@@ -19,7 +19,7 @@ const KG = [
   '    handles: [ e, egpt ]',
   'admin_channel: eGPT Admin',
 ];
-const SIRAN = 'C:/Users/an/src/siran';
+const SIRAN = 'C:/Users/user/src/siran';
 
 let root, egptHome;
 const cfgPath = () => join(egptHome, 'config', 'config.yaml');
@@ -42,7 +42,7 @@ describe('0034 — the repos are a global read path', () => {
     expect((await plan(ctx())).satisfied).toBe(false);
   });
 
-  it('inserts `global_read_paths:` with `- repos: C:/Users/an/src/siran` at the root, the ruling quoted above it', async () => {
+  it('inserts `global_read_paths:` with `- repos: C:/Users/user/src/siran` at the root, the ruling quoted above it', async () => {
     await (await plan(ctx())).apply();
     expect(YAML.parse(read()).global_read_paths).toEqual([{ repos: SIRAN }]);
     // ...which the spine and the provisioner read as exactly the one mount.
@@ -50,7 +50,7 @@ describe('0034 — the repos are a global read path', () => {
     expect(read()).toMatch(/# THE FOLDERS EVERY SANDBOXED BEING MAY READ \(0034, operator 2026-09-28: "sandboxed beings should\r\n/);
     expect(read()).toMatch(/please frame this in\r\n# config\.yaml as global_read_paths list"\)/);
     expect(read()).toMatch(/\.env/);
-    expect(read().endsWith('global_read_paths:\r\n  - repos: C:/Users/an/src/siran\r\n')).toBe(true);
+    expect(read().endsWith('global_read_paths:\r\n  - repos: C:/Users/user/src/siran\r\n')).toBe(true);
   });
 
   it('touches nothing else, keeps CRLF, and leaves a backup', async () => {
@@ -65,7 +65,7 @@ describe('0034 — the repos are a global read path', () => {
 
   it('plans the inserted lines, and says the provisioner is still to run', async () => {
     const p = await plan(ctx());
-    expect(p.changes[0]).toMatch(/config\.yaml:7-15 {2}insert `global_read_paths:` with `repos: C:\/Users\/an\/src\/siran` at the root$/);
+    expect(p.changes[0]).toMatch(/config\.yaml:7-15 {2}insert `global_read_paths:` with `repos: C:\/Users\/user\/src\/siran` at the root$/);
     expect(p.changes).toContain('  + global_read_paths:');
     expect(p.changes).toContain(`  +   - repos: ${SIRAN}`);
     expect(p.changes.some((c) => /provision-sandbox-account\.cmd/.test(c))).toBe(true);
@@ -79,7 +79,7 @@ describe('0034 — the repos are a global read path', () => {
   it('do: the folder is not on this node - satisfied with a note, nothing written', async () => {
     const p = await plan(ctx({ onNode: false }));
     expect(p.satisfied).toBe(true);
-    expect(p.notes[0]).toMatch(/C:\/Users\/an\/src\/siran is not a directory on this node/);
+    expect(p.notes[0]).toMatch(/C:\/Users\/user\/src\/siran is not a directory on this node/);
     expect(read()).toBe(crlf(KG));
   });
 

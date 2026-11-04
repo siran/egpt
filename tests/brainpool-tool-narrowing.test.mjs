@@ -14,11 +14,11 @@ import { loadPermissionLevel } from '../src/spine/permission-levels.mjs';
 import { buildClaudeArgs } from '../src/claude-args.mjs';
 import { emptyState } from '../src/conversations-state.mjs';
 
-// The live kg type files these beings run on (C:/Users/an/.egpt/config/agents, 2026-10-15).
+// The live kg type files these beings run on (C:/Users/user/.egpt/config/agents, 2026-10-15).
 const TYPES = {
-  'opus-default': 'type: ccode\nmodel: opus\neffort: high\nverbose_thinking: false\nallowed_paths:\n  C:/Users/an/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n',
-  'opus-xhigh': 'type: ccode\nmodel: opus\neffort: xhigh\nallowed_paths:\n  C:/Users/an/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n',
-  wren: 'type: ccode\nmodel: opus\neffort: xhigh\nverbose_thinking: false\npersonality: wren\ncwd: C:/Users/an/wren-cwd\n',
+  'opus-default': 'type: ccode\nmodel: opus\neffort: high\nverbose_thinking: false\nallowed_paths:\n  C:/Users/user/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n',
+  'opus-xhigh': 'type: ccode\nmodel: opus\neffort: xhigh\nallowed_paths:\n  C:/Users/user/src/egpt:\n    allowed_tools: [ Read, Glob, Grep ]\n',
+  wren: 'type: ccode\nmodel: opus\neffort: xhigh\nverbose_thinking: false\npersonality: wren\ncwd: C:/Users/user/wren-cwd\n',
   'edw-marketer': 'type: ccode\nmodel: sonnet\neffort: medium\npersonality: edw-marketer\nallowed_tools: [ Read, Grep, Glob, WebFetch, WebSearch ]\n',
   pi: 'type: pi\nmodel: local/gemma\npersonality: egpt\nallowed_tools: [read, grep, find, ls, edit, write, bash]\n',
 };

@@ -406,15 +406,15 @@ describe('/status: beeper_accounts registry', () => {
       getConfig: () => ({
         whatsapp: { chat_id: '!self' },
         beeper: {
-          dolly: { account: 'dolly.egpt@gmail.com', token: 'ROD-SECRET-TOKEN-1' },
-          reve: { account: 'anrodz42@gmail.com', token: 'REVE-SECRET-TOKEN-2' },
+          dolly: { account: 'mouth.acct@example.com', token: 'ROD-SECRET-TOKEN-1' },
+          reve: { account: 'anaprueba@example.org', token: 'REVE-SECRET-TOKEN-2' },
         },
       }),
     });
 
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
-    expect(text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com\n {2}reve: anrodz42@gmail\.com/);
+    expect(text).toMatch(/beeper_accounts:\n {2}dolly: mouth\.acct@example\.com\n {2}reve: anaprueba@example\.org/);
     expect(text).not.toContain('ROD-SECRET-TOKEN-1');
     expect(text).not.toContain('REVE-SECRET-TOKEN-2');
   });
@@ -429,7 +429,7 @@ describe('/status: beeper_accounts registry', () => {
       getConfig: () => ({
         whatsapp: { chat_id: '!self' },
         beeper: {
-          dolly: { account: 'dolly.egpt@gmail.com', token: 'ROD-SECRET-TOKEN-1' },
+          dolly: { account: 'mouth.acct@example.com', token: 'ROD-SECRET-TOKEN-1' },
           broken: { token: 'ORPHAN-TOKEN' },   // missing account
         },
       }),
@@ -437,7 +437,7 @@ describe('/status: beeper_accounts registry', () => {
 
     await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
     const { text } = sent[0];
-    expect(text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com/);
+    expect(text).toMatch(/beeper_accounts:\n {2}dolly: mouth\.acct@example\.com/);
     expect(text).not.toMatch(/broken/);
     expect(text).not.toContain('ORPHAN-TOKEN');
     expect(logs.some((m) => m.includes('broken') && m.includes('missing account'))).toBe(true);
@@ -454,7 +454,7 @@ describe('/status: beeper_accounts registry', () => {
         whatsapp: { chat_id: '!self' },
         beeper: {
           use: 'main',   // selector, not an account entry — must never warn
-          main: { account: 'anrodz42@gmail.com', token: 'MAIN-SECRET-TOKEN' },
+          main: { account: 'anaprueba@example.org', token: 'MAIN-SECRET-TOKEN' },
           other: { token: 'ORPHAN-TOKEN' },   // genuinely missing account — must still warn
         },
       }),
@@ -463,7 +463,7 @@ describe('/status: beeper_accounts registry', () => {
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     expect(logs.some((m) => m.includes('"use"'))).toBe(false);
     expect(logs.some((m) => m.includes('"other"') && m.includes('missing account'))).toBe(true);
-    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}main: anrodz42@gmail\.com/);
+    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}main: anaprueba@example\.org/);
   });
 
   it('tokens are optional in v1: an accounts-only entry (no token) still registers', async () => {
@@ -471,11 +471,11 @@ describe('/status: beeper_accounts registry', () => {
       io: HEALTHY_IO,
       gitOut: HEALTHY_GIT,
       loadState: async () => threeContacts(),
-      getConfig: () => ({ whatsapp: { chat_id: '!self' }, beeper: { dolly: { account: 'dolly.egpt@gmail.com' } } }),
+      getConfig: () => ({ whatsapp: { chat_id: '!self' }, beeper: { dolly: { account: 'mouth.acct@example.com' } } }),
     });
 
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
-    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com/);
+    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}dolly: mouth\.acct@example\.com/);
   });
 });
 
@@ -495,7 +495,7 @@ describe('/status: enriched fields', () => {
       use_config: 'reve',
       reve: {
         fallback_order: ['remote', 'cli'],
-        remote: { type: 'whisper-server-remote', endpoint: 'http://192.168.1.102:23390', token: TOKEN_SENTINEL },
+        remote: { type: 'whisper-server-remote', endpoint: 'http://192.0.2.102:23390', token: TOKEN_SENTINEL },
         cli: { type: 'whisper-cli', command: '/opt/whisper/whisper-cli.exe', model_path: '/m/large-v3.bin' },
       },
     },
@@ -527,7 +527,7 @@ describe('/status: enriched fields', () => {
     await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
     const { text } = sent[0];
     expect(text).toMatch(
-      /transcription:\n {2}enabled: true\n {2}use_config: reve\n {2}fallback_order: \[remote, cli\]\n {2}remote: whisper-server-remote @ http:\/\/192\.168\.1\.102:23390\n {2}cli: whisper-cli @ whisper-cli\.exe/,
+      /transcription:\n {2}enabled: true\n {2}use_config: reve\n {2}fallback_order: \[remote, cli\]\n {2}remote: whisper-server-remote @ http:\/\/192\.0\.2\.102:23390\n {2}cli: whisper-cli @ whisper-cli\.exe/,
     );
   });
 
@@ -568,7 +568,7 @@ describe('/status: enriched fields', () => {
     const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts(), getConfig: () => cfg });
     await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
     const { text } = sent[0];
-    expect(text).toMatch(/ {2}remote: whisper-server-remote @ http:\/\/192\.168\.1\.102:23390/);
+    expect(text).toMatch(/ {2}remote: whisper-server-remote @ http:\/\/192\.0\.2\.102:23390/);
     expect(text).toMatch(/ {2}ghost-engine: \? @ \?/);
   });
 

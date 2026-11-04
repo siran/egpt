@@ -4,11 +4,11 @@
 // this repo is administered across its two nodes):
 //
 //   $env:USERDOMAIN   = WORKGROUP        <- not the machine, not a domain
-//   $env:USERNAME     = an
-//   WindowsIdentity   = DOLLY\an         <- the authoritative answer
+//   $env:USERNAME     = user
+//   WindowsIdentity   = DOLLY\user         <- the authoritative answer
 //
 // Three setup scripts built their principal as "$env:USERDOMAIN\$env:USERNAME", i.e.
-// WORKGROUP\an, which maps to no SID on a workgroup machine. register-session1-daemon-task.ps1
+// WORKGROUP\user, which maps to no SID on a workgroup machine. register-session1-daemon-task.ps1
 // died with "No mapping between account names and security IDs was done" (0x80070534), and
 // install-nssm-service.ps1 would hand the same unresolvable name to NSSM's ObjectName.
 //

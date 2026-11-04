@@ -24,7 +24,7 @@ function stateWith(rows) {
   return s;
 }
 
-const pinFile = (key) => `# egpt sandbox pin - header\r\nkey=${key}\r\nC:\\Users\\an\\Documents|grant=Read\r\n`;
+const pinFile = (key) => `# egpt sandbox pin - header\r\nkey=${key}\r\nC:\\Users\\user\\Documents|grant=Read\r\n`;
 
 describe('the pin key and the opt-in walk', () => {
   it('a pin is a map (the allowed_paths shape); {} pins with no paths', () => {
@@ -35,7 +35,7 @@ describe('the pin key and the opt-in walk', () => {
 
   it('optedInPinKeys names exactly the being-in-conversation blocks that carry one', () => {
     const state = stateWith([
-      { chatId: 'A', being: 'egpt', fields: { sandbox_pin: { 'C:/Users/an/Documents': { allowed_tools: ['Read'] } } } },
+      { chatId: 'A', being: 'egpt', fields: { sandbox_pin: { 'C:/Users/user/Documents': { allowed_tools: ['Read'] } } } },
       { chatId: 'A', being: 'eplus', fields: { mode: 'on' } },
       { chatId: '!b:beeper.com', being: 'egpt', fields: { sandbox_pin: {} } },
       { chatId: 'C', being: 'egpt', fields: { threadId: 't' } },

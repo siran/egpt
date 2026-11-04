@@ -176,7 +176,7 @@ describe('memberStyle — many short vs one long', () => {
 });
 
 describe('name flap — an unresolved sender (raw id) is not a rename', () => {
-  const RAW = '@whatsapp_lid-69433129173200:beeper.local';
+  const RAW = '@whatsapp_lid-10000000000015:beeper.local';
   it('mergeNameHistory: a raw id never replaces a real name nor enters former_names', () => {
     expect(mergeNameHistory({ name: 'Rodz' }, RAW, 't1', { id: RAW })).toEqual({ name: 'Rodz' });
     expect(mergeNameHistory({ name: 'Rodz' }, '@other:beeper.com', 't1')).toEqual({ name: 'Rodz' });   // any bare raw id

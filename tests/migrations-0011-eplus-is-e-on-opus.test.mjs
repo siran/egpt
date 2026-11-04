@@ -197,7 +197,7 @@ describe('0011 refuses, naming the place', () => {
       .toThrow(/another being already answers to E\+'s handles in .*: agents\.plus\.handles claims "\+"/);
     await expect(plan(ctxFor(home({ config: add(['  spoken:', '    handles: [ spoken ]', '    voice_handles: [ "e+" ]']) })))).rejects
       .toThrow(/agents\.spoken\.voice_handles claims "e\+"/);
-    await expect(plan(ctxFor(home({ config: add(['  rodz:', '    handles: [ rodz ]', '    fallback_handle: { handle: [ "+" ], unless_present: "+13472576794" }']) })))).rejects
+    await expect(plan(ctxFor(home({ config: add(['  rodz:', '    handles: [ rodz ]', '    fallback_handle: { handle: [ "+" ], unless_present: "+15550100002" }']) })))).rejects
       .toThrow(/agents\.rodz\.fallback_handle claims "\+"/);
   });
 

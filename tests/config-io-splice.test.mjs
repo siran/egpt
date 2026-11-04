@@ -22,10 +22,10 @@ transcription_service:
     fallback_order: [ remote, cli ] # dolly's worker first, local whisper-cli second
     remote:
       type: whisper-server-remote   # the pipeline dispatches on type, not on the key
-      endpoint: http://192.168.1.102:23390
+      endpoint: http://192.0.2.102:23390
     cli:
       type: whisper-cli
-      command: C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-cli.exe
+      command: C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-cli.exe
       language: auto # NOT absent: whisper.cpp defaults to 'en', and a pinned language mis-hears the other one fluently
       quoted: "a quoted value"   # stays quoted
 `;
@@ -54,7 +54,7 @@ describe('spliceYamlScalar', () => {
   });
 
   it('a scalar edit is a ONE-LINE diff and every comment survives verbatim', () => {
-    const from = 'C:\\Users\\an\\bin\\whisper.cpp\\Release\\whisper-cli.exe';
+    const from = 'C:\\Users\\user\\bin\\whisper.cpp\\Release\\whisper-cli.exe';
     const to = 'D:\\tools\\whisper.cpp\\whisper-cli.exe';
     const out = spliceYamlScalar(FIXTURE, [...PROFILE, 'cli', 'command'], { expect: from, to });
     expect(diffLines(FIXTURE, out)).toEqual([
@@ -124,7 +124,7 @@ describe('spliceYamlScalar', () => {
     expect(err).toBeInstanceOf(YamlSpliceRefusal);
     expect(err.message).toContain('transcription_service.reve.remote.endpoint');
     expect(err.message).toContain('expected "http://127.0.0.1:23390"');
-    expect(err.message).toContain('found "http://192.168.1.102:23390"');
+    expect(err.message).toContain('found "http://192.0.2.102:23390"');
   });
 
   it('refuses a path that does not exist, and a path that is not a scalar', () => {

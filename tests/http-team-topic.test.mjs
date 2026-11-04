@@ -37,7 +37,7 @@ const TOKEN = '123456:FAKE-team-topic-token';
 const ME = { id: 99, is_bot: true, username: 'edw_bot', can_read_all_group_messages: true };
 const GROUP = -1001234;
 const TOPIC = `tg:${GROUP}/77`;               // the first topic the fake makes
-const CHAT = { id: GROUP, type: 'supergroup', title: 'EduWeb Chatbox', is_forum: true };
+const CHAT = { id: GROUP, type: 'supergroup', title: 'Contoso Chatbox', is_forum: true };
 const ANA = { id: 55, is_bot: false, first_name: 'Ana' };
 
 function fakeApi() {
@@ -115,15 +115,15 @@ const signed = (who, s = 3600) => {
 };
 const JP = { abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez' };
 const ML = { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' };
-const EDUWEB_TITLE = '{abrin} {user_type} {short_name} ({username})';
+const CONTOSO_TITLE = '{abrin} {user_type} {short_name} ({username})';
 
 const AGENTS = { ed: { configuration: 'egpt', handles: ['ed'], body_emoji: '🦉' } };
 // realFs: transcripts on disk (under _HOME), where /agents rethread's roll reads them.
 // block: the client as a top-level block named by limbs.http.chatboxes, not under clients:.
-async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb' }, { state = emptyState(), realFs = false, now, block = false } = {}) {
+async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo Contoso' }, { state = emptyState(), realFs = false, now, block = false } = {}) {
   await fs.mkdir(join(_HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(_HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
-  await fs.writeFile(join(_HOME, 'secrets', 'chatbox-eduweb.key'), `${ID_KEY}\n`);
+  await fs.writeFile(join(_HOME, 'secrets', 'chatbox-contoso.key'), `${ID_KEY}\n`);
   const port = await freeSafeHttpPort();
   const api = fakeApi();
   const io = memIo();
@@ -135,8 +135,8 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
       node_name: 'EDW', user_name: 'John',
       conversation_defaults: { allowed_users: ['owner-1'] },
       ...(block
-        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['eduweb_marketer'] } }, eduweb_marketer: { url: 'eduweb', being: 'ed', title: 'EduWeb', ...client } }
-        : { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { eduweb: { being: 'ed', title: 'EduWeb', ...client } } } } }),
+        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { url: 'contoso', being: 'ed', title: 'Contoso', ...client } }
+        : { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { contoso: { being: 'ed', title: 'Contoso', ...client } } } } }),
       agents: AGENTS,
     }),
     startTelegram: (opts) => startTelegramBridge({ ...opts, fetch: api.fetch }),
@@ -149,7 +149,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo EduWeb'
   });
   stopHttp = () => app.httpPort.stop();
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
-  const url = `http://127.0.0.1:${port}/chat/eduweb/`;
+  const url = `http://127.0.0.1:${port}/chat/contoso/`;
   const post = (body) => fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
   const messages = async (session, identity) => (await fetch(`${url}messages?session=${encodeURIComponent(session)}${identity ? `&identity=${encodeURIComponent(identity)}` : ''}`).then((r) => r.json())).messages;
   const slugOf = (turn) => turn.cwd.split(/[\\/]/).at(-1);
@@ -195,8 +195,8 @@ describe('a chatbox client with a team_group', () => {
     const made = n.api.of('createForumTopic');
     expect(made).toHaveLength(1);
     const slug = n.slugOf(n.turns[0]);
-    expect(made[0].body).toEqual({ chat_id: String(GROUP), name: `EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}` });
-    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
+    expect(made[0].body).toEqual({ chat_id: String(GROUP), name: `Contoso · ${slug.slice('contoso-'.length, 'contoso-'.length + 6)}` });
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo Contoso' }]), { timeout: 5000 });
     // the session's being answers its visitor in mode mention; the topic holds it mute
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
     expect(getContact(n.state(), 'telegram', TOPIC).entry.agents.ed.mode).toBe('mute');
@@ -212,8 +212,8 @@ describe('a chatbox client with a team_group', () => {
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
     const slug = n.slugOf(n.turns[0]);
-    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body)).toEqual([{ chat_id: String(GROUP), name: `EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}` }]), { timeout: 5000 });
-    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body)).toEqual([{ chat_id: String(GROUP), name: `Contoso · ${slug.slice('contoso-'.length, 'contoso-'.length + 6)}` }]), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo Contoso' }]), { timeout: 5000 });
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
     n.app.stop();
   });
@@ -238,7 +238,7 @@ describe('a chatbox client with a team_group', () => {
     const slug = n.slugOf(n.turns[0]);
     const stream = sse(`${n.url}events?session=${encodeURIComponent(a.session)}`);
     n.api.updates(inTopic('Hola, soy Ana del equipo'));
-    const team = (m) => m.from === 'being' && /Equipo EduWeb: Hola, soy Ana del equipo$/.test(m.text);
+    const team = (m) => m.from === 'being' && /Equipo Contoso: Hola, soy Ana del equipo$/.test(m.text);
     await vi.waitFor(async () => expect((await n.messages(a.session)).some(team)).toBe(true), { timeout: 5000 });
     await vi.waitFor(() => expect(stream.events.some(team)).toBe(true), { timeout: 5000 });
     await stream.close();
@@ -284,7 +284,7 @@ describe('a chatbox client with a team_group', () => {
   });
 
   it('the team group\'s General chat being a conversation changes nothing: the topic stays the chatbox\'s, not a fork', async () => {
-    let state = ensureContact(emptyState(), 'telegram', `tg:${GROUP}`, { pushedName: 'EduWeb Chatbox' }).state;
+    let state = ensureContact(emptyState(), 'telegram', `tg:${GROUP}`, { pushedName: 'Contoso Chatbox' }).state;
     state = recordThread(state, 'telegram', `tg:${GROUP}`, 'general-thread', '2026-10-01T00:00:00Z', 'ed');
     const n = await bootTeam(undefined, { state });
     const a = await n.post({ text: 'hola' });
@@ -331,7 +331,7 @@ describe('a chatbox client with a team_group', () => {
     n.api.answers.createForumTopic = () => n.api.err(502, 'Bad Gateway');
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
-    await vi.waitFor(() => expect(n.lines.filter((l) => /^\[http\] http:eduweb-[0-9a-f]{16}: no team topic — Telegram did not make the topic \(Bad Gateway\)$/.test(l))).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.lines.filter((l) => /^\[http\] http:contoso-[0-9a-f]{16}: no team topic — Telegram did not make the topic \(Bad Gateway\)$/.test(l))).toHaveLength(1), { timeout: 5000 });
     n.api.answers.createForumTopic = (b) => ({ status: 200, json: async () => ({ ok: true, result: { message_thread_id: 77, name: b.name } }) });
     skew = 110_000;
     await n.post({ session: a.session, text: 'dos' });
@@ -343,7 +343,7 @@ describe('a chatbox client with a team_group', () => {
     await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
     const slug = n.slugOf(n.turns[0]);
     expect(n.lines.filter((l) => l.endsWith(`http:${slug}: no team topic yet — trying again`))).toHaveLength(1);
-    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo EduWeb' }]), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo Contoso' }]), { timeout: 5000 });
     await vi.waitFor(() => {
       const recap = n.inThread()[0]?.text.split('\n') ?? [];
       expect(recap[0]).toMatch(/^\(conversación iniciada antes: [56] mensajes\)$/);
@@ -359,7 +359,7 @@ describe('a chatbox client with a team_group', () => {
     n.api.answers.createForumTopic = () => n.api.err(400, 'Bad Request: the chat is not a forum');
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
-    expect(n.lines.some((l) => /^\[http\] http:eduweb-[0-9a-f]{16}: no team topic — .*Topics/.test(l))).toBe(true);
+    expect(n.lines.some((l) => /^\[http\] http:contoso-[0-9a-f]{16}: no team topic — .*Topics/.test(l))).toBe(true);
     expect(await Room.forChat('http', n.slugOf(n.turns[0])).members()).toEqual([]);
     n.app.stop();
   });
@@ -416,7 +416,7 @@ describe('a chatbox client with no team_group', () => {
 });
 
 describe('a signed visitor (identity)', () => {
-  const client = (identity = 'required') => ({ team_group: GROUP, team_name: 'Equipo EduWeb', identity, topic_title: EDUWEB_TITLE });
+  const client = (identity = 'required') => ({ team_group: GROUP, team_name: 'Equipo Contoso', identity, topic_title: CONTOSO_TITLE });
 
   it('a valid token: the topic is "<abrin> <user_type> <short_name> (<username>)", and the user is on the desk (usuario.json, usuario.md), never the token', async () => {
     const n = await bootTeam(client());
@@ -460,7 +460,7 @@ describe('a signed visitor (identity)', () => {
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
     const slug = n.slugOf(n.turns[0]);
-    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual([`EduWeb · ${slug.slice('eduweb-'.length, 'eduweb-'.length + 6)}`]), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual([`Contoso · ${slug.slice('contoso-'.length, 'contoso-'.length + 6)}`]), { timeout: 5000 });
     await expect(fs.access(join(n.turns[0].cwd, 'usuario.json'))).rejects.toThrow();
     n.app.stop();
   });

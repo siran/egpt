@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { plan, withInsert, INSERT, TEXT, CARD_LINES } from '../migrations/0038-being-scripts-reach-chrome-through-the-spine.mjs';
 import { runMigrations, listMigrations, MIGRATIONS_DIR } from '../setup/migrate.mjs';
 
-const CHAT = join('conversations', 'whatsapp', 'eGPT Rodz Lulu An-2609201419');
+const CHAT = join('conversations', 'whatsapp', 'eGPT Rodz Lola An-2609201419');
 const LITERAL = "const list = await (await fetch('http://localhost:9221/json')).json();\nconst ws = new WebSocket(list[0].webSocketDebuggerUrl);\n";
 const VIA_PORT = 'const PORT = 9221;\nconst r = await fetch(`http://localhost:${PORT}/json/new?x`, { method: \'PUT\' });\n';
 const GMAIL = TEXT.find((t) => t.file[1] === 'gmail-watch3-0700.yaml');
@@ -151,7 +151,7 @@ describe('0038 prompts — exact-line replacements', () => {
 
   it('a target absent on this node (dolly has no such heartbeats) is nothing to do', async () => {
     const h = home({ 'config/skeletons/room/30-pointers.md': CARD_TEXT.join('\n') });
-    mkdirSync(join(h, 'conversations', 'whatsapp', 'eGPT Rodz Lulu An-2609201420'), { recursive: true });
+    mkdirSync(join(h, 'conversations', 'whatsapp', 'eGPT Rodz Lola An-2609201420'), { recursive: true });
     const p = await plan(ctxFor(h));
     expect(p.changes.slice(0, 2)).toEqual([
       'scripts: 0 to edit, 0 already carry the line, 0 skipped, 0 proposals (not .mjs, never edited)',

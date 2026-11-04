@@ -84,9 +84,9 @@ const MAIN = 'TOK-main';         // An — the operator's own number
 const SECONDARY = 'TOK-secondary';   // Rodz — the mouth
 const NAME_OF = { [MAIN]: 'main', [SECONDARY]: 'secondary' };
 
-const AN = '+16468217865';
-const RODZ = '+13472576794';
-const DANDO = '+34658515045';
+const AN = '+15550100001';
+const RODZ = '+15550100002';
+const DARIO = '+15550100005';
 
 // An account's OWN entry: a matrix id and NO phoneNumber. A member's entry carries the number.
 const self = (id) => ({ id });
@@ -103,12 +103,12 @@ const RODZ_ONLY = '!rodz-only-group';
 // missing here is the 404 → `participants: null` → UNKNOWN path.
 const DESKTOPS = {
   [MAIN]: {
-    [SHARED_ON_MAIN]: [self('an@beeper.local'), member('rodz@beeper.local', RODZ), member('dando@beeper.local', DANDO)],
-    [AN_ONLY]: [self('an@beeper.local'), member('dando@beeper.local', DANDO)],
+    [SHARED_ON_MAIN]: [self('an@beeper.local'), member('rodz@beeper.local', RODZ), member('dario@beeper.local', DARIO)],
+    [AN_ONLY]: [self('an@beeper.local'), member('dario@beeper.local', DARIO)],
   },
   [SECONDARY]: {
-    [SHARED_ON_SECONDARY]: [self('rodz@beeper.local'), member('an@beeper.local', AN), member('dando@beeper.local', DANDO)],
-    [RODZ_ONLY]: [self('rodz@beeper.local'), member('dando@beeper.local', DANDO)],
+    [SHARED_ON_SECONDARY]: [self('rodz@beeper.local'), member('an@beeper.local', AN), member('dario@beeper.local', DARIO)],
+    [RODZ_ONLY]: [self('rodz@beeper.local'), member('dario@beeper.local', DARIO)],
   },
 };
 
@@ -242,7 +242,7 @@ async function bootWith(config) {
 // bridge does not know that token, and the router's guard is the only thing that can wake on it.
 const deliver = (spy, chatId, body, { atE = false } = {}) => spy.onIncoming(body, {
   chatId, chatName: chatId.replace(/^!/, ''), network: 'whatsapp',
-  userId: DANDO, senderName: 'Dando', authorized: true, msgKey: `m-${chatId}-${body.length}`,
+  userId: DARIO, senderName: 'Dario', authorized: true, msgKey: `m-${chatId}-${body.length}`,
   atEStart: atE, atEAnywhere: atE,
 });
 

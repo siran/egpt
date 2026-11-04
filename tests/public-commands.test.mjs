@@ -20,12 +20,12 @@ import { ensureContact, recordThread } from '../src/conversations-state.mjs';
 
 const GROUP = 'grpC';
 const OTHER = 'grpD';
-const RODZ_ID = '@whatsapp_lid-69433129173200:beeper.local';
-const LULU = '@whatsapp_lid-lulu42:beeper.local';
+const RODZ_ID = '@whatsapp_lid-10000000000015:beeper.local';
+const LOLA = '@whatsapp_lid-lola42:beeper.local';
 const BASE = {
   node_name: 'kg', node_role: 'primary',
   networks: { whatsapp: { chat_ids: ['!self'] } },
-  beeper: { primary: { phone: '+16468217865' }, secondary: { phone: '+13472576794' } },
+  beeper: { primary: { phone: '+15550100001' }, secondary: { phone: '+15550100002' } },
   group_title: '{group}-{name}',
   agents: { egpt: { handles: ['e', 'egpt'], default: true, conversation_defaults: { allowed_users: ['*'] } } },   // members reach E
 };
@@ -33,7 +33,7 @@ const BASE = {
 let seq = 0;
 const member = (body, over = {}) => ({
   surface: 'whatsapp', chatId: GROUP, chatName: 'C', ts: 1, kind: 'text', raw: { chatType: 'group' },
-  senderId: LULU, senderName: 'Lulu', msgId: `m-${++seq}`, isSender: false, authorized: false, body, ...over,
+  senderId: LOLA, senderName: 'Lola', msgId: `m-${++seq}`, isSender: false, authorized: false, body, ...over,
 });
 const operator = (body, over = {}) => member(body, { senderId: '@an:beeper.com', senderName: 'An', isSender: true, authorized: true, ...over });
 
@@ -60,7 +60,7 @@ function node({ config = {}, lists = {} } = {}) {
       chatAccountId: async () => 'whatsapp',
       chatRaw: async () => null,
       chatTitle: async () => null,
-      resolveUserIdByPhone: async (digits) => (digits === '13472576794' ? RODZ_ID : null),
+      resolveUserIdByPhone: async (digits) => (digits === '15550100002' ? RODZ_ID : null),
       awaitMouthMessage: async () => null,
     },
   });

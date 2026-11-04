@@ -21,13 +21,13 @@ import { shortChatId } from '../src/bridges/chat-id.mjs';
 
 const GROUP = 'grpC';
 const SIDE = shortChatId('!side1:beeper.local');
-const RODZ_ID = '@whatsapp_lid-69433129173200:beeper.local';
-const LULU = '@whatsapp_lid-lulu42:beeper.local';
+const RODZ_ID = '@whatsapp_lid-10000000000015:beeper.local';
+const LOLA = '@whatsapp_lid-lola42:beeper.local';
 const ANYONE = { allowed_users: ['*'] };   // members reach both
 const AGENTS = { e: { handles: ['e'], mode: 'on', conversation_defaults: ANYONE }, don: { handles: ['d', 'don'], conversation_defaults: ANYONE } };
 const CONFIG = {
   networks: { whatsapp: { chat_ids: ['!self'] } }, agents: AGENTS,
-  beeper: { primary: { phone: '+16468217865' }, secondary: { phone: '+13472576794' } },
+  beeper: { primary: { phone: '+15550100001' }, secondary: { phone: '+15550100002' } },
   node_name: 'kg', node_role: 'primary', group_title: '{group}-{name}',
 };
 const ALIASES = join(HOME, 'config', 'commands_alias.yaml');
@@ -44,7 +44,7 @@ let seq = 0;
 const member = (body, over = {}) => ({
   surface: 'whatsapp', chatId: GROUP, chatName: 'C', ts: 1, kind: 'text', raw: { chatType: 'group' },
   mention: { atEStart: false, atEAnywhere: false, replyToBot: false },
-  senderId: LULU, senderName: 'Lulu', msgId: `m-${++seq}`, isSender: false, authorized: false, body, ...over,
+  senderId: LOLA, senderName: 'Lola', msgId: `m-${++seq}`, isSender: false, authorized: false, body, ...over,
 });
 const operator = (body, over = {}) => member(body, { senderId: '@an:beeper.com', senderName: 'An', isSender: true, authorized: true, ...over });
 
@@ -64,7 +64,7 @@ function build() {
       chatAccountId: async () => 'whatsapp',
       chatRaw: async () => null,
       chatTitle: async () => null,
-      resolveUserIdByPhone: async (digits) => (digits === '13472576794' ? RODZ_ID : null),
+      resolveUserIdByPhone: async (digits) => (digits === '15550100002' ? RODZ_ID : null),
       awaitMouthMessage: async () => null,
     },
     logToGroup: async (text) => { calls.audit.push(text); return true; },
@@ -98,7 +98,7 @@ describe('an alias runs its command line, with the rest of the message as argume
   it('a member\'s "aparte viaje" is /split viaje: the primary makes SI+C-viaje with Rodz + the member, forked from C', async () => {
     const { say, calls, getState } = build();
     await say(member('aparte viaje'));
-    expect(calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_ID, LULU], type: 'group', title: 'SI+C-viaje' }]);
+    expect(calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_ID, LOLA], type: 'group', title: 'SI+C-viaje' }]);
     expect(getState().contacts.whatsapp[SIDE]).toMatchObject({ parent_chat: GROUP });
     expect(calls.brain).toEqual([]);
   });
@@ -119,8 +119,8 @@ describe('an alias runs its command line, with the rest of the message as argume
     await say(member('Nos  vamos   ya'));
     expect(calls.ran).toEqual(['/split playa', '/end ya']);
     expect(calls.audit).toEqual([
-      "alias 'nos vamos aparte' → /split in C by Lulu",
-      "alias 'nos vamos' → /end in C by Lulu → no-op — not a /join or /split side channel",
+      "alias 'nos vamos aparte' → /split in C by Lola",
+      "alias 'nos vamos' → /end in C by Lola → no-op — not a /join or /split side channel",
     ]);
   });
 
@@ -239,7 +239,7 @@ describe('the file: live, validated, optional', () => {
     expect(calls.transcript).toEqual(['aparte viaje']);
     expect(calls.ran).toEqual(['/split viaje']);
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
-    expect(calls.audit).toEqual(["alias 'aparte' → /split in C by Lulu"]);
+    expect(calls.audit).toEqual(["alias 'aparte' → /split in C by Lola"]);
   });
 
   it('an alias to the retired /e join still loads, and answers with /split, making nothing', async () => {
@@ -255,7 +255,7 @@ describe('the file: live, validated, optional', () => {
 
 // Dispatched by the spine but unregistered until 2026-10-19: an alias to one was refused, /help omitted them.
 describe('/tab /close /activate /bans /unban are registry commands', () => {
-  const ALIASED = [['pestaña', '/tab', '1'], ['cierra', '/close', '2'], ['activa', '/activate', 'cgpt1'], ['baneos', '/bans', ''], ['perdona', '/unban', 'Lulu']];
+  const ALIASED = [['pestaña', '/tab', '1'], ['cierra', '/close', '2'], ['activa', '/activate', 'cgpt1'], ['baneos', '/bans', ''], ['perdona', '/unban', 'Lola']];
 
   it('each is a wired registry entry, and an alias to each is accepted and runs it', async () => {
     for (const [, cmd] of ALIASED) expect(COMMANDS.find((e) => e.cmd === cmd), cmd).toMatchObject({ wired: true });
@@ -276,7 +276,7 @@ describe('regression locks', () => {
     await say(operator('/e restart'));
     expect(calls.create.map((c) => c.title)).toEqual(['SI+C-viaje']);
     expect(calls.exit).toEqual([{ code: 43, force: false }]);
-    expect(calls.audit).toEqual(['/split in C by Lulu', '/restart in C by An']);
+    expect(calls.audit).toEqual(['/split in C by Lola', '/restart in C by An']);
     expect(calls.transcript).toEqual(['/e split viaje', '/e restart']);
   });
 

@@ -2,9 +2,9 @@
 //
 // The fixtures are the probe output MEASURED on 2026-09-16 (read-only) on each node:
 //   kg: labels already what install-nssm-service.ps1 stamps, AppEnvironmentExtra carrying both
-//       EGPT_HOME and EGPT_HOMES=C:/Users/an/.egpt - 0004 must read "already satisfied" from the
+//       EGPT_HOME and EGPT_HOMES=C:/Users/user/.egpt - 0004 must read "already satisfied" from the
 //       service's OWN list: the idempotency proof.
-//   do: an older hand install's labels, EGPT_HOME=C:\Users\an\.egpt only - both labels change.
+//   do: an older hand install's labels, EGPT_HOME=C:\Users\user\.egpt only - both labels change.
 // What is under test beyond that: only the two labels are set, by sc.exe, and every other value
 // under the service key must come back identical or the migration refuses naming it.
 // The SCM is a fake: the probe returns the fixture and the label script is applied to it.
@@ -23,19 +23,19 @@ const KG = () => ({
   keys: {
     '': {
       Type: v('DWord', 16), Start: v('DWord', 2), ErrorControl: v('DWord', 1),
-      ImagePath: v('ExpandString', 'C:\\Users\\an\\bin\\egpt\\setup\\bin\\egpt-service.exe'),
+      ImagePath: v('ExpandString', 'C:\\Users\\user\\bin\\egpt\\setup\\bin\\egpt-service.exe'),
       DisplayName: v('String', 'eGPT node supervisor (egpt-daemon)'),
-      ObjectName: v('String', '.\\an'), DelayedAutostart: v('DWord', 0), FailureActionsOnNonCrashFailures: v('DWord', 1),
-      Description: v('String', 'eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:/Users/an/.egpt. Stop it and this node goes silent.'),
+      ObjectName: v('String', '.\\user'), DelayedAutostart: v('DWord', 0), FailureActionsOnNonCrashFailures: v('DWord', 1),
+      Description: v('String', 'eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:/Users/user/.egpt. Stop it and this node goes silent.'),
       FailureActions: FAILURE_ACTIONS,
     },
     Parameters: {
       Application: v('ExpandString', 'C:\\Program Files\\nodejs\\node.exe'),
-      AppParameters: v('ExpandString', 'C:\\Users\\an\\bin\\egpt\\egpt-daemon.mjs'),
-      AppDirectory: v('ExpandString', 'C:\\Users\\an\\bin\\egpt'),
-      AppEnvironmentExtra: v('MultiString', ['EGPT_HOME=C:/Users/an/.egpt', 'EGPT_HOMES=C:/Users/an/.egpt']),
-      AppStdout: v('ExpandString', 'C:\\Users\\an\\.egpt\\config\\logs\\daemon-stdout.log'),
-      AppStderr: v('ExpandString', 'C:\\Users\\an\\.egpt\\config\\logs\\daemon-stderr.log'),
+      AppParameters: v('ExpandString', 'C:\\Users\\user\\bin\\egpt\\egpt-daemon.mjs'),
+      AppDirectory: v('ExpandString', 'C:\\Users\\user\\bin\\egpt'),
+      AppEnvironmentExtra: v('MultiString', ['EGPT_HOME=C:/Users/user/.egpt', 'EGPT_HOMES=C:/Users/user/.egpt']),
+      AppStdout: v('ExpandString', 'C:\\Users\\user\\.egpt\\config\\logs\\daemon-stdout.log'),
+      AppStderr: v('ExpandString', 'C:\\Users\\user\\.egpt\\config\\logs\\daemon-stderr.log'),
       AppRotateFiles: v('DWord', 1), AppRotateOnline: v('DWord', 1), AppRotateBytes: v('DWord', 10485760),
       AppRestartDelay: v('DWord', 5000), AppStopMethodConsole: v('DWord', 10000),
     },
@@ -50,29 +50,29 @@ const DO = () => ({
   keys: {
     '': {
       Type: v('DWord', 16), Start: v('DWord', 2), ErrorControl: v('DWord', 1),
-      ImagePath: v('ExpandString', 'C:\\Users\\an\\.egpt\\bin\\egpt-service.exe'),
+      ImagePath: v('ExpandString', 'C:\\Users\\user\\.egpt\\bin\\egpt-service.exe'),
       DisplayName: v('String', DO_DISPLAY),
-      ObjectName: v('String', '.\\an'), DelayedAutostart: v('DWord', 0), FailureActionsOnNonCrashFailures: v('DWord', 1),
+      ObjectName: v('String', '.\\user'), DelayedAutostart: v('DWord', 0), FailureActionsOnNonCrashFailures: v('DWord', 1),
       Description: v('String', DO_DESCRIPTION),
       FailureActions: FAILURE_ACTIONS,
     },
     Parameters: {
       Application: v('ExpandString', 'C:\\Program Files\\nodejs\\node.exe'),
-      AppParameters: v('ExpandString', 'C:\\Users\\an\\bin\\egpt\\egpt-daemon.mjs'),
-      AppDirectory: v('ExpandString', 'C:\\Users\\an\\bin\\egpt'),
-      AppStdout: v('ExpandString', 'C:\\Users\\an\\.egpt\\config\\logs\\service-stdout.log'),
-      AppStderr: v('ExpandString', 'C:\\Users\\an\\.egpt\\config\\logs\\service-stderr.log'),
+      AppParameters: v('ExpandString', 'C:\\Users\\user\\bin\\egpt\\egpt-daemon.mjs'),
+      AppDirectory: v('ExpandString', 'C:\\Users\\user\\bin\\egpt'),
+      AppStdout: v('ExpandString', 'C:\\Users\\user\\.egpt\\config\\logs\\service-stdout.log'),
+      AppStderr: v('ExpandString', 'C:\\Users\\user\\.egpt\\config\\logs\\service-stderr.log'),
       AppRotateFiles: v('DWord', 1), AppRotateOnline: v('DWord', 1), AppRotateBytes: v('DWord', 10485760),
       AppRestartDelay: v('DWord', 5000), AppStopMethodSkip: v('DWord', 0), AppStopMethodConsole: v('DWord', 10000),
       AppStopMethodWindow: v('DWord', 5000), AppStopMethodThreads: v('DWord', 5000),
-      AppEnvironmentExtra: v('MultiString', ['EGPT_HOME=C:\\Users\\an\\.egpt']),
+      AppEnvironmentExtra: v('MultiString', ['EGPT_HOME=C:\\Users\\user\\.egpt']),
     },
     'Parameters\\AppExit': { '': v('String', 'Restart') },
   },
 });
 
 const DO_WANT_DISPLAY = 'eGPT node supervisor (egpt-daemon)';
-const DO_WANT_DESCRIPTION = 'eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:\\Users\\an\\.egpt. Stop it and this node goes silent.';
+const DO_WANT_DESCRIPTION = 'eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:\\Users\\user\\.egpt. Stop it and this node goes silent.';
 
 // A fake SCM over one service's registry snapshot. The label script is read back the way sc.exe
 // would take it; `onLabel(state)` lets a test decide what else Windows changed.
@@ -95,13 +95,13 @@ function fakeScm(state, { onLabel = () => {} } = {}) {
   };
   return { calls, ps };
 }
-const ctxWith = (scm, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\an\\.egpt', log: () => {}, ps: scm.ps, ...over });
+const ctxWith = (scm, over = {}) => ({ platform: 'win32', egptHome: 'C:\\Users\\user\\.egpt', log: () => {}, ps: scm.ps, ...over });
 
 describe('0004 on kg - already carries the installer labels', () => {
   it('reads already satisfied from the service\'s OWN profile list, and sets nothing', async () => {
     const scm = fakeScm({ current: KG() });
     const p = await plan(ctxWith(scm));
-    expect(p).toEqual({ satisfied: true, notes: ['egpt-daemon: "eGPT node supervisor (egpt-daemon)" - "eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:/Users/an/.egpt. Stop it and this node goes silent."'] });
+    expect(p).toEqual({ satisfied: true, notes: ['egpt-daemon: "eGPT node supervisor (egpt-daemon)" - "eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:/Users/user/.egpt. Stop it and this node goes silent."'] });
     expect(scm.calls).toEqual(['# egpt-0004:probe']);
   });
 
@@ -123,14 +123,14 @@ describe('0004 on do - the older hand install\'s labels', () => {
     const p = await plan(ctxWith(fakeScm({ current: DO() })));
     expect(p.satisfied).toBe(false);
     expect(p.changes).toEqual([
-      'service egpt-daemon (runs as .\\an) - its labels only, by sc.exe. It is not stopped, restarted or reinstalled.',
+      'service egpt-daemon (runs as .\\user) - its labels only, by sc.exe. It is not stopped, restarted or reinstalled.',
       '  DisplayName',
       `    - ${DO_DISPLAY}`,
       `    + ${DO_WANT_DISPLAY}`,
       '  Description',
       `    - ${DO_DESCRIPTION}`,
       `    + ${DO_WANT_DESCRIPTION}`,
-      "  the profile list is the service's own, from its AppEnvironmentExtra: EGPT_HOME=C:\\Users\\an\\.egpt",
+      "  the profile list is the service's own, from its AppEnvironmentExtra: EGPT_HOME=C:\\Users\\user\\.egpt",
       'verify: every other value under HKLM\\SYSTEM\\CurrentControlSet\\Services\\egpt-daemon, subkeys included (ImagePath, ObjectName, Start, Parameters\\AppParameters, Parameters\\AppEnvironmentExtra, ...), is identical afterwards - else refuse and name what differs',
     ]);
   });
@@ -165,10 +165,10 @@ describe('0004 on do - the older hand install\'s labels', () => {
 
 describe('0004 refuses when setting the labels changed anything else', () => {
   const cases = [
-    ['the binary path', (s) => { s.keys[''].ImagePath = v('ExpandString', 'C:\\Users\\an\\bin\\egpt\\setup\\bin\\egpt-service.exe'); }, /ImagePath: before \{"kind":"ExpandString","value":"C:\\\\Users\\\\an\\\\.egpt\\\\bin\\\\egpt-service.exe"\}, after/],
-    ['AppParameters', (s) => { s.keys.Parameters.AppParameters = v('ExpandString', 'C:\\Users\\an\\src\\egpt\\egpt-daemon.mjs'); }, /Parameters\\AppParameters: before/],
-    ['AppEnvironmentExtra', (s) => { s.keys.Parameters.AppEnvironmentExtra = v('MultiString', []); }, /Parameters\\AppEnvironmentExtra: before \{"kind":"MultiString","value":\["EGPT_HOME=C:\\\\Users\\\\an\\\\.egpt"\]\}, after \{"kind":"MultiString","value":\[\]\}/],
-    ['the account', (s) => { s.keys[''].ObjectName = v('String', 'LocalSystem'); }, /ObjectName: before \{"kind":"String","value":".\\\\an"\}, after \{"kind":"String","value":"LocalSystem"\}/],
+    ['the binary path', (s) => { s.keys[''].ImagePath = v('ExpandString', 'C:\\Users\\user\\bin\\egpt\\setup\\bin\\egpt-service.exe'); }, /ImagePath: before \{"kind":"ExpandString","value":"C:\\\\Users\\\\user\\\\.egpt\\\\bin\\\\egpt-service.exe"\}, after/],
+    ['AppParameters', (s) => { s.keys.Parameters.AppParameters = v('ExpandString', 'C:\\Users\\user\\src\\egpt\\egpt-daemon.mjs'); }, /Parameters\\AppParameters: before/],
+    ['AppEnvironmentExtra', (s) => { s.keys.Parameters.AppEnvironmentExtra = v('MultiString', []); }, /Parameters\\AppEnvironmentExtra: before \{"kind":"MultiString","value":\["EGPT_HOME=C:\\\\Users\\\\user\\\\.egpt"\]\}, after \{"kind":"MultiString","value":\[\]\}/],
+    ['the account', (s) => { s.keys[''].ObjectName = v('String', 'LocalSystem'); }, /ObjectName: before \{"kind":"String","value":".\\\\user"\}, after \{"kind":"String","value":"LocalSystem"\}/],
     ['the start mode', (s) => { s.keys[''].Start = v('DWord', 3); }, /Start: before \{"kind":"DWord","value":2\}, after \{"kind":"DWord","value":3\}/],
     ['a value that appeared', (s) => { s.keys[''].DelayedAutostart = v('DWord', 1); s.keys[''].Group = v('String', 'x'); }, /DelayedAutostart: .*; Group: before null, after/],
     ['a subkey that went away', (s) => { delete s.keys['Parameters\\AppExit']; }, /subkey Parameters\\AppExit was removed/],
@@ -189,7 +189,7 @@ describe('0004 refuses when setting the labels changed anything else', () => {
     const state = { current: DO() };
     const scm = fakeScm(state);
     const p = await plan(ctxWith(scm));
-    state.current.keys.Parameters.AppDirectory = v('ExpandString', 'C:\\Users\\an\\src\\egpt');
+    state.current.keys.Parameters.AppDirectory = v('ExpandString', 'C:\\Users\\user\\src\\egpt');
     await expect(p.apply()).rejects.toThrow(/0004 refuses: egpt-daemon changed since it was planned - re-run/);
     expect(scm.calls.some((c) => c.includes('label'))).toBe(false);
   });
@@ -219,12 +219,12 @@ describe('0004 refuses what it does not know, by name', () => {
 
 describe('0004 derives the profile list the way install-nssm-service.ps1 builds it', () => {
   it('EGPT_HOMES wins over EGPT_HOME, in order, split on ; or , and joined with ", "', () => {
-    expect(profileListOf(['EGPT_HOME=C:/Users/an/.egpt', 'EGPT_HOMES=C:/Users/an/.egpt;C:/Users/an/.egpt-secondary']).list).toEqual(['C:/Users/an/.egpt', 'C:/Users/an/.egpt-secondary']);
+    expect(profileListOf(['EGPT_HOME=C:/Users/user/.egpt', 'EGPT_HOMES=C:/Users/user/.egpt;C:/Users/user/.egpt-secondary']).list).toEqual(['C:/Users/user/.egpt', 'C:/Users/user/.egpt-secondary']);
     expect(descriptionFor(profileListOf(['EGPT_HOMES= C:/b , C:/a ;;']).list)).toBe('eGPT spine supervisor (egpt-daemon.mjs) for profile(s) C:/b, C:/a. Stop it and this node goes silent.');
   });
 
   it('EGPT_HOME alone, verbatim - slashes as the service carries them', () => {
-    expect(profileListOf(['EGPT_HOME=C:\\Users\\an\\.egpt'])).toEqual({ from: 'EGPT_HOME=C:\\Users\\an\\.egpt', list: ['C:\\Users\\an\\.egpt'] });
+    expect(profileListOf(['EGPT_HOME=C:\\Users\\user\\.egpt'])).toEqual({ from: 'EGPT_HOME=C:\\Users\\user\\.egpt', list: ['C:\\Users\\user\\.egpt'] });
   });
 
   it('a blank EGPT_HOMES is no list - EGPT_HOME, as the daemon itself falls back', () => {

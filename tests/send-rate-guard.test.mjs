@@ -289,14 +289,14 @@ describe('send-rate pause at the spine — the same paused state the loop guard 
       isSelfChat: () => false,
       clock: { now: () => 1000 },
     });
-    const from = (msgKey) => ({ chatId: 'PALMA', chatName: 'PALMA', chatType: 'group', network: 'whatsapp', userId: 'an', username: 'An', senderName: 'An', isSender: true, authorized: true, msgKey });
+    const from = (msgKey) => ({ chatId: 'MUESTRA', chatName: 'MUESTRA', chatType: 'group', network: 'whatsapp', userId: 'an', username: 'An', senderName: 'An', isSender: true, authorized: true, msgKey });
 
-    guard.stopChannel(anyChannel('PALMA'));
+    guard.stopChannel(anyChannel('MUESTRA'));
     await spine.handleInbound({ body: 'e hola', from: from('h1') });
     expect(brain.calls).toHaveLength(0);
 
     await spine.handleInbound({ body: 'resume', from: from('r1') });
-    expect(guard.blocked('whatsapp:PALMA')).toBe(false);
+    expect(guard.blocked('whatsapp:MUESTRA')).toBe(false);
     await spine.handleInbound({ body: 'e seguimos', from: from('h2') });
     expect(brain.calls.length).toBeGreaterThan(0);
   });
@@ -359,7 +359,7 @@ async function bootNode(outbound = undefined) {
   app = await boot({
     readConfig: () => ({
       node_name: 'kg', user_name: 'An', log_to_group: 'eGPT Admin',
-      networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+16468217865'] } },
+      networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['+15550100001'] } },
       beeper: { primary: { account: 'an@example.com', token: 'TOK' } },
       agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
       loop_guard: { outbound },

@@ -27,8 +27,8 @@
 //
 // THE SHAPE MODELLED HERE IS THE LIVE kg NODE WITH ITS CRUTCH REMOVED — `~/.egpt/config.yaml`
 // carries `beeper: { use: primary }` marked TEMPORARY, and this file is what has to hold before
-// that line can go: `primary` (anrodz42) is the ear, `secondary` (dolly.egpt) is what the names
-// resolve OUTPUT to, and the Self-DM exists only on anrodz42.
+// that line can go: `primary` (anaprueba42) is the ear, `secondary` (mouth.acct) is what the names
+// resolve OUTPUT to, and the Self-DM exists only on anaprueba42.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 
 // A PRIVATE profile for this file — egpt-home.mjs freezes EGPT_HOME at module load, so it must be
@@ -71,12 +71,12 @@ afterEach(async () => {
 });
 
 // ── the two connections, named the way the live node names them ─────────────────────────────
-const PRIMARY = 'TOK-primary';       // anrodz42 — the EAR (boot's ear rule: 'primary' by name)
-const SECONDARY = 'TOK-secondary';   // dolly.egpt — the MOUTH the names resolve output to
+const PRIMARY = 'TOK-primary';       // anaprueba42 — the EAR (boot's ear rule: 'primary' by name)
+const SECONDARY = 'TOK-secondary';   // mouth.acct — the MOUTH the names resolve output to
 const NAME_OF = { [PRIMARY]: 'primary', [SECONDARY]: 'secondary' };
 
 // THE SELF-DM — `networks.whatsapp.chat_ids[0]`, the entry the live config annotates
-// "Self-DM = the operator command channel". A room on anrodz42 and on nothing else.
+// "Self-DM = the operator command channel". A room on anaprueba42 and on nothing else.
 // It is also the ONLY chat id the three node-level sends ever carry: the safe word is honoured in
 // Self alone (src/spine/spine.mjs isSelfChat), and both announces target Self by construction.
 // That is exactly why the arrival map cannot answer for them and the config must.
@@ -133,19 +133,19 @@ const KG = () => ({
   user_name: 'An',
   networks: { whatsapp: { chat_ids: [SELF_DM], allowed_users: ['u-1'] } },
   beeper: {
-    primary: { account: 'anrodz42@example.com', token: PRIMARY },
-    secondary: { account: 'dolly.egpt@example.com', token: SECONDARY },
+    primary: { account: 'anaprueba42@example.com', token: PRIMARY },
+    secondary: { account: 'mouth.acct@example.org', token: SECONDARY },
   },
   agents: { egpt: { configuration: 'egpt', default: true, handles: ['e'], name: 'E' } },
 });
 
-// THE SAME TWO CONNECTIONS ON ONE ACCOUNT — two Desktop installs of anrodz42, exactly the
+// THE SAME TWO CONNECTIONS ON ONE ACCOUNT — two Desktop installs of anaprueba42, exactly the
 // primary/primary_gui pair the operator runs. The mouth CAN reach the Self-DM here, so the mouth
 // speaks: that is the other half of the rule, and it is what keeps the rule a rule rather than
 // "the ear always wins".
 const KG_ONE_ACCOUNT = () => {
   const c = KG();
-  c.beeper.secondary.account = 'anrodz42@example.com';
+  c.beeper.secondary.account = 'anaprueba42@example.com';
   return c;
 };
 
@@ -205,7 +205,7 @@ const deliver = (spy, chatId, body) => spy.onIncoming(body, {
 describe('a node-level send rides the connection that can REACH the chat, not the default mouth', () => {
   // ── THE REPRODUCTION ──────────────────────────────────────────────────────────────────────
   // The earliest outbound of the process, with the arrival map necessarily EMPTY. Before this it
-  // rode `defaultBridge` — 'secondary', dolly.egpt — carrying a chatId only anrodz42 has.
+  // rode `defaultBridge` — 'secondary', mouth.acct — carrying a chatId only anaprueba42 has.
   it('the COLD-BOOT announce goes out on primary, with nothing ever having arrived', async () => {
     const { app, byConnection, posted } = await bootWith(KG(), { ingest: true });
 
@@ -267,7 +267,7 @@ describe('a node-level send rides the connection that can REACH the chat, not th
   // every command reply (`/status`, `/agents`, `/config`, …) leaves through boot's
   // commandTranscript.send, which had the plain default bridge hard-wired. A command is typed
   // overwhelmingly in Self, so with the crutch removed `/status` would have answered into a room
-  // dolly.egpt does not have — the operator's very next keystroke after the deploy.
+  // mouth.acct does not have — the operator's very next keystroke after the deploy.
   it('a COMMAND reply typed in Self is answered on primary', async () => {
     const { app, byConnection, posted } = await bootWith(KG());
     await deliver(byConnection.primary, SELF_DM, '/e status');

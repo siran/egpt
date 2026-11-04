@@ -1314,7 +1314,7 @@ describe('createHeartbeatLoader — the command runner on win32 (POSIX bash)', (
       '    post: "Hola muchachas y muchachos, el primo del día es {stdout}"',
       '',
     ].join('\n');
-    const GROUP = { dir: 'C:\\Users\\an\\.egpt\\conversations\\whatsapp\\Reencuentro CRC 1991-2026-2607161314', ns: 'whatsapp/Reencuentro CRC 1991-2026-2607161314' };
+    const GROUP = { dir: 'C:\\Users\\user\\.egpt\\conversations\\whatsapp\\Reencuentro amigos 1990-2607161314', ns: 'whatsapp/Reencuentro amigos 1990-2607161314' };
     const h = build({
       block: parseEntityConfig(yaml).heartbeats, entities: [GROUP],
       now: () => Date.UTC(2026, 8, 16, 12, 0),   // 13:00 in Tenerife (WEST), an hour before
@@ -1513,8 +1513,8 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
 describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run BOXED or not at all', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
   const CONFIG = { default_time_zone: 'UTC', agents: { egpt: { default: true, handles: ['e'] }, djh: { handles: ['djh'] } } };
-  // dolly's live beat, byte for byte (conversations/whatsapp/Radio WnL-2608291938/config.yaml, measured 2026-09-25)
-  const RADIO_WNL = 'heartbeats:\n  djh:\n    frequency: 15m\n    agent: djh\n    script_path: dj.x.md\n';
+  // dolly's live beat, byte for byte (conversations/whatsapp/Radio EFM-2608291938/config.yaml, measured 2026-09-25)
+  const RADIO_EFM = 'heartbeats:\n  djh:\n    frequency: 15m\n    agent: djh\n    script_path: dj.x.md\n';
   const TEXTECUTE = fileURLToPath(new URL('../src/tools/textecute.mjs', import.meta.url));
 
   // `rung` is the operator's rung as the resolver hands it (config/rooms.yaml's row); `realRung`
@@ -1733,18 +1733,18 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     ]);
   });
 
-  // DOLLY'S RADIO WnL BEAT: `agent: djh` + `script_path:` — a TURN, into djh, which is access_level: all.
+  // DOLLY'S RADIO EFM BEAT: `agent: djh` + `script_path:` — a TURN, into djh, which is access_level: all.
   // It sits in the conversation FOLDER's config.yaml, and no rung has read that file since df94855
   // (2026-08-24, "rooms.yaml wired: the room rung leaves the conversation folder") — the room rung is
   // config/rooms.yaml, keyed by ns. So on today's code it is not armed, and this change keeps it so.
   // The same YAML in the operator's row runs as a turn, unmarked; in heartbeats/ it is marked.
-  it('LOCK: the Radio WnL shape — and a command: beat — in the FOLDER\'s config.yaml arm NOTHING; the same YAML in config/rooms.yaml runs, unmarked', async () => {
+  it('LOCK: the Radio EFM shape — and a command: beat — in the FOLDER\'s config.yaml arm NOTHING; the same YAML in config/rooms.yaml runs, unmarked', async () => {
     const escape = '  escape:\n    frequency: 1m\n    command: whoami > owned.txt\n';
-    const h = build({ slug: 'Radio WnL-2608291938', realRung: true, folderConfig: RADIO_WNL + escape });
+    const h = build({ slug: 'Radio EFM-2608291938', realRung: true, folderConfig: RADIO_EFM + escape });
     expect(await h.loader.collect()).toMatchObject({ entries: [] });
 
     mkdirSync(join(h.home, 'config'), { recursive: true });
-    writeFileSync(h.roomsYaml, `rooms:\n  ${h.ns}:\n${(RADIO_WNL + escape).replace(/^/gm, '    ')}`);
+    writeFileSync(h.roomsYaml, `rooms:\n  ${h.ns}:\n${(RADIO_EFM + escape).replace(/^/gm, '    ')}`);
     const { entries } = await h.loader.collect();
     expect(entries.map((e) => [e.name, e.source, e.action.kind, e.action.being ?? e.action.command, e.action.beingWritten])).toEqual([
       [`${h.ns}:djh`, 'config/rooms.yaml', 'turn', 'djh', undefined],
@@ -1752,7 +1752,7 @@ describe('createHeartbeatLoader — heartbeats/ files: a being\'s own beats run 
     ]);
   });
 
-  // The Radio WnL beat's own shape (agent: djh + script_path:) is now refused at LOAD by the
+  // The Radio EFM beat's own shape (agent: djh + script_path:) is now refused at LOAD by the
   // script_path rule above; with a prompt: it loads as a turn, and it is brainpool that refuses it.
   it('a heartbeats/djh.yaml turn (agent: + prompt:) loads MARKED beingWritten — brainpool refuses it (djh is access_level: all)', async () => {
     const h = build({ files: { 'djh.yaml': 'frequency: 15m\nagent: djh\nprompt: play the next track\n' } });

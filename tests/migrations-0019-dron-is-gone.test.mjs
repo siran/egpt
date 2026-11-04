@@ -38,7 +38,7 @@ const DO_BEFORE = [
 // The block as it reads on do: KEYED `rodz`, and only `handles:` says it is dron.
 const DRON = [
   '  # DRON (0016) - the being the operator calls dron, KEYED `rodz`: that is the trap. The mouth',
-  '  # it is named beside is an ACCOUNT (beeper.secondary, dolly.egpt@gmail.com).',
+  '  # it is named beside is an ACCOUNT (beeper.secondary, mouth.acct@example.com).',
   '  rodz:',
   '    configuration: sonnet-high # config/agents/sonnet-high.yaml',
   '    personality: dron # config/agents/identities/dron.md',

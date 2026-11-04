@@ -35,7 +35,7 @@ const CONFIG = (isPublic) => () => ({
   bridge_signature_close: '🏰',
   admin_channel: ADMIN,
   beeper: { use: 'main', main: { account: 'you@example.com', token: 'TOK' } },
-  agents: { egpt: { configuration: 'egpt', name: 'EduWeb', body_emoji: '🐶', handles: ['e'], default: true, ...(isPublic ? { public: true } : {}) } },
+  agents: { egpt: { configuration: 'egpt', name: 'Contoso', body_emoji: '🐶', handles: ['e'], default: true, ...(isPublic ? { public: true } : {}) } },
 });
 
 function memIo() {
@@ -122,8 +122,8 @@ describe('boot — a public being', () => {
   it('LOCK: without the flag the same being streams its placeholder, stamped and signed as before', async () => {
     const { app, spy } = await run({ isPublic: false, turn: reply, body: 'e hola, quiero información' });
     expect(spy.streams).toHaveLength(1);
-    expect(spy.streams[0].init).toMatch(/^🐶 EduWeb: ⏳ Thinking… 🏰/);
-    expect(spy.streams[0].finals[0]).toMatch(/^🐶 EduWeb: Hola, ¿de qué colegio me escribes\? 🏰/);
+    expect(spy.streams[0].init).toMatch(/^🐶 Contoso: ⏳ Thinking… 🏰/);
+    expect(spy.streams[0].finals[0]).toMatch(/^🐶 Contoso: Hola, ¿de qué colegio me escribes\? 🏰/);
     app.stop();
   });
 });
