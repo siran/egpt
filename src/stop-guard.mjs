@@ -22,7 +22,7 @@
 //      super fragile. i don't really like it. is must be a single word message in Self,
 //      'stop', case insensitive"). parseStopWord below only says WHAT was typed; WHERE it
 //      counts is the spine's gate (src/spine/spine.mjs classify → isSelfChat, wired in
-//      boot to networks.whatsapp.chat_ids[0]). In any other chat, group, or on the shell
+//      boot to networks.whatsapp.admin_chat_ids[0]). In any other chat, group, or on the shell
 //      console the same word is ordinary text. RESUME / RESUME ALL are NOT scoped that
 //      way — they only clear a loop-counter pause, so they stay usable in the channel
 //      that got paused.

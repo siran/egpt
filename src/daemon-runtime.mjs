@@ -370,19 +370,24 @@ export function createDaemonRuntime(opts = {}) {
     log(`${childLogPaths.stdout} is ${humanBytes(size)} and nothing rotates it while this spine is up — it rolls on the next respawn. Restart the spine, or move the file aside, if that is too big.`);
   }
 
-  // A narrow reimplementation of boot.mjs's selfChatId()/surfaceCfg() lookup — the daemon
-  // has no bridge and no resolved config object, so it reads+parses config.yaml directly.
-  // SAME priority as boot.mjs (networks.whatsapp new shape, falling back to top-level
-  // whatsapp old shape; chat_ids[] if present, else chat_id wrapped as a 1-element array),
-  // just narrower (only this one lookup, not the full resolver). Never throws.
+  // A narrow reimplementation of boot.mjs's announceChatId()/router.mjs adminChatIdsOf — the
+  // daemon has no bridge and no resolved config object, so it reads+parses config.yaml directly.
+  // SAME priority as boot.mjs: the first admin chat of whatsapp, else telegram, else any other
+  // networks: surface; per surface networks.<surface> (else the old top-level block),
+  // admin_chat_ids[], else the pre-rename chat_ids[], else chat_id as a 1-element array.
+  // Never throws.
   function resolveSelfChatId() {
     try {
       const doc = YAML.parse(readFileSync(configYamlPath, 'utf8')) ?? {};
-      const raw = (doc.networks?.whatsapp && typeof doc.networks.whatsapp === 'object') ? doc.networks.whatsapp
-                : (doc.whatsapp && typeof doc.whatsapp === 'object') ? doc.whatsapp
-                : {};
-      const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
-      return chat_ids[0] ?? null;
+      const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+      for (const s of new Set(['whatsapp', 'telegram', ...Object.keys(isMap(doc.networks) ? doc.networks : {})])) {
+        const raw = isMap(doc.networks?.[s]) ? doc.networks[s] : isMap(doc[s]) ? doc[s] : {};
+        const ids = Array.isArray(raw.admin_chat_ids) ? raw.admin_chat_ids
+                  : Array.isArray(raw.chat_ids) ? raw.chat_ids
+                  : (raw.chat_id != null ? [raw.chat_id] : []);
+        if (ids[0] != null) return ids[0];
+      }
+      return null;
     } catch { return null; }
   }
 

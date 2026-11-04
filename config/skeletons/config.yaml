@@ -328,14 +328,15 @@ conversation_defaults:
   allowed_users: [] # your ids: they may run commands and always wake your beings; networks.<surface>.allowed_users and the beings' lists add to them
 
 # --- Surfaces ----------------------------------------------------------------
-# Per-surface, because ids are per-network namespaces. chat_id = your Self-DM
-# command channel, auto-captured on first contact.
+# Per-surface, because ids are per-network namespaces. admin_chat_ids = your
+# command channels (the Self-DM first); /restart and /upgrade announce in the
+# first one of whatsapp, else of telegram. (Older configs' chat_ids still work.)
 networks:
   whatsapp:
-    chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
+    admin_chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
     # allowed_users: [] # more owners on this network, ADDED to conversation_defaults.allowed_users
-  telegram: { chat_ids: [] } # limbs.telegram bot; its owners are Telegram numeric ids
-  signal:   { chat_ids: [] }
+  telegram: { admin_chat_ids: [] } # limbs.telegram bot; its owners are Telegram numeric ids
+  signal:   { admin_chat_ids: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [split, send, end]
 

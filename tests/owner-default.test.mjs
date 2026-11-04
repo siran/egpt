@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
-import { createRouter, mayWake, ownersOf, isOwner, isKnownSender, configWarnings } from '../src/spine/router.mjs';
+import { createRouter, mayWake, ownersOf, adminChatIdsOf, isOwner, isKnownSender, configWarnings } from '../src/spine/router.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const AN = '@an:beeper.com';
@@ -42,6 +42,21 @@ describe('ownersOf — the one owner list (commands and beings)', () => {
   it('isKnownSender counts the node list (the stranger rule)', () => {
     expect(isKnownSender(AN, { conversation_defaults: { allowed_users: [AN] } })).toBe(true);
     expect(isKnownSender(STRANGER, { conversation_defaults: { allowed_users: [AN] } })).toBe(false);
+  });
+});
+
+// operator 2026-11-03: "put An in chat_ids, btw it should be called admin_chat_ids".
+describe('adminChatIdsOf — networks.<surface>.admin_chat_ids, legacy chat_ids / chat_id still read', () => {
+  it('admin_chat_ids is preferred over a legacy chat_ids beside it', () => {
+    expect(adminChatIdsOf({ networks: { telegram: { admin_chat_ids: ['tg:-1/3'], chat_ids: ['tg:-1/9'] } } }, 'telegram')).toEqual(['tg:-1/3']);
+  });
+  it('a config not yet renamed keeps working: chat_ids, the singular chat_id, the old top-level block', () => {
+    expect(adminChatIdsOf({ networks: { whatsapp: { chat_ids: ['!self'] } } }, 'whatsapp')).toEqual(['!self']);
+    expect(adminChatIdsOf({ networks: { whatsapp: { chat_id: '!self' } } }, 'whatsapp')).toEqual(['!self']);
+    expect(adminChatIdsOf({ whatsapp: { chat_id: '!old' } }, 'whatsapp')).toEqual(['!old']);
+  });
+  it('none = []', () => {
+    expect(adminChatIdsOf({}, 'telegram')).toEqual([]);
   });
 });
 

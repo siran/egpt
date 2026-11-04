@@ -23,7 +23,7 @@ import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from './permission-
 // over a single already-extracted token is the house single-token lookup (src/spine/mesh.mjs's
 // findAgentByToken, src/spine/heartbeat-loader.mjs's `agent:`); `addressableTokens` LISTS the
 // valid handles in the not-hosted log line. See agentsCmd's HANDLE → KEY block.
-import { addressed, addressableTokens, addressingView, agentsInChat, fallbackWake, isKnownSender, mayWake, wakeTokens, voiceWakeTokens } from './router.mjs';
+import { addressed, addressableTokens, addressingView, adminChatIdsOf, agentsInChat, fallbackWake, isKnownSender, mayWake, wakeTokens, voiceWakeTokens } from './router.mjs';
 import { superChannelAlive, resolveMode } from './gating.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, rename as fsRename } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -755,16 +755,10 @@ export function createCommands({
     return out;
   })();
 
-  // Per-surface self-DM command channels (operator 2026-07-09): the NEW shape lists them under
-  // networks:.<surface>.chat_ids (plural); the OLD shape has <surface>.chat_id (singular). Read
-  // BOTH, preferring networks:, always yielding a LIST — a command typed in ANY of the surface's
-  // command channels is the operator (a singular chat_id normalizes to a 1-element list).
-  function commandChatIds(surface) {
-    const c = cfg() ?? {};
-    const raw = (c.networks?.[surface] && typeof c.networks[surface] === 'object') ? c.networks[surface]
-              : (c[surface] && typeof c[surface] === 'object') ? c[surface] : {};
-    return Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
-  }
+  // Per-surface command channels: networks.<surface>.admin_chat_ids (router.mjs adminChatIdsOf, which
+  // also reads the pre-rename chat_ids and the old singular chat_id) — a command typed in ANY of the
+  // surface's admin chats is the operator.
+  function commandChatIds(surface) { return adminChatIdsOf(cfg() ?? {}, surface); }
   // The operator gate — reused by isCommand and every command handler. Same
   // authorization every slash command uses: the origin surface's own Self DM (ids
   // are per-surface namespaces), an authorized sender, or the account owner (isSender).
@@ -837,8 +831,8 @@ export function createCommands({
 
   // Same id in any form counts as the Self DM (lid vs phone-form — a /restart
   // often arrives as the @lid self-jid). The Self DM is PER-SURFACE now (operator
-  // 2026-07-02): a /restart typed in the telegram surface's own chat_id is checked
-  // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
+  // 2026-07-02): a /restart typed in the telegram surface's own admin chat is checked
+  // against networks.telegram.admin_chat_ids, not whatsapp's — ids are per-surface namespaces.
   // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
   // senders (per-surface allowed_users / isSender) can command from anywhere.
   // Anyone else runs only the chat's public commands (publicCommandsOf), never from a node-signed line,

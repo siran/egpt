@@ -133,7 +133,7 @@ eGPT answers **from your own WhatsApp number**, so your contacts see its replies
 4. Tell eGPT who it may answer. Under `networks:`, change the `telegram:` line to:
 
    ```yaml
-     telegram: { chat_ids: [], allowed_users: ["YOUR_TELEGRAM_NUMERIC_ID"] }
+     telegram: { admin_chat_ids: [], allowed_users: ["YOUR_TELEGRAM_NUMERIC_ID"] }
    ```
 
    To find your numeric id, send any message to @userinfobot in Telegram.
@@ -200,7 +200,7 @@ default `~/.egpt`).
    ```
 
    Then edit `~/.egpt/config/config.yaml`: paste your `beeper_token`, set
-   `user_name`, add each surface's `chat_id`, and put your ids in the top-level
+   `user_name`, add each surface's `admin_chat_ids`, and put your ids in the top-level
    `conversation_defaults.allowed_users` (empty = no listed owner; your own account-owner
    messages are always authorized): beings answer only those owners by default. Every key is
    documented inline and registered in [`config/config-schema.mjs`](config/config-schema.mjs).
