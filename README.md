@@ -186,7 +186,7 @@ default `~/.egpt`).
    > **Everything past this point is OPTIONAL EXPANSION, and none of it is needed
    > to run eGPT.** A node can additionally hold a SECOND Beeper account, and can
    > run its Beeper Desktop as a Windows SESSION 0 service so the agents answer
-   > with nobody logged in — see `handoffs/2026-09-03-session-zero.md`. That
+   > with nobody logged in — see the session-zero handoff (kept in the node profile). That
    > buys an unattended node and a reply that arrives from a visibly different
    > person. It also costs a second install, a second login, and a service to
    > supervise. Skip it. Add it the day you want what it buys.

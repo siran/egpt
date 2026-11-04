@@ -1,6 +1,6 @@
 dangerously_skip_permissions: false
 
-# config/permissions/reader.md — the desk-only level (plans/2610261726-CHATBOXES.md, operator
+# config/permissions/reader.md — the desk-only level (the chatboxes plan, kept in the node profile; operator
 # 2026-10-26: "the desk is the boundary"): a public chatbox being reads the files on its own
 # conversation folder and nothing else. Parsed fresh every turn (src/spine/permission-levels.mjs).
 #
