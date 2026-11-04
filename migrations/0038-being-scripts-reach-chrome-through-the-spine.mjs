@@ -46,9 +46,9 @@ export const CARD_LINES = [
   "the usual localhost:9221 /json and ws:// URLs reach my chat's browser.",
 ];
 const VIA_SPINE = 'a node script reaches it with const { fetch, WebSocket } = await import(process.env.EGPT_CDP), and the same localhost:9221 /json and ws URLs keep working';
-const GMAIL = (where) => `  3-hourly Gmail watch (07,10,13,16,19,22) for An (anrodz42@gmail.com; Gmail is logged in in ${where}). HARD RULES: never delete, archive, send, reply,`;
+const GMAIL = (where) => `  3-hourly Gmail watch (07,10,13,16,19,22) for An (anaprueba@example.org; Gmail is logged in in ${where}). HARD RULES: never delete, archive, send, reply,`;
 const DOJO = (where) => `  info (registration dates, session dates, fees, and the Amilia registration link) in (a) the ClassDojo feed in ${where}`;
-const RODZ = 'eGPT Rodz Lulu An';
+const RODZ = 'eGPT Rodz Lola An';
 
 // `chat` = a chat NAME: conversations/<surface>/<name>-<10 digits>/<file>, on whichever node has it.
 export const TEXT = [

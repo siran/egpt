@@ -285,7 +285,7 @@ export function findMessageByKey(messages, msgKey, timestamp = 0) {
  * them correct — no false match and no ambiguity anywhere in the sweep. What it does NOT reach is
  * a chat whose last message is RICH: the same code block carried one trailing newline more on one
  * account than the other, and a MENTION renders through each account's own id namespace
- * ('@whatsapp_lid-694…' against '@dolly-egpt:beeper.com'). Those cost a MISS, never a wrong
+ * ('@whatsapp_lid-694…' against '@mouth-acct:beeper.com'). Those cost a MISS, never a wrong
  * match, which is the only direction a failure here may fall.
  *
  * AND IT REFUSES THE SAME WAY findChatByKey does. Zero matches: nothing. More than one: nothing,

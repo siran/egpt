@@ -460,7 +460,7 @@ export const CONFIG_SCHEMA = {
 
     SHORT FORM (operator 2026-07-03): a Beeper room id here is written WITHOUT
     the Matrix decoration — no leading "!", no trailing ":beeper.local" (e.g.
-    "yz3kJjWXsQJofK9naaVb", not "!yz3kJjWXsQJofK9naaVb:beeper.local"). egpt
+    "FakeRoomId0000000001", not "!FakeRoomId0000000001:beeper.local"). egpt
     expands to the full form only at the Beeper API boundary
     (src/bridges/chat-id.mjs).
 
@@ -841,7 +841,7 @@ export const CONFIG_SCHEMA = {
         ayde              { on: false (default) | true, path: /ayde,
                           public_max_level: team (default) | devs | admin | root,
                           scope: [] (default) }:
-                          the EduWeb team's read-only browser of EGPT_HOME, served by
+                          the Contoso team's read-only browser of EGPT_HOME, served by
                           this limb (below). A path that overlaps the chatbox's path:
                           off (logged). public_max_level: the highest level a login
                           opens through the proxy (below); any other value: team (logged).
@@ -852,26 +852,26 @@ export const CONFIG_SCHEMA = {
                             limbs:
                               http:
                                 port: 8095
-                                chatboxes: [ eduweb_marketer, eduweb_soporte ]
-                            eduweb_marketer:
-                              url: eduweb
+                                chatboxes: [ contoso_marketer, contoso_soporte ]
+                            contoso_marketer:
+                              url: contoso
                               being: asesor
-                              seed: seeds/eduweb
-                              title: "🐶 Agente EduWeb SI"
-                              intro: "¡Hola, soy Edu, el súper agente inteligente de EduWeb!"
-                              team_name: Equipo EduWeb
-                              team_group: -1004473260995
+                              seed: seeds/contoso
+                              title: "🐶 Agente Contoso SI"
+                              intro: "¡Hola, soy Edu, el súper agente inteligente de Contoso!"
+                              team_name: Equipo Contoso
+                              team_group: -1000000000102
                               label: Marketer — website
-                            eduweb_soporte:
-                              url: demoiev
+                            contoso_soporte:
+                              url: democlient
                               being: soporte
                               identity: required
                               allowed_origins: [ … ]
                           A block holds a <client>'s keys (below), its strings written flat
                           beside them (intro, send, placeholder, …); a strings: map there still
                           works, a flat key beats it. identity is the mode: its text goes in
-                          strings:. url: the <client>, in the URL (/chat/eduweb/widget.js),
-                          the chat ids (http:eduweb-<sid>), the folders and the key file;
+                          strings:. url: the <client>, in the URL (/chat/contoso/widget.js),
+                          the chat ids (http:contoso-<sid>), the folders and the key file;
                           default the block's name. A name with no block (a map): logged and
                           skipped. A block and a clients entry with the same <client>: the
                           block wins (logged). The blocks are restart-only, as limbs is.
@@ -888,7 +888,7 @@ export const CONFIG_SCHEMA = {
                               request whose Origin is not listed is refused (403)
             title             the panel's title
             label             its section's title in /ayde (e.g. "Marketer — website",
-                              "Support — EduWeb app"); default the title, else the name
+                              "Support — Contoso app"); default the title, else the name
             strings           UI strings (Spanish defaults): open, close,
                               placeholder, send, error, too_long, too_many,
                               end, end_confirm, end_yes, cancel, identity; intro (the panel's first
@@ -922,7 +922,7 @@ export const CONFIG_SCHEMA = {
                               "{title} · {sid}". A placeholder with no value is empty,
                               spaces collapse, an empty () or [] goes; nothing left:
                               the default. Cut at 128 (Telegram's limit) with "…".
-                              EduWeb: "{abrin} {user_type} {short_name} ({username})"
+                              Contoso: "{abrin} {user_type} {short_name} ({username})"
             identity          off (default) | optional | required: the host page's
                               signed user (below). required: a call without one is
                               401 {error, message: strings.identity}, which the widget
@@ -941,7 +941,7 @@ export const CONFIG_SCHEMA = {
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.
         THE SIGNED IDENTITY. Key: <EGPT_HOME>/secrets/chatbox-<client>.key, its text used
-        as is (not decoded), e.g.  openssl rand -base64 32 > <EGPT_HOME>/secrets/chatbox-demoiev.key
+        as is (not decoded), e.g.  openssl rand -base64 32 > <EGPT_HOME>/secrets/chatbox-democlient.key
         then chmod 600. Read on each signed call (a new key needs no restart). The same text
         goes to the host site's server only, never to a browser or a repo.
         Token: base64url(JSON payload) "." base64url(HMAC-SHA256(key, the first part)), no
@@ -953,12 +953,12 @@ export const CONFIG_SCHEMA = {
           $p = $b64(json_encode(['abrin' => $abrin, 'user_type' => $_SESSION['TipoUsuario'],
             'short_name' => $nombre, 'username' => $login, 'exp' => time() + 12 * 3600]));
           $tok = $p . '.' . $b64(hash_hmac('sha256', $p, $key, true));
-          echo '<script src="https://<host>/chat/demoiev/widget.js" data-identity="'
+          echo '<script src="https://<host>/chat/democlient/widget.js" data-identity="'
             . htmlspecialchars($tok) . '" defer></script>';
         json_encode needs UTF-8 strings (utf8_encode a Latin-1 name, else it returns false).
         A page left open past exp gets strings.identity on its next line: reload.
         AYDE (ayde.on; src/bridges/http-ayde.mjs). GET <ayde.path>/ (e.g.
-        https://eduweb.com.ve/ayde/; without the last slash: 308 to it): the EduWeb team's read-only
+        https://contoso.example/ayde/; without the last slash: 308 to it): the Contoso team's read-only
         browser of EGPT_HOME, by level. One English page: the user and level, and one list of the
         scope's conversations (root's too): a section per chatbox client (its label, in
         limbs.http.chatboxes' order, then clients'), then "Team groups (Telegram)", then "Other"; in each, Today and
@@ -976,7 +976,7 @@ export const CONFIG_SCHEMA = {
         Read-only for every level: any method but GET is 405. A future delete of core files
         (config/, state/, secrets/) is root's only.
         The scope (ayde.scope): what team, devs and admin read, a list of chat ids, e.g.
-          scope: ["tg:-1004408163350", "tg:-1004473260995", "tg:-1004311994096", "http:eduweb-", "http:demoiev-"]
+          scope: ["tg:-1000000000101", "tg:-1000000000102", "tg:-1000000000103", "http:contoso-", "http:democlient-"]
         Each entry is one of:
           tg:<group>     the Telegram group and every topic in it (tg:<group>/<n>); a /split fork
                          lives in its parent's folder, so it comes with it
@@ -1025,11 +1025,11 @@ export const CONFIG_SCHEMA = {
         inside a conversation (conversations/<surface>/<name>/) also appended to its
         admin-access.log. Each refusal is logged with the level it needed.
         HTTPS only: Basic sends the password with every request. The site's proxy is HTTPS; the
-        hop from the proxy to the node stays private (EduWeb: Portales-new → edw.egpt.internal:8095,
+        hop from the proxy to the node stays private (Contoso: the website proxy → edw.example.internal:8095,
         beside /chat/). The proxy passes the Authorization header and the WWW-Authenticate answer
         as they are (nginx and Apache do by default), e.g.
-          nginx:  location /ayde/ { proxy_pass http://edw.egpt.internal:8095; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
-          Apache: ProxyPass /ayde/ http://edw.egpt.internal:8095/ayde/  (mod_proxy adds X-Forwarded-For)
+          nginx:  location /ayde/ { proxy_pass http://edw.example.internal:8095; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+          Apache: ProxyPass /ayde/ http://edw.example.internal:8095/ayde/  (mod_proxy adds X-Forwarded-For)
   `,
 
   beeper: `
@@ -1182,11 +1182,11 @@ export const CONFIG_SCHEMA = {
     per station, mirroring transcription_service's named profile blocks:
 
       radio_service:
-        wildnloyal:
-          name: "Wild n Loyal radio"
-          listen_url: https://radio.wildnloyal.org/
+        examplefm:
+          name: "Example FM radio"
+          listen_url: https://radio.examplefm.example/
           enabled: true
-          endpoint: https://radio.wildnloyal.org
+          endpoint: https://radio.examplefm.example
           relay_user: egpt
           relay_password: ""
           default_speaker: egpt
@@ -1200,11 +1200,11 @@ export const CONFIG_SCHEMA = {
     KEYS, per <radio-name>:
       name
         Human-readable station name used in /radio's replies (e.g. "relaying
-        to Wild n Loyal radio…"). Falls back to the config key (the radio's
-        map key, e.g. "wildnloyal") when absent.
+        to Example FM radio…"). Falls back to the config key (the radio's
+        map key, e.g. "examplefm") when absent.
       listen_url
         Where a HUMAN listens (the public station page), e.g.
-        https://radio.wildnloyal.org/. Included in /radio join's reply when
+        https://radio.examplefm.example/. Included in /radio join's reply when
         set, omitted entirely when absent — never derived from endpoint, since
         the API base and the public listen page need not be the same host.
       enabled
@@ -1554,7 +1554,7 @@ export const CONFIG_SCHEMA = {
 
   echo_max_age_ms: `
     Never echo a voice note whose OWN timestamp is older than this (operator
-    2026-07-09, Zohykar incident; renamed from the old
+    2026-07-09, Zurikar incident; renamed from the old
     network.transcribe_ack_max_age_ms).
 
     A Beeper resync can re-deliver ancient backlog notes, and the 👂 is a
@@ -1629,7 +1629,7 @@ export const CONFIG_SCHEMA = {
         back-compat, and it is plain rung order now — nearest the room wins.
       server
         The endpoint engine — a remote worker e.g. DOLLY, or a resident server.
-          endpoint   URL, e.g. "http://192.168.1.50:23390"
+          endpoint   URL, e.g. "http://192.0.2.50:23390"
           token      shared HMAC-SHA256 secret, SAME on both machines;
                      unsigned/stale >60s rejected
       cli
@@ -1876,7 +1876,7 @@ export const CONFIG_SCHEMA = {
           type: "piper-server-remote"
             POST to endpoint + token (HMAC), the same scheme transcription's
             whisper-server-remote uses.
-              endpoint            e.g. "http://192.168.1.102:23391"
+              endpoint            e.g. "http://192.0.2.102:23391"
               token               HMAC auth; SAME value as the worker's synthesizer.server.token
               connect_timeout_ms  liveness probe — fail fast if the endpoint is down.
                                   DEFAULT: 3000
@@ -1981,8 +1981,8 @@ export const CONFIG_SCHEMA = {
         OPTIONAL (operator 2026-08-31) — ONE MORE @token this agent wakes on,
         but ONLY where a named OTHER identity is not in the chat:
 
-          fallback_handle: { handle: e,        unless_present: "+13472576794" }
-          fallback_handle: { handle: [d, don], unless_present: "+13472576794" }
+          fallback_handle: { handle: e,        unless_present: "+15550100002" }
+          fallback_handle: { handle: [d, don], unless_present: "+15550100002" }
 
         reads "also wake on @e, unless +1347… is a participant here". Where
         that identity IS present the token belongs to the OTHER account's
@@ -1990,7 +1990,7 @@ export const CONFIG_SCHEMA = {
         waking two spines.
 
         WHY IT EXISTS: kg and do stopped sharing one Beeper account. do runs on
-        a second account (+1 347…, "Rodz") and carries a relay agent \`e\` that
+        a second account (+1 555…, "Rodz") and carries a relay agent \`e\` that
         forwards to ekg.kg, so @e is ANSWERED by kg's brain but POSTED from a
         visibly different account — the point of the arrangement. The cost is
         that \`e\` became a handle on do ONLY, so in every chat the 347 account
@@ -2344,7 +2344,7 @@ export const CONFIG_SCHEMA = {
         and gets STANDING grants for that account alone (same shape as
         allowed_paths; written once, kept across turns):
           sandbox_pin:
-            C:/Users/an/Documents: { allowed_tools: [ Read, Glob, Grep ] }
+            C:/Users/user/Documents: { allowed_tools: [ Read, Glob, Grep ] }
         {} = pinned, no standing paths. Removing the key releases it within a
         minute (the spine ends that session, revokes every standing ACE, frees
         the account). Windows box only. setup/SANDBOX.md, "Pinned accounts".
@@ -2462,7 +2462,7 @@ export const CONFIG_SCHEMA = {
     SAME SHAPE as a type file's own allowed_paths (see agents above):
 
       allowed_paths:
-        C:/Users/an/src:
+        C:/Users/user/src:
           allowed_tools: [ Read, Glob, Grep ]   # read-only
         C:/shared/scratch:                      # empty value = full access
 
@@ -2497,7 +2497,7 @@ export const CONFIG_SCHEMA = {
     maps, <mount name>: <path>:
 
       global_read_paths:
-        - repos: C:/Users/an/src/siran      # ~/repos in every pool profile
+        - repos: C:/Users/user/src/siran      # ~/repos in every pool profile
 
       DEFAULT: unset (or empty) - no extra mount and no grant, exactly the
       behaviour before this key existed.
@@ -3089,7 +3089,7 @@ export const CONFIG_SCHEMA = {
     chokepoint src/spine/spine.mjs; replaces the old flood-guard + mesh circuit
     breaker).
 
-    ONE GUARD, TWO TRIGGERS (operator 2026-09-20, after "🌴FAMILIA PALMA🌴" sat
+    ONE GUARD, TWO TRIGGERS (operator 2026-09-20, after "🌴FAMILIA MUESTRA🌴" sat
     paused for eight hours):
 
       · RATE — \`turns\` non-human turns within \`window\` MINUTES. "a hard limit of
@@ -3109,7 +3109,7 @@ export const CONFIG_SCHEMA = {
     signature, or a send the bridge knows by id) coming back through the bridge is
     BOOKKEEPING: it does not count and does not reset. E's own "⏳ Thinking…" /
     "⏳ Queued…" placeholders, posted through the mouth account, are what filled
-    PALMA's cap in five seconds. ANOTHER node's being still counts — that is real
+    MUESTRA's cap in five seconds. ANOTHER node's being still counts — that is real
     chatter.
 
     A PAUSE ANNOUNCES ITSELF in the channel, once, naming what tripped it (the
@@ -3258,7 +3258,7 @@ export const CONFIG_SCHEMA = {
         runs with no change, its status is posted again this often — a new
         message, never an edit. Read each tick.
       background_change_ms
-        DEFAULT: 120000 (2 min; An 2026-11-02: "this is probably too much :)").
+        DEFAULT: 120000 (2 min; operator 2026-11-02: "this is probably too much :)").
         A change waits this long after the chat's last status, then ONE post
         carries the current state. The first status (a turn ends leaving work
         running) and the last ("done" / "ended") are not held. Read each tick.
@@ -3648,7 +3648,7 @@ export const CONFIG_SCHEMA = {
     threads are COPIED from this chat so it DIVERGES. Anyone in a group chat may run it (2026-10-18):
     the primary account creates it, inviting the secondary (Rodz) and that person; the operator's own
     split invites Rodz alone; no secondary → just that person. "invite" (2026-10-31) also invites every
-    member of the chat ("/e split invite fulvio" in a 1:1 with Fulvio: Rodz + Fulvio). In the split,
+    member of the chat ("/e split invite fabio" in a 1:1 with Fabio: Rodz + Fabio). In the split,
     anyone may call the being it was typed to (its allowed_users there: ['*']; not for access_level all).
     THE TUNNEL (2026-10-31): while the chat has an open split, a being called in the chat answers on the
     chat's own thread and rules, but its reply is posted in the split (the most recent one), by its

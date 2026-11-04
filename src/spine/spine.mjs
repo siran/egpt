@@ -166,7 +166,7 @@ export function createSpine({
   isTransit = () => false,
   // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
-  fromThisNode = () => false,          // (ev) => did THIS node's own spine commit this text? boot: `ev.fromNode != null && !fromOtherNode(getConfig(), ev)` — the SAME ownNodeNamesOf set every other "who are we" question reads. The guard's third bucket (stop-guard turnKind 'echo'): our own ⏳ placeholder coming back through Beeper is bookkeeping, so it neither counts toward the loop cap nor resets it (kg 2026-09-20, "🌴FAMILIA PALMA🌴"). Default false = never our own frame, byte-identical to before.
+  fromThisNode = () => false,          // (ev) => did THIS node's own spine commit this text? boot: `ev.fromNode != null && !fromOtherNode(getConfig(), ev)` — the SAME ownNodeNamesOf set every other "who are we" question reads. The guard's third bucket (stop-guard turnKind 'echo'): our own ⏳ placeholder coming back through Beeper is bookkeeping, so it neither counts toward the loop cap nor resets it (kg 2026-09-20, "🌴FAMILIA MUESTRA🌴"). Default false = never our own frame, byte-identical to before.
   logToGroup = null,                   // optional (text) => Promise — boot's log_to_group poster (node-prefixed there). Liveness reports a being that did not answer whether its long background work is still needed. Null ⇒ the note is all there is.
   backgroundWork = null,               // optional () => [{ being, chatId, description, since }] — every warm session's live background tasks (boot: the pool's); the restart drain waits for them
   allBackground = null,                // optional, same shape — every live background task whoever holds the process (boot: the pool's); what a /standdown ends
@@ -294,7 +294,7 @@ export function createSpine({
     // refuses it, so it could only ever log a stop that never happened.
     if (channel == null) return;
     // OUR OWN ECHO IS NOT A TURN (operator 2026-09-20). E's ⏳ placeholders, posted through the
-    // mouth account and re-entering on the ear, filled PALMA's cap in five seconds. Bookkeeping
+    // mouth account and re-entering on the ear, filled MUESTRA's cap in five seconds. Bookkeeping
     // neither counts nor resets. EXCEPT a same-node CROSS-BEING wake (E→E+): it IS real chatter and
     // must count exactly as a cross-node one does, or a runaway E↔E+ never auto-STOPs (2026-10-13).
     if (kindOf(ev) === 'echo' && !crossBeingWake) return;
@@ -536,7 +536,7 @@ export function createSpine({
   //     progress"). ---
   //
   //     THE INCIDENT. kg, 16:10 that day: a deploy (setup/upgrade.ps1 drops /upgrade into the ingest
-  //     box) bounced the spine while being Ken had a live turn in chat delen4 — the operator's
+  //     box) bounced the spine while being Ken had a live turn in chat user4 — the operator's
   //     steered message had just been taken (`[warm] … the model ACKNOWLEDGED the steered message`)
   //     and Ken was running a WebSearch. /upgrade left the moment it was read, the turn died with
   //     the process, and the operator's question was never answered.

@@ -291,7 +291,7 @@ export function createWarmPool({
   // branching anywhere above.
   //
   // AND EVERY REFUSAL IS SAID OUT LOUD, AND NONE OF THEM IS A SUCCESS (operator 2026-09-09,
-  // after `Joyce Vicente-2606301852` swallowed ~90 minutes of messages behind four confident
+  // after `Julia Demo-2606301852` swallowed ~90 minutes of messages behind four confident
   // 👀s). `e.busy` is A FLAG THIS FILE SETS, not liveness, and `inject`'s old `true` was a
   // successful WRITE to a live pipe, not a read — so this function could report a weave into a
   // turn that had already ended and nothing anywhere disagreed. It now returns `false` (nothing

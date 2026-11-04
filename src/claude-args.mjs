@@ -246,7 +246,7 @@ export function buildClaudeArgs(options = {}) {
   // AN OS-SANDBOXED TURN GETS NONE OF THEM, and that is the whole of the argv change the
   // 2026-09-23 ruling asked for. `--add-dir` grants nothing there — the pool account's ACEs
   // decide what opens — and every root it could name is a REAL path under the operator's
-  // profile, which is what put `C:/Users/an/src/egpt` into every sandboxed being's argv and
+  // profile, which is what put `C:/Users/user/src/egpt` into every sandboxed being's argv and
   // from there into whatever the being quoted in a group chat. The mounts it would have named
   // (`egpt`, `src`) live at C:\Users\egpt-sbx-NN, which the spine cannot know: the account is
   // leased after the argv is built.

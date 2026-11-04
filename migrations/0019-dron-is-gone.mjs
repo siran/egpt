@@ -2,7 +2,7 @@
 //
 // Operator, 2026-09-20: "dron needs not to exist".
 //
-// `beeper.secondary` is the ACCOUNT dolly.egpt@gmail.com, display name Rodz, and BOTH nodes speak
+// `beeper.secondary` is the ACCOUNT mouth.acct@example.com, display name Rodz, and BOTH nodes speak
 // through that one account — do's own config annotates it "Rodz - the mouth". do ALSO carries a
 // being for it: `agents.rodz`, named "Dron", `handles: [ dron ]`, the one 0016 promoted to
 // `access_level: all` three migrations ago. A being standing beside the account it speaks through

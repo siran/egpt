@@ -35,7 +35,7 @@
 //     and fail-closed (dropped + logged) when no advice channel is configured;
 //   - a malformed action line is STRIPPED and LOGGED, never surfaced, never executed;
 //   - a /reply targeting the message THIS REPLY ALREADY QUOTES is REDUNDANT (operator
-//     2026-07-08, Zohykar rogue-twin) — the action is dropped, but its TEXT DEMOTES to
+//     2026-07-08, Zurikar rogue-twin) — the action is dropped, but its TEXT DEMOTES to
 //     prose (2026-07-15): redundant is not malformed, and discarding content is a bug;
 //   - a /media path must resolve INSIDE the conversation dir (E's confined cwd) —
 //     traversal / absolute paths are rejected at parse AND re-checked at execute;
@@ -177,7 +177,7 @@ function parseOne(verb, args, ev, opts = {}) {
         const bad = { ok: false, reason: 'reply: expected "#<id> <text>"' };
         return (raw && !/[<>]/.test(raw)) ? { ...bad, demote: raw } : bad;
       }
-      // REDUNDANCY GUARD (operator 2026-07-08, Zohykar rogue-twin; made HONEST + demoting
+      // REDUNDANCY GUARD (operator 2026-07-08, Zurikar rogue-twin; made HONEST + demoting
       // 2026-07-15). When the message E is ALREADY posting quotes the target, a /reply at that
       // same target would only duplicate the train as a second, un-stamped post — the rogue twin.
       //

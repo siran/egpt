@@ -29,7 +29,7 @@ contacts:
       # where the folder is, home-relative; the slug is its basename (not stored)
       conversation_path: .egpt/conversations/whatsapp/some-group-2606291919
       # the home conversation_path is relative to, msys-style. Pointer only.
-      home_dir: /c/Users/an
+      home_dir: /c/Users/user
 
       # 👂 voice-note echo delay ms: -1 never echo, 0 immediate, N debounce
       # default: config.yaml transcription_service.posts_back_delay_ms
@@ -109,18 +109,18 @@ contacts:
 
     # a second id for the SAME contact - one thread, one folder, one mode.
     # One level only; an alias pointing at an alias resolves to nothing.
-    #"584122182178@s.whatsapp.net":
+    #"15550100006@s.whatsapp.net":
     #  aliasOf: "EXAMPLE_CHAT_ID"
 
   #telegram:
-  #  "88164392": # An
+  #  "100000001": # An
   #    conversation_path: .egpt/conversations/telegram/an-2605211200
-  #    home_dir: /c/Users/an
+  #    home_dir: /c/Users/user
 
   #shell:
   #  main: # console
   #    conversation_path: .egpt/conversations/shell/lobby
-  #    home_dir: /c/Users/an
+  #    home_dir: /c/Users/user
 
 
 # INERT - `system_thread:` at the root: round-trips, nothing reads it. Don't copy

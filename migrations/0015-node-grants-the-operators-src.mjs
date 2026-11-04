@@ -5,7 +5,7 @@
 //
 // A read grant used to be per TYPE FILE. E's config/agents/sonnet-default.yaml carried
 //   allowed_paths:
-//     C:/Users/an/src/egpt:
+//     C:/Users/user/src/egpt:
 //       allowed_tools: [ Read, Glob, Grep ]
 // and granting the same folder to a second being meant writing that block into a second file —
 // revoking it meant finding every copy. That is the drift setup/migrate.mjs exists to end
@@ -17,8 +17,8 @@
 // `--add-dir` and read-only deny rules) and sandboxSharePathsFor (the OS layer's per-turn
 // `-SharePathReadOnly` ACE) — and a being that names the same path keeps its own, narrower grant.
 //
-// THE OS HALF IS ALREADY IN PLACE on kg (measured 2026-09-20): C:\Users\an\src carries
-// `reve\egpt-sandbox-pool:(OI)(CI)(RX)` and C:\Users\an\src\egpt inherits it. Without this CLI
+// THE OS HALF IS ALREADY IN PLACE on kg (measured 2026-09-20): C:\Users\user\src carries
+// `reve\egpt-sandbox-pool:(OI)(CI)(RX)` and C:\Users\user\src\egpt inherits it. Without this CLI
 // half a confined being still REFUSES those paths — the kernel would let it read and Claude Code
 // would not, the mirror image of the bug the two-layer walk was written to prevent.
 //

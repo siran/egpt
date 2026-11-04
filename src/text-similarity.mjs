@@ -56,7 +56,7 @@ export function similarity(aTokens, bTokens) {
 // scores that pair 0.5 and a single-word typo 0.0; edit distance sees it as 0.95.
 //
 // Shares normalizeTokens with the echo scorer, so both compare in the SAME folded space:
-// case, punctuation, emoji and diacritics are gone, which means 'Radio WnL' / 'radio wnl'
+// case, punctuation, emoji and diacritics are gone, which means 'Radio EFM' / 'radio efm'
 // are one key and an accent the operator omitted ("traducción") is free.
 
 // Levenshtein, two-row (O(min) memory). Chat names are short; no cutoff needed.
@@ -81,7 +81,7 @@ function editDistance(a, b) {
  * they are compared) so a caller can quote them straight back at the operator.
  *
  * Score = 1 - editDistance/maxLength over the folded keys, EXCEPT that a key wholly
- * CONTAINED in the other floors at 0.8: someone who types `radio` for "Radio WnL" is not
+ * CONTAINED in the other floors at 0.8: someone who types `radio` for "Radio EFM" is not
  * making a typo, he is naming the chat by the part he remembers, and the raw ratio there
  * (0.44) would bury the one candidate he meant beneath the threshold.
  *

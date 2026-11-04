@@ -13,7 +13,7 @@
 // default to `off` silences djh only where no conversation overrides it. This migration therefore
 // checks the EFFECTIVE state: it is satisfied only when the agent default is `off` AND no
 // conversation re-enables djh, and it refuses by name - naming the chat - rather than reporting
-// djh off while it still answers somewhere. Measured on do, 2026-09-16: one djh block (Radio WnL),
+// djh off while it still answers somewhere. Measured on do, 2026-09-16: one djh block (Radio EFM),
 // no mode override.
 //
 // The edit goes through the splice (src/tools/config-io.mjs): one scalar, every other byte kept.

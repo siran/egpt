@@ -12,7 +12,7 @@
 //   to: do
 //   ```
 //
-// Principles (An/e7, 2026-06-19):
+// Principles (operator/e7, 2026-06-19):
 //   - The body is the human's OWN message, unchanged — "@don" stays "@don" (so a
 //     limb can't linkify "don.do"). The owning spine self-selects: it runs the
 //     being it owns that is @mentioned.
@@ -45,7 +45,7 @@ const DIVIDER = /\n[ \t]*---[ \t]*\n/;
 const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node', 'via']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
-// Body codec (An 2026-06-20): base64 so the transport can't mangle the body. Beeper
+// Body codec (operator 2026-06-20): base64 so the transport can't mangle the body. Beeper
 // renders ``` → <pre><code> → `` and a CODE-bearing reply (Don writes code!) collides
 // with the fence → the mirror edit breaks ("Failed to edit"). base64 is markdown-inert
 // (no backticks / --- / <>) → delivered verbatim; the TAIL stays readable. node-only
@@ -96,7 +96,7 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   // It is a DISPLAY finish marker, not a teardown that drops edits: every non-done frame
   // still flows onto the mirror (the living pipe); done only says "the turn is complete".
   if (done) lines.push(`done: true`);
-  // Body is base64 (An 2026-06-20): markdown-inert, so the transport can't mangle it
+  // Body is base64 (operator 2026-06-20): markdown-inert, so the transport can't mangle it
   // and a code-bearing reply can't collide with the fence. The TAIL stays readable
   // for routing + light provenance; only the body is opaque (a privacy bonus in the
   // relay channel). `enc: b64` marks it so parseMesh decodes; un-tagged = legacy raw.
@@ -279,7 +279,7 @@ export function createMeshRelay({
   // engine keeps `by: <handle>.<node>`), only the RUN-being is resolved. Default: identity.
   resolveLocalBeing = (name) => name,
   resolveBeingRelay = () => null,    // (being) => {being,node}|null — relay-record: re-resolve to another node
-  // STREAMING — a relayed reply is a LIVING MIRROR (An 2026-06-21). Edit-streaming
+  // STREAMING — a relayed reply is a LIVING MIRROR (operator 2026-06-21). Edit-streaming
   // is a bridge property, so a relayed reply streams for free; the relay just mirrors.
   //   RESPONDER: relayDispatch({being,prompt,route,from,re,post_id,by}) → edit-stream ONE
   //     relay-room message wrapped in the mesh tail (by/emoji/re/post_id). The responder's

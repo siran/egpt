@@ -351,16 +351,16 @@ const LIVE_AGENT_SUBS = Object.keys(AGENT_SUB_ARITY).filter((v) => !Object.hasOw
 // Every level name in the operator-facing text comes from ACCESS_LEVELS (permission-levels.mjs),
 // never a literal: the tier list is spelled out in ONE place, and a new tier updates this line,
 // the refusals below and /help together or not at all. Same rule now holds for the verb list.
-export const AGENTS_USAGE = `usage: /<handle> agents [<verb>] [<value>] [<handle>|force all [<conversation>]] — verbs: refresh | rethread | reset | compact | stop | mode <${AUTO_MODES.join('|')}> | access_level <${ACCESS_LEVELS.join('|')}>. A verb with no target acts on the being the command was typed to. \`/<handle> agents <handle>|force all\` shows status; bare \`all\` is refused. <conversation> is the rest of the line, spaces and all: \`/e agents refresh e eGPT Rodz Lulu An\`.`;
+export const AGENTS_USAGE = `usage: /<handle> agents [<verb>] [<value>] [<handle>|force all [<conversation>]] — verbs: refresh | rethread | reset | compact | stop | mode <${AUTO_MODES.join('|')}> | access_level <${ACCESS_LEVELS.join('|')}>. A verb with no target acts on the being the command was typed to. \`/<handle> agents <handle>|force all\` shows status; bare \`all\` is refused. <conversation> is the rest of the line, spaces and all: \`/e agents refresh e eGPT Rodz Lola An\`.`;
 
 // args (already whitespace-split) -> what agentsCmd wants: { args: [handle, verb, value],
 // slug }, or { retired } for the old order. Pure; exported for tests.
 //
 // The conversation is EVERYTHING after the handle, joined with single spaces (operator
 // 2026-09-28: "please enable: /agent refresh <agent> <channel slug> so i can fire from eGPT
-// Admin"). It was one token, and chat names and slugs carry spaces (`eGPT Rodz Lulu An-
-// 2609201419`), so `refresh e eGPT Rodz Lulu An` resolved "eGPT" and answered `don't know
-// where to put "Rodz Lulu An"`. With nothing left over in any shape, that reply went too.
+// Admin"). It was one token, and chat names and slugs carry spaces (`eGPT Rodz Lola An-
+// 2609201419`), so `refresh e eGPT Rodz Lola An` resolved "eGPT" and answered `don't know
+// where to put "Rodz Lola An"`. With nothing left over in any shape, that reply went too.
 // `force all` is ONE target (operator 2026-10-11); the conversation starts after it.
 const FORCE_ALL = 'force all';
 const targetAt = (args, i) => (args[i]?.toLowerCase() === 'force' && args[i + 1]?.toLowerCase() === 'all'
@@ -468,7 +468,7 @@ export function rewriteForkSessionJsonl(raw, { sessionId, cwd = null }) {
 }
 
 // The one id form that addresses the SECONDARY account (Rodz) from the PRIMARY account's roster is
-// the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @dolly-egpt:beeper.com is the secondary's
+// the PHONE NUMBER (idKey in src/bridges/beeper.mjs; @mouth-acct:beeper.com is the secondary's
 // OWN-account id and does NOT reach it from here — investigation 2026-10-01). phoneDigitsOf returns
 // the bare digits of a phone-shaped id, or null for anything else (a matrix/@user id, a slug, a name).
 function phoneDigitsOf(v) {
@@ -942,7 +942,7 @@ export function createCommands({
     // `[<conv>]` and `=<slug>` are the same thing said two ways.
     //
     // `=<slug>` is a PRIVATE convention parsed by THIS regex alone, bound directly to the
-    // command token (`/e agents=palma refresh e`).
+    // command token (`/e agents=muestra refresh e`).
     // Omitted = the CURRENT conversation (ev.surface/ev.chatId), exactly like today's bare
     // /e reset/auto/access. Given = resolved through resolveTarget — the SAME fuzzy/jid
     // resolver /e auto <mode> <target> and /e reset <target> already used, reused verbatim
@@ -2573,7 +2573,7 @@ export function createCommands({
     const add = /^add\s+tab\s+(\d+)(?:\s+(\S+))?$/i.exec(rest);
     if (add) { await membersAddTab(ev, room, Number(add[1]), add[2] ?? null); return; }
     // `add group <chat name|id>` — the argument runs to END OF LINE, because a chat NAME has
-    // spaces in it ("Radio WnL"). A single-token capture could only ever take an id.
+    // spaces in it ("Radio EFM"). A single-token capture could only ever take an id.
     const addGroup = /^add\s+group\s+(\S.*)$/i.exec(rest);
     if (addGroup) { await membersAddGroup(ev, room, addGroup[1].trim()); return; }
     // remove/mode take their target to END OF LINE for the SAME reason add group does —
@@ -2653,9 +2653,9 @@ export function createCommands({
   // (Operator console, 2026-08-31 — three symptoms, one cause. `add group` grew a chat
   // resolver in c63cdd6 + c84deac and its siblings did not:
   //   /members add group perrito traduciones
-  //     → added group 'perrito traduciones' → '0MP97ovrD6XvVovMVx6v' — mode:disable
-  //   /members mode all !0MP97ovrD6XvVovMVx6v:beeper.local
-  //     → no member '!0MP97ovrD6XvVovMVx6v:beeper.local' in this conversation
+  //     → added group 'perrito traduciones' → 'FakeRoomId0000000002' — mode:disable
+  //   /members mode all !FakeRoomId0000000002:beeper.local
+  //     → no member '!FakeRoomId0000000002:beeper.local' in this conversation
   //   /members mode all perrito traduciones
   //     → usage: /members | /members add tab … | /members mode <disable|mention|all> <id>
   // …i.e. the system printed a chat id in its OWN error message that its OWN next command
@@ -2687,7 +2687,7 @@ export function createCommands({
   // THE id comparison, in SHORT space (operator 2026-08-31). The two id forms on this node
   // are not a mistake to be migrated away, they are both real: resolveChatId NORMALIZES to
   // the short form and returns it (beeper.mjs — a '!' argument is passed through
-  // shortChatId), so `add group <name>` stores '0MP97ovrD6XvVovMVx6v'; `add group !<id>:
+  // shortChatId), so `add group <name>` stores 'FakeRoomId0000000002'; `add group !<id>:
   // beeper.local` stores the full form verbatim; and the FULL form is what /members
   // listings, Beeper's own UI, and this module's own error messages show the operator.
   // Comparing raw strings therefore made the printed form unusable. Folding BOTH sides
@@ -3311,7 +3311,7 @@ export function createCommands({
   // config.group_title_prefix (unset → SIDE_GROUP_PREFIX) + config.group_title ({group}=parent chat name, {name}=the <name> arg).
   const groupTitleTpl = () => ((typeof cfg().group_title === 'string' && cfg().group_title.trim()) ? cfg().group_title : GROUP_TITLE_DEFAULT);
   const sidePrefix = () => (typeof cfg().group_title_prefix === 'string' ? cfg().group_title_prefix : SIDE_GROUP_PREFIX);
-  // The prefix once: a title already starting with it (any case, e.g. a /join inside "SI+EduWeb") keeps its own.
+  // The prefix once: a title already starting with it (any case, e.g. a /join inside "SI+Contoso") keeps its own.
   const sidePrefixed = (title) => (String(title).toLowerCase().startsWith(sidePrefix().toLowerCase()) ? String(title) : sidePrefix() + title);
   const groupTitleOf = (groupName, name) =>
     sidePrefixed(fill(groupTitleTpl(), { group: groupName, name }));

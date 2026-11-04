@@ -76,7 +76,7 @@ const PI_PKG = ['@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'];
 // Node realpath()s what it resolves, and realpathSync lstat()s EVERY ancestor
 // directory. Under the sandbox the leased account holds rights on the granted
 // leaves only, so resolution died with:
-//   EPERM: operation not permitted, lstat 'C:\Users\an\AppData'
+//   EPERM: operation not permitted, lstat 'C:\Users\user\AppData'
 // --preserve-symlinks-main covers the CJS entry; the ESM resolver
 // (finalizeResolution) needs the broader --preserve-symlinks. BOTH are required
 // -- with only -main the failure simply moved from resolveMainPath into the ESM

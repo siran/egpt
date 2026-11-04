@@ -37,7 +37,7 @@
 // made far above it (conversation_defaults.allow_new_input → spine → warm pool `steer`).
 //
 // …AND WHAT IT RETURNS IS NOW EVIDENCE, NOT A SUCCESSFUL WRITE (operator 2026-09-09, after the
-// live fault in `Joyce Vicente-2606301852`: four messages steered, a 👀 on each, no reply ever;
+// live fault in `Julia Demo-2606301852`: four messages steered, a 👀 on each, no reply ever;
 // the sandboxed claude.exe measured afterwards with NO CHILDREN and ~350s of CPU over 21 hours,
 // i.e. idle). `proc.stdin.write` on a LIVE process's pipe succeeds whether or not anything on
 // the other end ever reads it, so the old `return true` meant SENT and was read one layer up as
@@ -176,7 +176,7 @@ const SUMMARY_MAX = 60;
 // Deliberately biased toward over-redaction: a stub that says `***` too often costs
 // nothing, a stub that leaks once cannot be unposted.
 const SECRET_PATTERNS = [
-  // https://user:pass@host → https://***@host. Requires the ':' so a bare `ssh://an@dolly`
+  // https://user:pass@host → https://***@host. Requires the ':' so a bare `ssh://user@dolly`
   // (a username, not a credential) still renders.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/@]+:[^\s@/]*@/gi, '$1***@'],
   // curl basic auth, spaced or '=': `-u user:pass`, `--user user:pass`, `--user=user:pass`.
@@ -237,7 +237,7 @@ export function renderToolUse(block) {
 }
 
 // A background task's description, as every status, ask, registry and listing names it, is ONE short line
-// (An #3499, 2026-11-01: "por qué los mensajes se están viendo así? … se van así"). The CLI describes a
+// (operator 2026-11-01: "por qué los mensajes se están viendo así? … se van así"). The CLI describes a
 // background Bash with no `description` by its whole command: the status posted a heredoc line by line, code
 // and any secret in it with it. Its first non-empty line — collapsed, redacted, capped, as renderToolUse
 // does — ending "…" when anything was left out; none → the task id.
@@ -324,7 +324,7 @@ export function createWarmCliSession(options = {}) {
   let selfTurn = null;              // the CLI's own turn on `finished`: { done, end, timer, started, summaries }
   let model = null;                 // the model the CLI reports in its `init` event (agent stats)
   // A listed task as kept: the live background agent that launched it (parent_task_id; the status nests
-  // it, An #2971), and `ambient` (the CLI's doc: "not activity … hosts should exclude them from activity
+  // it, operator 2026-10-31), and `ambient` (the CLI's doc: "not activity … hosts should exclude them from activity
   // indicators"). Kept here, not dropped: an ambient task is the CLI's task all the same — while it runs
   // the pool must not evict its process, and its notification and end are read like any (the CLI's own
   // turn, its outcome). Only the activity shown leaves it out: liveness's status (src/spine/liveness.mjs).
@@ -403,7 +403,7 @@ export function createWarmCliSession(options = {}) {
     selfTurn = null;
     if (t) { clearTimeout(t.timer); t.end(); }
   }
-  // HOW A BACKGROUND TASK ENDED IS THE CLI'S OWN VERDICT (An #2944, 2026-10-31: "si termina en error (muy
+  // HOW A BACKGROUND TASK ENDED IS THE CLI'S OWN VERDICT (operator 2026-10-31: "si termina en error (muy
   // raro) debería mostrar una X y el mensaje de error? esto debe ser estructural, no pongas al SI a
   // determinar el error cuando falla el proceso"). task_notification carries it (status; its summary,
   // sometimes a reason); the task_updated just before it is kept in case none follows. Anything but
@@ -452,7 +452,7 @@ export function createWarmCliSession(options = {}) {
       // it sits on the ONLY path a turn has to finish: the turn's own `result` arrives as one
       // of these lines, and if the line is unreadable it is dropped here, `pending` is never
       // settled, the pool's `busy` stays true forever and the conversation wedges with the CLI
-      // alive and idle — which is exactly the state the Joyce session was measured in. Whether
+      // alive and idle — which is exactly the state the Julia session was measured in. Whether
       // that is what happened there cannot be known now; what can be fixed is that it would
       // have left no trace at all. Capped, because a stdout that has started emitting garbage
       // must not also flood the log.
@@ -615,7 +615,7 @@ export function createWarmCliSession(options = {}) {
 
   // Tell every injection still waiting on this turn what became of it. Called from EVERY way a
   // turn can end, so a steered line is never left with nobody ever answering for it — that
-  // silence is precisely what the Joyce incident was made of.
+  // silence is precisely what the Julia incident was made of.
   function settleInjections(p, reason) {
     for (const rec of p?.injections ?? []) {
       if (rec.done) continue;

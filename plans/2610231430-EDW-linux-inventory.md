@@ -1,6 +1,6 @@
 # EDW step 0 — Linux inventory of eGPT (read-only)
 
-Repo `C:\Users\an\src\egpt` @ `472eadf`, 2026-10-23. Static reading only: nothing was run on Linux, nothing in the repo or `~/.egpt` was touched.
+Repo `C:\Users\user\src\egpt` @ `472eadf`, 2026-10-23. Static reading only: nothing was run on Linux, nothing in the repo or `~/.egpt` was touched.
 Legend: **works** = the POSIX branch exists and looks correct · **degrades** = runs with less information or function · **refuses** = throws or declines loudly · **breaks** = wrong path or ENOENT · *unverified* = my inference, not measured.
 
 Already in the repo: `tests/integrity.test.mjs:181-196` scans `src/**` (except `src/tools/**`) for Windows literals. Its `KNOWN_PLATFORM_DEBT` list (`:231-250`) is the place where known debt is recorded.

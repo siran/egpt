@@ -320,8 +320,8 @@ export function makeLimbAwareBridge(bridge, ...limbs) {
 // wake words, but they all use secondary to speak, when present."*
 //
 // 32aa5c1 answered "can the mouth reach this chat?" by COMPARING THE `account:` STRINGS of two
-// connections, and dolly proved that wrong on 2026-09-12: node `do` holds `primary` = anrodz42 as
-// its ear and `secondary` = dolly.egpt as its mouth, a message arrived on the ear in a group BOTH
+// connections, and dolly proved that wrong on 2026-09-12: node `do` holds `primary` = anaprueba42 as
+// its ear and `secondary` = mouth.acct as its mouth, a message arrived on the ear in a group BOTH
 // accounts are in, and D answered from the operator's own number. Every clause of the log line it
 // printed was true — the chat id really is primary's, secondary really is another account, that
 // id really does not exist there — and the conclusion was still wrong, because ONE REAL CHAT IS
@@ -1521,7 +1521,7 @@ export async function boot({
   // passes it to `addressed` beside the agents registry). One value, one rung — the limbs
   // and the agent registry can never disagree about whether `d hola` is an address.
   const addressWithoutAt = cfg.dispatch?.address_without_at !== false;
-  // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident; renamed from transcribe_ack_max_age_ms):
+  // 👂 ECHO AGE BOUND (operator 2026-07-09, Zurikar incident; renamed from transcribe_ack_max_age_ms):
   // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
@@ -1717,7 +1717,7 @@ export async function boot({
   // TEMPORARY, for no reason other than to hold that ear open.
   //
   // TWO MEASURED FACTS this rule is shaped around, both on the operator's own machine:
-  //   · `primary` and `primary_gui` are the SAME ACCOUNT (anrodz42) on two different Beeper
+  //   · `primary` and `primary_gui` are the SAME ACCOUNT (anaprueba42) on two different Beeper
   //     installs, so they carry two DIFFERENT tokens and nothing downstream collapses them.
   //     Dialling both as ears would ingest every message on that account TWICE.
   //   · `~/.egpt`'s `secondary` token is BYTE-IDENTICAL to `~/.egpt-secondary`'s `main` token — one
@@ -3352,7 +3352,7 @@ export async function boot({
   // and the operator's account is the one this node HEARS on. Not outboundConnectionFor's
   // question -- there is no chatId yet to ask reachability about, and no config declaration to
   // lean on. `bridge` is the fan-out facade and delegates both reads to the DEFAULT MOUTH, which
-  // on kg (ear 'primary', mouth 'secondary') resolved names in dolly.egpt's chat list and wrote
+  // on kg (ear 'primary', mouth 'secondary') resolved names in mouth.acct's chat list and wrote
   // an id the group's own arrivals -- which come in on the EAR -- can never match. The ear is
   // inboundConnections[0] (decided by connection, never by a being); `?? bridge` keeps a node with no ear exactly as it was.
   const earBridge = bridgeByEndpoint.get(endpointKey(endpointFor(inboundConnections[0] ?? null))) ?? bridge;
@@ -3383,7 +3383,7 @@ export async function boot({
   // Every warm session's live background tasks, with the conversation each would wake in.
   const convOfWarm = (k) => brain.convOfKey(k) ?? { being: '?', chatId: k };
   const liveBackground = () => pool.stats().keys.flatMap((k) => pool.background(k).map((t) => ({ ...convOfWarm(k), ...t })));
-  // …and how a finished one ended, as its session's CLI said it (An #2944) — read from that conversation's keys.
+  // …and how a finished one ended, as its session's CLI said it (operator 2026-10-31) — read from that conversation's keys.
   const backgroundOutcome = ({ being, chatId, taskId }) => pool.stats().keys.filter((k) => convOfWarm(k).being === being && convOfWarm(k).chatId === chatId).map((k) => pool.outcome(k, taskId)).find(Boolean) ?? null;
   // What this node is handling, in state/background.json (src/spine/background.mjs). Real-node only (tests: backgroundFile).
   const background = (ingest || backgroundFile) ? createBackgroundRegistry({ path: backgroundFile ?? join(EGPT_HOME, 'state', 'background.json'), node: node_name, liveAgents: liveBackground, now, onLog: (m) => log.line?.(`[background] ${m}`) }) : null;

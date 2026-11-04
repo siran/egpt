@@ -12,9 +12,9 @@
 //     lugar de editar los mensajes, puedes solo publicar el estatus de todas las tareas en un mensaje cada
 //     cierto tiempo"; earlier: "puedes dar updates cada minuto, o cuando terminen"). A fresh message
 //     (sender.post) when the chat's task list changes — a task appears or finishes — at the first pulse
-//     liveness.background_change_ms after the last post, ONE post however many did (An, 2026-11-02: "this is
+//     liveness.background_change_ms after the last post, ONE post however many did (operator, 2026-11-02: "this is
 //     probably too much :)"), else every liveness.background_every_ms while work runs; the tasks finished since
-//     the last post are listed as each ended, the CLI's own verdict, never the being's words (An #2944,
+//     the last post are listed as each ended, the CLI's own verdict, never the being's words (operator 2026-10-31,
 //     2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto debe ser
 //     estructural, no pongas al SI a determinar el error cuando falla el proceso"): ✓ completed, ✗ failed
 //     with the CLI's message, ⏹ stopped, ◦ not known — no success it cannot see. The first is posted when
@@ -22,7 +22,7 @@
 //     later one. A finished task's wake answers in its own placeholder. Once the chat has no work left
 //     (one quiet pulse, and no turn running there: a wake may start more), a last post lists what
 //     finished — "done" only if all of it completed, else "ended", ⚠️ if any failed; a /standdown's line
-//     is posted instead. A task a listed agent launched is listed under it, └, as deep as they go (An #2971,
+//     is posted instead. A task a listed agent launched is listed under it, └, as deep as they go (operator 2026-10-31,
 //     2026-10-31: "are you listing parent and child process in the same level? in that case why not nest?");
 //     one whose agent is not in the post stands on its own. A level's shell commands (the CLI's local_bash),
 //     more than ROLL_UP_OVER of one being, running or ended alike, are one line; a failed one stays listed.
@@ -75,8 +75,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   const why = (o) => (o?.status === 'failed' && o.message ? ` — ${o.message}` : o?.status === 'stopped' ? ' — stopped' : '');
   // The chat's status: its running tasks •, those finished since the last post marked as each ended (ENDED),
   // each with its elapsed time, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
-  // the listed agent that launched it, └ (An #2971). The count is every running task, nested ones included.
-  // The last says "done" only if all of it completed (An #2944).
+  // the listed agent that launched it, └ (operator 2026-10-31). The count is every running task, nested ones included.
+  // The last says "done" only if all of it completed (operator 2026-10-31).
   function post(s, running, t) {
     const live = new Set(running);
     const listed = rollUp([...running, ...s.done], live);

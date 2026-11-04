@@ -35,7 +35,7 @@ compaction:
 - `help` is a value accepted where a handle goes (`/agents compact help`). It prints, for THIS chat:
 ```
 /agents compact e                     compact E in this chat now (handoff first)
-/agents compact e eGPT Rodz Lulu An   compact E in another conversation
+/agents compact e eGPT Rodz Lola An   compact E in another conversation
 /agents compact wren                  compact wren (node-wide thread)
 /agents compact force all             every being resident here
 Current: E at 64% · warns at 82% · compacts after 10 min quiet · at once at 90%

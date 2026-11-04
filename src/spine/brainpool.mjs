@@ -169,7 +169,7 @@ function allowedPathsFor(def, onLog = () => {}) {
 //
 // WHY THE ROOT HAD TO GO, measured live 2026-09-23. The `egpt` mount landed and a sandboxed being
 // asked `pwd` still answered
-//   /c/Users/an/.egpt/conversations/whatsapp/Reencuentro CRC 1991-2026-2607161314
+//   /c/Users/user/.egpt/conversations/whatsapp/Reencuentro amigos 1990-2607161314
 // The process cwd really WAS the junction; the leak was the ARGV. `confineToDirs: [cwd]` carried
 // the Room's real path, claude-args unions every confine root into `--add-dir`, and the CLI
 // reports the spelling it was TOLD about. So the being was handed the operator's username and a
@@ -408,7 +408,7 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // "all agents see an src/ directory, it is actually interesting to have a my-code/ pointing to
 // src/egpt, we can 'leak' my own src/ to the agent (read-only for now)".
 //
-// THE PATH THAT ASK PRODUCED — `C:/Users/an/src` — WAS RETIRED ON 2026-09-23 (operator: "dismiss
+// THE PATH THAT ASK PRODUCED — `C:/Users/user/src` — WAS RETIRED ON 2026-09-23 (operator: "dismiss
 // mounting ~/src always, that was a faux-pas"). A sandboxed being now reaches the eGPT checkout
 // through the `src` junction in its own pool profile, backed by a STANDING group ACE on
 // ~\src\egpt, so it needs no allowed_paths entry to see its own code. THE MECHANISM BELOW IS
@@ -416,7 +416,7 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // that went, and it goes from config, not from here (setup/migrations owns that).
 //
 // A read grant used to be per TYPE FILE: config/agents/sonnet-default.yaml carried E's
-// `allowed_paths: { C:/Users/an/src/egpt: { allowed_tools: [Read, Glob, Grep] } }`, and granting
+// `allowed_paths: { C:/Users/user/src/egpt: { allowed_tools: [Read, Glob, Grep] } }`, and granting
 // the same folder to a second being meant writing that block into a second file. That is the
 // drift this repo keeps paying for — and REVOKING it meant finding every copy. config.yaml's own
 // top-level `allowed_paths:` is the one place to grant and the one place to revoke: it is merged
@@ -429,8 +429,8 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
 // THE DEF WINS. A being that names the SAME path keeps its own entry, whatever its class: the
 // node grant sits UNDER the def's own, so a narrower per-being grant is never widened by a
 // node-wide one written later. Paths are compared EXACTLY AS allowedPathsFor will read them
-// (trimmed, normalizeCwd'd), so a def writing `/c/Users/an/src` and a node writing
-// `C:/Users/an/src` are ONE path, not two — two spellings of one folder landing in two grant
+// (trimmed, normalizeCwd'd), so a def writing `/c/Users/user/src` and a node writing
+// `C:/Users/user/src` are ONE path, not two — two spellings of one folder landing in two grant
 // classes is exactly the double-ACE the launcher must never be handed. It is the walk's own
 // reading and nothing more: a config that spells one folder two ways in CASE (`c:/users` vs
 // `C:/Users`) still declares two paths here, exactly as it already does inside a single
@@ -1686,7 +1686,7 @@ export function createBrainPool({
     //
     // WHAT IT RETURNS IS EVIDENCE OR NOTHING (operator 2026-09-09). `false` still means nothing
     // happened; anything else is the pool's `{ ack }` — a promise that later says whether the
-    // MODEL took the line, not whether a write to a pipe succeeded. That is the whole Joyce fix,
+    // MODEL took the line, not whether a write to a pipe succeeded. That is the whole Julia fix,
     // and it is passed straight through rather than collapsed to a boolean here, because the
     // spine is the layer that owns what a chat is shown (turns.mjs: 📩 for the bridge's receipt,
     // 👀 only once this ack says ok).

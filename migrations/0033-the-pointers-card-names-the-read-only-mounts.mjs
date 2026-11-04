@@ -2,7 +2,7 @@
 // sandboxed being has beside its room.
 //
 // THE RULING (operator, 2026-09-28): "sandboxed beings should have access to my
-// 'C:\Users\an\src\siran', we can call it repos/", then "please frame this in config.yaml as
+// 'C:\Users\user\src\siran', we can call it repos/", then "please frame this in config.yaml as
 // global_read_paths list". Every pool profile now carries, beside the `src` junction onto the eGPT
 // checkout, one read-only junction per entry of the node's config.yaml global_read_paths - kg's is
 // `repos`, onto ~\src\siran (setup/sandbox-account.ps1, Get-SandboxProfileJunctionStatement; the

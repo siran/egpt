@@ -142,7 +142,7 @@ export function chromePipeArgs({ userDataDir, extensionDir, url = 'about:blank',
   const args = [
     '--remote-debugging-pipe',
     // The pipe alone sets navigator.webdriver = true for every site, so captchas and bot filters
-    // refuse the operator's own browsing (NYSCEF, ticket sites; measured 2026-10-27).
+    // refuse the operator's own browsing (LOGIN_PORTAL, ticket sites; measured 2026-10-27).
     '--disable-blink-features=AutomationControlled',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',

@@ -48,8 +48,8 @@ import { makeOutbound } from './sender.mjs';
 // one boot opens is wrapped outbound-only and its onMessage is a no-op (boot's outboundOnly and
 // its sibling). So an ask posted on a connection this node does not hear can never be answered:
 // the operator's quote-reply carries ids minted by a different account, in a different Matrix
-// room, and the routing map can never match. On the live kg node — ear `primary` (anrodz42),
-// default mouth `secondary` (dolly.egpt) — the frozen bridge posted every ask into an account
+// room, and the routing map can never match. On the live kg node — ear `primary` (anaprueba42),
+// default mouth `secondary` (mouth.acct) — the frozen bridge posted every ask into an account
 // whose answers this node is deaf to, so the whole mode:auto consult loop was open-circuit.
 //
 // Absent (every unit test, and any caller that has not been rewired) ⇒ the injected `bridge`, so

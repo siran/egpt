@@ -1,6 +1,6 @@
 // 0020 — the mouth is not a being.
 //
-// `@rodz` is an ACCOUNT, not a persona. `beeper.secondary` is dolly.egpt@gmail.com, display name
+// `@rodz` is an ACCOUNT, not a persona. `beeper.secondary` is mouth.acct@example.com, display name
 // Rodz, and BOTH nodes speak through that one account — do's own config annotates it "Rodz - the
 // mouth". kg nevertheless carries a BEING named after it: `agents.rodz`, name "Rodz",
 // `personality: rodz`, `handles: [ rodz, r ]`, `access_level: sandbox`. Operator, 2026-09-20:

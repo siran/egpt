@@ -122,7 +122,7 @@ export async function setRoomConfigBlock(ns, key, value, { reg = registryOf(ns),
 
 /**
  * Set a DOTTED key inside one room's row: setRoomConfigKey('room/dj-son',
- * 'radio_service.wildnloyal.enabled', false).
+ * 'radio_service.examplefm.enabled', false).
  *
  * `ns` is treated as ONE key, never split: a slug legitimately contains spaces
  * and can contain dots ("HFM - high frequency masturbation-2606300017"), so

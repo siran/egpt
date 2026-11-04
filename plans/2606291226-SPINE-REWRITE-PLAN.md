@@ -1,7 +1,7 @@
 # egpt — True-Spine Rewrite Plan
 
-> Branch `rewrite` in `C:\Users\an\src\egpt2`. The live nodes (REVE/DOLLY) keep
-> running the old spine from `C:\Users\an\src\egpt` until cutover. Nothing here
+> Branch `rewrite` in `C:\Users\user\src\egpt2`. The live nodes (REVE/DOLLY) keep
+> running the old spine from `C:\Users\user\src\egpt` until cutover. Nothing here
 > touches them. When done: park `main`, rename `rewrite` → `main`.
 
 ---

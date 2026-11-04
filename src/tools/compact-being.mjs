@@ -48,7 +48,7 @@ import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 // `context_window` in its sibling config.
 export const MODEL_WINDOWS = { haiku: 200_000, sonnet: 1_000_000, opus: 1_000_000 };
 export const DEFAULT_WINDOW = 200_000;
-export const COMPACT_RATIO  = 0.25;   // keep sessions THIN — compact at 25% of the window (An 2026-06-19)
+export const COMPACT_RATIO  = 0.25;   // keep sessions THIN — compact at 25% of the window (operator 2026-06-19)
 // A session whose jsonl changed within this window is treated as a turn IN FLIGHT
 // (or just-ran). Kept for callers/tests that still reason about activity; the
 // in-spine compactor serializes through the warm pool instead of mtime-guessing.
@@ -230,7 +230,7 @@ export function compactableBeings(config) {
 }
 
 // ── pure: ACTIVE conversations are ccode threads too — same compaction, so busy chats stay
-//    thin alongside the beings (An 2026-06-19: "not only the being, the active conversations").
+//    thin alongside the beings (operator 2026-06-19: "not only the being, the active conversations").
 //
 //    ONE TARGET PER RESIDENT BEING (fix 2026-07-26, HANDOFF C4). A conversation hosts residents,
 //    each with its OWN thread in its `agents.<being>` block (phase 1, operator 2026-08-14 — was

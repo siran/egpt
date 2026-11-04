@@ -31,10 +31,10 @@ import { makeSerialByKey } from '../serial-by-key.mjs';
 // agree with the reply or it announces which account is really listening (see its header).
 import { makeOutbound } from './sender.mjs';
 
-// THE TWO REACTIONS, AND THEY ARE A PAIR (operator 2026-09-09, after `Joyce Vicente-2606301852`
+// THE TWO REACTIONS, AND THEY ARE A PAIR (operator 2026-09-09, after `Julia Demo-2606301852`
 // swallowed ~90 minutes of the operator's messages behind four confident 👀s and total silence).
 //
-// THE GLYPHS (operator 2026-10-26, EduWeb An #413/#417): ✍️ and 👍, were 📩 and 👀. Telegram's
+// THE GLYPHS (operator 2026-10-26): ✍️ and 👍, were 📩 and 👀. Telegram's
 // bot reaction set has no 📩, so the bridge's own receipt never showed there — every steered
 // message waited on the model's 👀 instead, which is the lag the receipt exists to remove. Both
 // are in the set (Bot API ReactionTypeEmoji; ✍️ verified live with its FE0F) and on every other
@@ -51,7 +51,7 @@ import { makeOutbound } from './sender.mjs';
 //       anything on the other end ever read it.
 //
 // 📩 WITH NO 👀 FOLLOWING IS NOW A VISIBLE SYMPTOM, in the chat, at the time. That is the whole
-// point of keeping both: in the Joyce incident the operator would have seen four 📩 and no 👀 —
+// point of keeping both: in the Julia incident the operator would have seen four 📩 and no 👀 —
 // received, never ingested — instead of four 👀 that each claimed the model had it.
 //
 // SCOPE, deliberately narrow: only traffic ADMITTED into a live turn (below, once admitsNewInput
@@ -314,7 +314,7 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     // deliberately NOT awaited: it can take the rest of a pure-text turn to answer, and this
     // function runs inside the spine's single node-wide inbound pump, which must not stall behind
     // one conversation's model. A reaction has no deadline, so it is placed when the evidence
-    // arrives, and never at all when it does not — which is exactly the Joyce symptom made
+    // arrives, and never at all when it does not — which is exactly the Julia symptom made
     // visible: ✍️ alone, in the chat, with the reason in the log.
     //
     // A `steer` seam that answers a bare `true` (an older Brain, every test fake) carries no

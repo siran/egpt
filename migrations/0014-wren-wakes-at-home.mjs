@@ -3,10 +3,10 @@
 // Operator, 2026-09-20: "wren, as a meta engineer, should wake in your same folder; he manages
 // everything, and it also enabled an easy thread inheritance."
 //
-// "Your same folder" is the ORCHESTRATOR SESSION'S cwd, C:/Users/an. Measured that day: the
+// "Your same folder" is the ORCHESTRATOR SESSION'S cwd, C:/Users/user. Measured that day: the
 // operator's own session files its transcript under ~/.claude/projects/C--Users-an/, while wren's
 // threads sit in ~/.claude/projects/C--Users-an-bin-egpt/, because config/agents/wren.yaml pins
-// `cwd: C:/Users/an/bin/egpt`. The CLI derives that project folder FROM THE CWD (the same mapping
+// `cwd: C:/Users/user/bin/egpt`. The CLI derives that project folder FROM THE CWD (the same mapping
 // src/conversations-state.mjs reverses), so two beings in different cwds can never resume each
 // other's thread. Same cwd, same folder, and a thread id can simply be handed over. Nothing is
 // migrated to make that true: the operator ruled "egpt wren's thread can be lost; we keep this
@@ -16,15 +16,15 @@
 // SESSION DOES. A meta engineer is a being whose `conversation_defaults.access_level` is `all` —
 // the unsandboxed being that runs AS the operator because its job is to change the machine. Where
 // the operator's own session wakes is `dirname(EGPT_HOME)`: the profile is ~/.egpt, so its parent
-// IS the home. Never a hardcoded C:/Users/an — a node with its profile elsewhere gets ITS home.
+// IS the home. Never a hardcoded C:/Users/user — a node with its profile elsewhere gets ITS home.
 //
 // On kg that being is `agents.wren`, and the line it moves is the whole edit:
-//   cwd: C:/Users/an/bin/egpt # wren's job is the system, so it runs in the deployed tree
+//   cwd: C:/Users/user/bin/egpt # wren's job is the system, so it runs in the deployed tree
 // The value AND the comment change: the comment documented the OLD placement, and a comment that
 // lies is worse than none (0012). On do there is no such being, so do reads SATISFIED.
 //
 // THE SECOND HALF, and it is not optional. At bin/egpt wren picked the repo's CLAUDE.md up for
-// free, because the CLI reads the rules file of the tree it wakes in. At C:/Users/an there is
+// free, because the CLI reads the rules file of the tree it wakes in. At C:/Users/user there is
 // none (verified 2026-09-20: no ~/CLAUDE.md; ~/.claude/CLAUDE.md is the OPERATOR'S instructions,
 // not the repo's), so moving wren home would silently drop the engineering rules it works by.
 // They are put back where a being's kickoff is already composed — its IDENTITY file,

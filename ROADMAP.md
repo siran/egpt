@@ -612,7 +612,7 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   > `~/.egpt/state/stats/<surface>/<sender-id>.yaml` —
   > ```yaml
   > # per-contact cross-chat stats (spine-written — do not edit)
-  > sender_id: "@whatsapp_lid-114469569040632:beeper.local"
+  > sender_id: "@whatsapp_lid-100000000000017:beeper.local"
   > count: 1
   > last_seen: 2026-07-08T13:00:15.313Z
   > name: "…"
@@ -1091,8 +1091,8 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   5. **beeper accounts REGISTRY (config shape, operator verbatim)**:
      ```yaml
      beeper:
-       dolly: { account: dolly.egpt@gmail.com, token: <rodz token> }
-       reve:  { account: anrodz42@gmail.com,   token: <reve token> }
+       dolly: { account: mouth.acct@example.com, token: <rodz token> }
+       reve:  { account: anaprueba@example.org,   token: <reve token> }
      ```
      the network's named accounts shared as config. Physical note: a token
      only answers on its OWN machine's local API (and sleeps with it) —
@@ -1284,7 +1284,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   unbounded ~0.7s apart. Seeded by `/e auto mute debacle` matching DOLLY but erroring on REVE
   (name divergence below). FIXES: (a) the catch-all response must not be re-parsable as a command
   (don't start with `/`, or mark bot-authored lines non-command); (b) a cross-node loop/flood guard.
-- **BUG — node name divergence for the SAME chat id.** `bWv3isJYZMzDwJzQWDLr` is cached
+- **BUG — node name divergence for the SAME chat id.** `FakeRoomId0000000017` is cached
   "Reencuentro amigos" on REVE but "Reencuentro post debacle" on DOLLY (the pushedName inline
   comment diverged — the group was renamed, only one node refreshed). So `/e auto mute debacle`
   matched DOLLY, errored "no chat matches" on REVE — which seeded the loop. Fix: refresh the
@@ -1303,9 +1303,9 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   so a slow/hung turn cannot stop it (Node fires timers while the main thread is idle). For the
   beat to stop, EITHER the event loop was BLOCKED SYNCHRONOUSLY, OR the beat's own
   `echo beat > state/alive.txt` SPAWN hung — i.e. process/handle EXHAUSTION. Evidence leans
-  exhaustion: ZERO live processing in both windows (every message — Joyce 22:10, delen4 22:07/
+  exhaustion: ZERO live processing in both windows (every message — Julia 22:10, user4 22:07/
   22:09 … — shows up later as BACKLOG backfill, not live), and REVE runs auto-mode chats
-  (morgan, Dando Ruiz — `mode: auto`, reply to EVERY message, each spawns a claude subprocess);
+  (morgan, Dario Ensayo — `mode: auto`, reply to EVERY message, each spawns a claude subprocess);
   a burst there = many concurrent child processes. UNPROVABLE from current logs — there is no
   turn-lifecycle or spawn-count logging (that absence IS the real gap). DISPOSITION (operator
   2026-07-16): WATCH for recurrence, do NOT fix yet. If it recurs, fix order: (1) log turn
@@ -1321,7 +1321,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   feeds `members[id].name` — must NOT be the saved-contact `senderName` label, or it
   reintroduces the private-annotation leak the author-rule just closed; (b) whether
   Beeper's contact/user/participant endpoints return anything (they 404'd 2026-07-03).
-  Net today the owner reads as `anrodriguez` (localpart) — clean enough; this is polish,
+  Net today the owner reads as `anaprueba` (localpart) — clean enough; this is polish,
   NOT a Phase-3 blocker.
 
 - **Merge `transcription` + `transcription_service` config blocks (operator 2026-07-10,
@@ -1333,7 +1333,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   when doing it (src/spine/transcription.mjs, transcriptor-worker.mjs, boot whisper-reap).
 
 - **Service levels — "a conversation to be had" (operator 2026-07-03):** the node
-  runs as `.\an` (the claude login, ~/.local/bin PATH, and the profile all live in
+  runs as `.\user` (the claude login, ~/.local/bin PATH, and the profile all live in
   the user's home — maximum capability, node = the operator). The alternative end
   of the spectrum is a dedicated low-privilege service account with explicit
   grants (smaller blast radius; claude-login + PATH story gets involved). Ties to
@@ -1346,8 +1346,8 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   - **L-1 DORMANT** — machine asleep; scheduled WakeToRun duty cycles: wake,
     do egpt things, exit (exiting releases the scheduler's wake lock → machine
     drifts back to sleep). TEST HARNESSES LIVE 2026-07-07, task
-    `egpt-wake-duty` → C:\Users\an\egpt-wake-duty.ps1 → appends to
-    C:\Users\an\egpt-wake-duty.log; wake timers enabled AC+DC on both:
+    `egpt-wake-duty` → C:\Users\user\egpt-wake-duty.ps1 → appends to
+    C:\Users\user\egpt-wake-duty.log; wake timers enabled AC+DC on both:
     - REVE (operator: test here first): every 5 MIN, duty also WAITS FOR
       NETWORKING (up to 30s, pings DOLLY + 1.1.1.1, logs seconds-to-net) —
       manual fire verified (net 0.1s, svc=Running, spine alive, beeperApi up).
@@ -1357,7 +1357,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
     enabled a sleeping machine RE-WAKES every interval — disable after
     testing (`schtasks /change /tn egpt-wake-duty /disable`).
   - **L0 BOOT** — service starts at boot, NO login: VERIFIED 2026-07-07 both
-    nodes (`egpt-daemon`, startMode=Auto, .\an). Headless duties (heartbeats,
+    nodes (`egpt-daemon`, startMode=Auto, .\user). Headless duties (heartbeats,
     cron, textecutables, claude turns) should run; Beeper is a GUI app so no
     messaging — deaf/mute BY DESIGN at this level.
   - **L1 SESSION** — user logged in, Beeper Desktop up → bridge connects →
@@ -1458,7 +1458,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
       present (= locked), **and the spine pid + Beeper.exe survived** — locking does NOT kill the
       session, so a locked box is still a LIVE node. That is the property that makes this safe.
       Gotchas if recreating: `schtasks /create /it /sc onlogon` emits invalid task XML — use the
-      PowerShell cmdlets; and the user MUST be fully qualified (`<COMPUTER>\an`) — a bare `an`
+      PowerShell cmdlets; and the user MUST be fully qualified (`<COMPUTER>\user`) — a bare `user`
       is rejected as malformed XML.
     - **Net effect:** any boot (BSOD, hang, manual, update, power cut) → auto-logon → screen locks
       immediately → Beeper starts (Run key) → the bridge attaches ⇒ live node, locked screen,
@@ -1522,12 +1522,12 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   (was the raw `@whatsapp_lid-…` in the morgan chat — a LID is an unsaved
   contact so senderName IS the push name).
 - **👂 max-age bound — IN FLIGHT (operator 2026-07-08 "go", after the
-  Zohykar ancient-note acks)**: `network.transcribe_ack_max_age_ms`
+  Zurikar ancient-note acks)**: `network.transcribe_ack_max_age_ms`
   (default 1h) — a 👂 posts only for notes younger than the bound; resync-
   resurrected notes transcribe + log SILENTLY; sleep-window notes (<1h)
   keep their courtesy ack. Agent dispatched.
 - **DONE (a95c46b): /reply redundancy guard** — a /reply targeting the
-  message being answered is stripped (the Zohykar rogue-twin); doc updated,
+  message being answered is stripped (the Zurikar rogue-twin); doc updated,
   profiles refreshed.
 - **VERIFIED IN CODE (2026-07-08): third-party @e IS answered** —
   ev.authorized gates ONLY slash commands (commands.mjs); the reply gate is
@@ -1565,7 +1565,7 @@ conversation / per being, the usual rungs); creating a WhatsApp group through Be
   which are surface `room` (conversations/room/<slug>/) and have been since 2026-08-09
   (`85f346d`); there is no rooms/ folder at the profile root. Config
   is at ~/.egpt/config/config.yaml (the ONLY location — no legacy fallbacks since
-  85a824e). Old production (egpt-daemon service, ~/.egpt, C:\Users\an\src\egpt) is
+  85a824e). Old production (egpt-daemon service, ~/.egpt, C:\Users\user\src\egpt) is
   STOPPED — both ride the same local Beeper Desktop (127.0.0.1:23373), so running both
   double-answers every @e.
 - Restart: drop a file containing `/restart` into ~/.egpt/state/ingest/ (temp→rename).

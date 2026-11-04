@@ -32,7 +32,7 @@ const WHISPER_DEFAULT_PORT = 8089;   // mirrors src/tools/whisper-server.mjs (po
 // (a loopback host, or one of this machine's interface addresses) on THIS node's transcriptor
 // port (transcriptor.port, default 23390). Returns { at, endpoint } for the first such rung,
 // else null. dolly: `do.worker` → http://127.0.0.1:23390 → its own worker. kg: `reve.worker` →
-// http://192.168.1.102:23390 (dolly's address) → not. The one definition of "a node that sends
+// http://192.0.2.102:23390 (dolly's address) → not. The one definition of "a node that sends
 // voice notes to its own transcriptor endpoint", so the worker's warning below and anything that
 // decides whether a node should run the worker role cannot disagree.
 export function routesToOwnTranscriptor(cfg, { localAddresses = localAddressSet() } = {}) {

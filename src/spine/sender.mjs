@@ -713,7 +713,7 @@ export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null
           const peerChat = route ? await route : null;
           const t = textOf(reply);
           // Gate-withheld ('on'-mode silence / not surfaced). NOTHING IS EVER
-          // DELETED (operator 2026-08-24; An 2026-10-27: "nadie borra nunca nada, ningún
+          // DELETED (operator 2026-08-24; 2026-10-27: "nadie borra nunca nada, ningún
           // bot, ni el spine"). The placeholder resolves to the
           // silence mark instead of vanishing. 40-rules.md already names it —
           // "A polite silence is '...' or '…'" — so the withheld turn reads as

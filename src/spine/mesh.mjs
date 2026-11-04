@@ -65,7 +65,7 @@ export function createMeshService({
   //
   // AND IT IS NOT COSMETIC, because one real chat is a DIFFERENT Matrix room per Beeper account
   // (originConv's header below records two pairs measured live). On the kg node the mouth is
-  // `secondary` (dolly.egpt) and the ear is `primary` (anrodz42), and THREE families of mesh send
+  // `secondary` (mouth.acct) and the ear is `primary` (anaprueba42), and THREE families of mesh send
   // carry an id that only the ear's account has:
   //   · THE ORIGIN CHAT — a human TYPED there, so it is a room on the ear by definition. The 🤔
   //     placeholder, the living mirror that is the entire visible output of a mesh hop, the
@@ -338,7 +338,7 @@ export function createMeshService({
   // MUST BE DIFFERENT THREADS!"). Returns { chatId, name }, or null = "not addressable here".
   //
   // THE NAME IS THE ONLY THING THAT CROSSES. Beeper chat ids do NOT: the same WhatsApp group is
-  // `!6ljZJkx0OaY9ZVhEzFgi` on anrodz42 and `!HuXFQeZSY1X4khNDWTzz` on dolly.egpt, and Radio WnL
+  // `!FakeRoomId0000000004` on anaprueba42 and `!FakeRoomId0000000003` on mouth.acct, and Radio EFM
   // is `!9M8Dhdj…` vs `!3yqv8ll…` (both measured on these two machines, 2026-08-31). So the
   // requester's chat id is meaningless on this node — config/rooms.yaml here lists its members by
   // THIS node's ids — while a WhatsApp group's TITLE is the same for both accounts. The tail has

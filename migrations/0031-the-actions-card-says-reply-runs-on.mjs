@@ -1,10 +1,10 @@
 // 0031 — the actions card says a /reply runs on, so a quote-reply can carry paragraphs and lists.
 //
-// THE MEASUREMENT (operator, 2026-09-25): King Ken's quote-replies in Dagiely Palma arrived as one
+// THE MEASUREMENT (operator, 2026-09-25): King Ken's quote-replies in Dalia Muestra arrived as one
 // flat paragraph, "1) ... 2) ... 3)" inline. His session jsonl shows the model wrote them that way
 // because they were `/reply #<id> <text>` actions, whose text was the rest of ONE line; the same
-// beings' plain messages kept their paragraphs (E at 00:17 in Dagiely Palma, Ken at 11:58 in
-// 🌴FAMILIA PALMA🌴). src/spine/reply-actions.mjs now keeps a /reply open over the lines below it,
+// beings' plain messages kept their paragraphs (E at 00:17 in Dalia Muestra, Ken at 11:58 in
+// 🌴FAMILIA MUESTRA🌴). src/spine/reply-actions.mjs now keeps a /reply open over the lines below it,
 // to the next action line or the end. A being learns its limbs from ONE card,
 // config/skeletons/room/10-actions.md, and a rule it is never told is a rule it does not use.
 //

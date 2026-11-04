@@ -3,7 +3,7 @@
 // Proven from operator data (2026-06-02, baileys sender-key files + the
 // @lid name-debug log):
 //   - a user's WhatsApp lid is IDENTICAL across every group AND 1:1 (e.g. the
-//     operator's lid 34836563681438 appeared in 17 different groups);
+//     operator's lid 10000000000012 appeared in 17 different groups);
 //   - lid ↔ phone is a 1:1 bijection (26/26, zero violations);
 //   - identity is `‹user›[:‹deviceId›]@‹server›`, sometimes with a group-
 //     participant `_N` suffix; the SAME human spans multiple deviceIds
@@ -31,10 +31,10 @@
  * Strips, in order: a `wa:`/`tg:` scheme prefix, the `@server` part, the
  * `:deviceId` segment, and the group-participant `_N` suffix.
  *
- *   '34836563681438:45@lid'        -> '34836563681438'
- *   '34836563681438_1'             -> '34836563681438'   (group sender-key form)
- *   'wa:16468217865@s.whatsapp.net'-> '16468217865'
- *   '16468217865:42@s.whatsapp.net'-> '16468217865'
+ *   '10000000000012:45@lid'        -> '10000000000012'
+ *   '10000000000012_1'             -> '10000000000012'   (group sender-key form)
+ *   'wa:15550100001@s.whatsapp.net'-> '15550100001'
+ *   '15550100001:42@s.whatsapp.net'-> '15550100001'
  */
 export function canonicalUserId(jid) {
   if (jid == null) return null;
@@ -52,8 +52,8 @@ export function canonicalUserId(jid) {
  * The device/source segment — informational only (never a permission input).
  * Primary device is '0' (no explicit segment).
  *
- *   '34836563681438:45@lid' -> '45'
- *   '34836563681438@lid'    -> '0'
+ *   '10000000000012:45@lid' -> '45'
+ *   '10000000000012@lid'    -> '0'
  */
 export function deviceId(jid) {
   if (jid == null) return '0';

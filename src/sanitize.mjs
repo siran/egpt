@@ -14,7 +14,7 @@
 // Operator (2026-06-14): "slugs must substitute ONLY for windows path-unfriendly
 // characters. accents and spaces and more are allowed; slashes etc. can be
 // substituted." So the slug stays as close to the real contact/group NAME as
-// possible — "Tío Jesús Palma", "+1 (646) 821-7865", "premise-driven bitcoin"
+// possible — "Tío Jesús Muestra", "+1 (555) 010-0001", "premise-driven bitcoin"
 // — and only the characters Windows forbids in a filename are removed:
 //   < > : " / \ | ? *   and the ASCII control range, plus the trailing-dot /
 //   trailing-space rule and the reserved device names (CON, PRN, …).

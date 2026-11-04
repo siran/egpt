@@ -3,7 +3,7 @@
 // THE MEASUREMENT THAT CAUSED IT. A sandboxed being (E, running as pool account egpt-sbx-NN)
 // finished six translation files and could not deliver them to `G:\My Drive\jose-lorenzo\…`.
 // The volume reports FAT32 — there are no ACLs on it to grant — and GoogleDriveFS.exe runs as
-// `reve\an`, so the drive letter lives in THAT user's session and the pool account has no `G:`
+// `reve\user`, so the drive letter lives in THAT user's session and the pool account has no `G:`
 // at all. There was no permission to grant: the path is simply absent from the being's world.
 // The spine already runs as `an` and can see `G:`, so the operator ruled a spine-side copy.
 //
@@ -19,7 +19,7 @@
 //     inside the outbox is a destination the BEING named, wearing a file's clothes: follow one
 //     and the move lands wherever it points. lstat (never stat) is what refuses to follow it.
 //   · NEVER OVERWRITE. A destination file of the same name leaves that entry in the outbox,
-//     reported by name. Silent overwrite could destroy the operator's or Joyce's work, and the
+//     reported by name. Silent overwrite could destroy the operator's or Julia's work, and the
 //     FILENAME is the one thing the being does choose — so a collision is a thing it can cause.
 //   · REFUSE THE WHOLE DRAIN, NAMING THE PLACE, when the destination does not exist, is not a
 //     directory or cannot be written. NEVER create it: the operator names a real folder or
@@ -255,7 +255,7 @@ export async function drainOutbox({ room, target, io = {}, onLog = () => {} } = 
  * the outbox is empty after almost every turn, and a line per turn would be noise).
  *
  * THE TARGET KEY IS WHAT IT NAMES, NEVER THE RESOLVED PATH — see the ruling above checkDestination
- * (Joyce is in the room this ships to). Everything this function reads is already chat-safe by
+ * (Julia is in the room this ships to). Everything this function reads is already chat-safe by
  * construction: `refused` and each `skipped[].why` are built path-free at the point of failure,
  * with the path sent to the log there instead. So there is no filtering here to forget, and
  * nothing that could be "improved" back into a leak by editing this function alone — but the test

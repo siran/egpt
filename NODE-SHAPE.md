@@ -242,7 +242,7 @@ What still differs, measured, and why it is not being changed:
   re-linking that account.
 - **`do`'s `egpt-daemon` service is an older install**: its binary sits inside
   the profile and it logs under a different name. Converging it is a reinstall,
-  and the service runs as `.\an`, so a reinstall needs that account's password at
+  and the service runs as `.\user`, so a reinstall needs that account's password at
   a real console.
 - **The helper tasks differ by purpose, not by drift.** `kg` has `egpt-chrome-radio`
   and an enabled `egpt-wake-duty`; `do` has a disabled `egpt-lock-on-logon` and a

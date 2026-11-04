@@ -10,9 +10,9 @@
 // AppEnvironmentExtra - EGPT_HOMES if it carries one, else EGPT_HOME - split on `;` or `,`, trimmed,
 // empties dropped, joined with ', ', in order. That is the installer's own rule for -EgptHomes, and
 // the installer writes EGPT_HOMES from that same list, so the text reads back exactly as it was
-// stamped. kg (EGPT_HOME and EGPT_HOMES both C:/Users/an/.egpt) reads already satisfied from it.
+// stamped. kg (EGPT_HOME and EGPT_HOMES both C:/Users/user/.egpt) reads already satisfied from it.
 //
-// LABELS ONLY, NEVER A REINSTALL. The service runs as .\an, so reinstalling it needs that account's
+// LABELS ONLY, NEVER A REINSTALL. The service runs as .\user, so reinstalling it needs that account's
 // password, and the installer asks with Get-Credential - which hangs forever over ssh (measured
 // 2026-09-15). This migration runs `sc.exe config <svc> DisplayName= <text>` and
 // `sc.exe description <svc> <text>`, for whichever of the two differs, and nothing else. Nothing is

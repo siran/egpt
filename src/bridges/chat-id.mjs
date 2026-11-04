@@ -4,7 +4,7 @@
 // 2026-07-03: neither the leading '!' nor the trailing ':beeper.local' is part
 // of the chat's real identity — ':beeper.local' specifically names Beeper's
 // OWN local bridge server, nothing about the chat, and a Matrix USER id can
-// legitimately live on a DIFFERENT server ('@anrodriguez:beeper.com' — a
+// legitimately live on a DIFFERENT server ('@anaprueba:beeper.com' — a
 // different sigil AND a different suffix, verified live in the operator's own
 // config.yaml allowed_users). So: SHORT ids everywhere inside egpt (registry
 // keys, config, gating, transcripts, mesh); the full Matrix form is expanded

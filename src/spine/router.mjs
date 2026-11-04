@@ -207,11 +207,11 @@ export function voiceWakeTokens(agent) {
 // one line to specify the handles that i expect to be answered by some other account (like
 // rodz); if that account is not present in the chat, fallback_handle can be used").
 //
-//   fallback_handle: { handle: e,          unless_present: "+13472576794" }
-//   fallback_handle: { handle: [d, don],   unless_present: "+13472576794" }   ← since 2026-09-01
+//   fallback_handle: { handle: e,          unless_present: "+15550100002" }
+//   fallback_handle: { handle: [d, don],   unless_present: "+15550100002" }   ← since 2026-09-01
 //
 // THE ARRANGEMENT it exists for: kg and do stopped sharing ONE Beeper account (2026-08-31). `do`
-// now runs on a SECOND account (+1 347…, "Rodz") and carries a relay agent `e` that forwards to
+// now runs on a SECOND account (+1 555…, "Rodz") and carries a relay agent `e` that forwards to
 // ekg.kg — so `@e` is ANSWERED by kg's brain but POSTED from a visibly different account, which is
 // the whole point of the arrangement. The COST is that `e` became a handle on `do` ONLY: in every
 // chat the 347 account is not a member of — most of the operator's chats, and EVERY room, since a

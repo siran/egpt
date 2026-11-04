@@ -8,7 +8,7 @@
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
-//   GET  <ayde.path>/                    the EduWeb team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
+//   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
 //   GET  <ayde.path>/logout              401 + a signed-out page whose script overwrites each cached login so the next visit is challenged
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the

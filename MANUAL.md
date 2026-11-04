@@ -264,8 +264,8 @@ chat.
 you (the node's owner), as if you had sent it there:
 
 ```
-/to tg:-1004408163350/55
-/file C:\Users\an\Desktop\factura.pdf
+/to tg:-1000000000101/55
+/file C:\Users\user\Desktop\factura.pdf
 ed, pick up the invoice thread above
 ```
 
@@ -290,7 +290,7 @@ What the chat sees, and when the line is dispatched (`ingest:` in config.yaml):
 
 Once dispatched the line takes the normal path: addressing and the chat's mode
 decide who answers, the answer goes to that chat, and the transcript records the
-line with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). An
+line with `.ingest` as its entry point (`An@[Contoso].ingest (14:05): ed, …`). An
 id with no conversations.yaml entry, or a file with no text and no files, is
 logged and ignored. The box sits under `~/.egpt`, so only the node's owner can
 write it; a sandboxed being cannot.
@@ -399,20 +399,20 @@ limbs:
   http:
     port: 8095
     trust_proxy: true
-    chatboxes: [ eduweb_marketer, eduweb_soporte ]   # each one a top-level block below
+    chatboxes: [ contoso_marketer, contoso_soporte ]   # each one a top-level block below
 
-eduweb_marketer:
-  url: eduweb                 # the id in the URL (/chat/eduweb/widget.js) and the chat ids (http:eduweb-<sid>)
+contoso_marketer:
+  url: contoso                 # the id in the URL (/chat/contoso/widget.js) and the chat ids (http:contoso-<sid>)
   being: asesor
-  seed: seeds/eduweb
-  title: "🐶 Agente EduWeb SI"
-  intro: "¡Hola, soy Edu, el súper agente inteligente de EduWeb!"
-  team_name: Equipo EduWeb
-  team_group: -1004473260995
+  seed: seeds/contoso
+  title: "🐶 Agente Contoso SI"
+  intro: "¡Hola, soy Edu, el súper agente inteligente de Contoso!"
+  team_name: Equipo Contoso
+  team_group: -1000000000102
   label: Marketer — website
 
-eduweb_soporte:
-  url: demoiev
+contoso_soporte:
+  url: democlient
   being: soporte
   identity: required
 ```
@@ -425,18 +425,18 @@ them. A `strings:` map in the block still works; a key written beside it wins.
 of a chatbox that is already live: its widget's address, its chat ids and its
 conversation folders all use it.
 
-The older form, `limbs.http.clients: { eduweb: { … } }`, still works. If both
+The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
 name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
 no block is logged and skipped. A change to a block takes a `/restart`, as any
 change under `limbs` does.
 
-### `/ayde` — the EduWeb team's browser (staff access)
+### `/ayde` — the Contoso team's browser (staff access)
 
 With `limbs.http.ayde: { on: true }`, the chatbox limb also serves a read-only
-browser of the node's `EGPT_HOME` to the EduWeb team, at:
+browser of the node's `EGPT_HOME` to the Contoso team, at:
 
 ```text
-https://eduweb.com.ve/ayde/
+https://contoso.example/ayde/
 ```
 
 The browser asks for a user and a password (HTTP Basic). Each user has a level;
@@ -469,7 +469,7 @@ limbs:
   http:
     ayde:
       on: true
-      scope: ["tg:-1004408163350", "tg:-1004473260995", "tg:-1004311994096", "http:eduweb-", "http:demoiev-"]
+      scope: ["tg:-1000000000101", "tg:-1000000000102", "tg:-1000000000103", "http:contoso-", "http:democlient-"]
 ```
 
 Each entry is one of:
@@ -477,7 +477,7 @@ Each entry is one of:
 | Entry | Covers |
 |---|---|
 | `tg:<group>` | the Telegram group and every topic in it (`tg:<group>/<n>`); a `/split` fork lives in its parent's folder, so it comes with it |
-| ending in `-` | every chat id that starts with it: `http:eduweb-` is every chatbox session of the `eduweb` client |
+| ending in `-` | every chat id that starts with it: `http:contoso-` is every chatbox session of the `contoso` client |
 | any other chat id | that chat only, e.g. one topic `tg:<group>/<n>` |
 
 The folders come from `config/conversations.yaml` by chat id, on each request,
@@ -525,7 +525,7 @@ from the internal network instead. It is logged, and it is not a failed login.
 
 **HTTPS only:** Basic sends the password with every request. The site's proxy
 must be HTTPS, and the hop from the proxy to the node must stay private
-(EduWeb: Portales-new → `edw.egpt.internal:8095`, beside `/chat/`).
+(Contoso: the website proxy → `edw.example.internal:8095`, beside `/chat/`).
 
 ---
 

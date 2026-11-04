@@ -11,7 +11,7 @@
 // so the session 0 service carries every session 0 profile instead of there
 // being one service per account:
 //
-//   EGPT_HOMES=C:\Users\an\.egpt;C:\Users\an\.egpt-secondary
+//   EGPT_HOMES=C:\Users\user\.egpt;C:\Users\user\.egpt-secondary
 //
 // EGPT_SESSION1=1 (setup/session1-daemon-launcher.vbs) marks the Session 1 daemon,
 // the node's one runner: it holds the browsers and the claude sessions.

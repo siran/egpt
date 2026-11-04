@@ -1,4 +1,4 @@
-// http-ayde.mjs — /ayde: the EduWeb team's read-only browser of EGPT_HOME, by level (limbs.http.ayde).
+// http-ayde.mjs — /ayde: the Contoso team's read-only browser of EGPT_HOME, by level (limbs.http.ayde).
 // http.mjs checks the login (HTTP Basic against secrets/ayde.users: checkUser) and, on a public request
 // (one through the site's proxy), refuses a user above limbs.http.ayde.public_max_level; under <ayde path>/:
 //   (none)                          the page (http-ayde.html)

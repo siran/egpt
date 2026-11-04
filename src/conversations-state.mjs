@@ -230,7 +230,7 @@ export async function stampThreadId(surface, slug, threadId, { io = {}, key = nu
   } catch (e) { console.error(`!! stampThreadId(${surface}/${slug}): ${e?.message ?? e}`); return false; }
 }
 
-// Render a path msys-style: C:\Users\an → /c/Users/an (drive-letter lowercased,
+// Render a path msys-style: C:\Users\user → /c/Users/user (drive-letter lowercased,
 // backslashes → forward slashes). Pure; an already-posix or UNC path is left alone.
 // Used for the self-describing `home_dir` + the absolute-fallback conversation_path.
 export function toMsysPath(p) {
@@ -299,14 +299,14 @@ export async function statsPath(surface, chatId, { name, io = {}, rename = false
 }
 
 // Filename-safe key for a SENDER id (the per-contact stats file's basename). A sender id
-// is a Matrix user id like "@anrodriguez:beeper.com" or "26087681749235@lid" and is NEVER
+// is a Matrix user id like "@anaprueba:beeper.com" or "10000000000011@lid" and is NEVER
 // shortened (a user can live on another homeserver) — so it can carry ':' etc., invalid in
 // a Windows filename component (< > : " / \ | ? * + control chars). NOT sanitizeSlug: that
 // collapses illegal chars + whitespace runs to a single space, so "a:b" and "a b" would
 // fuse into ONE file — lossy/colliding for a MACHINE key. Instead, a percent-style escape
 // with '~' as the sentinel: escape a literal '~' FIRST (so real input can't forge an
 // escape), then each illegal char -> '~' + its 2-hex code. Collision-free, deterministic,
-// reversible, and human-readable enough ("@anrodriguez:beeper.com" -> "@anrodriguez~3abeeper.com").
+// reversible, and human-readable enough ("@anaprueba:beeper.com" -> "@anaprueba~3abeeper.com").
 const _WIN_ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
 export function sanitizeStatKey(id) {
   return String(id ?? '')
@@ -921,8 +921,8 @@ export function jidMediaDir(jid) {
 //
 // Callers should treat the return as a hint, not ground truth.
 // The previous implementation hard-mapped every `-` to `/` and
-// produced paths like `C:/Users/an//egpt/conversations/premise/driven/bitcoin/e/2605211611`
-// for the cwd `C:/Users/an/.egpt/conversations/premise_driven_bitcoin_e-2605211611`
+// produced paths like `C:/Users/user//egpt/conversations/premise/driven/bitcoin/e/2605211611`
+// for the cwd `C:/Users/user/.egpt/conversations/premise_driven_bitcoin_e-2605211611`
 // — totally broken. Surface-layout migration now invalidates
 // threadIds instead of relying on this recovery path.
 export function reverseSanitizeCwd(projectDir, candidateCwds = []) {
@@ -1063,17 +1063,17 @@ export { sanitizeSlug };
 //
 //   contacts:
 //     whatsapp:
-//       "26087681749235@lid":
-//         slug: diego_p_rez_koma-2605200133
+//       "10000000000011@lid":
+//         slug: diego_p_rez_kilo-2605200133
 //         personality: default
 //         threadId: …
 //         firstSeenAt: …
-//         pushedName: "Diego Pérez (Koma)"
+//         pushedName: "Diego Pruéba (Kilo)"
 //         ...
-//       "584122182178@s.whatsapp.net":
-//         aliasOf: "26087681749235@lid"
+//       "15550100006@s.whatsapp.net":
+//         aliasOf: "10000000000011@lid"
 //     telegram:
-//       "tg:user:88164392":
+//       "tg:user:100000001":
 //         slug: an-self-tg-2605211200
 //         personality: system
 //         ...

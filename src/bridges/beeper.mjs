@@ -90,7 +90,7 @@ const SEND_GATE_MAX_MS = 15_000;
 // not found: <id>"} EVEN ON SUCCESS (the just-made group's real id is right there in the message),
 // and a GET of that id 200s a moment later once the group has synced. So on that 404 createGroup
 // extracts <id> and polls the single-chat GET up to this many times, this far apart, before
-// conceding null. (A live run: POST 404 "Chat not found: !hCJbnVCBvzUAcGYyv7MQ:beeper.local",
+// conceding null. (A live run: POST 404 "Chat not found: !FakeRoomId0000000019:beeper.local",
 // then GET of that id → 200 with the created group.)
 const CREATE_GROUP_POLL_ATTEMPTS = 5;
 const CREATE_GROUP_POLL_MS = 500;
@@ -159,8 +159,8 @@ export function newerMsgId(a, b) {
 //
 // IDENTITY KEY: `participants.items[]` carries `phoneNumber`, the one identifier that means the
 // same thing on BOTH accounts (a matrix/participant id does not: each account sees the other
-// through its own namespace). A phone-shaped value compares on DIGITS ONLY, so "+1 (347)
-// 257-6794", "+13472576794" and "13472576794" are one identity; anything else falls back to
+// through its own namespace). A phone-shaped value compares on DIGITS ONLY, so "+1 (555)
+// 010-0002", "+15550100002" and "15550100002" are one identity; anything else falls back to
 // shortChatId, the SAME normalizer allowed_users uses, so a raw participant id still works.
 // The country code is NOT guessed — a bare national form is a different digit string and does
 // not match. Declare the full international number (which is what Beeper reports anyway); a
@@ -192,8 +192,8 @@ function participantKeys(c) {
 // a deterministic contact name"). Beeper chatIDs are opaque Matrix room
 // ids; nobody should have to chase them. The slug of a chat TITLE is the
 // stable, human-meaningful key: lowercase, diacritics stripped, runs of
-// non-alphanumerics collapsed to single dashes. 'Dando Ruiz' →
-// 'dando-ruiz'; config lists may then hold names/slugs instead of ids.
+// non-alphanumerics collapsed to single dashes. 'Dario Ensayo' →
+// 'dario-ensayo'; config lists may then hold names/slugs instead of ids.
 function chatSlug(title) {
   return String(title ?? '')
     .normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -204,8 +204,8 @@ function chatSlug(title) {
 // ONE real group, seen by TWO Beeper accounts, shares NOTHING in the payload. Measured live on
 // the same machine, the same underlying WhatsApp group:
 //
-//   primary   sees  !6ljZJkx0OaY9ZVhEzFgi:beeper.local   localChatID 211
-//   secondary sees  !HuXFQeZSY1X4khNDWTzz:beeper.local   localChatID 3
+//   primary   sees  !FakeRoomId0000000004:beeper.local   localChatID 211
+//   secondary sees  !FakeRoomId0000000003:beeper.local   localChatID 3
 //
 // Beeper is Matrix: each account gets its OWN room for the same underlying chat, so the room
 // id, the local id and every other handle are per-account. THE PEOPLE ARE NOT. This derives a
@@ -245,11 +245,11 @@ function chatSlug(title) {
 //     (THE CHAT THAT IS ONLY US below). ONE is refused for a `single` and ACCEPTED for a
 //     `group`, which is what CHAT TYPE below buys.
 //
-// CHAT TYPE IS THE FIRST FIELD OF THE KEY (operator 2026-09-06, live: "An y Dando"). Membership
+// CHAT TYPE IS THE FIRST FIELD OF THE KEY (operator 2026-09-06, live: "An y Dario"). Membership
 // alone cannot separate a group from the 1:1 nested inside it — a 1:1 with X reduces to {X}, and
 // so does the group [self, X, co-account] once the co-account is excluded — so the floor was two,
 // and the price was that the SMALLEST REAL GROUP THERE IS (both accounts plus one other person)
-// could not be keyed at all. Measured live: `An y Dando` keyed to nothing on either endpoint, the
+// could not be keyed at all. Measured live: `An y Dario` keyed to nothing on either endpoint, the
 // mouth link refused with `no-key`, and the reply fell back onto the node's OWN account — the
 // operator answering himself, the one thing the second account exists to prevent.
 //
@@ -268,8 +268,8 @@ function chatSlug(title) {
 // THE CHAT THAT IS ONLY US (operator 2026-09-12, live: "eGPT Admin"). A group whose ONLY members
 // are the two accounts this node holds — nobody else in it at all. Measured on both installs:
 //
-//   primary   !trYqoMoH7jETBozvcOQh   group  "eGPT Admin"  [ self(no phone), the SECONDARY's number ]
-//   secondary !nG3zZhXhJ0mZfmCu6s2f   group  "eGPT Admin"  [ self(no phone), the PRIMARY's number   ]
+//   primary   !FakeRoomId0000000005   group  "eGPT Admin"  [ self(no phone), the SECONDARY's number ]
+//   secondary !FakeRoomId0000000010   group  "eGPT Admin"  [ self(no phone), the PRIMARY's number   ]
 //
 // Self carries no phone and the co-account is excluded, so the surviving set is EMPTY on BOTH
 // sides: the refusal above fired four times in the live log and every reply went out on the EAR's
@@ -357,8 +357,8 @@ export function crossAccountChatKey(chat, exclude = []) {
 //
 //   field       An's view                     Rodz's view
 //   id          2901                          1118
-//   chatID      !JwvpZvGK8H8DLDuPa89w         !lHZ44tI32W0eEtbwMutM
-//   senderID    @whatsapp_lid-694…            @dolly-egpt:beeper.com
+//   chatID      !FakeRoomId0000000014         !FakeRoomId0000000009
+//   senderID    @whatsapp_lid-694…            @mouth-acct:beeper.com
 //   timestamp   2026-09-07T11:07:17.000Z      IDENTICAL
 //   text        …                             IDENTICAL
 //
@@ -434,7 +434,7 @@ export function _msgTimestampMs(msg) {
 export async function startBeeperBridge(opts = {}) {
   let {   // `let`, not `const`: the redial below re-points baseUrl/wsUrl when the install has moved
     onIncoming,
-    // RAW edit hook (An 2026-06-20): an incoming message EDIT, before it's wrapped
+    // RAW edit hook (operator 2026-06-20): an incoming message EDIT, before it's wrapped
     // as an editAction stage-direction. Lets the mesh router mirror a relayed
     // reply's streamed edits to the origin chat. async (chatId, msgId, newText,
     // oldText) => truthy-if-consumed (truthy → skip the stage-direction surfacing).
@@ -556,7 +556,7 @@ export async function startBeeperBridge(opts = {}) {
     // the wait between single-chat GETs while the just-created group syncs. Defaults to a real
     // timer; tests inject a no-op so the poll runs instantly.
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-    // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar 1:1 incident; renamed from
+    // 👂 ECHO AGE BOUND (operator 2026-07-09, Zurikar 1:1 incident; renamed from
     // transcribe_ack_max_age_ms): a Beeper resync can re-deliver ancient backlog voice notes;
     // the 👂 is a live-conversation courtesy, not an archaeology announcement, so it only posts
     // when the NOTE ITSELF (its own message timestamp, not bridge start) is within this bound of
@@ -600,7 +600,7 @@ export async function startBeeperBridge(opts = {}) {
     isAllowedUser = () => false,
     // Display name for the ACCOUNT OWNER's own (isSender) messages. Beeper gives
     // the self participant NO fullName — only its matrix id — so without this the
-    // operator's own lines read '@anrodriguez:beeper.com' instead of a name
+    // operator's own lines read '@anaprueba:beeper.com' instead of a name
     // (operator 2026-06-16). Host supplies the configured user_name.
     userName = null,
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
@@ -728,14 +728,14 @@ export async function startBeeperBridge(opts = {}) {
   // *"if 'Rodz' or the number or de beeper user, or email, then that account (secondary) is used
   // to talk"* — so EVERY stable identifier this install answers to, not the phone alone. All of
   // them come off the very payload above. Measured live 2026-09-12 on both of the operator's
-  // installs: five `/v1/accounts` entries (matrix + whatsapp on dolly.egpt's, matrix + whatsapp +
-  // telegram on anrodz42's), all five `user.isSelf: true`, carrying between them
+  // installs: five `/v1/accounts` entries (matrix + whatsapp on mouth.acct's, matrix + whatsapp +
+  // telegram on anaprueba42's), all five `user.isSelf: true`, carrying between them
   //
   //   user.phoneNumber  full international form, on the phone-shaped networks only
-  //                     (+16468217865 / +13472576794 — the pair `peer_spine.accounts` names by
+  //                     (+15550100001 / +15550100002 — the pair `peer_spine.accounts` names by
   //                     hand); ABSENT on the matrix entry.
-  //   user.id           '@dolly-egpt:beeper.com' on the matrix entry — the Beeper user id — and
-  //                     the network's own id elsewhere ('13472576794', telegram's '88164392').
+  //   user.id           '@mouth-acct:beeper.com' on the matrix entry — the Beeper user id — and
+  //                     the network's own id elsewhere ('15550100002', telegram's '100000001').
   //   user.email        ONLY on the matrix entry, and it is the address
   //                     `config.beeper.<name>.account` already records.
   //   accountID         the NETWORK name ('matrix' | 'whatsapp' | 'telegram'). Not an identity.
@@ -747,7 +747,7 @@ export async function startBeeperBridge(opts = {}) {
   // WhatsApp's `user.id` IS its own number and collapses into the phone it already reported.
   //
   // ONE OF THEM IS PHONE-SHAPED AND IS NOT A PHONE: Telegram's `user.id` is a bare number
-  // ('88164392'), so idKey stamps it '#88164392' exactly as it stamps a real number. It is still
+  // ('100000001'), so idKey stamps it '#100000001' exactly as it stamps a real number. It is still
   // a true identity of this install, and it can only ever skip ITSELF — a Telegram roster names
   // its people '@telegram_<id>:beeper.local', which idKey does NOT read as a phone, and no
   // participant across both installs (620 entries) carries a number whose digits are those. So
@@ -762,7 +762,7 @@ export async function startBeeperBridge(opts = {}) {
   // they cost one more field read off a GET the bridge already makes at startup.
   //
   // user.fullName IS DELIBERATELY NOT HERE, and it is the one the operator's list starts with
-  // ("Rodz" — really is `fullName` on dolly.egpt's WhatsApp self entry). It is also the only
+  // ("Rodz" — really is `fullName` on mouth.acct's WhatsApp self entry). It is also the only
   // identifier a stranger can set to whatever they like, and participantKeys does not key it: it
   // would be inert without ALSO widening the roster reader, and widening that would let any
   // participant who calls themselves Rodz make this node speak as the wrong account. Here a false
@@ -833,7 +833,7 @@ export async function startBeeperBridge(opts = {}) {
   // "is <identity> a participant of this chat?", answered from THIS account's own copy of the
   // roster. It exists for the two-account arrangement (see router.mjs fallbackWake): kg and do no
   // longer share a Beeper account, `e` is now a handle on do's account only, and kg wakes on `@e`
-  // as a fallback ONLY where do's identity (+1 347…) is not in the chat. Membership — unlike
+  // as a fallback ONLY where do's identity (+1 555…) is not in the chat. Membership — unlike
   // liveness ("did do answer?", which is a timeout on every message) — is STATIC and knowable
   // locally, which is the whole reason the feature is shaped this way.
   //
@@ -894,7 +894,7 @@ export async function startBeeperBridge(opts = {}) {
   }
 
   // ── A PICKER @-MENTION OF THE MOUTH IS AN ADDRESS (operator 2026-09-16) ─────────────────────
-  // Live on kg, group "Reencuentro CRC 1991-2026": picking "Rodz" from WhatsApp's @-mention picker
+  // Live on kg, group "Reencuentro amigos 1990": picking "Rodz" from WhatsApp's @-mention picker
   // woke nothing; typing `@rodz` woke the being. The picker sends an ANCHOR, htmlToMarkdown renders
   // it `[@Rodz](https://matrix.to/#/<id>)` (or `[Rodz](…)`), and mentionHits' '@' must follow
   // whitespace — so no matcher on the node could see it.
@@ -937,7 +937,7 @@ export async function startBeeperBridge(opts = {}) {
   // THE OUTBOUND TWIN of mouthMentionsAsAddresses above, over the SAME anchor. Measured live
   // 2026-09-16 from the Rodz account: posting the plain text `[Nombre](https://matrix.to/#/<id>)`
   // IS the mention — WhatsApp resolved it and the recipient's copy came back carrying
-  // `mentions: ["@anrodriguez:beeper.com"]`. So nothing new is SENT here: no field on the body,
+  // `mentions: ["@anaprueba:beeper.com"]`. So nothing new is SENT here: no field on the body,
   // no second send path, sendMessage still posts `{ text }`.
   //
   // WHAT WAS MISSING WAS THE ID, not the mechanism. The id that works is the person AS THE
@@ -1055,7 +1055,7 @@ export async function startBeeperBridge(opts = {}) {
 
   // ── PHONE → BEEPER USER ID (operator 2026-10-03, the /fork group create) ────────────────────
   // WhatsApp's `POST /v1/chats` REFUSES a `+phone` participant — live: `M_INVALID_PARAM … User ID
-  // "+1646…"`. The member it wants is the person's BEEPER USER ID (e.g. `@whatsapp_lid-<num>:
+  // "+1555…"`. The member it wants is the person's BEEPER USER ID (e.g. `@whatsapp_lid-<num>:
   // beeper.local`), and the two identifiers ride TOGETHER on every roster entry
   // (`participants.items[] = { id, phoneNumber }`, the SAME shape participantKeys / crossAccountChatKey
   // read). So the phone the config names resolves to the id the create needs by scanning the chats
@@ -1775,7 +1775,7 @@ export async function startBeeperBridge(opts = {}) {
   // The SENDER's display name for the dispatch line / transcript / reactor + editor
   // names. HARD PRIVACY RULE (operator 2026-07-03): the sender attribution must
   // NEVER be the operator's SAVED contact-list label — it's a leak (the operator's
-  // private annotations, e.g. "Ricki Mejia amigo diana real estate", would ride into
+  // private annotations, e.g. "Rita Modelo amiga de lola inmobiliaria", would ride into
   // transcripts fed to models and surface in replies / mesh envelopes). Beeper fills
   // message.senderName with EXACTLY that saved label for a saved contact (verified
   // live 2026-07-03: senderName == the participant's fullName == the chat title; no
@@ -1792,7 +1792,7 @@ export async function startBeeperBridge(opts = {}) {
   //   2. else a HUMAN-READABLE NON-PRIVATE id — the phone number embedded in a
   //      WhatsApp senderID ('@whatsapp_<digits>:beeper.local' → '+<digits>'), else
   //      the localpart of a Matrix id ('@<localpart>:<domain>' → '<localpart>', a
-  //      public handle — e.g. '@anrodriguez:beeper.com' → 'anrodriguez', not a label);
+  //      public handle — e.g. '@anaprueba:beeper.com' → 'anaprueba', not a label);
   //   3. else the raw stable senderID itself; 4. else null (caller's own fallback).
   // The chat label / [chatname] / conversation folder (conversations.yaml pushedName)
   // KEEP the operator's label — that's the CHAT's name, not the person's. Display-only:
@@ -2491,7 +2491,7 @@ export async function startBeeperBridge(opts = {}) {
     // Stream a bot reply into the chat as a REAL in-place editor: post the
     // placeholder, edit it live as the turn streams, finalize in place — ONE
     // message, never a separate "final" send. The edit lifecycle is OWNED HERE in
-    // the bridge so every surface behaves identically. An 2026-06-20: edit-streaming
+    // the bridge so every surface behaves identically. operator 2026-06-20: edit-streaming
     // is a bridge PROPERTY of ANY bot reply (the operator's own typing never
     // streams — this only ever runs on a bot's generated reply). It writes EXACTLY the
     // frame it is handed and adds nothing of its own: the streaming/settled progress

@@ -137,7 +137,7 @@ export function createTranscript({
   // (372c17f) and does not need to.
   const openBlocks = new Set();
   // WHICH DAY THE RECORD IS ON, per FILE (operator 2026-09-01, from his own live SPOILER
-  // transcript: "Ron Tomkins@… (22:40)", "Mauricio Castro@… (00:18)", "José Velarde@… (06:20)"
+  // transcript: "Ron Testeo@… (22:40)", "Mauricio Ficcion@… (00:18)", "José Supuesto@… (06:20)"
   // — midnight passed between two adjacent lines and nothing marked it, so no reader could
   // tell which day any line belonged to). A line carries HH:MM only, by operator mandate
   // (dispatch-line.formatDispatchLine), so the DAY is stated once, where it CHANGES — lighter

@@ -1,8 +1,8 @@
 // 0034 — the operator's repositories are a global read path: `global_read_paths:` with
-// `- repos: C:/Users/an/src/siran` in the node's config.yaml, on the node that has that folder.
+// `- repos: C:/Users/user/src/siran` in the node's config.yaml, on the node that has that folder.
 //
 // THE RULING (operator, 2026-09-28): "sandboxed beings should have access to my
-// 'C:\Users\an\src\siran', we can call it repos/", then, the same day, "please frame this in
+// 'C:\Users\user\src\siran', we can call it repos/", then, the same day, "please frame this in
 // config.yaml as global_read_paths list". 1fdf5c0 shipped the mount with the path spelled twice, in
 // the provisioner and in the launcher; both now read it from this key (config/config-schema.mjs
 // global_read_paths - the spine hands the launcher the list, the provisioner asks node for it). So
@@ -28,13 +28,13 @@ import * as YAML from 'yaml';
 import { spliceYamlInsertKey } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
-export const summary = 'the operator\'s repositories are a global read path: config.yaml lists `global_read_paths: - repos: C:/Users/an/src/siran` where that folder exists';
+export const summary = 'the operator\'s repositories are a global read path: config.yaml lists `global_read_paths: - repos: C:/Users/user/src/siran` where that folder exists';
 
 const ID = '0034';
 const KEY = 'global_read_paths';
 const NAME = 'repos';
 // THE ONE PATH THIS MIGRATION SPELLS - the ruling's, in the forward-slash form these files use.
-const DIR = 'C:/Users/an/src/siran';
+const DIR = 'C:/Users/user/src/siran';
 
 const refuse = (why) => { throw new Error(`${ID} refuses: ${why}`); };
 const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -56,7 +56,7 @@ function rendered(file, before, after, label) {
 
 const blockLines = () => [
   `# THE FOLDERS EVERY SANDBOXED BEING MAY READ (${ID}, operator 2026-09-28: "sandboxed beings should`,
-  `# have access to my 'C:\\Users\\an\\src\\siran', we can call it repos/", then "please frame this in`,
+  `# have access to my 'C:\\Users\\user\\src\\siran', we can call it repos/", then "please frame this in`,
   `# config.yaml as global_read_paths list"). Each \`- <mount name>: <path>\` is mounted READ-ONLY as`,
   `# ~/<mount name> in every sandbox pool profile, beside src. The grant behind it is STANDING and is`,
   `# setup\\provision-sandbox-account.cmd's - re-run it after changing this list. It takes the pool off`,

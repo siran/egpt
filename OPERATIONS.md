@@ -11,11 +11,11 @@ heartbeat and shell port. No "kg2": both reve profiles declare `node_name: kg`.
 
 | machine | profile | `node_name` | role | shell port |
 |---|---|---|---|---|
-| `reve` `192.168.1.114` | `~/.egpt` | `kg` | primary | 23475 |
+| `reve` `192.0.2.114` | `~/.egpt` | `kg` | primary | 23475 |
 | `reve` | `~/.egpt-secondary` | `kg` | secondary | 23477 |
-| `Dolly` `192.168.1.102` | `~/.egpt` | `do` | primary | 23475 |
+| `Dolly` `192.0.2.102` | `~/.egpt` | `do` | primary | 23475 |
 
-reve's `172.25.64.1` / `172.19.160.1` are Hyper-V/WSL switches — never deploy there.
+reve's `198.51.100.1` / `198.51.100.2` are Hyper-V/WSL switches — never deploy there.
 
 **Each node has two runners, one at a time (GENOME 6, 2026-10-22).** The NSSM service
 `egpt-daemon` (`node egpt-daemon.mjs` → `egpt-spine.mjs`, Automatic, as the desktop user,
@@ -85,7 +85,7 @@ so in log_to_group after 5 min on no port — through a connection that still wo
 ## Deploying
 
 ```
-powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer an@dolly
+powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -Peer user@dolly
 powershell -ExecutionPolicy Bypass -File setup\upgrade.ps1 -EgptHome "$env:USERPROFILE\.egpt-secondary"
 ```
 
@@ -178,7 +178,7 @@ message).
 lock (`Get-Process git`), then reset:
 
 ```
-ssh -p 2222 an@dolly "rm -f ~/bin/egpt/.git/index.lock && git -C ~/bin/egpt reset --hard --quiet"
+ssh -p 2222 user@dolly "rm -f ~/bin/egpt/.git/index.lock && git -C ~/bin/egpt reset --hard --quiet"
 ```
 
 ### Migrations
@@ -201,7 +201,7 @@ A failure stops the chain and is not recorded. A migration that needs elevation,
 unelevated, prints **PENDING** with the exact command and does not block the rest —
 so on reve's UAC-filtered shell an elevated migration stays pending until run from
 an admin shell.
-**`-Peer an@dolly` runs dolly's migrations over ssh, which is elevated** (below):
+**`-Peer user@dolly` runs dolly's migrations over ssh, which is elevated** (below):
 elevated ones apply there during the deploy, Beeper downtime included.
 
 ## The admin ssh hop
@@ -212,15 +212,15 @@ An interactive session on reve is UAC-filtered — `IsInRole(Administrator)` is
 | from | to | admin? |
 |---|---|---|
 | reve, local shell | — | **False** |
-| reve | `ssh an@localhost` (22 or 2222) | auth refused |
-| reve | `ssh an@dolly` (22 or 2222) | **True** |
-| reve | `ssh an@dolly` → `ssh an@reve` | **True** |
+| reve | `ssh user@localhost` (22 or 2222) | auth refused |
+| reve | `ssh user@dolly` (22 or 2222) | **True** |
+| reve | `ssh user@dolly` → `ssh user@reve` | **True** |
 
 reve will not ssh to its own loopback, but dolly will ssh in and that inbound
 session carries the full token. **For admin on reve, hop out and back:**
 
 ```
-ssh -p 2222 an@dolly "ssh an@reve '<elevated command>'"
+ssh -p 2222 user@dolly "ssh user@reve '<elevated command>'"
 ```
 
 Nested quoting through two shells mangles `$_` (msys path translation) — write a
@@ -232,7 +232,7 @@ powershell -NoProfile -Command "(New-Object Security.Principal.WindowsPrincipal(
 
 **Port 22** = Windows OpenSSH (`scp` works). **Port 2222** = msys2 sshd, the POSIX
 shell this repo assumes — but `scp -P 2222` FAILS; pipe instead:
-`ssh -p 2222 an@dolly "cat > /tmp/f" < local`. Python on both machines is
+`ssh -p 2222 user@dolly "cat > /tmp/f" < local`. Python on both machines is
 **Windows** python even inside msys: pass `C:/Users/...`, never `/c/Users/...`.
 
 ## Two traps, each of which cost a live incident

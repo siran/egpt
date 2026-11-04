@@ -42,9 +42,9 @@
 //   `conversation_defaults` is NOT touched: it stays whatever it is, and this room alone is
 //   sandboxed.
 //
-//   `members: [{ kind: wa-group, id: MMF7iTSSiR3fc7UbbgM9, state: active }]` — operator: *"we can
+//   `members: [{ kind: wa-group, id: FakeRoomId0000000007, state: active }]` — operator: *"we can
 //   link acim-do to the whatsapp group as well"*. THAT ID IS DO'S OWN VIEW of the group "perrito
-//   traduciones". kg sees the same group as `0MP97ovrD6XvVovMVx6v`. The asymmetry is real and
+//   traduciones". kg sees the same group as `FakeRoomId0000000002`. The asymmetry is real and
 //   load-bearing (tests/cross-account-chat-key.test.mjs is the lock on it): two Beeper accounts
 //   bridge one WhatsApp group into two different Matrix rooms, so an id lifted from the other
 //   node's registry would name NOTHING here. It is also why this id is what QUALIFIES the node —
@@ -70,7 +70,7 @@
 //     agent's wake vocabulary (0011/0016/0018/0019/0020/0021 all ask it), NEVER the map key. On do
 //     that being is keyed `don` since 0018; on a node where it is keyed something else, the room's
 //     `agents:` block is keyed by the KEY, because that is what getBeing looks a being up by.
-//   - a CONVERSATION RECORD for chat id `MMF7iTSSiR3fc7UbbgM9` — this node's account actually has
+//   - a CONVERSATION RECORD for chat id `FakeRoomId0000000007` — this node's account actually has
 //     that group. Resolved with the node's own getContact over its own parse(), and its own
 //     shortChatId, so a full `!…:beeper.local` key matches the short id either way.
 // kg has NEITHER, so kg reads SATISFIED WITH A NOTE and its own `chrome:` block is not disturbed.
@@ -130,8 +130,8 @@ const ID = '0023';
 // 0018's doing and not a thing this may assume).
 const HANDLE = 'don';
 // THIS node's account's view of the group "perrito traduciones". kg's account sees the same group
-// as 0MP97ovrD6XvVovMVx6v — see the header.
-const CHAT = 'MMF7iTSSiR3fc7UbbgM9';
+// as FakeRoomId0000000002 — see the header.
+const CHAT = 'FakeRoomId0000000007';
 const SURFACE = 'room';
 const SLUG = 'acim-do';
 const NS = `${SURFACE}/${SLUG}`;

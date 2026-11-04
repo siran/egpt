@@ -32,7 +32,7 @@
 //      node, so it parses as nothing and reads as ordinary text.
 //
 //   2. THE LOOP GUARD still pauses a CHANNEL on its own. ONE guard, TWO TRIGGERS (operator
-//      2026-09-20, after the "🌴FAMILIA PALMA🌴" outage below):
+//      2026-09-20, after the "🌴FAMILIA MUESTRA🌴" outage below):
 //        · RATE — `turns` non-human turns inside `window` MINUTES. "a hard limit of turns is
 //          only effective on a rapid succession … six spread over a day is the kind of
 //          conservatism we must avoid". At two below the hard limit → warn; at it → auto-STOP.
@@ -46,7 +46,7 @@
 //      STOP ALL removal on its own merits: the guard can auto-stop SEVERAL channels
 //      independently, so clearing them one at a time is not the same job.
 //
-// THE LOOP THIS GUARD DID NOT CATCH, AND THE ONE IT CAUSED (kg, 2026-09-20). "🌴FAMILIA PALMA🌴"
+// THE LOOP THIS GUARD DID NOT CATCH, AND THE ONE IT CAUSED (kg, 2026-09-20). "🌴FAMILIA MUESTRA🌴"
 // was auto-STOPped at 00:35:50 and nobody noticed until 08:21 — eight hours of `stopped — prompt
 // suppressed`, the operator's own `@ken @don @e están?` among them. The six turns that filled the
 // cap arrived in FIVE SECONDS and were THIS NODE'S OWN BOOKKEEPING: E's `⏳ Thinking…` and
@@ -207,7 +207,7 @@ export function isHumanTurn(ev, { isEnvelope = () => false, wasSentByUs = () => 
 //   'echo'  — THIS NODE'S OWN OUTPUT coming back to it: a send the bridge recognises by id
 //             (wasSentByUs) or a frame THIS node's spine committed (fromThisNode). It is
 //             bookkeeping, not an utterance — so it NEITHER counts toward the cap NOR resets
-//             it. This is the whole PALMA bug: E's own ⏳ placeholders, posted through the
+//             it. This is the whole MUESTRA bug: E's own ⏳ placeholders, posted through the
 //             mouth account and re-entering on the ear, filled the cap in five seconds.
 //   'being' — somebody else's machine turn: ANOTHER node's being, a relay envelope, a brain
 //             member's reply. That is real chatter and it counts, exactly as before.
@@ -362,7 +362,7 @@ export function createStopGuard({ turns = 6, window = 2, repeats = 3, repeatWind
 
     // WHY this channel was last auto-stopped — the repeated line, or the rate with its numbers.
     // The log line and the notice the channel gets both say it: a pause nobody can explain is
-    // how PALMA stayed silent for eight hours.
+    // how MUESTRA stayed silent for eight hours.
     reasonOf(channel) { return reasons.get(channel) ?? 'a loop'; },
 
     stopChannel(channel) { if (channel != null) { stoppedChannels.add(channel); onLog(`STOP ${channel}`); } },

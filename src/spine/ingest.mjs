@@ -21,7 +21,7 @@
 // `/to <chatId>` (2026-10-26): the lines below it are typed into that chat as the node's owner
 // (boot → spine.handleInbound, the limbs' own entry):
 //
-//   /to tg:-1004408163350/55
+//   /to tg:-1000000000101/55
 //   ed, resume the thread above
 //
 // The chat must already have a conversations.yaml entry; an unknown id or empty text is ignored.

@@ -15,7 +15,7 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
    own config.yaml" is stale) — `parseDedicatedFlag` is retired, not kept beside the new map.
 2. **Keyed by chat NAME** (same on both nodes; `admin_channel` already names by name). Slugs differ per node.
 3. **Groups:** the existing `brain` profile (Gmail/ClassDojo/AWS) is the group of `eGPT Admin` +
-   `eGPT Rodz Lulu An`. Every chat NOT listed uses the `shared` group — a NEW, empty profile
+   `eGPT Rodz Lola An`. Every chat NOT listed uses the `shared` group — a NEW, empty profile
    (`chrome/profiles/shared`). Group name = profile dir name. One Chrome per group, memory-admitted.
 4. **Pipe-only for EVERY group, `brain` included.** No Chrome listens on a port; beings reach their
    group's Chrome only through the spine. Everything that uses `:9221` today is rerouted first.
@@ -24,7 +24,7 @@ my conversations." A conversation launches its own Chrome, and that Chrome is ti
 ```yaml
 # ~/.egpt/config/browsers.yaml
 groups:
-  brain: [ "eGPT Admin", "eGPT Rodz Lulu An" ]
+  brain: [ "eGPT Admin", "eGPT Rodz Lola An" ]
 # any chat not listed → shared
 ```
 
@@ -87,7 +87,7 @@ groups:
 - Mirror `src/spine/warm-sessions.mjs` (lazy open, idle-evict, never-evict-while-busy, cap) for
   the Chrome pool.
 - **Conversation slug**: the dir name under `.egpt/conversations/whatsapp/<slug>` (e.g.
-  `Reinie Alvino-2607150057`); state already carries `conversation_path`.
+  `Renata Ficticio-2607150057`); state already carries `conversation_path`.
 
 ## Chunks (ordered; each: dispatch → verify → commit → deploy)
 

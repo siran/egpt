@@ -21,7 +21,7 @@
 # A conversation's privileged_browser (conversations.yaml) still wins. Read per upload.
 
 groups:
-  brain: [ "eGPT Admin", "eGPT Rodz Lulu An" ]
+  brain: [ "eGPT Admin", "eGPT Rodz Lola An" ]
   # work: [ "Some Chat" ]
 
 # colors:

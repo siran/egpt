@@ -95,7 +95,7 @@ export async function startVoiceNote({
   transcribe, outboundFor, reply, checkCovered, scheduler, serial = (k, fn) => fn(), onLog = () => {},
 }) {
   const vmeta = {};
-  // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident): gate on the NOTE'S OWN
+  // 👂 ECHO AGE BOUND (operator 2026-07-09, Zurikar incident): gate on the NOTE'S OWN
   // timestamp vs now — NOT bridge start, so a note that arrived during sleep still echoes on wake
   // if the note itself is within the bound. No parseable timestamp -> fail-open (echo), same as
   // the backlog gate.
