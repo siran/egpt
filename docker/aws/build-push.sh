@@ -2,16 +2,11 @@
 # build-push.sh [--deploy <name>] [--apply]
 # Builds the image from the checkout this script is in, tags it egpt:<short sha> and
 # egpt:<deployment>, and pushes both to the deployment account's ECR repository "egpt",
-# creating it (tagged) when missing. ROOT_SUDO=1 in the deployment: egpt may sudo anything as root.
+# creating it (tagged) when missing.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 parse_apply "$@"
 check_account
-case $ROOT_SUDO in
-  0) log "image    plain (ROOT_SUDO=0)" ;;
-  1) log "image    ROOT: egpt may sudo anything as root (ROOT_SUDO=1)" ;;
-  *) die "ROOT_SUDO must be 0 or 1, not '$ROOT_SUDO'" ;;
-esac
 
 ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel) \
   || die "git cannot read this checkout from here (a Git Bash worktree?); use a plain one, e.g. ~/src/egpt in WSL"
@@ -33,12 +28,11 @@ log "checkout $ROOT ($(git -C "$ROOT" rev-parse --abbrev-ref HEAD) $SHA)"
   || log "WARNING: docker/ has uncommitted changes; the image will not match $SHA"
 [ -z "$ARN" ] || log "in ECR now: $(q ecr describe-images --repository-name egpt --query 'imageDetails[].imageTags[]' | tr -s '\t' ' ')"
 
-run docker build -f "$ROOT/docker/Dockerfile" --build-arg "EGPT_ROOT_SUDO=$ROOT_SUDO" \
+run docker build -f "$ROOT/docker/Dockerfile" \
   -t "egpt:$SHA" -t "egpt:$N" "$ROOT"
 
 if size=$(docker image inspect -f '{{.Size}}' "egpt:$SHA" 2>/dev/null); then
   log "image egpt:$SHA is $(awk -v b="$size" 'BEGIN { printf "%.2f GB", b / 1e9 }') uncompressed"
-  log "image egpt:$SHA egpt.root_sudo=$(docker image inspect -f '{{index .Config.Labels "egpt.root_sudo"}}' "egpt:$SHA")"
 else
   log "image egpt:$SHA is not built yet; its size prints here after the build"
 fi

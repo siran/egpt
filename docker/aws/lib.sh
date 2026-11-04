@@ -25,7 +25,6 @@ DEPLOY_ENV=$DEPLOYMENTS/$DEPLOY.env
   || die "no deployment '$DEPLOY' ($DEPLOYMENTS/$DEPLOY.env, docker/aws/deployments/$DEPLOY.env)"
 SSH_PORT=                    # default; a deployment may set it: sshd in the container, an EIP, tcp $SSH_PORT open
 SSH_PERMIT_LISTEN=           # default; with SSH_PORT: "host:port ..." that reverse forwards (ssh -R) may listen on
-ROOT_SUDO=0                  # default; 1: build-push.sh builds an image where egpt may sudo anything as root
 # shellcheck source=deployments/example.env
 . "$DEPLOY_ENV"
 

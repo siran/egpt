@@ -97,16 +97,6 @@ COPY --chmod=440 docker/sudoers-egpt-box /etc/sudoers.d/egpt-box
 RUN userdel -r node 2>/dev/null; useradd -m -u 1000 -s /bin/bash egpt && chmod 700 /home/egpt \
   && install -d -m 1777 /tmp/.X11-unix
 
-# 1: egpt may sudo anything as root (deployment ROOT_SUDO, docker/aws/build-push.sh). Single-owner nodes only.
-ARG EGPT_ROOT_SUDO=0
-RUN case "$EGPT_ROOT_SUDO" in \
-      0) ;; \
-      1) echo 'egpt ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/egpt-root \
-         && chmod 440 /etc/sudoers.d/egpt-root && visudo -cf /etc/sudoers.d/egpt-root ;; \
-      *) echo "EGPT_ROOT_SUDO must be 0 or 1, not '$EGPT_ROOT_SUDO'" >&2; exit 1 ;; \
-    esac
-LABEL egpt.root_sudo=$EGPT_ROOT_SUDO
-
 USER egpt
 # EGPT_SESSION1=1: the daemon loads chrome-host (daemon-runtime.mjs).
 ENV HOME=/home/egpt EGPT_HOME=/home/egpt/.egpt DISPLAY=:99 EGPT_SESSION1=1 \
