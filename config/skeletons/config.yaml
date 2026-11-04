@@ -350,6 +350,8 @@ networks:
 #   thinking_train: emoji           # emoji: no ⏳ bubble; the line gets 👾 at arrival, 🤔 when its turn starts, off at the end.
 #                                   # A tool use takes it off and opens the ⏳ bubble with the text so far.
 #                                   # bubble: the ⏳ placeholder as before; also any chat no reaction can go on.
+#   thinking_frames: [🤔, 🤓, 👀, 🤯]  # the emoji train's started phase, one every thinking_frame_ms until the mark comes off.
+#   thinking_frame_ms: 2000
 #   address_without_at: true       # a BARE handle opening a message addresses its agent ("d hola" = "@d hola").
 #                                   # false = the '@' is required. Node-wide; the '@' form and the quick reply ("r ok") are unaffected.
 

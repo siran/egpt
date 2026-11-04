@@ -111,7 +111,7 @@ import { createMeshService } from './mesh.mjs';
 // no FIFO, no queued placeholder and no allow_new_input steer; two instances would be worse than
 // none, because a relayed turn and a local turn in one conversation derive the SAME key and must
 // meet on the SAME queue.
-import { createTurns } from './turns.mjs';
+import { createTurns, THINKING_FRAMES, THINKING_FRAME_MS } from './turns.mjs';
 import { createCompaction } from './compaction.mjs';
 // The room OUTBOX drain — the other rider on brainpool's ONE post-turn hook (see where the two
 // are composed below). Unrelated to src/tools/outbox-send.mjs's ~/.egpt/state/outbox, which is
@@ -592,8 +592,9 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
     // reply it says in its own room quotes its own copy (sender.mjs makeOutbound `say`). A LOCAL
     // mouth only — the link has no verb that names a message to quote (mouth.mjs), so a peer answers
     // `no-verb` and the text goes out unquoted rather than from the wrong account.
-    quote(chat, { msgKey, timestamp = 0 } = {}) {
-      if (chat?.bridge) return ownCopy(chat, { msgKey, timestamp });
+    // `wait`: how long the copy may trail (the train's handover, 2026-11-04).
+    quote(chat, { msgKey, timestamp = 0, wait } = {}) {
+      if (chat?.bridge) return ownCopy(chat, { msgKey, timestamp }, wait);
       return Promise.resolve({ ok: false, reason: 'no-verb', detail: 'the mouth link has no verb that quotes a message' });
     },
   };
@@ -3320,7 +3321,8 @@ export async function boot({
   // any other, so it resolves through the ONE resolver the reply does (sender.mjs makeOutbound).
   // Without it the ack went out on this account while the reply came out of the peer's.
   // shellAwareBridgeOf: its reactions route as rawBridgeOf's do, and it also knows the console's chats (reactsAsBeing).
-  const turns = createTurns({ brain, bridge, bridgeOf: shellAwareBridgeOf, peerMouth, log });
+  // The emoji train's frames, read live (dispatch.thinking_frames / thinking_frame_ms, 2026-11-04).
+  const turns = createTurns({ brain, bridge, bridgeOf: shellAwareBridgeOf, peerMouth, log, thinkingFrames: () => getConfig()?.dispatch?.thinking_frames ?? THINKING_FRAMES, thinkingFrameMs: () => getConfig()?.dispatch?.thinking_frame_ms ?? THINKING_FRAME_MS });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.

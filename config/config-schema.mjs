@@ -537,7 +537,9 @@ export const CONFIG_SCHEMA = {
         DEFAULT: "emoji"
         How a turn shows it is running (operator 2026-11-03):
           emoji   no "⏳ Thinking…" bubble, in any mode. A human's line that starts
-                  or queues a turn gets 👾 from the mouth at arrival, 🤔 when its
+                  or queues a turn gets 👾 at arrival, from the account it arrived
+                  on, moved to the mouth once the mouth has its own copy (else it
+                  stays there; operator 2026-11-04), then thinking_frames when its
                   turn starts, and the reaction comes off when the turn ends (reply,
                   silence, error, timeout). The reply is posted once, whole —
                   unless the being uses a tool (operator 2026-11-04): then the
@@ -554,6 +556,17 @@ export const CONFIG_SCHEMA = {
           bubble  as before: the ⏳ placeholder with its liveness timer, and the ✍️
                   on an unaddressed 'on' line.
         Read live (src/spine/gating.mjs decide).
+      thinking_frames
+        List of emoji. DEFAULT: ["🤔", "🤓", "👀", "🤯"]
+        The emoji train's started phase (operator 2026-11-04): the first goes on
+        the line when its turn starts, then the next every thinking_frame_ms, on
+        whichever account holds the mark, until it comes off (the bubble opens at
+        a tool use, or the turn ends). A step still in flight skips the next.
+        One entry = no animation. Telegram bots may use only its fixed reaction
+        set; a refused emoji is skipped there. Read live (src/spine/turns.mjs).
+      thinking_frame_ms
+        Integer, ms. DEFAULT: 2000
+        The interval between thinking_frames. Read live.
       address_without_at
         Boolean. DEFAULT: true
         May a BARE handle OPENING a message address its agent — "d hola",

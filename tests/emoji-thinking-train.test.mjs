@@ -3,7 +3,7 @@
 // mark comes off when the turn ends, whatever the outcome. The reply posts whole at finish; a tool use
 // takes the mark off and opens the bubble (2026-11-04). A '…' posts
 // nothing unless the being was addressed directly. Steers keep ✍️/👍. `bubble` is the old behaviour.
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
@@ -13,7 +13,6 @@ import { createTurns } from '../src/spine/turns.mjs';
 import { makePeerMouth, makeLimbAwareBridge } from '../src/spine/boot.mjs';
 import { makeOutbound } from '../src/spine/sender.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
-import { crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 import { LIVE_FRAME_MARK } from '../src/dispatch-line.mjs';
 
 const MOUTH_HOLDS = { route: async () => null, mouthIsElsewhere: () => false };
@@ -57,8 +56,8 @@ function fakeBridge() {
 }
 
 // `train`: dispatch.thinking_train (unset = the default). '!t' replies into a tunnel, '!s' into a side group.
-// `mouth(bridge)`: a peer mouth other than the holder itself (the default).
-function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, now = () => 1, mouth = null } = {}) {
+// `mouth(bridge)`: a peer mouth other than the holder itself (the default). `frames`: the train's frames, on `frameTimers`.
+function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, now = () => 1, mouth = null, frames = null } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
   const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(train ? { dispatch: { thinking_train: train } } : {}) };
   const bridge = fakeBridge();
@@ -71,7 +70,7 @@ function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, no
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, reply: r }); } };
   const notes = [];
   const onLog = (s) => notes.push(s);
-  const timers = fakeTimers();
+  const timers = fakeTimers(), frameTimers = fakeTimers();
   const sideGroupFor = async (ev) => (ev.chatId === '!t' ? { chatId: '!split', tunnel: true } : ev.chatId === '!s' ? '!side' : null);
   const spine = createSpine({
     bridge, brain, transcript, defaultBeing: 'egpt', peerMouth, turnTimeoutMs,
@@ -83,6 +82,7 @@ function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, no
     heartbeats: { runDue() {} }, readTranscript: async () => '', clock: { now },
     setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout, rng: () => 0.5,
     log: { line: onLog },
+    ...(frames ? { turns: createTurns({ brain, bridge, peerMouth, log: { line: onLog }, thinkingFrames: () => frames, setTimeout: frameTimers.setTimeout, clearTimeout: frameTimers.clearTimeout }) } : {}),
   });
   spine.start();
   // The reactions on one message, in order: '+👾' placed, '-🤔' taken off.
@@ -90,7 +90,7 @@ function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, no
   const reactions = () => bridge.events.filter(([op]) => op === 'react' || op === 'unreact');
   const posts = () => bridge.events.filter(([op]) => op === 'post' || op === 'send').map(([, chat, t]) => [chat, t]);
   const bubbles = () => bridge.streams.filter((s) => s.init === THINKING || String(s.init).includes(LIVE_FRAME_MARK) || s.frames.length);
-  return { spine, bridge, brain, notes, timers, config, marks, reactions, posts, bubbles };
+  return { spine, bridge, brain, notes, timers, frameTimers, config, marks, reactions, posts, bubbles };
 }
 const answers = (text) => async () => ({ text });
 const TRAIN = ['+👾', '+🤔', '-🤔'];
@@ -266,6 +266,27 @@ describe('emoji train: the first tool use opens the bubble and takes the mark of
     await flush();
     expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['✓']]]);
     expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
+  });
+
+  it('REPRODUCE: the thinking frames step until the bubble opens, then stop (2026-11-04)', async () => {
+    const tool = gate(), g = gate();
+    const b = build({ mode: 'on', frames: ['🤔', '🤓', '👀'], work: async (onPartial) => { await tool.p; onPartial('Mirando.', { tool: true }); await g.p; return { text: 'Mirando. Listo.' }; } });
+    const m = msg('@e revisá esto');
+    const done = b.bridge.emit(m);
+    await until(() => b.brain.calls.length);
+    await flush();
+    b.frameTimers.fire(); await flush();
+    b.frameTimers.fire(); await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '+🤓', '+👀']);
+    tool.open();
+    await until(() => b.bridge.streams.length);
+    await flush();
+    expect(b.frameTimers.size()).toBe(0);
+    g.open();
+    await done;
+    await flush();
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '+🤓', '+👀', '-👀']);
+    expect(b.posts()).toEqual([['!g', 'Mirando. Listo.']]);
   });
 
   it("REPRODUCE (lock): a bot's line and a tunnelled turn that use a tool still post nothing until the end", async () => {
@@ -451,21 +472,25 @@ describe('emoji train: every end takes the mark off', () => {
     expect(b.marks(m.msgId)).toEqual(TRAIN);
   });
 
-  it("REPRODUCE: a 👾 still waiting for the mouth's copy holds neither the turn nor the next one", async () => {
+  it("REPRODUCE: the 👾 lands on the holder at arrival; the mouth's copy still awaited holds neither the turn nor the next one (2026-11-04)", async () => {
     const copy = gate();
-    const placed = [];
+    const asked = [], placed = [];
     const mouth = (bridge) => ({
       route: async () => ({ connection: 'secondary', bridge, chatId: '!g' }), mouthIsElsewhere: () => true,
-      async react(chat, { emoji, remove, wait }) { placed.push(`${remove ? '-' : '+'}${emoji}${wait ? `/${wait}` : ''}`); if (emoji === '👾' && !remove) await copy.p; return { ok: true, chatId: '!g' }; },
+      async quote(chat, { wait } = {}) { if (!wait) return { ok: false, reason: 'no-match' }; asked.push(wait); await copy.p; return { ok: true, msgId: 'x' }; },   // the reply's own quote asks no wait
+      async react(chat, { emoji, remove }) { placed.push(`${remove ? '-' : '+'}${emoji}`); return { ok: true, chatId: '!g' }; },
     });
     const b = build({ work: async (_, ev) => ({ text: `re ${ev.body}` }), mouth });
-    await b.bridge.emit(msg('@e uno'));
-    await b.bridge.emit(msg('@e dos'));
+    const [one, two] = [msg('@e uno'), msg('@e dos')];
+    await b.bridge.emit(one);
+    await b.bridge.emit(two);
+    await flush();
     expect(b.posts()).toEqual([['!g', 're @e uno'], ['!g', 're @e dos']]);
-    expect(placed).toEqual(['+👾/6000', '+👾/6000']);
+    expect([b.marks(one.msgId), b.marks(two.msgId)]).toEqual([TRAIN, TRAIN]);
+    expect(asked).toEqual([6000, 6000]);
     copy.open();
     await flush(); await flush();
-    expect(placed).toEqual(['+👾/6000', '+👾/6000', '-👾', '-👾']);
+    expect(placed).toEqual([]);                          // both ended before the copy: nothing moves
   });
 
   it("REPRODUCE: the mark is off before the turn's limbs run (one reaction per account per message)", async () => {
@@ -602,85 +627,4 @@ describe('canMark — can this chat carry a temporary mark', () => {
     expect(await node(false).canMark()).toBe(false);
   });
 });
-
-// ── THE PLACEMENT LANDS LATE: the mouth's copy of an image arrives 1–2 s after the ear heard it ────────
-// The real lookup (boot makePeerMouth → ownCopy), its arrival record and its wait, on fake timers.
-describe("emoji train through a local mouth: the copy arrives late — ordered, nothing stray", () => {
-  const EAR_TS = Date.parse('2026-10-31T02:53:07.260Z');
-  const ON_EAR = { id: '41174', text: 'w', timestamp: EAR_TS };
-  const ON_MOUTH = { id: '17743', text: 'w', timestamp: '2026-10-31T02:53:08.000Z' };
-  const EV = { surface: 'whatsapp', chatId: 'chat-1', senderId: 'an', body: 'w', msgId: ON_EAR.id, msgHash: crossAccountMsgKey(ON_EAR), msgTs: EAR_TS };
-  afterEach(() => vi.useRealTimers());
-
-  function node() {
-    const seen = [], waiters = new Set(), placed = [], logs = [];
-    const mouthBridge = {
-      recentMessages: () => [...seen],
-      awaitMessage: (_c, test, ms) => new Promise((resolve) => {
-        const w = { test, done: (m) => { clearTimeout(t); waiters.delete(w); resolve(m); } };
-        const t = setTimeout(() => w.done(null), ms);
-        waiters.add(w);
-      }),
-      async react(chatId, msgId, emoji) { placed.push(`+${emoji}@${msgId}`); return true; },
-      async unreact(chatId, msgId, emoji) { placed.push(`-${emoji}@${msgId}`); return true; },
-    };
-    const ear = { async react() { placed.push('EAR'); return true; }, async unreact() { placed.push('EAR'); return true; } };
-    const mouth = makePeerMouth({ peer: null, bridge: ear, localMouth: () => ({ name: 'secondary', home: 'primary', bridge: mouthBridge }), onLog: (s) => logs.push(s) });
-    const peerMouth = { ...mouth, route: async () => ({ connection: 'secondary', bridge: mouthBridge, chatId: 'mouth-1' }) };
-    const turns = createTurns({ brain: {}, bridge: ear, peerMouth, log: { line: (s) => logs.push(s) } });
-    const arrive = (m) => { seen.push(m); for (const w of [...waiters]) if (w.test(m)) w.done(m); };
-    return { turns, placed, logs, arrive };
-  }
-
-  it('REPRODUCE: the copy lands 2 s late; 🤔 asked at 0.5 s and the end at 2.5 s still run in order on it', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, arrive } = node();
-    const t = turns.train('egpt', EV);
-    await vi.advanceTimersByTimeAsync(500);
-    t.started();
-    await vi.advanceTimersByTimeAsync(1500);
-    expect(placed).toEqual([]);
-    arrive(ON_MOUTH);
-    await vi.advanceTimersByTimeAsync(10);
-    expect(placed).toEqual(['+👾@17743', '+🤔@17743']);
-    await vi.advanceTimersByTimeAsync(490);
-    await t.off();
-    expect(placed).toEqual(['+👾@17743', '+🤔@17743', '-🤔@17743']);
-  });
-
-  it('REPRODUCE: the copy lands at 5.5 s — inside the arrival wait', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, arrive } = node();
-    const t = turns.train('egpt', EV);
-    await vi.advanceTimersByTimeAsync(5500);
-    arrive(ON_MOUTH);
-    await vi.advanceTimersByTimeAsync(10);
-    expect(placed).toEqual(['+👾@17743']);
-    await t.off();
-    expect(placed).toEqual(['+👾@17743', '-👾@17743']);
-  });
-
-  it('REPRODUCE: the turn ends before the 👾 landed — it comes off after it lands, nothing placed after the end', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, arrive } = node();
-    const t = turns.train('egpt', EV);
-    t.started();
-    const off = t.off();
-    await vi.advanceTimersByTimeAsync(2000);
-    arrive(ON_MOUTH);
-    await vi.advanceTimersByTimeAsync(10);
-    await off;
-    expect(placed).toEqual(['+👾@17743', '-👾@17743']);
-  });
-
-  it('REPRODUCE: a copy that never arrives — nothing placed, nothing taken off, never from the ear', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, logs } = node();
-    const t = turns.train('egpt', EV);
-    t.started();
-    await vi.advanceTimersByTimeAsync(10_000);
-    await t.off();
-    expect(placed).toEqual([]);
-    expect(logs.join('\n')).toMatch(/could not place the 👾 \(no-match: .*nor did it arrive within 6000ms\)/);
-  });
-});
+// The copy that lands late, and the handover to the mouth: tests/emoji-train-handover.test.mjs.

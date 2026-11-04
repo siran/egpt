@@ -319,11 +319,13 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         return typeof out.bridge?.react === 'function';
       },
       // `wait`: how long a local mouth waits for its own copy to arrive (the emoji train's 👾, 2026-11-03).
-      async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false, wait = null } = {}) {
+      // `here`: by the account holding the chat, by its own id — the train at first byte (operator 2026-11-04).
+      async react(msgId, emoji, keyOf, what = 'react', { remove = false, temporary = false, wait = null, here = false } = {}) {
         // NO MOUTH ON THIS NODE — one account, the operator's (operator 2026-10-18): a reaction from
         // it is his own, so none is placed (taking one off still works: a stale 🎧 from before).
         // The /react limb says it as a quoted line instead.
         if (!out.reacts() && !remove) { onLog(`${what} ${being}/${chatId}: no mouth account on this node — no ${emoji} placed`); return false; }
+        if (here) return remove ? out.bridge.unreact?.(chatId, msgId, emoji) : out.bridge.react?.(chatId, msgId, emoji);
         const says = out.route();
         const mouthChat = says ? await says : null;
         // A being reacts ONLY through its mouth (operator 2026-10-18): where the mouth is a different
@@ -351,6 +353,18 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         if (remove) onLog(r?.ok ? `${what} ${being}/${chatId}: ${who} took the ${emoji} off its own copy (its chat ${r.chatId})` : `${what} ${being}/${chatId}: ${who} could not take the ${emoji} off its own copy (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''})`);
         else if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
         else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
+        return r?.ok === true;
+      },
+      // Does a local mouth on another account hold its own copy of the message `keyOf` names, within
+      // `wait` (the train's handover, 2026-11-04)? false: none, or no such mouth.
+      async mouthHas(keyOf, wait = null, what = 'react') {
+        const says = out.route();
+        const mouthChat = says ? await says : null;
+        if (!mouthChat?.bridge || !peerMouth?.quote) return false;
+        let r = null;
+        try { r = await peerMouth.quote(mouthChat, { ...(await keyOf()), ...(wait ? { wait } : {}) }); }
+        catch (e) { r = { reason: 'threw', detail: e?.message ?? String(e) }; }
+        if (!r?.ok) onLog(`${what} ${being}/${chatId}: '${mouthChat.connection}' has no copy of its own (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — the mark stays on this account`);
         return r?.ok === true;
       },
       keyOf(msgId, what = 'reply', at = null) {

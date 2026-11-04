@@ -68,6 +68,10 @@ const STEER_ACK_EMOJI = '👍';
 // turn starts. Both in Telegram's bot set. The mouth's copy of an image lands 1–2 s after the ear's.
 const TRAIN_EMOJI = ['👾', '🤔'];
 const TRAIN_COPY_WAIT_MS = 6000;
+// The started phase's frames, one every THINKING_FRAME_MS (operator 2026-11-04; dispatch.thinking_frames /
+// thinking_frame_ms override, read live). All in Telegram's bot set.
+export const THINKING_FRAMES = ['🤔', '🤓', '👀', '🤯'];
+export const THINKING_FRAME_MS = 2000;
 
 /**
  * @param {{ brain: object, bridge?: object, bridgeOf?: Function, log?: {line?: Function} }} deps
@@ -81,8 +85,9 @@ const TRAIN_COPY_WAIT_MS = 6000;
  *                     second connection on this node. Absent peerMouth (every single-account
  *                     node, every test fake) ⇒ no mouth is ever consulted and this is
  *                     byte-identical to before.
+ *        thinkingFrames / thinkingFrameMs — () => the train's frames / their interval (boot: config dispatch).
  */
-export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null } = {}) {
+export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null, thinkingFrames = () => THINKING_FRAMES, thinkingFrameMs = () => THINKING_FRAME_MS, setTimeout: setTimeoutFn = (fn, ms) => globalThis.setTimeout(fn, ms), clearTimeout: clearTimeoutFn = (t) => globalThis.clearTimeout(t) } = {}) {
   const note = (s) => { try { log?.line?.(s); } catch {} };
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog: note });
 
@@ -210,26 +215,50 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   }
 
   // THE MARK ON A TURN'S OWN LINE (operator 2026-11-03): `glyphs[0]` placed at arrival as a temporary
-  // mark, never awaited. `started()` changes it to `glyphs[1]` (a reaction replaces the account's last
+  // mark, never awaited. `started()` changes it to `glyphs[1]`, or the first of `frames` (a reaction replaces the account's last
   // one: WhatsApp and a Telegram bot hold one per message). `off()` takes off whichever landed: any
   // number of calls, one removal, nothing placed after it. Each step waits for the one before.
   // ✍️ alone is dd2c11b7's arrival ack (bubble); `train` is the emoji train.
-  function receipt(to, ev, glyphs = [RECEIPT_EMOJI], { what = 'arrival-ack', wait } = {}) {
-    let up = null, done = false;
+  // `handover` (the train, operator 2026-11-04): placed at once by the account holding the line (`here`); once
+  // the mouth has its own copy (within `wait`) the mark moves there, placed there and then taken off here.
+  // `frames`: the started phase steps through them on whichever account holds it; a step still in flight
+  // skips the next.
+  function receipt(to, ev, glyphs = [RECEIPT_EMOJI], { what = 'arrival-ack', wait, handover = false, frames = null } = {}) {
+    let up = null, here = handover, done = false, busy = 0, timer = null, n = 0;
     const place = (emoji, opts) => placeReaction(to, ev, emoji, { what, ...opts });
-    let chain = place(glyphs[0], { temporary: true, ...(wait ? { wait } : {}) }).then((ok) => { if (ok) up = glyphs[0]; });
+    const key = () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs });
+    let chain = place(glyphs[0], { temporary: true, ...(handover ? { here } : wait ? { wait } : {}) }).then((ok) => { if (ok) up = glyphs[0]; });
+    const step = (fn) => { busy++; chain = chain.then(fn).finally(() => { busy--; }); return chain; };
+    const show = (g) => step(async () => { if (!done && g !== up && await place(g, { temporary: true, here })) up = g; });
+    if (handover) {
+      Promise.resolve(outbound(to, ev.chatId).mouthHas(key, wait, what)).then((has) => has && step(async () => {
+        if (done || !here || !up || !(await place(up, { temporary: true }))) return;
+        await place(up, { remove: true, here });
+        here = false;
+      }), () => {});
+    }
+    const list = () => { const f = frames?.(); return Array.isArray(f) ? f.filter((g) => typeof g === 'string' && g) : []; };
+    const every = () => { const ms = Number(thinkingFrameMs()); return ms > 0 ? ms : THINKING_FRAME_MS; };
+    const arm = () => { timer = setTimeoutFn(frame, every()); timer?.unref?.(); };
+    function frame() {
+      if (done) return;
+      const f = list();
+      if (!busy && f.length > 1) show(f[++n % f.length]);
+      arm();
+    }
     return {
       started() {
-        if (glyphs[1] && !done) chain = chain.then(async () => { if (!done && await place(glyphs[1], { temporary: true })) up = glyphs[1]; });
+        const first = list()[0] ?? glyphs[1];
+        if (first && !done) { show(first); if (frames && !timer) arm(); }
         return chain;
       },
       off() {
-        if (!done) { done = true; chain = chain.then(async () => { if (up) await place(up, { remove: true }); }); }
+        if (!done) { done = true; if (timer) clearTimeoutFn(timer); step(async () => { if (up) await place(up, { remove: true, here }); }); }
         return chain;
       },
     };
   }
-  const train = (to, ev) => receipt(to, ev, TRAIN_EMOJI, { what: 'train', wait: TRAIN_COPY_WAIT_MS });
+  const train = (to, ev) => receipt(to, ev, TRAIN_EMOJI, { what: 'train', wait: TRAIN_COPY_WAIT_MS, handover: true, frames: thinkingFrames });
   // May the train go on this chat's lines (makeOutbound canMark)? The fact gating.decide takes for `emoji`.
   async function canMark(to, ev) {
     try { return (await outbound(to, ev.chatId).canMark()) === true; }
