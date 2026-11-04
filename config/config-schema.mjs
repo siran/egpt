@@ -2278,7 +2278,7 @@ export const CONFIG_SCHEMA = {
             its chain of thought - warm-cli-session taps every assistant
             event's thinking blocks and renders them above the answer, with
             tool calls collapsed to bare stubs (wren's "see your full chain of
-            thought").
+            thought"). text = the same as true, without the tool-call stubs.
 
             THE ONE conversation_defaults field with a THIRD tier BELOW these
             two: the same key on the AGENT-TYPE FILE (config/agents/<type>.yaml

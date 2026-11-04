@@ -2151,6 +2151,36 @@ describe('brainpool.turn — verbose_thinking three-tier resolution (operator 20
     expect(getBeing(getState(), ev.surface, ev.chatId, 'e').verboseThinking).toBe(true);
     expect(getBeing(getState(), ev.surface, ev.chatId, 'wren').verboseThinking).toBe(null);
   });
+
+  // 'text': true without the tool lines, carried through every tier as the string.
+  it("'text' at tier 1 wins over the agent's true, and the reply still counts as verbose", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: true } } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      config, brains: typeFile(null), seedAgents: { e: { verbose_thinking: 'text' } },
+    });
+    const reply = await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe('text');
+    expect(reply.verbose).toBe(true);
+  });
+
+  it("'text' at tier 2 and at tier 3 (the type file) reaches the session as 'text'", async () => {
+    const config = { agents: { e: { conversation_defaults: { access_level: 'regular', verbose_thinking: 'text' } } } };
+    const a = harness([{ text: 'ok', sessionId: 's' }], { config, brains: typeFile(true) });
+    await a.brain.turn('e', ev);
+    expect(a.pool.calls[0].brainOptions.verboseThinking).toBe('text');
+    const b = harness([{ text: 'ok', sessionId: 's' }], { brains: typeFile('text') });
+    await b.brain.turn('e', ev);
+    expect(b.pool.calls[0].brainOptions.verboseThinking).toBe('text');
+  });
+
+  it('any other non-boolean is still false', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains: typeFile(null), seedAgents: { e: { verbose_thinking: 'yes' } },
+    });
+    const reply = await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.verboseThinking).toBe(false);
+    expect(reply.verbose).toBe(false);
+  });
 });
 
 // ── ALLOW_NEW_INPUT (operator's ruling 2026-08-30): may a message arriving while this being

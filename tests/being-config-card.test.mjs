@@ -105,6 +105,12 @@ describe('renderConfigBlock — what a being is shown', () => {
     expect(YAML.parse(text).egpt.mode).toBe('per chat');
   });
 
+  it("verbose_thinking 'text' is shown as text", () => {
+    const text = renderConfigBlock({ being: 'egpt', config: baseConfig(), def: {}, sources: {}, verboseThinking: 'text', verboseSource: 'conversation' });
+    expect(text).toMatch(/verbose_thinking: text\s+# this conversation/);
+    expect(YAML.parse(text).egpt.verbose_thinking).toBe('text');
+  });
+
   it('a fresh thread says its id is still to come', () => {
     const text = renderConfigBlock({ being: 'egpt', config: baseConfig(), def: {}, sources: {}, threadId: null });
     expect(text).toMatch(/thread: new\s+# its id is assigned on this turn/);
@@ -178,6 +184,15 @@ describe('brainpool writes the card at the start of every turn', () => {
     expect(after.egpt.model).toBe('haiku');
     expect(after.egpt.mode).toBe('on');
     expect(after.ken).toEqual(kenBefore);
+  });
+
+  it("a conversation's verbose_thinking 'text' shows on the card over the agent's true", async () => {
+    const h = harness();
+    await h.brain.turn('egpt', ev);
+    expect(cardOf(h.io)).toMatch(/verbose_thinking: true\s+# agent default/);
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { verbose_thinking: 'text' }));
+    await h.brain.turn('egpt', ev);
+    expect(cardOf(h.io)).toMatch(/verbose_thinking: text\s+# this conversation/);
   });
 
   it('the file never holds a node-level key', async () => {

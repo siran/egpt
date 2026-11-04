@@ -45,6 +45,7 @@ import { resolveOutboxTarget } from '../room-outbox.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../brain-errors.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
+import { verboseOf } from '../warm-cli-session.mjs';
 import { loadPermissionLevel, isAccessLevel, isDeskOnly } from './permission-levels.mjs';
 import { readSecret, CLAUDE_OAUTH_TOKEN_FILE } from '../secrets.mjs';
 import { isSandboxPin, sandboxPinKeyOf } from './sandbox-pins.mjs';
@@ -399,7 +400,7 @@ function shapeDef(name, def, agent = {}, brainType = 'ccode') {
     // controlled from config.yaml rather than the agent.yaml"): that added two config.yaml tiers
     // ABOVE this one (see resolveConv), it did not retire it — this carry IS the bottom tier, and
     // wren's live egpt-xhigh.yaml sets verbose_thinking here and in neither config.yaml tier.
-    verbose_thinking: def?.verbose_thinking === true,
+    verbose_thinking: verboseOf(def?.verbose_thinking),
   };
 }
 
@@ -1212,14 +1213,16 @@ export function createBrainPool({
       // ./directives/config.readonly.yaml, rendered from the values THIS turn runs with and written
       // only when it changed — see being-config-card.mjs. Before the spawn, so a fresh thread's
       // first turn already finds it. Best-effort by contract (writeConfigCard never throws).
-      // `verbose` is the one reading of verbose_thinking, shared with baseOpts below.
+      // `verboseMode` (true | 'text' | false) is the one reading of verbose_thinking, shared with
+      // baseOpts below; `verbose` is its on/off, carried out on the reply.
       // A 'reader' gets none: the card names the node, handles and allowed_users.
-      const verbose = (verboseThinking ?? def.verbose_thinking) === true;
+      const verboseMode = verboseOf(verboseThinking ?? def.verbose_thinking);
+      const verbose = verboseMode !== false;
       if (!desk) await writeCard(Room.forChat(scope.surface, slug), being, renderConfigBlock({
         being, config: getConfig() ?? {}, scoped: scope.scoped, configuration, def, engine,
         model: runModel, effort: runEffort, accessLevel, sandboxed, sandboxedRung,
         mode: resolveMode({ mode }, being, getConfig() ?? {}),
-        verboseThinking: verbose,
+        verboseThinking: verboseMode,
         verboseSource: verboseThinking != null ? sources.verboseThinking : (def.verbose_thinking != null ? 'type' : 'default'),
         allowedUsers, compaction: compactionOver, sources, outboxTarget, threadId: sessionId,
       }), { io, onLog });
@@ -1321,9 +1324,9 @@ export function createBrainPool({
         // false. `??` (not ||) throughout, so an explicit `verbose_thinking: false` at a HIGHER
         // tier is a real opt-out that stops the walk rather than falling through to a lower
         // tier's `true` — the whole point of adding the config.yaml tiers over a type file one
-        // conversation can't otherwise escape. The `=== true` keeps a hand-typed non-boolean
-        // (`verbose_thinking: "yes"`) from reaching warm-cli-session as anything but a boolean.
-        verboseThinking: verbose,
+        // conversation can't otherwise escape. verboseOf keeps a hand-typed other value
+        // (`verbose_thinking: "yes"`) from reaching warm-cli-session as anything but false.
+        verboseThinking: verboseMode,
         // Plain passthrough (operator 2026-08-20) — boot.mjs's makeSession reads this to pick
         // createSandboxCliSession over createBrainSession.
         sandboxed: sandboxed === true,

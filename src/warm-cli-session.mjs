@@ -258,14 +258,16 @@ function describeTask(t) {
 // parens carry a redacted, truncated summary of the INPUT (operator 2026-08-30), never the
 // result. A tool_result arrives on a separate `user`-role event, which onStdout never routes
 // here, so it never appears regardless. Only called when verboseThinking is on — the default
-// OFF path never calls this.
-function pushVerboseBlocks(pending, content) {
+// OFF path never calls this. verboseThinking 'text' is the same without the tool_use stubs.
+function pushVerboseBlocks(pending, content, tools) {
   for (const c of content) {
     if (c?.type === 'text' && typeof c.text === 'string' && c.text) pending.verboseBlocks.push(c.text);
     else if (c?.type === 'thinking' && typeof c.thinking === 'string' && c.thinking) pending.verboseBlocks.push(c.thinking);
-    else if (c?.type === 'tool_use' && typeof c.name === 'string' && c.name) pending.verboseBlocks.push(renderToolUse(c));
+    else if (tools && c?.type === 'tool_use' && typeof c.name === 'string' && c.name) pending.verboseBlocks.push(renderToolUse(c));
   }
 }
+// true | 'text' | false; anything else is false.
+export const verboseOf = (v) => (v === 'text' ? 'text' : v === true);
 
 // Resolve the claude binary to a FULL path. A Windows SERVICE inherits a minimal
 // PATH (not the login PATH), and — verified the hard way (operator 2026-06-14:
@@ -290,7 +292,7 @@ export function createWarmCliSession(options = {}) {
   // Opt-in, default off (operator 2026-08-29 ruling): when on, the turn's resolved `text` is
   // the full verbose transcript (thinking verbatim + tool-name stubs) instead of the CLI's own
   // clean `ev.result`. Wired the same way as cwd/model/effort — see brainpool.mjs baseOpts.
-  let verboseThinking = options.verboseThinking === true;
+  let verboseThinking = verboseOf(options.verboseThinking);
   const opts = { ...options };      // what a (re)spawn builds its argv from; reconfigure() updates it
   const controls = new Map();       // control request id → { resolve, reject }
   let orphan = null;                // an adopted turn the previous spine started, until it ends
@@ -515,7 +517,7 @@ export function createWarmCliSession(options = {}) {
       // existing (unchanged, below) `!pending.acc` first-wins fallback — additive only, a
       // no-op when the option is off. See pushVerboseBlocks above.
       if (verboseThinking && ev.type === 'assistant' && ev.message?.content && pending) {
-        pushVerboseBlocks(pending, ev.message.content);
+        pushVerboseBlocks(pending, ev.message.content, verboseThinking === true);
         // Progressive preview, mirroring pending.acc's onUpdate below: grow the WhatsApp
         // placeholder message-by-message instead of delivering the whole transcript once,
         // at `result`. The final `result`-event resolution below is unchanged/authoritative.
@@ -767,7 +769,7 @@ export function createWarmCliSession(options = {}) {
       if (closed) throw new Error('warm-cli: session closed');
       for (const [k, v] of Object.entries(changes)) {
         if (!RECONFIGURABLE.has(k)) throw new Error(`warm-cli: ${k} cannot change in a live process`);
-        if (k === 'verboseThinking') verboseThinking = v === true;
+        if (k === 'verboseThinking') verboseThinking = verboseOf(v);
         else if (proc) {
           const request = LIVE_REQUEST[k](v);
           try { await control(request); }

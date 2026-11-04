@@ -341,7 +341,41 @@ describe('warm-cli-session — verboseThinking (operator 2026-08-29, wren\'s "fu
   });
 });
 
-// ── THE MESSAGE BOUNDARY (operator 2026-09-01) ──────────────────────────────────────────
+// verboseThinking 'text': `true` without the tool lines.
+describe("warm-cli-session — verboseThinking 'text'", () => {
+  const VERBOSE = 'THINK1: let me check the directory\n\nBash(ls -la)\n\nTHINK2: now I can answer\n\nHello';
+  const TEXT = 'THINK1: let me check the directory\n\nTHINK2: now I can answer\n\nHello';
+
+  it('thinking and text as true shows them, no tool line, in the reply or any update', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: 'text' });
+    const updates = [];
+    const r = await s.turn('what is in the dir?', (t) => updates.push(t));
+    s.close();
+    expect(r.text).toBe(TEXT);
+    expect(updates.length).toBeGreaterThan(0);
+    for (const u of updates) expect(u).not.toContain('Bash(');
+    expect(updates[updates.length - 1]).toBe(TEXT);
+  });
+
+  it('true and false are unchanged on the same turn', async () => {
+    const on = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    const off = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: false });
+    expect((await on.turn('x')).text).toBe(VERBOSE);
+    expect((await off.turn('x')).text).toBe('Hello');
+    on.close(); off.close();
+  });
+
+  it('reconfigure switches a live session between true and text', async () => {
+    const s = createWarmCliSession({ spawn: fakeClaudeAgentic().spawn, verboseThinking: true });
+    await s.reconfigure({ verboseThinking: 'text' });
+    expect((await s.turn('x')).text).toBe(TEXT);
+    await s.reconfigure({ verboseThinking: true });
+    expect((await s.turn('x')).text).toBe(VERBOSE);
+    s.close();
+  });
+});
+
+// ── THE MESSAGE BOUNDARY (operator 2026-09-01)──────────────────────────────────────────
 //
 // The LIVE failure, twice that morning in the SPOILER chat: a being's reply reached the
 // humans as "...a simple affirmation doesn't need a reply from me./react #563 🤝". The model

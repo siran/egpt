@@ -235,6 +235,7 @@ agents:
     #                             # (conversations.yaml agents.<name>.verbose_thinking). The one field
     #                             # here with a THIRD tier below it: the agent-TYPE file's own
     #                             # verbose_thinking, used only when both tiers above are unset.
+    #                             # `text` = the same as true, without the tool-call lines.
     #   allow_new_input: same_sender
     #                             # none|same_sender|any (default same_sender) - what happens to a
     #                             # message that arrives while this agent is ALREADY streaming a turn
