@@ -181,6 +181,7 @@ The task's second container, `oficina-tunnel` (same image, not essential, egpt-h
 - **The container:** ECS names it `ecs-edw-<rev>-edw-<hex>`, so:
   - find it with `docker ps --filter label=com.amazonaws.ecs.container-name=edw`;
   - follow its logs with `docker logs -f $(docker ps -q --filter label=com.amazonaws.ecs.container-name=edw)`.
+  - The same output also goes to `egpt-home/config/logs/session1-daemon.log` (`/srv/egpt/egpt-home/...` on the instance), the file the Windows nodes use, so it survives a new container. At container start, a file over 50 MB rolls to `.1`; `.1`–`.3` are kept.
 - **VNC:** with host networking, 5900 and 6080 listen on the instance itself; edw-sg has no inbound rules. Use the same port forward as above. The password is in `/srv/egpt/egpt-home/secrets/vnc.password` (`sudo cat` it).
 
 ### Costs (us-east-1, 10-24)

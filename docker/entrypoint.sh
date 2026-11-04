@@ -11,6 +11,16 @@ keep_running() {  # name, command...
   done
 }
 
+# Everything below, the daemon included, also goes to the file the Windows nodes log to, so it
+# outlives the container. Windows appends forever; this one rolls at startup past 50 MB, keeping 3.
+DAEMON_LOG=$EGPT_HOME/config/logs/session1-daemon.log
+mkdir -p "${DAEMON_LOG%/*}"
+if [ -f "$DAEMON_LOG" ] && [ "$(stat -c %s "$DAEMON_LOG")" -gt $((50 * 1024 * 1024)) ]; then
+  for i in 2 1; do [ ! -e "$DAEMON_LOG.$i" ] || mv -f "$DAEMON_LOG.$i" "$DAEMON_LOG.$((i + 1))"; done
+  mv -f "$DAEMON_LOG" "$DAEMON_LOG.1"
+fi
+exec > >(tee -a "$DAEMON_LOG") 2>&1
+
 REPO=$HOME/src/egpt
 REPO_URL=${EGPT_REPO_URL:-https://github.com/siran/egpt.git}
 
