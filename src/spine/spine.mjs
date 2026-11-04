@@ -117,6 +117,9 @@ const AMBIENT_OPEN_MS = 10_000;
 // A turn that never opens its ⏳ and posts its reply whole at finish: a quiet one, and every one with
 // the emoji train (dispatch.thinking_train, operator 2026-11-03).
 const whole = (d) => !!(d.quiet || d.emoji);
+// …except an emoji turn's first tool use opens it, as an ambient bubble turn's does (operator 2026-11-04).
+// Not a bot's line or a tunnel: those post nothing until the end.
+const opensOnTool = (d) => !!d.emoji && !d.tunnel && (!d.quiet || !!d.unaddressed);
 
 /**
  * Build the spine. Nothing starts until start(). All deps are injected so the
@@ -1615,14 +1618,22 @@ export function createSpine({
       // carries only the FINAL answer (warm-cli resolves with `result`, codex replaces
       // `text` on item/completed), so before this the earlier output was simply gone.
       // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
-      let streamed = '';
+      let streamed = '', working = false;
+      const show = (partial) => out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
       const onPartial = (partial, use) => {
-        if (use?.tool) return whole(d) ? undefined : out.begin?.();   // the being used a tool: an ambient turn opens its train
+        if (use?.tool) {
+          if (!whole(d)) return out.begin?.();         // the being used a tool: an ambient turn opens its train
+          if (working || !opensOnTool(d)) return;
+          working = true;                              // the emoji train's first tool: the bubble, with the text so far, replaces the mark
+          for (const m of marks) m.off();
+          show(partial);
+          return out.begin?.();
+        }
         const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
         transcript.logStream?.(ev, streamed, raw, { being: to });
         streamed = raw;
-        if (whole(d)) return;                          // quiet / emoji train: recorded, never shown — the reply posts whole at finish
-        return out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+        if (whole(d) && !working) return;              // quiet / emoji train: recorded, never shown — the reply posts whole at finish
+        return show(partial);
       };
       for (const m of marks) m.started();              // 🤔: the line goes to the model now
       const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);

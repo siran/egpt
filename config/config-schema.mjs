@@ -539,7 +539,11 @@ export const CONFIG_SCHEMA = {
           emoji   no "⏳ Thinking…" bubble, in any mode. A human's line that starts
                   or queues a turn gets 👾 from the mouth at arrival, 🤔 when its
                   turn starts, and the reaction comes off when the turn ends (reply,
-                  silence, error, timeout). The reply is posted once, whole. A "…"
+                  silence, error, timeout). The reply is posted once, whole —
+                  unless the being uses a tool (operator 2026-11-04): then the
+                  reaction comes off and the ⏳ bubble opens with its text so far,
+                  and the turn runs as bubble's from there (not a bot's line or a
+                  split: those post once, whole). A "…"
                   posts nothing unless the being was addressed (@handle, an opening
                   bare handle, a reply to its post); then the "…" is posted. Not on
                   a steered line (✍️/👍 as before), a bot's line, a reaction, or a

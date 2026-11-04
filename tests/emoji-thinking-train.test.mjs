@@ -1,6 +1,7 @@
 // The emoji thinking train (operator 2026-11-03, dispatch.thinking_train: emoji, the default): no ⏳
 // bubble; a human line that starts or queues a turn gets 👾 at arrival, 🤔 when its turn starts, and the
-// mark comes off when the turn ends, whatever the outcome. The reply posts whole at finish. A '…' posts
+// mark comes off when the turn ends, whatever the outcome. The reply posts whole at finish; a tool use
+// takes the mark off and opens the bubble (2026-11-04). A '…' posts
 // nothing unless the being was addressed directly. Steers keep ✍️/👍. `bubble` is the old behaviour.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
@@ -164,9 +165,9 @@ describe('emoji train (the default): 👾 at arrival → 🤔 when the turn star
     expect(b.marks(m.msgId)).toEqual(['+👾', '-👾']);
   });
 
-  it('REPRODUCE: a tool use, streamed text and the ambient timer open nothing; the reply posts whole', async () => {
+  it('REPRODUCE: with no tool use, streamed text and the ambient timer open nothing; the reply posts whole', async () => {
     const g = gate();
-    const b = build({ mode: 'on', work: async (onPartial) => { onPartial('', { tool: true }); onPartial('Mirando…'); await g.p; return { text: 'Mirando… listo.' }; } });
+    const b = build({ mode: 'on', work: async (onPartial) => { onPartial('Mirando…'); await g.p; return { text: 'Mirando… listo.' }; } });
     const m = msg('@e revisá esto');
     const done = b.bridge.emit(m);
     await until(() => b.brain.calls.length);
@@ -193,6 +194,90 @@ describe('emoji train (the default): 👾 at arrival → 🤔 when the turn star
     g.open();
     await done;
     expect(b.posts()).toEqual([['!g', 'listo']]);
+  });
+});
+
+// The first tool use: the being is working (operator 2026-11-04). The bubble opens as an ambient bubble
+// turn's does, with the text so far; the 🤔 comes off; from then on it is a bubble turn.
+describe('emoji train: the first tool use opens the bubble and takes the mark off', () => {
+  const OFF_AT_ONCE = ['+👾', '-👾'];                   // a tool at once: off before the 🤔 lands, nothing placed after
+  it('REPRODUCE: text, then a tool use — no bubble before; at the tool it opens with that text, 🤔 off, pulses edit it, the reply lands in it', async () => {
+    let t = 1;
+    const tool = gate(), g = gate();
+    const b = build({ mode: 'on', now: () => t, work: async (onPartial) => {
+      onPartial('Voy a mirar.');
+      await tool.p;
+      onPartial('Voy a mirar.', { tool: true });
+      await g.p;
+      onPartial('Voy a mirar.\nEs eso');
+      return { text: 'Voy a mirar.\nEs eso, listo.' };
+    } });
+    const m = msg('@e revisá esto');
+    const done = b.bridge.emit(m);
+    await until(() => b.brain.calls.length);
+    b.timers.fire();
+    await flush();
+    expect(b.bridge.streams).toEqual([]);
+    expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔']);
+    tool.open();
+    await until(() => b.bridge.streams.length && b.marks(m.msgId).length === 3);
+    expect(b.bridge.streams.map((s) => [s.chat, s.init])).toEqual([['!g', `Voy a mirar. ${LIVE_FRAME_MARK}`]]);
+    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    t += 20_000; b.spine.tick(); await flush();
+    expect(b.bridge.streams[0].frames.at(-1)).toMatch(/^Voy a mirar\. ⏳ \S+ 20s$/);
+    g.open();
+    await done;
+    await flush();
+    expect(b.bridge.streams).toHaveLength(1);
+    expect(b.bridge.streams[0].frames).toContain(`Voy a mirar.\nEs eso ${LIVE_FRAME_MARK}`);
+    expect(b.posts()).toEqual([['!g', 'Voy a mirar.\nEs eso, listo.']]);
+    expect(b.marks(m.msgId)).toEqual(TRAIN);
+  });
+
+  it('REPRODUCE: a tool use before any text opens the ⏳ placeholder', async () => {
+    const g = gate();
+    const b = build({ mode: 'mention', work: async (onPartial) => { onPartial('', { tool: true }); await g.p; return { text: 'Listo.' }; } });
+    const m = msg('@e revisá esto');
+    const done = b.bridge.emit(m);
+    await until(() => b.bridge.streams.length);
+    expect(b.bridge.streams.map((s) => s.init)).toEqual([THINKING]);
+    g.open();
+    await done;
+    await flush();
+    expect(b.bridge.streams[0].finals).toEqual(['Listo.']);
+    expect(b.posts()).toEqual([['!g', 'Listo.']]);
+    expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
+  });
+
+  it('a second tool use opens nothing more and takes nothing off twice', async () => {
+    const b = build({ mode: 'on', work: async (onPartial) => { onPartial('a', { tool: true }); onPartial('a b', { tool: true }); return { text: 'a b c' }; } });
+    const m = msg('@e revisá esto');
+    await b.bridge.emit(m);
+    await flush();
+    expect(b.bridge.streams).toHaveLength(1);
+    expect(b.posts()).toEqual([['!g', 'a b c']]);
+    expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
+  });
+
+  it("REPRODUCE: an unaddressed 'on' line that uses a tool opens too, then a '…' settles it as bubble's does", async () => {
+    const b = build({ mode: 'on', work: async (onPartial) => { onPartial('', { tool: true }); return { text: '…' }; } });
+    const m = msg('qué calor hace hoy');
+    await b.bridge.emit(m);
+    await flush();
+    expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['✓']]]);
+    expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
+  });
+
+  it("REPRODUCE (lock): a bot's line and a tunnelled turn that use a tool still post nothing until the end", async () => {
+    const tool = async (onPartial) => { onPartial('Mirando.'); onPartial('Mirando.', { tool: true }); onPartial('Mirando. Hecho'); return { text: 'Mirando. Hecho.' }; };
+    const b = build({ mode: 'on', work: tool });
+    await b.bridge.emit(msg('@e qué hora es allá?', BEING));
+    await b.bridge.emit(msg('@e qué calor', { chatId: '!t' }));
+    await flush();
+    expect(b.brain.calls).toHaveLength(2);
+    expect(b.bubbles()).toEqual([]);
+    expect(b.posts()).toEqual([['!g', 'Mirando. Hecho.'], ['!split', 'Mirando. Hecho.']]);
+    expect(b.reactions()).toEqual([]);
   });
 });
 
