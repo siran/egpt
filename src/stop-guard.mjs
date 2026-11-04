@@ -69,6 +69,7 @@ import { EGPT_HOME } from './egpt-home.mjs';
 import { hasNodeSignature, stripNodeSignature, stripRenderedNodeSignature } from './node-signature.mjs';
 import { THINKING, QUEUED, LIVE_TICK_SUFFIX } from './spine/sender.mjs';
 import { shortChatId } from './bridges/chat-id.mjs';
+import { BEING_STAMP } from './bridges/persona-wrap.mjs';
 
 // A chat paused on EVERY surface — the send-rate trip (src/loop-guard.mjs) knows the chat id,
 // not the surface. Channels are `${surface}:${chatId}`; blocked() matches either key.
@@ -221,13 +222,8 @@ export function turnKind(ev, { isEnvelope = () => false, wasSentByUs = () => fal
   return 'being';
 }
 
-// THE PERSONA STAMP the bridge puts at the head of a being's post (bridges/persona-wrap.mjs
-// personaStamp): "<body_emoji> <label>: ". Stripped so the SAME sentence from two different
-// beings compares equal — which is exactly the A,B,A,B case. NARROW ON PURPOSE: the leading
-// glyph must be non-letter/non-digit and the label a single bare word, so ordinary prose
-// ("nota: mañana", "Juan: dijo que sí") keeps its prefix and two genuinely different messages
-// stay different.
-const BEING_STAMP = /^\s*[^\p{L}\p{N}\s]{1,4}\s+[\p{L}\p{N}_-]{1,24}\s*[:：]\s*/u;
+// THE PERSONA STAMP (BEING_STAMP, bridges/persona-wrap.mjs) is stripped so the SAME sentence from
+// two different beings compares equal — which is exactly the A,B,A,B case.
 
 /**
  * The COMPARABLE LINE of a message body: what was said, with the machinery around it removed.

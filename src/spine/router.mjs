@@ -29,6 +29,8 @@ import { mentionHits } from '../auto-mode.mjs';
 // WRITES it (incoming-media.voiceTranscriptBody), never re-spelled here. addressed() takes it off
 // before the spoken-wake scan so "the start" means the start of the TRANSCRIPT, not of the marker.
 import { VOICE_MARK } from '../incoming-media.mjs';
+import { BEING_STAMP } from '../bridges/persona-wrap.mjs';
+import { stripInvisible } from '../invisible.mjs';
 import { getBeing, getContact, allowedUsersPermits, defaultBeingOf } from '../conversations-state.mjs';
 import { surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { fromOtherNode } from './node-names.mjs';
@@ -421,6 +423,16 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
   return out;
 }
 
+// THE ADDRESSING VIEW (operator 2026-11-04): what resolve() hands addressed() — the line's words,
+// with invisible characters, a leading node frame (rendered `<node>` by identity.build) and the
+// persona stamp skipped, for every sender. The recorded and prompted text keep all of it.
+function addressingView(ev) {
+  let t = stripInvisible(ev?.body).trimStart();
+  const frame = ev?.fromNode ? `<${ev.fromNode}>` : '';
+  if (frame && t.startsWith(frame)) t = t.slice(frame.length);
+  return t.replace(BEING_STAMP, '');
+}
+
 // `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)
 // — the ONE switch for the bare-handle form, forwarded to `addressed` above.
 // `loadState` (operator 2026-08-15, allowed_users) — () => Promise<conv state>, the SAME
@@ -711,7 +723,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // replyToBeing, as a text reply to that message would (operator 2026-10-18).
         // The handles are the ARRIVAL chat's (`org`): where the line was typed is whose names it uses.
         const here = agentsInChat(agents, state, org?.surface, org?.chatId);
-        for (const hit of addressed(ev?.kind === 'reaction' ? '' : (ev?.body ?? ''), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
+        for (const hit of addressed(ev?.kind === 'reaction' ? '' : addressingView(ev), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
           if (!admits(hit.name, hit.agent, hit.unlessPresent != null || hit.unlessPeerAlive != null)) continue;
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
           // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher

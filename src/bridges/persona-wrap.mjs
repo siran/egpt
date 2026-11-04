@@ -51,6 +51,12 @@ export function personaStamp(bodyEmoji, label, text) {
   return `${bodyEmoji} ${label}: ${clean}`;      // persona header: "🐶 egpt:" then the reply, one line
 }
 
+// The stamp personaStamp writes, as a reader finds it at the head of a post: "<body_emoji> <label>: ".
+// Read by stop-guard (repetition) and the router (addressing). NARROW ON PURPOSE: the leading glyph
+// must be non-letter/non-digit and the label a single bare word, so ordinary prose ("nota: mañana",
+// "Juan: dijo que sí") keeps its prefix.
+export const BEING_STAMP = /^\s*[^\p{L}\p{N}\s]{1,4}\s+[\p{L}\p{N}_-]{1,24}\s*[:：]\s*/u;
+
 // The being whose stamp ("<emoji> <name>:") is earliest in `text`, at a word start; null when none.
 // `beings`: [{ being, bodyEmoji, label }]. How a surface with no invisible frame (Telegram) names the author.
 export function stampedBeing(text, beings = []) {
