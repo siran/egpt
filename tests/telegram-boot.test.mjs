@@ -245,6 +245,61 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     app.stop();
   });
 
+  // log_to_group as a Telegram topic (operator 2026-11-03: "can you fix so that it shows in the log
+  // channel? btw, we should create a eGPT logs topic"; nu's is tg:-1000000000104/185).
+  const LOGS = 'tg:-1000000000104/185';
+  const resolveChatId = (id) => (id.startsWith('tg:') ? id : null);   // the real limb's answer (telegram-limb.test.mjs)
+  const said = (tg, re) => tg[0].sent.filter((s) => re.test(s.text)).map((s) => s.chatId);
+
+  it('log_to_group a tg: topic: a command\'s audit line lands in that topic', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
+    await tg[0].onIncoming('/e status', tgFrom);
+    await vi.waitFor(() => expect(said(tg, /\/status in An R by An R/)).toEqual([LOGS]), { timeout: 10000 });
+    app.stop();
+  });
+
+  it('"↻" goes to the admin topic AND the log topic', async () => {
+    await writeToken();
+    const { app, tg, exits } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
+    await tg[0].onIncoming('/e restart', inTopic);
+    await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
+    expect(said(tg, /↻/).sort()).toEqual([TOPIC, LOGS].sort());
+    app.stop();
+  });
+
+  it('"egpt back up!" goes to both; once when log_to_group IS the admin chat', async () => {
+    for (const [logTo, want] of [[LOGS, [TOPIC, LOGS]], [TOPIC, [TOPIC]]]) {
+      await writeToken();
+      await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+      await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+      const { app, tg } = await bootWith({ ...NU(), log_to_group: logTo }, { ingest: true, tgExtra: { resolveChatId } });
+      await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toHaveLength(want.length), { timeout: 10000 });
+      expect(said(tg, /egpt back up!/).sort()).toEqual([...want].sort());
+      app.stop();
+    }
+  });
+
+  it('"egpt started" reaches log_to_group even with no admin chat at all', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...NU({ allowed_users: [42] }), log_to_group: LOGS }, { ingest: true, tgExtra: { resolveChatId } });
+    await vi.waitFor(() => expect(said(tg, /egpt started/)).toEqual([LOGS]), { timeout: 10000 });
+    app.stop();
+  });
+
+  // The outcome daemon-runtime.mjs addOutcome joins to the sidecar.
+  for (const outcome of ['already up to date', 'pulled 3 commits, npm install ok', 'git pull failed (fatal: Not possible to fast-forward, aborting.), still on abc123']) {
+    it(`the back-up line after /upgrade says what it did: ${outcome}`, async () => {
+      await writeToken();
+      await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+      await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/upgrade', preSha: 'abc123', pid: 999, outcome }), 'utf8');
+      const { app, tg } = await bootWith(NU(), { ingest: true });
+      await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toEqual([TOPIC]), { timeout: 10000 });
+      expect(tg[0].sent.find((s) => /egpt back up!/.test(s.text)).text.split('\n')[0]).toMatch(new RegExp(`^✅ egpt back up! \\(.+\\) pid 999 → \\d+ — /upgrade: ${outcome.replace(/[().]/g, '\\$&')}$`));
+      app.stop();
+    });
+  }
+
   it('the stop safe word is NOT widened: a bare "stop" in the telegram admin chat is ordinary text', async () => {
     await writeToken();
     const { app, tg, exits } = await bootWith(NU());
