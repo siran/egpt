@@ -3,12 +3,12 @@
 //    copy the mark moves there (placed there, then taken off the holder). No copy: it stays to the end.
 // B. the started phase steps through dispatch.thinking_frames, one every dispatch.thinking_frame_ms, on the
 //    account holding it, until the mark comes off (the bubble opens, or the turn ends). A step still in
-//    flight skips the next; none queue.
+//    flight skips the next; none queue. 'random', the default: any of Telegram's set but the one showing.
 // C. one train per line (kg 2026-11-04, eGPT Admin #44699: E and wren each ran a train on one line through the
 //    same two accounts and wiped each other's marks): every turn on the line holds the one train; it comes off
 //    when the first opens its bubble or the last ends.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createTurns, THINKING_FRAMES } from '../src/spine/turns.mjs';
+import { createTurns, THINKING_FRAMES, TELEGRAM_REACTIONS } from '../src/spine/turns.mjs';
 import { makePeerMouth } from '../src/spine/boot.mjs';
 import { crossAccountMsgKey } from '../src/bridges/beeper.mjs';
 
@@ -17,13 +17,14 @@ const ON_EAR = { id: '41174', text: 'w', timestamp: EAR_TS };
 const ON_MOUTH = { id: '17743', text: 'w', timestamp: '2026-10-31T02:53:08.000Z' };
 const EV = { surface: 'whatsapp', chatId: 'chat-1', senderId: 'an', body: 'w', msgId: ON_EAR.id, msgHash: crossAccountMsgKey(ON_EAR), msgTs: EAR_TS };
 const ONE = () => ['🤔'];                                       // frames off: A's tests watch the handover alone
+const LIST = ['🤔', '🤓', '👀', '🤯'];                          // a configured list
 
 afterEach(() => vi.useRealTimers());
 
 // The real lookup (boot makePeerMouth → ownCopy): its arrival record and its wait. `slow`: a glyph whose
 // placement on the ear takes that long.
 // `refuse`: placements that fail once, e.g. '-🤔@41174'.
-function node({ frames = ONE, frameMs, slow = {}, refuse = [] } = {}) {
+function node({ frames = ONE, frameMs, slow = {}, refuse = [], rng } = {}) {
   const seen = [], waiters = new Set(), placed = [], logs = [], refused = new Set(refuse);
   const mouthBridge = {
     recentMessages: () => [...seen],
@@ -41,7 +42,7 @@ function node({ frames = ONE, frameMs, slow = {}, refuse = [] } = {}) {
   };
   const mouth = makePeerMouth({ peer: null, bridge: ear, localMouth: () => ({ name: 'secondary', home: 'primary', bridge: mouthBridge }), onLog: (s) => logs.push(s) });
   const peerMouth = { ...mouth, route: async () => ({ connection: 'secondary', bridge: mouthBridge, chatId: 'mouth-1' }) };
-  const turns = createTurns({ brain: {}, bridge: ear, peerMouth, log: { line: (s) => logs.push(s) }, thinkingFrames: frames, ...(frameMs ? { thinkingFrameMs: frameMs } : {}) });
+  const turns = createTurns({ brain: {}, bridge: ear, peerMouth, log: { line: (s) => logs.push(s) }, thinkingFrames: frames, ...(frameMs ? { thinkingFrameMs: frameMs } : {}), ...(rng ? { rng } : {}) });
   const arrive = (m) => { seen.push(m); for (const w of [...waiters]) if (w.test(m)) w.done(m); };
   return { turns, placed, logs, arrive };
 }
@@ -123,10 +124,9 @@ describe('A. the 👾 at first byte, from the account holding the line; then ove
 });
 
 describe('B. the started phase steps through the thinking frames', () => {
-  it('REPRODUCE: one frame every 2 s on a fake clock, from the default set; the end stops them', async () => {
+  it('REPRODUCE (lock): a configured list — one frame every 2 s on a fake clock, in order; the end stops them', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    expect(THINKING_FRAMES).toEqual(['🤔', '🤓', '👀', '🤯']);
-    const { turns, placed } = node({ frames: () => THINKING_FRAMES });
+    const { turns, placed } = node({ frames: () => LIST });
     const t = turns.train('egpt', EV);
     t.started();
     await tick(1);
@@ -158,7 +158,7 @@ describe('B. the started phase steps through the thinking frames', () => {
 
   it('REPRODUCE: a slow step skips the next frame rather than queueing it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed } = node({ frames: () => THINKING_FRAMES, slow: { '🤓': 3000 } });
+    const { turns, placed } = node({ frames: () => LIST, slow: { '🤓': 3000 } });
     const t = turns.train('egpt', EV);
     t.started();
     await tick(2000);                                   // 🤓 asked; it lands at 5 s
@@ -172,7 +172,7 @@ describe('B. the started phase steps through the thinking frames', () => {
 
   it('the frames go on the account holding the mark: after the handover, on the mouth', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, arrive } = node({ frames: () => THINKING_FRAMES });
+    const { turns, placed, arrive } = node({ frames: () => LIST });
     const t = turns.train('egpt', EV);
     t.started();
     await tick(1000);
@@ -181,12 +181,43 @@ describe('B. the started phase steps through the thinking frames', () => {
     await t.off();
     expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '+🤓@17743', '-🤓@17743']);
   });
+
+  it("REPRODUCE: random, the default — 🤔 at the start, then each step any of Telegram's set but the one showing", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    expect(THINKING_FRAMES).toBe('random');
+    const { turns, placed } = node({ frames: () => THINKING_FRAMES });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(1);
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174']);
+    await tick(200 * 2000);
+    await t.off();
+    const shown = placed.slice(1, -1).map((p) => p.slice(1, p.lastIndexOf('@')));
+    expect(shown).toHaveLength(201);
+    for (let i = 1; i < shown.length; i++) {
+      expect(TELEGRAM_REACTIONS).toContain(shown[i]);
+      expect(shown[i]).not.toBe(shown[i - 1]);
+    }
+    expect(new Set(shown).size).toBeGreaterThan(20);
+    expect(placed.at(-1)).toBe(`-${shown.at(-1)}@41174`);
+  });
+
+  it('random: the pick is over the set without the one showing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const [a, b] = TELEGRAM_REACTIONS;
+    const { turns, placed } = node({ frames: () => 'random', rng: () => 0 });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(6000);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', `+${a}@41174`, `+${b}@41174`, `+${a}@41174`, `-${a}@41174`]);
+  });
 });
 
 describe('C. one train per line, whichever beings run turns on it', () => {
   it('REPRODUCE (kg #44699): two turns on one line — one 👾/🤔 train, one handover, frames until the last ends, nothing left on either account', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed, arrive } = node({ frames: () => THINKING_FRAMES });
+    const { turns, placed, arrive } = node({ frames: () => LIST });
     const e = turns.train('egpt', EV), w = turns.train('wren', EV);
     e.started(); w.started();
     await tick(1000);
@@ -201,7 +232,7 @@ describe('C. one train per line, whichever beings run turns on it', () => {
 
   it('REPRODUCE: the second turn ends first — the train keeps going for the first', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed } = node({ frames: () => THINKING_FRAMES });
+    const { turns, placed } = node({ frames: () => LIST });
     const e = turns.train('egpt', EV), w = turns.train('wren', EV);
     e.started(); w.started();
     await tick(1000);
@@ -214,7 +245,7 @@ describe('C. one train per line, whichever beings run turns on it', () => {
 
   it('REPRODUCE: one turn opens its bubble — the train comes off once, for every turn on the line', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { turns, placed } = node({ frames: () => THINKING_FRAMES });
+    const { turns, placed } = node({ frames: () => LIST });
     const e = turns.train('egpt', EV), w = turns.train('wren', EV);
     e.started(); w.started();
     await tick(1000);

@@ -557,13 +557,17 @@ export const CONFIG_SCHEMA = {
                   on an unaddressed 'on' line.
         Read live (src/spine/gating.mjs decide).
       thinking_frames
-        List of emoji. DEFAULT: ["🤔", "🤓", "👀", "🤯"]
-        The emoji train's started phase (operator 2026-11-04): the first goes on
-        the line when its turn starts, then the next every thinking_frame_ms, on
-        whichever account holds the mark, until it comes off (the bubble opens at
-        a tool use, or the turn ends). A step still in flight skips the next.
-        One entry = no animation. Telegram bots may use only its fixed reaction
-        set; a refused emoji is skipped there. Read live (src/spine/turns.mjs).
+        "random" or a list of emoji. DEFAULT: "random"
+        The emoji train's started phase (operator 2026-11-04), on whichever
+        account holds the mark, until it comes off (the bubble opens, or the turn
+        ends). A step still in flight skips the next.
+          random  🤔 when the turn starts, then every thinking_frame_ms any of
+                  Telegram's standard reaction set (turns.mjs TELEGRAM_REACTIONS)
+                  but the one showing — no order to read time off.
+          list    the first when the turn starts, then the next, in order. One
+                  entry = no animation. Telegram bots may use only its fixed
+                  reaction set; a refused emoji is skipped there.
+        Read live (src/spine/turns.mjs).
       thinking_frame_ms
         Integer, ms. DEFAULT: 2000
         The interval between thinking_frames. Read live.

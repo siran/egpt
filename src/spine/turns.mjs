@@ -64,13 +64,17 @@ import { makeOutbound } from './sender.mjs';
 // "thinking" — that's the placeholder's job, and a woven message gets no placeholder.
 const RECEIPT_EMOJI = '✍️';
 const STEER_ACK_EMOJI = '👍';
+// Telegram's complete standard reaction set (Bot API ReactionTypeEmoji, read 2026-11-04), fully qualified:
+// the Telegram bridge strips U+FE0F to the set's own spelling (❤, ✍).
+export const TELEGRAM_REACTIONS = ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁', '🤔', '🤯', '😱', '🤬', '😢', '🎉', '🤩', '🤮', '💩', '🙏', '👌', '🕊️', '🤡', '🥱', '🥴', '😍', '🐳', '❤️‍🔥', '🌚', '🌭', '💯', '🤣', '⚡', '🍌', '🏆', '💔', '🤨', '😐', '🍓', '🍾', '💋', '🖕', '😈', '😴', '😭', '🤓', '👻', '👨‍💻', '👀', '🎃', '🙈', '😇', '😨', '🤝', '✍️', '🤗', '🫡', '🎅', '🎄', '☃️', '💅', '🤪', '🗿', '🆒', '💘', '🙉', '🦄', '😘', '💊', '🙊', '😎', '👾', '🤷‍♂️', '🤷', '🤷‍♀️', '😡'];
 // The emoji thinking train on a turn's own line (operator 2026-11-03): 👾 at arrival, 🤔 when the
 // turn starts. Both in Telegram's bot set. The mouth's copy of an image lands 1–2 s after the ear's.
 const TRAIN_EMOJI = ['👾', '🤔'];
 const TRAIN_COPY_WAIT_MS = 6000;
 // The started phase's frames, one every THINKING_FRAME_MS (operator 2026-11-04; dispatch.thinking_frames /
-// thinking_frame_ms override, read live). All in Telegram's bot set.
-export const THINKING_FRAMES = ['🤔', '🤓', '👀', '🤯'];
+// thinking_frame_ms override, read live). 'random' (operator 2026-11-04, the default: no one reads time off the
+// train): 🤔, then any of TELEGRAM_REACTIONS but the one showing. A list steps through it in order.
+export const THINKING_FRAMES = 'random';
 export const THINKING_FRAME_MS = 2000;
 
 /**
@@ -85,9 +89,10 @@ export const THINKING_FRAME_MS = 2000;
  *                     second connection on this node. Absent peerMouth (every single-account
  *                     node, every test fake) ⇒ no mouth is ever consulted and this is
  *                     byte-identical to before.
- *        thinkingFrames / thinkingFrameMs — () => the train's frames / their interval (boot: config dispatch).
+ *        thinkingFrames / thinkingFrameMs — () => the train's frames ('random' or a list) / their interval (boot: config dispatch).
+ *        rng — the random frame's pick.
  */
-export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null, thinkingFrames = () => THINKING_FRAMES, thinkingFrameMs = () => THINKING_FRAME_MS, setTimeout: setTimeoutFn = (fn, ms) => globalThis.setTimeout(fn, ms), clearTimeout: clearTimeoutFn = (t) => globalThis.clearTimeout(t) } = {}) {
+export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth = null, log = null, thinkingFrames = () => THINKING_FRAMES, thinkingFrameMs = () => THINKING_FRAME_MS, rng = Math.random, setTimeout: setTimeoutFn = (fn, ms) => globalThis.setTimeout(fn, ms), clearTimeout: clearTimeoutFn = (t) => globalThis.clearTimeout(t) } = {}) {
   const note = (s) => { try { log?.line?.(s); } catch {} };
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog: note });
 
@@ -261,13 +266,14 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
         await take('here');
       }), () => {});
     }
-    const list = () => { const f = frames?.(); return Array.isArray(f) ? f.filter((g) => typeof g === 'string' && g) : []; };
+    const list = () => { const f = frames?.(); return f === 'random' ? f : Array.isArray(f) ? f.filter((g) => typeof g === 'string' && g) : []; };
+    const any = () => { const pool = TELEGRAM_REACTIONS.filter((g) => g !== on[at]); return pool[Math.floor(rng() * pool.length)]; };
     const every = () => { const ms = Number(thinkingFrameMs()); return ms > 0 ? ms : THINKING_FRAME_MS; };
     const arm = () => { timer = setTimeoutFn(frame, every()); timer?.unref?.(); };
     function frame() {
       if (done) return;
       const f = list();
-      if (!busy && f.length > 1) show(f[++n % f.length]);
+      if (!busy && (f === 'random' || f.length > 1)) show(f === 'random' ? any() : f[++n % f.length]);
       arm();
     }
     return {
@@ -275,7 +281,8 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
       gone,                                    // settles once the mark is off
       settled: () => chain,
       started() {
-        const first = list()[0] ?? glyphs[1];
+        const f = list();
+        const first = (f === 'random' ? null : f[0]) ?? glyphs[1];
         if (first && !done && !begun) { begun = true; show(first); if (frames) arm(); }
         return chain;
       },

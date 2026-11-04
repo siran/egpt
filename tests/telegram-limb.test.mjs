@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { startTelegramBridge, readTelegramToken, telegramTokenPath, isTelegramChatId, secretTag } from '../src/bridges/telegram.mjs';
 import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
+import { TELEGRAM_REACTIONS } from '../src/spine/turns.mjs';
 
 const TOKEN = '123456:FAKE-bot-token-never-logged';
 const ME = { id: 99, is_bot: true, username: 'edw_bot', can_read_all_group_messages: true };
@@ -663,6 +664,19 @@ describe('telegram limb — outbound', () => {
     expect(api.of('setMessageReaction').filter((c) => c.body.message_id === 10).map((c) => c.body.reaction)).toEqual([
       [{ type: 'emoji', emoji: '👾' }], [{ type: 'emoji', emoji: '🤔' }], [],
     ]);
+    bridge.stop();
+  });
+
+  // The random frames' pool (2026-11-04): Bot API ReactionTypeEmoji's 73, each sent in the set's spelling.
+  it('every glyph of TELEGRAM_REACTIONS goes out bare, one each, the train and steer glyphs among them', async () => {
+    const api = fakeApi();
+    const { bridge } = start(api);
+    for (const e of TELEGRAM_REACTIONS) await bridge.sendReaction('tg:42', '9', e);
+    const sent = api.of('setMessageReaction').map((c) => c.body.reaction[0].emoji);
+    expect(sent).toHaveLength(73);
+    expect(new Set(sent).size).toBe(73);
+    expect(sent.filter((e) => e.includes('️'))).toEqual([]);
+    expect(sent).toEqual(expect.arrayContaining(['👾', '🤔', '🤓', '👀', '🤯', '✍', '👍', '❤', '❤‍🔥', '🤷‍♀']));
     bridge.stop();
   });
 
