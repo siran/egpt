@@ -269,6 +269,22 @@ agents:
     conversation_defaults:
       access_level: all         # the ONE unsandboxed being - it runs as you, because its job is to change the machine
       sandboxed: false
+  # S, the chat superintendent: one per chat (its own thread there, started in the chat's folder),
+  # woken ONLY by "/<handle> super <message>" from you or a being - so no handles.
+  # super:
+  #   configuration:
+  #     type: ccode
+  #     model: opus
+  #     effort: xhigh
+  #     personality: super        # config/agents/identities/super.md
+  #   handles: []
+  #   name: "S"
+  #   body_emoji: "🦉"
+  #   mode: accum                 # prompted with what the chat said since its last turn
+  #   conversation_defaults:
+  #     access_level: all         # runs as you, unboxed
+  #     sandboxed: false
+  #     allowed_users: []         # no line wakes it (not even a quote of its post); the command does
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.

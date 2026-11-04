@@ -2429,6 +2429,22 @@ export const CONFIG_SCHEMA = {
     "verbose for this ONE agent/chat", because a type is shared by every agent
     that names it. Kept working for the profiles that already set it here.
 
+    THE SUPERINTENDENT, agents.super (operator 2026-11-04): S, one per chat.
+    "/<handle> super <message>" runs a turn of it on the handle's node, in that
+    chat, answered there: its own thread in the chat (agents.super.threadId,
+    made on first use), its cwd the chat's folder, prompted with <message> and,
+    in mode accum, what the chat said since its last turn. Run by the operator
+    or by a being's line (a node-signed one, read past its stamp and frame) —
+    the only command a being's line runs; never by another person, never by
+    S's own line here. A being's run counts in loop_guard.inbound. Give it
+    handles: [] and allowed_users: [] so nothing else wakes it (the command reads
+    neither). Absent → "/<handle> super" says so.
+      super: { configuration: { type: ccode, model: opus, effort: xhigh,
+               personality: super }, handles: [], name: "S", body_emoji: "🦉",
+               mode: accum,
+               conversation_defaults: { access_level: all, sandboxed: false,
+                                        allowed_users: [] } }
+
     EXAMPLE:
       { egpt: { configuration: sonnet-high, handles: [e, egpt], default: true },
         don:  { configuration: relay, relay_channel: Rodz } }
@@ -3334,7 +3350,8 @@ export const CONFIG_SCHEMA = {
   public_commands: `
     The commands ANYONE in a chat may run (operator 2026-10-19); every other command is
     the node's allowed users' only (Self DM, networks.<surface>.allowed_users, the owner).
-    Command words, with or without the '/'. A node-signed line is never admitted.
+    Command words, with or without the '/'. A node-signed line is never admitted (it runs
+    /super only, agents.super).
       config.yaml, root key:           DEFAULT [split, send, end] (join retired 2026-10-25)
       conversations.yaml, a chat's own entry: REPLACES the root list there; [] = none.
     A listed agents opens only the bare /agents list (agents_list); its verbs stay

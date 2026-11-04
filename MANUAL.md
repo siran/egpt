@@ -119,6 +119,8 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                window on its profile, to sign in
                                                or pass a check yourself (see
                                                below)
+/<handle> super <message>                      a turn of this chat's superintendent
+                                               S, answered here (see below)
 ```
 
 **Reply modes** (`/agents … auto <mode>`): `on` (receive every burst, reply per
@@ -292,6 +294,22 @@ line with `.ingest` as its entry point (`An@[EduWeb].ingest (14:05): ed, …`). 
 id with no conversations.yaml entry, or a file with no text and no files, is
 logged and ignored. The box sits under `~/.egpt`, so only the node's owner can
 write it; a sandboxed being cannot.
+
+### `/<handle> super <message>` — the chat superintendent
+
+`agents.super` (S, 🦉) is one being per chat: `/e super why did X happen?` runs
+a turn of it on `e`'s node, in this chat, and the answer is posted here. It has
+its own thread in each chat (made on first use, `agents.super.threadId`), starts
+in the chat's folder, and is prompted with your message plus what the chat said
+since its last turn there (mode `accum`). It runs as you, unboxed (`access_level:
+all`). You may run it, and so may a being: a being's line ("🐶 E: /e super
+check X") is read past its stamp and frame, and `super` is the only command a
+being's line runs. Another person's `/e super` is refused like any owner-only
+command, S's own line never runs it, and a being's run counts in
+`loop_guard.inbound`. With `handles: []` and `allowed_users: []` nothing else
+wakes it, not even a quote of its post; the command reads neither. Its block:
+config-schema `agents` (THE SUPERINTENDENT); personality
+`config/agents/identities/super.md`.
 
 ### `/<handle> browser refresh [group] [url]` — sign in yourself
 
