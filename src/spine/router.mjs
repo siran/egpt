@@ -68,10 +68,25 @@ export function isKnownSender(senderId, config = {}) {
 // ('*' kept): networks.<surface>.allowed_users (else a legacy top-level <surface>: block's) first, so an
 // owner's [0] stays that surface's own id, then the root's.
 function nodeListsOf(config = {}, surface) {
+  const block = surfaceBlockOf(config, surface);
+  return [block.allowed_users, config?.conversation_defaults?.allowed_users].filter(Array.isArray).flat();
+}
+// networks.<surface>, else a legacy top-level <surface>: block, else {}.
+function surfaceBlockOf(config, surface) {
   const s = String(surface ?? '').toLowerCase();
   const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-  const block = isMap(config?.networks?.[s]) ? config.networks[s] : isMap(config?.[s]) ? config[s] : {};
-  return [block.allowed_users, config?.conversation_defaults?.allowed_users].filter(Array.isArray).flat();
+  return isMap(config?.networks?.[s]) ? config.networks[s] : isMap(config?.[s]) ? config[s] : {};
+}
+
+// This node's ADMIN CHATS on a surface, always a list (operator 2026-11-03: "it should be called
+// admin_chat_ids"): the chats that accept commands (commands.mjs isOperator), the first of them where
+// boot's lifecycle lines land. networks.<surface>.admin_chat_ids, else the pre-rename `chat_ids`,
+// else the older singular `chat_id` — configs written before the rename keep working unedited.
+export function adminChatIdsOf(config = {}, surface) {
+  const block = surfaceBlockOf(config, surface);
+  if (Array.isArray(block.admin_chat_ids)) return block.admin_chat_ids;
+  if (Array.isArray(block.chat_ids)) return block.chat_ids;
+  return block.chat_id != null ? [block.chat_id] : [];
 }
 
 // This node's owners on a surface — who may command it (boot's isAllowedUser): the two node lists
