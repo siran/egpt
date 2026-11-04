@@ -43,6 +43,7 @@ What differs between deployments is a switch, not a branch on the name. Two exam
 | `ECR_UNTAGGED` | 1 | 0 | 1: the ECR repository `egpt` already exists without the Project tag (made by hand), and build-push.sh accepts it. 0: build-push.sh refuses an existing repo without the deployment's tag. |
 | `SSH_PORT` | empty | 2222 | [SSH into the container](#ssh-into-the-container-ssh_port): sshd as egpt on that port (`EGPT_SSH_PORT` in the task definition), tcp `SSH_PORT` from anywhere in `$N-sg`, and the Elastic IP `$N-ip`, which the instance associates at boot (`$N-address`). Empty: none of these. |
 | `SSH_PERMIT_LISTEN` | empty | `127.0.0.1:22001 127.0.0.1:22002` | With `SSH_PORT`: [reverse tunnels into the container](#ssh-into-the-container-ssh_port). sshd also allows `ssh -R`, listening only on these `host:port` (`EGPT_SSH_PERMIT_LISTEN`). Empty: local forwards only. |
+| `ROOT_SUDO` | 0 | 1 | 1: [root in the container](#root-in-the-container-root_sudo), egpt may sudo anything. 0 or absent: the plain image. |
 
 The plain-EC2 scripts predate deployment files and keep fixed names: the container `edw`, `edw-node`, `edw-data`, `edw-instance-role`, the tag `egpt:edw`. A deployment that uses them sets `N=edw` and `LEGACY_NODE=edw-node`.
 
@@ -240,6 +241,16 @@ Changing the instance type of the running instance (stop, modify, start) leaves 
 - **Claude login:** `ssh -t <name> egpt-claude-token`. It runs `claude setup-token`, saves the token you paste (not shown) as `secrets/claude-oauth.token`, and offers to restart egpt. Sandboxed beings use it on their next turn, the others after the restart. SSH shells export it too.
 - **Copying:** `tar -C <dir> -cf - . | ssh <name> 'tar -C <dest> -xf -'`, and the other way round.
 - **Reverse tunnels (`SSH_PERMIT_LISTEN`):** PCs keep `ssh -N -R 127.0.0.1:<port>:localhost:<their sshd port> <name>` up, so the node's beings reach each PC's sshd at 127.0.0.1:`<port>`. sshd then runs with `AllowTcpForwarding yes` and `PermitListen` set to `SSH_PERMIT_LISTEN`; any other `-R` is refused. GatewayPorts stays `no`, so the listeners are loopback only. The client must ask for `127.0.0.1` explicitly: a bare `-R <port>:…` asks for `localhost`, which `PermitListen` does not match.
+
+## Root in the container (`ROOT_SUDO`)
+
+With `ROOT_SUDO=1` in the deployment, build-push.sh builds with `--build-arg EGPT_ROOT_SUDO=1`. The image then has `/etc/sudoers.d/egpt-root`, `egpt ALL=(ALL) NOPASSWD:ALL` (mode 0440, checked with `visudo -cf` at build time), and the label `egpt.root_sudo=1`. With 0 or no key, the image has neither the file nor any sudo beyond the egpt-box line, and its label is `egpt.root_sudo=0`. build-push.sh prints which kind it is building, and the built image's label. It takes effect with the next build-push.sh and `ecs/ecs-deploy.sh`.
+
+- **What it grants:** every process running as egpt may run anything as root in the container, with no password.
+- **On ECS that is root on the instance.** The task is `privileged: true` with host networking, so root in the container has the host's devices and kernel. The [metadata guard](#the-instances-first-boot) lets uid 0 through, so it also gets the instance role's credentials.
+- **Who gets it:** the spine and the beings that run unboxed as egpt (`access_level: all`). A boxed being (`access_level: sandbox`, the default) runs as its own uid with no_new_privs, and it cannot sudo, with or without `ROOT_SUDO`.
+- **Single-owner personal nodes only**, where the owner wants the beings to have the whole machine. Never on a node that serves other people.
+- To check an image: `docker image inspect -f '{{index .Config.Labels "egpt.root_sudo"}}' <image>`.
 
 ## Notes
 
