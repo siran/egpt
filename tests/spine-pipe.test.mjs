@@ -832,6 +832,17 @@ describe('spine — resume observation (a slept process is not a live one)', () 
     expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([]);
   });
 
+  // A chat held by a new-chat burst (operator 2026-11-05) is backlog stamped AFTER the wake: not
+  // this wake's news, so the node never posts into it.
+  it('a backlog message stamped after the wake (a held new chat) is neither listed nor told', async () => {
+    const s = buildTicking();
+    wake(s);
+    await slept(s, { chatId: A, body: '@e hola', msgTs: s.now() + 60_000, mention: addressed });
+    await s.settle(10_000);
+    expect(s.said).toEqual([]);
+    expect(s.spine.backlogOf({ surface: MSG.surface, chatId: A })).toEqual([]);
+  });
+
   it('no wake, no notice: a backlog replay on a node that never slept (older than bridge start) says nothing', async () => {
     const s = buildTicking();
     for (let i = 0; i < 3; i++) { s.advance(TICK); s.tick(); }

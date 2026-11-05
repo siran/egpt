@@ -644,7 +644,8 @@ export async function startBeeperBridge(opts = {}) {
     // MEDIA-FLOOD auto-ban (src/flood-ban.mjs, wired by boot). A sender who dumps a burst of
     // media into a chat is muted; while muted EVERY message of theirs — media AND text — is
     // dropped HERE, before persistMedia + onIncoming, so nothing hits disk or the spine. Null
-    // (a directly-built bridge) ⇒ no flood gate, byte-identical to before.
+    // (a directly-built bridge) ⇒ no flood gate, byte-identical to before. An ear's also carries
+    // observeChat (network, chatId, { chatName }) => held, the new-chat burst (boot).
     floodBan = null,
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
@@ -1349,7 +1350,7 @@ export async function startBeeperBridge(opts = {}) {
   // the caller can ANNOUNCE non-voice media to the model (the saved path) — a
   // photo/gif/video/doc must reach E, not just disk (operator 2026-06-16: this
   // regressed; onMedia's returned path was discarded here).
-  async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null } = {}) {
+  async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null, voiceInText = true } = {}) {
     const saved = [];
     if (typeof onMedia !== 'function') return saved;
     if (mediaDownloadPolicy === 'off') return saved;
@@ -1364,7 +1365,7 @@ export async function startBeeperBridge(opts = {}) {
       try {
         // inText: this attachment is the one the voice branch already transcribed
         // into `text` — don't ALSO announce its path (avoids a double mention).
-        saved.push(savedEntry(await onMedia({ ...meta, localPath }), { kind, localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, inText: att === voiceAtt }));
+        saved.push(savedEntry(await onMedia({ ...meta, localPath }), { kind, localPath, fileName: att?.fileName ?? null, inText: att === voiceAtt && voiceInText }));
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
     return saved;
@@ -2027,13 +2028,10 @@ export async function startBeeperBridge(opts = {}) {
     const info = await chatInfo(chatID);
     const acct = msg.accountID || info.accountID;
 
-    // Backlog gate → BACKFILL (operator 2026-07-08, trusted network / S3 wake): a node
-    // that slept and woke MUST keep a complete record. A replayed/old message (older than
-    // bridge start) is no longer DROPPED here — it is flagged `isBacklog` and rides the
-    // rest of this path so it is transcribed (voice below) + transcript-logged, but the
-    // `backlog` flag on `from` makes the spine log-but-NEVER-dispatch it (no agents, no
-    // commands, no mesh, no mode:on — today's no-dispatch guarantee, kept). Was: returned
-    // before the message ever reached the transcript.
+    // Backlog gate → BACKFILL (operator 2026-07-08): a replayed/old message (older than bridge
+    // start) is flagged `isBacklog` and transcript-logged; the spine never dispatches it. A backlog
+    // voice note is saved, NOT transcribed (operator 2026-11-05, replacing 07-08's "transcribe it
+    // for a complete record"): its line says so and names the saved audio.
     //
     // …AND A WAKE WITHOUT A RESTART IS A WAKE (2026-09-27, node do: 35 hours asleep, the process
     // SUSPENDED, every message from the sleep answered on waking). "Older than bridge start" only
@@ -2057,6 +2055,11 @@ export async function startBeeperBridge(opts = {}) {
     } else if (tsMs < backlogCutoffMs - holdGraceMs) {
       isBacklog = true;
       onLog(`beeper: backlog message [${info.title}] (${new Date(tsMs).toISOString()} < cutoff ${new Date(backlogCutoffMs).toISOString()}) — backfilled to transcript, not dispatched`);
+    }
+    // …and so is a chat first seen in a NEW-CHAT BURST on this connection (src/flood-ban.mjs observeChat).
+    if (floodBan?.observeChat && await floodBan.observeChat(acct || 'whatsapp', chatID, { chatName: info.title })) {
+      if (!isBacklog) onLog(`beeper: held [${info.title}] — first seen in a new-chat burst, backfilled to transcript, not dispatched`);
+      isBacklog = true;
     }
 
     // MEDIA-FLOOD BAN (src/flood-ban.mjs). Our OWN output is exempt (!ownOutput) so the counter
@@ -2093,7 +2096,7 @@ export async function startBeeperBridge(opts = {}) {
         const svc = await resolveTranscriptionService(chatID);
         // The note itself — 🎧, transcription, 👂, its two lines — is the shared intake (limb-intake.mjs).
         ({ text, pending: _voicePending, listening: _voiceListening } = await startVoiceNote({
-          path, chatId: chatID, title: info.title, msgId: msg.id, tsMs, durationSec: att?.duration,
+          path, chatId: chatID, title: info.title, msgId: msg.id, tsMs, durationSec: att?.duration, backlog: isBacklog,
           author: senderDisplay(msg), muted: info.isMuted, operatorSent: () => !!msg.isSender || isAllowedUser(msg.senderID, acct),
           svc, echoPlan, echoMaxAgeMs, echoTimeoutMs, postsBackDelayMs, audioCfg, transcribe, outboundFor, scheduler,
           // BASELINE OWN-VOICE KEY (operator 2026-10-13): a single-account install's own .ogg re-enters
@@ -2121,7 +2124,7 @@ export async function startBeeperBridge(opts = {}) {
     // transcribed is persisted with its outcome line (its sidecar caption IS the
     // transcription), at the end of this function.
     const withMedia = async (body, voiceCaption) => {
-      const saved = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption });
+      const saved = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption, voiceInText: !isBacklog });
       return withMediaLines(body, saved);
     };
     if (!_voicePending) text = await withMedia(text, null);

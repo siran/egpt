@@ -1887,7 +1887,7 @@ export function createSpine({
   // sleep a chat can have been talking to a being all night and hear nothing back. After a wake the
   // node says so, ONCE, in each chat whose backlog WOULD HAVE REACHED A BEING had it been live
   // (wouldReachABeing, above) — never in a chat whose backlog was chatter nobody was going to answer.
-  // Only what was written WHILE the node slept counts (stamped after `wake.sleptAt`): a restart's
+  // Only what was written WHILE the node slept counts (stamped between `wake.sleptAt` and the wake): a restart's
   // replay of older traffic is backlog too, but it is not this wake's news. The line waits until the
   // chat's backlog has SETTLED — BACKLOG_SETTLE_MS after its last arrival; Beeper hands a night over
   // within seconds, but not in one frame — and goes out through `say`, the placement the loop guard's
@@ -1898,7 +1898,7 @@ export function createSpine({
   const BACKLOG_SETTLE_MS = 5_000;
   const backlogBy = new Map();   // conversation (guardChannel) -> { chatId, messages: [{ sender, ts, body }], reaches, told, timer }
   async function noteWakeBacklog(ev) {
-    if (!wake || ev.msgTs == null || ev.msgTs < wake.sleptAt) return;
+    if (!wake || ev.msgTs == null || ev.msgTs < wake.sleptAt || ev.msgTs > wake.at) return;   // after the wake: a held new chat (bridge new-chat burst), not this wake's news
     const key = guardChannel(ev);
     let b = backlogBy.get(key);
     if (!b) backlogBy.set(key, (b = { chatId: ev.chatId, messages: [], reaches: false, told: false, timer: null }));

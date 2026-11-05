@@ -400,7 +400,7 @@ export function startTelegramBridge({
         const svc = await resolveTranscriptionService(chatId);
         ({ text, pending, listening } = await startVoiceNote({
           path, chatId, title, msgId: msgKey, tsMs, durationSec: md.duration, author: senderName,
-          operatorSent: () => authorized,
+          operatorSent: () => authorized, backlog,
           svc, echoPlan, echoMaxAgeMs, echoTimeoutMs, postsBackDelayMs, audioCfg, transcribe, outboundFor, scheduler,
           reply: (t) => echoGate(() => send(wrapEcho(echoTag, t), { chatId, replyToMessageID: msgKey })),
           serial: transcribing,
@@ -409,11 +409,11 @@ export function startTelegramBridge({
       } else text = VOICE_NOTE_PLACEHOLDER;
       if (caption) text = `${text}\n${caption}`;
     }
-    // Saved through the host's onMedia and announced (the voice note's own line already says it).
+    // Saved through the host's onMedia and announced (a transcribed voice note's own line already says it).
     const withMedia = async (body, voiceCaption) => {
       if (!meta || !path) return body;
       let saved = [];
-      try { saved = [savedEntry(await onMedia({ ...meta, localPath: path, caption: isVoice ? voiceCaption : caption }), { kind: md.kind, localPath: path, fileName: md.fileName, isVoiceNote: !!md.isVoiceNote, inText: isVoice })]; }
+      try { saved = [savedEntry(await onMedia({ ...meta, localPath: path, caption: isVoice ? voiceCaption : caption }), { kind: md.kind, localPath: path, fileName: md.fileName, inText: isVoice && !backlog })]; }
       catch (e) { log(`onMedia threw — ${e?.message ?? e}`); }
       return withMediaLines(body, saved);
     };

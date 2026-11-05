@@ -88,12 +88,14 @@ export function transcriptionForNoteId(doc, noteId) {
  * The limb supplies: svc (resolveTranscriptionService's verdict for this chat), echoPlan (audioHash →
  * { rank }), ownEcho(audioHash) (true = our own voice reply re-entered), reply (the 👂 send),
  * checkCovered, outboundFor (the one placement), serial (the whisper slot), and the note's facts.
+ * `backlog`: never transcribed (operator 2026-11-05) — one line saying so, nothing pending; the limb names the saved audio.
  */
 export async function startVoiceNote({
-  path, chatId, title, msgId, tsMs, durationSec, author, muted = false, operatorSent = () => false,
+  path, chatId, title, msgId, tsMs, durationSec, author, muted = false, operatorSent = () => false, backlog = false,
   svc, echoPlan, ownEcho = () => false, echoMaxAgeMs, echoTimeoutMs, postsBackDelayMs, audioCfg,
   transcribe, outboundFor, reply, checkCovered, scheduler, serial = (k, fn) => fn(), onLog = () => {},
 }) {
+  if (backlog) { onLog(`backlog voice note [${title}] #${msgId ?? '?'} — saved, not transcribed`); return { text: voiceFailedBody('backlog'), pending: null, listening: false }; }
   const vmeta = {};
   // 👂 ECHO AGE BOUND (operator 2026-07-09, Zurikar incident): gate on the NOTE'S OWN
   // timestamp vs now — NOT bridge start, so a note that arrived during sleep still echoes on wake
@@ -258,11 +260,11 @@ export async function readBack({
 // What a limb's onMedia answered, as one saved entry: the saved path (string) OR, for a video
 // (Route A), { savedPath, framePaths, transcript } — the host extracted keyframes + transcribed the
 // audio so they can be handed to E.
-export function savedEntry(r, { kind, localPath, fileName = null, isVoiceNote = false, inText = false }) {
+export function savedEntry(r, { kind, localPath, fileName = null, inText = false }) {
   const savedPath = (r && typeof r === 'object') ? r.savedPath : r;
   const framePaths = (r && typeof r === 'object' && Array.isArray(r.framePaths)) ? r.framePaths : [];
   const transcript = (r && typeof r === 'object') ? (r.transcript ?? null) : null;
-  return { kind, savedPath: savedPath ?? localPath, fileName, isVoiceNote, inText, framePaths, transcript };
+  return { kind, savedPath: savedPath ?? localPath, fileName, inText, framePaths, transcript };
 }
 
 // Surface non-voice media to the model (operator 2026-06-16 regression): a
@@ -280,8 +282,9 @@ export function withMediaLines(body, saved) {
     // (Was: `m.kind !== 'audio'` — which silently dropped a shared AUDIO FILE
     // like an .mp3 that wasn't a voice note, so E never knew it arrived and it
     // wasn't even logged — operator 2026-06-16. `inText` now excludes only the
-    // transcribed voice note, so non-voice audio files surface like any media.)
-    .filter((m) => m.savedPath && !m.isVoiceNote && !m.inText)
+    // transcribed voice note, so non-voice audio files surface like any media — and so does a
+    // backlog voice note, which is never transcribed.)
+    .filter((m) => m.savedPath && !m.inText)
     .map((m) => {
       let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${relMediaPath(m.savedPath)}]`;
       // ROUTE A: a video is handed to E on a silver platter — keyframes the

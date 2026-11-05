@@ -1041,21 +1041,41 @@ describe('beeper bridge', () => {
     expect(fresh.from.backlog).toBe(false);   // live traffic — dispatched normally
   });
 
-  // A HELD (backlog) voice note MUST still be transcribed locally so the backfill carries
-  // text, not "[voice note]" — and the 👂 still posts on a default (echo:true) node. With the
-  // arrival-lag/grace scaffold GONE, the 👂 posts immediately (coverage query finds no covering
-  // reply); the note's age only gates DISPATCH (backlog), never the 👂.
-  it('backlog voice note is transcribed + logged, and the 👂 posts (default echo)', async () => {
-    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+  // BACKLOG IS NOT TRANSCRIBED (operator 2026-11-05; replaces 2026-07-08's "transcribe it for a
+  // complete record"). A Telegram history import put 174 old voice notes through whisper on kg. A
+  // backlog note is saved and recorded in ONE line that says why it has no text and names the
+  // audio; no whisper, no 🎧, no 👂, no arrival line — so nothing is pending for a restart to resume.
+  it('REPRODUCE: a backlog voice note is saved, not transcribed — its line says backlog and names the audio', async () => {
+    let calls = 0;
+    const { incoming, arrivals } = await startBridge({
+      transcribe: async () => { calls++; return 'fake transcript'; },
+      onMedia: async (m) => join(stateDir, 'media', `saved-${m.msgId}.ogg`),
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true, listeningReaction: true }),
+    });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
-      attachments: [voiceAtt()],
+      id: 'old-note', text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
+      attachments: [{ ...voiceAtt(), mimeType: 'audio/ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
-    expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // …but STILL transcribed locally
-    await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 fake transcript');                   // default echo → 👂 posts (uncovered)
+    expect(incoming[0].from.backlog).toBe(true);
+    expect(incoming[0].text).toBe('(voice note not transcribed: backlog)\n(audio) [saved: media/saved-old-note.ogg]');
+    expect(calls).toBe(0);
+    expect(arrivals).toEqual([]);
+    expect(incoming[0].from).not.toHaveProperty('voiceLine');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fake.posts).toHaveLength(0);
+    expect(fake.reactions).toHaveLength(0);
+  });
+
+  it('a LIVE voice note is still transcribed: arrival, then its transcription', async () => {
+    let calls = 0;
+    const { incoming, arrivals } = await startBridge({ transcribe: async () => { calls++; return 'fake transcript'; } });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [voiceAtt()] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.backlog).toBe(false);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');
+    expect(arrivals).toHaveLength(1);
+    expect(calls).toBe(1);
   });
 
   // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): the per-note gate is now
@@ -1456,9 +1476,14 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
+  // A bridge up for a month: an old note delivered late is LIVE, not backlog (which is never
+  // transcribed — operator 2026-11-05), so the age bound is what decides its 👂.
+  const UP_A_MONTH = { holdGraceMs: 30 * 86_400_000 };
+
   // The age bound is ORTHOGONAL to the rank: a too-old note never echoes even for a rank-1 winner.
   it('echoMaxAgeMs still suppresses an old note even for a rank-1 winner (age bound is independent of the rank)', async () => {
     const { incoming } = await startBridge({
+      ...UP_A_MONTH,
       echoPlan: () => ({ rank: 1, winner: true }),   // this node IS rank-1 …
       echoMaxAgeMs: 3_600_000,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
@@ -1482,7 +1507,7 @@ describe('beeper bridge', () => {
     attachments: [voiceAtt()],
   });
   it('a 12-day-old voice note is transcribed + logged, but the 👂 is NOT posted (age bound)', async () => {
-    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    const { incoming } = await startBridge({ ...UP_A_MONTH, resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
@@ -1492,7 +1517,7 @@ describe('beeper bridge', () => {
   it('a 10-minute-old voice note still gets its 👂 (sleep-window courtesy, well within the default 1h bound)', async () => {
     // Within the age bound → echo allowed; with the arrival-lag/grace scaffold gone it posts immediately
     // (coverage query finds no covering reply). The note's age gates only the ECHO bound, not the timing.
-    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    const { incoming } = await startBridge({ ...UP_A_MONTH, resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(10 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
@@ -1500,7 +1525,7 @@ describe('beeper bridge', () => {
   });
 
   it('default bound (echoMaxAgeMs absent) is ~1h: a note just past it is not acked', async () => {
-    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    const { incoming } = await startBridge({ ...UP_A_MONTH, resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(61 * 60 * 1000)] });   // 61 min — just past the default 1h
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(0);
@@ -1509,6 +1534,7 @@ describe('beeper bridge', () => {
   it('echoMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂 (posts immediately)', async () => {
     // Bound disabled → echo allowed; with no arrival-lag/grace scaffold it posts immediately (uncovered).
     const { incoming } = await startBridge({
+      ...UP_A_MONTH,
       echoMaxAgeMs: 0,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
@@ -1863,6 +1889,65 @@ describe('beeper bridge — media-flood auto-ban drops a flooder before persistM
     expect(media).toHaveLength(3);                                          // all three images saved + announced
     expect(incoming.filter((x) => x.from.userId === 'A')).toHaveLength(4);  // 3 media announces + 1 text
     expect(notices.some((m) => /^flood-ban: /.test(m))).toBe(false);       // never banned
+  });
+});
+
+// NEW-CHAT BURST (operator 2026-11-05). Linking a Telegram account into a shared Beeper account made
+// hundreds of chats at once. More than 10 chats the node has never seen, within 5 minutes on one
+// connection: every chat first seen in that burst is held exactly like backlog (recorded, not
+// dispatched, not transcribed) until 5 minutes pass with no new chat. `known` stands in for the
+// conversations.yaml read boot wires into floodBan.observeChat; onIncoming registers a chat, as the spine does.
+describe('beeper bridge — a burst of new chats on one connection is held as backlog', () => {
+  async function burstBridge(extra = {}) {
+    const clock = { t: 1_000_000 };
+    const notices = [];
+    const known = new Set([shortChatId(CHAT('home'))]);
+    const fb = createFloodBan({ now: () => clock.t, onLog: (m) => notices.push(m) });
+    const floodBan = { ...fb, observeChat: async (network, chatId, meta) => fb.observeChat('primary', chatId, { ...meta, isNew: !known.has(chatId) }) };
+    const seen = [];
+    await startBridge({ floodBan, onIncoming: (text, from) => { known.add(from.chatId); seen.push({ text, from }); }, ...extra });
+    const say = async (chat, text, over = {}) => {
+      const n = seen.length;
+      fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT(chat), text, ...over })] });
+      await waitFor(() => seen.length > n);
+      return seen[seen.length - 1];
+    };
+    return { clock, notices, seen, say };
+  }
+
+  it('REPRODUCE: the 11th new chat in 5 minutes starts a burst — it and every chat first seen in the window are held; one notice', async () => {
+    const b = await burstBridge();
+    for (let i = 1; i <= 10; i++) expect((await b.say(`new-${i}`, `hola ${i}`)).from.backlog).toBe(false);
+    expect((await b.say('new-11', 'hola 11')).from.backlog).toBe(true);
+    expect((await b.say('new-1', 'otra vez')).from.backlog).toBe(true);    // first seen inside the window → held now
+    expect((await b.say('new-12', 'hola 12')).from.backlog).toBe(true);
+    expect((await b.say('home', 'en casa')).from.backlog).toBe(false);     // a chat the node knew stays live
+    expect(b.notices.filter((m) => /new-chat burst/.test(m))).toHaveLength(1);
+  });
+
+  it('a single new chat is still live, and says nothing', async () => {
+    const b = await burstBridge();
+    expect((await b.say('fresh', 'hola')).from.backlog).toBe(false);
+    expect(b.notices).toEqual([]);
+  });
+
+  it('once 5 minutes pass with no new chat, the burst lifts and messages behave normally', async () => {
+    const b = await burstBridge();
+    for (let i = 1; i <= 11; i++) await b.say(`new-${i}`, `hola ${i}`);
+    b.clock.t += 5 * 60_000;
+    expect((await b.say('new-3', 'ya pasó')).from.backlog).toBe(false);
+    expect((await b.say('another', 'nuevo')).from.backlog).toBe(false);
+    expect(b.notices.filter((m) => /new-chat burst/.test(m))).toHaveLength(2);   // the start, and the lift
+  });
+
+  it('a voice note in a held chat is not transcribed (the backlog rule covers it)', async () => {
+    let calls = 0;
+    const b = await burstBridge({ transcribe: async () => { calls++; return 'fake transcript'; } });
+    for (let i = 1; i <= 11; i++) await b.say(`new-${i}`, `hola ${i}`);
+    const note = await b.say('new-12', null, { type: 'VOICE', attachments: [voiceAtt()] });
+    expect(note.from.backlog).toBe(true);
+    expect(note.text).toMatch(/^\(voice note not transcribed: backlog\)/);
+    expect(calls).toBe(0);
   });
 });
 
@@ -4795,6 +4880,20 @@ describe('a node that SLEPT is not a node that just started — the backlog cuto
     await waitFor(() => incoming.length === 2);
     expect(incoming.find((i) => i.text === 'hace diez minutos').from.backlog).toBe(false);    // inside the window: live
     expect(incoming.find((i) => i.text === 'hace veinte minutos').from.backlog).toBe(true);   // before it: backfilled
+  });
+
+  it('a voice note inside the wake window is transcribed; one before it is backlog and is not', async () => {
+    let resumed = null, calls = 0;
+    const { incoming } = await startBridge({ resumedAt: () => resumed, transcribe: async () => { calls++; return 'fake transcript'; } });
+    resumed = Date.now() + 2 * 3600_000;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'nap', text: null, type: 'VOICE', timestamp: resumed - 10 * 60_000, attachments: [voiceAtt()] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'night', text: null, type: 'VOICE', timestamp: resumed - 20 * 60_000, attachments: [voiceAtt()] })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.find((i) => i.from.msgKey === 'nap')).toMatchObject({ text: '(voice transcription) fake transcript', from: { backlog: false } });
+    const night = incoming.find((i) => i.from.msgKey === 'night');
+    expect(night.from.backlog).toBe(true);
+    expect(night.text).toMatch(/^\(voice note not transcribed: backlog\)\n\(\w+\) \[saved: media\//);
+    expect(calls).toBe(1);
   });
 
   // contract 15.1
