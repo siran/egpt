@@ -2523,11 +2523,13 @@ export const CONFIG_SCHEMA = {
         wren:
           background_agents: { effort: high }   # this being only; model stays the node's
 
-    model: sonnet | opus | haiku. effort: low | medium | high | xhigh | max.
+    model: sonnet | opus | haiku | inherit. effort: low | medium | high | xhigh | max.
     Handed to the CLI as CLAUDE_CODE_SUBAGENT_MODEL / CLAUDE_CODE_SUBAGENT_EFFORT,
     boxed or not. An agents.<name> key wins over the node's, key by key.
 
-    DEFAULT: unset - nothing is passed and the CLI's own default applies. An
+    DEFAULT: model is sonnet when unset at every tier (operator 2026-11-04);
+    model: inherit passes nothing, so the CLI uses the parent's model. Effort has
+    no default: unset passes nothing and the CLI's own applies. An
     invalid value is logged once and ignored. It applies when a CLI process
     spawns (a new session, or a respawn); a warm process keeps what it started
     with, like a type file's model/effort. Claude Code beings only.

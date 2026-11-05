@@ -33,20 +33,24 @@ describe('backgroundAgentEnvOf', () => {
     expect(backgroundAgentEnvOf({ model: 'sonnet', effort: 'medium' }, { effort: 'high' })).toEqual([
       'CLAUDE_CODE_SUBAGENT_MODEL=sonnet', 'CLAUDE_CODE_SUBAGENT_EFFORT=high']);
   });
-  it('unset means no vars', () => {
-    expect(backgroundAgentEnvOf(undefined, undefined)).toEqual([]);
-    expect(backgroundAgentEnvOf({}, null)).toEqual([]);
+  it('unset: model defaults to sonnet, effort passes nothing', () => {
+    expect(backgroundAgentEnvOf(undefined, undefined)).toEqual(['CLAUDE_CODE_SUBAGENT_MODEL=sonnet']);
+    expect(backgroundAgentEnvOf({}, null)).toEqual(['CLAUDE_CODE_SUBAGENT_MODEL=sonnet']);
+  });
+  it('model: inherit passes nothing, and a per-agent inherit beats the node model', () => {
+    expect(backgroundAgentEnvOf({ model: 'inherit' }, undefined)).toEqual([]);
+    expect(backgroundAgentEnvOf({ model: 'opus', effort: 'low' }, { model: 'inherit' })).toEqual(['CLAUDE_CODE_SUBAGENT_EFFORT=low']);
   });
   it('an invalid value is ignored and logged once, never throws', () => {
     const logs = [];
     const run = () => backgroundAgentEnvOf({ model: 'gpt-9', effort: 'low' }, 'junk', (l) => logs.push(l));
-    expect(run()).toEqual(['CLAUDE_CODE_SUBAGENT_EFFORT=low']);
+    expect(run()).toEqual(['CLAUDE_CODE_SUBAGENT_MODEL=sonnet', 'CLAUDE_CODE_SUBAGENT_EFFORT=low']);
     run();
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatch(/background_agents\.model.*gpt-9/);
   });
   it('an invalid per-agent value falls back to the node default', () => {
-    expect(backgroundAgentEnvOf({ effort: 'low' }, { effort: 'ultra-bad' })).toEqual(['CLAUDE_CODE_SUBAGENT_EFFORT=low']);
+    expect(backgroundAgentEnvOf({ effort: 'low' }, { effort: 'ultra-bad' })).toEqual(['CLAUDE_CODE_SUBAGENT_MODEL=sonnet', 'CLAUDE_CODE_SUBAGENT_EFFORT=low']);
   });
 });
 

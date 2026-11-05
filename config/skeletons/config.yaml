@@ -294,8 +294,8 @@ agents:
 # --- Folder grants and the sandbox token (all optional; unset = none) --------
 # allowed_paths:                  # every being on this node; a being's own entry for the same path wins
 #   C:/Users/you/src: { allowed_tools: [Read, Glob, Grep] }   # read-only; an empty value = full access
-# background_agents:              # model/effort of the sub-agents a being launches; unset = the CLI's default
-#   model: sonnet                 # sonnet | opus | haiku
+# background_agents:              # model/effort of the sub-agents a being launches; model defaults to sonnet; effort unset = the CLI's default
+#   model: sonnet                 # sonnet | opus | haiku | inherit (inherit = the parent's model)
 #   effort: medium                # low | medium | high | xhigh | max
 #   (per being: agents.<name>.background_agents: { effort: high } overrides these, key by key)
 # global_read_paths:              # standing read-only mounts in every sandboxed being's home; re-run setup/provision-sandbox-account.ps1 after a change
