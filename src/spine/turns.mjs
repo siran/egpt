@@ -254,7 +254,13 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
     const gone = new Promise((r) => { ended = r; });
     const place = (emoji, acct, opts) => placeReaction(to, ev, emoji, { what, here: acct === 'here', ...opts });
     const put = async (acct, g, opts) => { const ok = await place(g, acct, { temporary: true, ...opts }); if (ok) on[acct] = g; return ok; };
-    const take = async (acct) => { if (on[acct] && await place(on[acct], acct, { remove: true })) on[acct] = null; };
+    const take = async (acct) => {
+      const g = on[acct];
+      if (!g) return;
+      const ok = await place(g, acct, { remove: true });
+      if (ok) on[acct] = null;
+      if (acct === 'here') note(`${what} ${to}/${ev.chatId}: ${ok ? 'took' : 'could NOT take'} the ${g} off #${ev.msgId}, on the account holding the line`);
+    };
     const key = () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs });
     let chain = put(at, glyphs[0], handover || !wait ? {} : { wait });
     const step = (fn) => { busy++; chain = chain.then(fn).finally(() => { busy--; }); return chain; };

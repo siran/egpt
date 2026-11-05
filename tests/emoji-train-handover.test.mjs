@@ -21,11 +21,18 @@ const LIST = ['🤔', '🤓', '👀', '🤯'];                          // a con
 
 afterEach(() => vi.useRealTimers());
 
-// The real lookup (boot makePeerMouth → ownCopy): its arrival record and its wait. `slow`: a glyph whose
-// placement on the ear takes that long.
-// `refuse`: placements that fail once, e.g. '-🤔@41174'.
+// The real lookup (boot makePeerMouth → ownCopy): its arrival record and its wait.
+// `slow`: a placement that takes that long — '+🤔@17743', '-🤔@41174', or a bare glyph placed on the ear.
+// `refuse`: placements that fail once, e.g. '-🤔@41174' or '+🤓@41174'.
 function node({ frames = ONE, frameMs, slow = {}, refuse = [], rng } = {}) {
   const seen = [], waiters = new Set(), placed = [], logs = [], refused = new Set(refuse);
+  const act = async (op, emoji, msgId, onEar) => {
+    const k = `${op}${emoji}@${msgId}`, ms = slow[k] ?? (onEar && op === '+' ? slow[emoji] : undefined);
+    if (ms) await new Promise((r) => setTimeout(r, ms));
+    if (refused.delete(k)) return false;
+    placed.push(k);
+    return true;
+  };
   const mouthBridge = {
     recentMessages: () => [...seen],
     awaitMessage: (_c, test, ms) => new Promise((resolve) => {
@@ -33,12 +40,12 @@ function node({ frames = ONE, frameMs, slow = {}, refuse = [], rng } = {}) {
       const t = setTimeout(() => w.done(null), ms);
       waiters.add(w);
     }),
-    async react(chatId, msgId, emoji) { placed.push(`+${emoji}@${msgId}`); return true; },
-    async unreact(chatId, msgId, emoji) { placed.push(`-${emoji}@${msgId}`); return true; },
+    react: (chatId, msgId, emoji) => act('+', emoji, msgId, false),
+    unreact: (chatId, msgId, emoji) => act('-', emoji, msgId, false),
   };
   const ear = {
-    async react(chatId, msgId, emoji) { if (slow[emoji]) await new Promise((r) => setTimeout(r, slow[emoji])); placed.push(`+${emoji}@${msgId}`); return true; },
-    async unreact(chatId, msgId, emoji) { if (refused.delete(`-${emoji}@${msgId}`)) return false; placed.push(`-${emoji}@${msgId}`); return true; },
+    react: (chatId, msgId, emoji) => act('+', emoji, msgId, true),
+    unreact: (chatId, msgId, emoji) => act('-', emoji, msgId, true),
   };
   const mouth = makePeerMouth({ peer: null, bridge: ear, localMouth: () => ({ name: 'secondary', home: 'primary', bridge: mouthBridge }), onLog: (s) => logs.push(s) });
   const peerMouth = { ...mouth, route: async () => ({ connection: 'secondary', bridge: mouthBridge, chatId: 'mouth-1' }) };
@@ -330,5 +337,135 @@ describe('C. one train per line, whichever beings run turns on it', () => {
     await w.off();
     await new Promise((r) => setTimeout(r, 0));
     expect(placed).toEqual(['+👾@41174', '+🤔@41174', '-🤔@41174', '+👍@41174']);
+  });
+});
+
+// kg 2026-11-04, "primary is not removing its reaction … sometimes it behaves correctly": whatever the order the
+// steps land in, the end leaves nothing on the holder (41174) or the mouth (17743), and each removal names the
+// glyph that account last showed.
+describe('D. the holder is left clean, whatever the order', () => {
+  const clean = (placed) => { const s = showing(placed); expect([s[41174], s[17743] ?? null]).toEqual([null, null]); };
+
+  it('REPRODUCE (live): one being, the mark moves to the mouth, the turn ends — nothing on the holder, and the log says so', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive, logs } = node({ frames: () => LIST });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(1000);
+    arrive(ON_MOUTH);
+    await tick(2000);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '+🤓@17743', '-🤓@17743']);
+    clean(placed);
+    expect(logs.filter((s) => s.includes('on the account holding the line'))).toEqual(['train egpt/chat-1: took the 🤔 off #41174, on the account holding the line']);
+  });
+
+  it("the turn ends while the handover's placement on the mouth is in flight", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ slow: { '+🤔@17743': 1000 } });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(500);
+    arrive(ON_MOUTH);
+    await tick(10);
+    const off = t.off();
+    await tick(2000);
+    await off;
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '-🤔@17743']);
+    clean(placed);
+  });
+
+  it("the turn ends while the handover's removal from the holder is in flight", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ slow: { '-🤔@41174': 1000 } });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(500);
+    arrive(ON_MOUTH);
+    await tick(10);
+    const off = t.off();
+    await tick(2000);
+    await off;
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '-🤔@17743']);
+    clean(placed);
+  });
+
+  it('the handover comes due only after the end: it moves nothing; the holder is cleared', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ slow: { '🤔': 1000 } });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(100);
+    arrive(ON_MOUTH);                                   // the move is queued behind the 🤔 still landing
+    await tick(100);
+    const off = t.off();
+    await tick(2000);
+    await off;
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '-🤔@41174']);
+    clean(placed);
+  });
+
+  it('a frame lands on the holder just before the handover: that frame is what moves and comes off', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ frames: () => LIST, slow: { '🤓': 1000 } });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(2000);                                   // 🤓 asked; it lands at 3 s
+    await tick(500);
+    arrive(ON_MOUTH);
+    await tick(600);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤓@41174', '+🤓@17743', '-🤓@41174', '-🤓@17743']);
+    clean(placed);
+  });
+
+  it('the 👾 lands after started() and the copy: 🤔 waits for it, then moves', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ slow: { '👾': 1000 } });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(500);
+    arrive(ON_MOUTH);
+    await tick(1000);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '-🤔@17743']);
+    clean(placed);
+  });
+
+  it('a frame the holder refused is not what the removal names: the glyph showing there is', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed } = node({ frames: () => LIST, refuse: ['+🤓@41174'] });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(2500);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '-🤔@41174']);
+    clean(placed);
+  });
+
+  it('…and after a refused frame, the handover moves the glyph showing, and the holder loses that one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ frames: () => LIST, refuse: ['+🤓@41174'] });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(2500);
+    arrive(ON_MOUTH);
+    await tick(10);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤔@17743', '-🤔@41174', '-🤔@17743']);
+    clean(placed);
+  });
+
+  it('the mouth refuses the move: the mark stays on the holder, steps there, and comes off there', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { turns, placed, arrive } = node({ frames: () => LIST, refuse: ['+🤔@17743'] });
+    const t = turns.train('egpt', EV);
+    t.started();
+    await tick(500);
+    arrive(ON_MOUTH);
+    await tick(2000);
+    await t.off();
+    expect(placed).toEqual(['+👾@41174', '+🤔@41174', '+🤓@41174', '-🤓@41174']);
+    clean(placed);
   });
 });
