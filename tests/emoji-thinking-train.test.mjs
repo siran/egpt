@@ -1,7 +1,7 @@
 // The emoji thinking train (operator 2026-11-03, dispatch.thinking_train: emoji, the default): no ⏳
 // bubble; a human line that starts or queues a turn gets 👾 at arrival, 🤔 when its turn starts, and the
-// mark comes off when the turn ends, whatever the outcome. The reply posts whole at finish; a tool use
-// takes the mark off and opens the bubble (2026-11-04). A '…' posts
+// mark comes off when the turn ends, whatever the outcome. The reply posts whole at finish; a tool use or
+// the first text that is not a polite silence takes the mark off and opens the bubble (2026-11-04). A '…' posts
 // nothing unless the being was addressed directly. Steers keep ✍️/👍. `bubble` is the old behaviour.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
@@ -166,9 +166,9 @@ describe('emoji train (the default): 👾 at arrival → 🤔 when the turn star
     expect(b.marks(m.msgId)).toEqual(['+👾', '-👾']);
   });
 
-  it('REPRODUCE: with no tool use, streamed text and the ambient timer open nothing; the reply posts whole', async () => {
+  it('REPRODUCE: with no streamed text and no tool use, the ambient timer opens nothing; the reply posts whole', async () => {
     const g = gate();
-    const b = build({ mode: 'on', work: async (onPartial) => { onPartial('Mirando…'); await g.p; return { text: 'Mirando… listo.' }; } });
+    const b = build({ mode: 'on', work: async () => { await g.p; return { text: 'Listo.' }; } });
     const m = msg('@e revisá esto');
     const done = b.bridge.emit(m);
     await until(() => b.brain.calls.length);
@@ -178,7 +178,7 @@ describe('emoji train (the default): 👾 at arrival → 🤔 when the turn star
     g.open();
     await done;
     await flush();
-    expect(b.posts()).toEqual([['!g', 'Mirando… listo.']]);
+    expect(b.posts()).toEqual([['!g', 'Listo.']]);
     expect(b.bubbles()).toEqual([]);
     expect(b.marks(m.msgId)).toEqual(TRAIN);
   });
@@ -198,14 +198,16 @@ describe('emoji train (the default): 👾 at arrival → 🤔 when the turn star
   });
 });
 
-// The first tool use: the being is working (operator 2026-11-04). The bubble opens as an ambient bubble
-// turn's does, with the text so far; the 🤔 comes off; from then on it is a bubble turn.
-describe('emoji train: the first tool use opens the bubble and takes the mark off', () => {
+// The first tool use, or the first text that is not a polite silence (operator 2026-11-04: "as soon as any
+// text is outputted from model we show it"). The bubble opens as an ambient bubble turn's does, with the text
+// so far; the 🤔 comes off; from then on it is a bubble turn.
+describe('emoji train: the first text or tool use opens the bubble and takes the mark off', () => {
   const OFF_AT_ONCE = ['+👾', '-👾'];                   // a tool at once: off before the 🤔 lands, nothing placed after
-  it('REPRODUCE: text, then a tool use — no bubble before; at the tool it opens with that text, 🤔 off, pulses edit it, the reply lands in it', async () => {
+  it('REPRODUCE: the first text opens the bubble with it, 🤔 off; a later tool use opens nothing more; pulses edit it, the reply lands in it', async () => {
     let t = 1;
-    const tool = gate(), g = gate();
+    const text = gate(), tool = gate(), g = gate();
     const b = build({ mode: 'on', now: () => t, work: async (onPartial) => {
+      await text.p;
       onPartial('Voy a mirar.');
       await tool.p;
       onPartial('Voy a mirar.', { tool: true });
@@ -220,9 +222,13 @@ describe('emoji train: the first tool use opens the bubble and takes the mark of
     await flush();
     expect(b.bridge.streams).toEqual([]);
     expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔']);
-    tool.open();
+    text.open();
     await until(() => b.bridge.streams.length && b.marks(m.msgId).length === 3);
     expect(b.bridge.streams.map((s) => [s.chat, s.init])).toEqual([['!g', `Voy a mirar. ${LIVE_FRAME_MARK}`]]);
+    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    tool.open();
+    await flush(); await flush();
+    expect(b.bridge.streams).toHaveLength(1);
     expect(b.marks(m.msgId)).toEqual(TRAIN);
     t += 20_000; b.spine.tick(); await flush();
     expect(b.bridge.streams[0].frames.at(-1)).toMatch(/^Voy a mirar\. ⏳ \S+ 20s$/);
@@ -234,6 +240,52 @@ describe('emoji train: the first tool use opens the bubble and takes the mark of
     expect(b.posts()).toEqual([['!g', 'Voy a mirar.\nEs eso, listo.']]);
     expect(b.marks(m.msgId)).toEqual(TRAIN);
   });
+
+  it("REPRODUCE: an unaddressed 'on' reply streamed as nothing but '…' never opens and posts nothing; the mark comes off", async () => {
+    const said = gate();
+    const b = build({ mode: 'on', work: async (onPartial) => { await said.p; onPartial(''); onPartial('…'); return { text: '…' }; } });
+    const m = msg('qué calor hace hoy');
+    const done = b.bridge.emit(m);
+    await until(() => b.brain.calls.length);
+    await flush();
+    said.open();
+    await done;
+    await flush();
+    expect(b.bridge.streams).toEqual([]);
+    expect(b.posts()).toEqual([]);
+    expect(b.marks(m.msgId)).toEqual(TRAIN);
+  });
+
+  for (const silence of [['…'], ['.', '..', '...']]) {
+    it(`REPRODUCE: a stream that starts ${silence.map((s) => `'${s}'`).join(', ')} stays unshown, and opens once real text follows`, async () => {
+      const start = gate(), more = gate(), g = gate();
+      const real = `${silence.at(-1)} pues sí`;
+      const b = build({ mode: 'on', work: async (onPartial) => {
+        await start.p;
+        for (const s of silence) onPartial(s);
+        await more.p;
+        onPartial(real);
+        await g.p;
+        return { text: `${real}, hace calor.` };
+      } });
+      const m = msg('qué calor hace hoy');
+      const done = b.bridge.emit(m);
+      await until(() => b.brain.calls.length);
+      await flush();
+      start.open();
+      await flush(); await flush();
+      expect(b.bridge.streams).toEqual([]);
+      expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔']);
+      more.open();
+      await until(() => b.bridge.streams.length && b.marks(m.msgId).length === 3);
+      expect(b.bridge.streams.map((s) => s.init)).toEqual([`${real} ${LIVE_FRAME_MARK}`]);
+      expect(b.marks(m.msgId)).toEqual(TRAIN);
+      g.open();
+      await done;
+      await flush();
+      expect(b.posts()).toEqual([['!g', `${real}, hace calor.`]]);
+    });
+  }
 
   it('REPRODUCE: a tool use before any text opens the ⏳ placeholder', async () => {
     const g = gate();

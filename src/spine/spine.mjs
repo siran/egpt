@@ -32,7 +32,7 @@ import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, turnKind, parseStopWord, pauseNotice, isStopPhrase, STOP_PHRASE } from '../stop-guard.mjs';
 import { SHELL_SURFACE } from './identity.mjs';
-import { mentionHits, withoutAddress, isDeliberateSilence } from '../auto-mode.mjs';
+import { mentionHits, withoutAddress, isDeliberateSilence, isSilenceReply } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 import { cleanForSpeech } from '../speech-clean.mjs';
 
@@ -117,9 +117,11 @@ const AMBIENT_OPEN_MS = 10_000;
 // A turn that never opens its ⏳ and posts its reply whole at finish: a quiet one, and every one with
 // the emoji train (dispatch.thinking_train, operator 2026-11-03).
 const whole = (d) => !!(d.quiet || d.emoji);
-// …except an emoji turn's first tool use opens it, as an ambient bubble turn's does (operator 2026-11-04).
+// …except an emoji turn's first tool use or first text opens it, as an ambient bubble turn's does (operator 2026-11-04).
 // Not a bot's line or a tunnel: those post nothing until the end.
 const opensOnTool = (d) => !!d.emoji && !d.tunnel && (!d.quiet || !!d.unaddressed);
+// Text that is still only a polite silence, or the start of one ('.', '..'), opens nothing: a silence stays unseen.
+const silentSoFar = (t) => isSilenceReply(t) || isSilenceReply(`${String(t ?? '').trim()}...`);
 
 /**
  * Build the spine. Nothing starts until start(). All deps are injected so the
@@ -1619,20 +1621,26 @@ export function createSpine({
       // `text` on item/completed), so before this the earlier output was simply gone.
       // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
       let streamed = '', working = false;
-      const show = (partial) => out.update(actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      const prose = (partial) => (actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      const show = (partial) => out.update(prose(partial));
+      // The emoji train's first tool use or first text: the bubble, with the text so far, replaces the mark.
+      const open = (partial) => {
+        working = true;
+        for (const m of marks) m.off(true);            // off for every turn on the line
+        show(partial);
+        return out.begin?.();
+      };
       const onPartial = (partial, use) => {
         if (use?.tool) {
           if (!whole(d)) return out.begin?.();         // the being used a tool: an ambient turn opens its train
           if (working || !opensOnTool(d)) return;
-          working = true;                              // the emoji train's first tool: the bubble, with the text so far, replaces the mark
-          for (const m of marks) m.off(true);          // off for every turn on the line
-          show(partial);
-          return out.begin?.();
+          return open(partial);
         }
         const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
         transcript.logStream?.(ev, streamed, raw, { being: to });
         streamed = raw;
-        if (whole(d) && !working) return;              // quiet / emoji train: recorded, never shown — the reply posts whole at finish
+        // A bot's line, a tunnel, a silence so far: recorded, not shown — the reply posts whole at finish.
+        if (whole(d) && !working) return opensOnTool(d) && !silentSoFar(prose(raw)) ? open(partial) : undefined;
         return show(partial);
       };
       for (const m of marks) m.started();              // 🤔: the line goes to the model now
