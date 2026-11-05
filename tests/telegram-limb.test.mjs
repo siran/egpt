@@ -356,6 +356,26 @@ describe('telegram limb — inbound media (the shared intake)', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('REPRODUCE: a backlog video reaches onMedia marked backlog (media.save skips keyframes + whisper); a live one is not', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['videos/v1.mp4'] = 'mp4';
+      api.files['videos/v2.mp4'] = 'mp4';
+      const { saved, onMedia } = saver();
+      const { bridge, incoming } = start(api, { onMedia, mediaDir: dir });
+      await bridge.startupReady;
+      api.updates(
+        privateMsg({ message_id: 7, date: NOW_S - 3600, text: undefined, video: { file_id: 'v1', file_size: 10 } }),
+        privateMsg({ message_id: 8, text: undefined, video: { file_id: 'v2', file_size: 10 } }),
+      );
+      await vi.waitFor(() => expect(incoming).toHaveLength(2));
+      expect(saved.find((m) => m.msgId === '7')).toMatchObject({ kind: 'video', backlog: true });
+      expect(saved.find((m) => m.msgId === '8')).toMatchObject({ kind: 'video', backlog: false });
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   // contract 8.4
   it('a bare name reply from the owner to a voice note posts its 👂 transcript from transcript.md and wakes no one', async () => {
     const api = fakeApi();

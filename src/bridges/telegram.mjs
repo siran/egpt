@@ -392,7 +392,7 @@ export function startTelegramBridge({
     let path = null, isVoice = false, pending = null, listening = false;
     if (md && (md.voice || shouldDownload(policy, md.kind))) path = await download(md, title);
     const meta = md && shouldDownload(policy, md.kind) && typeof onMedia === 'function'
-      ? { chatID: chatId, chatName: title, chatType, network: 'telegram', msgId: msgKey, senderName, isSender: false, ts: tsMs, kind: md.kind, mime: md.mime, fileName: md.fileName, isVoiceNote: !!md.isVoiceNote }
+      ? { chatID: chatId, chatName: title, chatType, network: 'telegram', msgId: msgKey, senderName, isSender: false, ts: tsMs, kind: md.kind, mime: md.mime, fileName: md.fileName, isVoiceNote: !!md.isVoiceNote, backlog }
       : null;
     if (md?.voice) {
       isVoice = true;

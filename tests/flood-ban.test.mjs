@@ -140,32 +140,46 @@ describe('flood-ban: ban() — a ban decided outside the media counter (the /age
 // connection, holds every chat first seen in that window — until a window passes with no new chat.
 describe('flood-ban: observeChat — a burst of new chats on one connection is held', () => {
   const newChats = (fb, conn, from, to) => { for (let i = from; i <= to; i++) fb.observeChat(conn, `c${i}`, { isNew: true }); };
+  const held = (fb, conn, chatId, o) => fb.observeChat(conn, chatId, o).held;
+  const START = 'new-chat burst on primary: 11 new chats in 5m (last: Tío Pepe) — every chat first seen in it is held as backlog (recorded, not dispatched, not transcribed) until 5m pass with no new chat';
 
   it('10 new chats in the window are live; the 11th starts the burst and holds all 11; one notice', () => {
     let t = 0;
     const notices = [];
     const fb = createFloodBan({ now: () => t, onLog: (m) => notices.push(m) });
-    for (let i = 1; i <= 10; i++) { t += 1_000; expect(fb.observeChat('primary', `c${i}`, { isNew: true })).toBe(false); }
+    for (let i = 1; i <= 10; i++) { t += 1_000; expect(held(fb, 'primary', `c${i}`, { isNew: true })).toBe(false); }
     t += 1_000;
-    expect(fb.observeChat('primary', 'c11', { isNew: true, chatName: 'Tío Pepe' })).toBe(true);
-    expect(fb.observeChat('primary', 'c1')).toBe(true);                  // first seen in the window, known now: held
-    expect(fb.observeChat('primary', 'old')).toBe(false);                // a chat the node already had
-    expect(fb.observeChat('primary', 'c12', { isNew: true })).toBe(true);
-    expect(notices).toEqual(['new-chat burst on primary: 11 new chats in 5m (last: Tío Pepe) — every chat first seen in it is held as backlog (recorded, not dispatched, not transcribed) until 5m pass with no new chat']);
+    expect(held(fb, 'primary', 'c11', { isNew: true, chatName: 'Tío Pepe' })).toBe(true);
+    expect(held(fb, 'primary', 'c1')).toBe(true);                  // first seen in the window, known now: held
+    expect(held(fb, 'primary', 'old')).toBe(false);                // a chat the node already had
+    expect(held(fb, 'primary', 'c12', { isNew: true })).toBe(true);
+    expect(notices).toEqual([START]);
+  });
+
+  // The start is the one line the admin chat gets (boot posts it to log_to_group): returned once, never for the lift.
+  it('REPRODUCE: the call that starts a burst returns its notice; no other call does, the lift included', () => {
+    let t = 0;
+    const fb = createFloodBan({ now: () => t });
+    for (let i = 1; i <= 10; i++) expect(fb.observeChat('primary', `c${i}`, { isNew: true }).notice).toBe(null);
+    expect(fb.observeChat('primary', 'c11', { isNew: true, chatName: 'Tío Pepe' })).toEqual({ held: true, notice: START });
+    expect(fb.observeChat('primary', 'c12', { isNew: true })).toEqual({ held: true, notice: null });
+    expect(fb.observeChat('primary', 'c1')).toEqual({ held: true, notice: null });
+    t += 5 * 60_000;
+    expect(fb.observeChat('primary', 'c1')).toEqual({ held: false, notice: null });   // lifted: a log line only
   });
 
   it('a slow trickle never trips it: new chats spread past the window', () => {
     let t = 0;
     const fb = createFloodBan({ now: () => t });
-    for (let i = 1; i <= 30; i++) { t += 31_000; expect(fb.observeChat('primary', `c${i}`, { isNew: true })).toBe(false); }
+    for (let i = 1; i <= 30; i++) { t += 31_000; expect(held(fb, 'primary', `c${i}`, { isNew: true })).toBe(false); }
   });
 
   it('the same new chat seen twice before it is registered counts once', () => {
     const fb = createFloodBan({ now: () => 0 });
     for (let i = 0; i < 20; i++) fb.observeChat('primary', 'same', { isNew: true });
     newChats(fb, 'primary', 1, 8);
-    expect(fb.observeChat('primary', 'c10', { isNew: true })).toBe(false);   // 10 distinct, not 29
-    expect(fb.observeChat('primary', 'c11', { isNew: true })).toBe(true);
+    expect(held(fb, 'primary', 'c10', { isNew: true })).toBe(false);   // 10 distinct, not 29
+    expect(held(fb, 'primary', 'c11', { isNew: true })).toBe(true);
   });
 
   it('lifts once a window passes with no new chat — lift notice — and the held chats are live again', () => {
@@ -174,12 +188,12 @@ describe('flood-ban: observeChat — a burst of new chats on one connection is h
     const fb = createFloodBan({ now: () => t, onLog: (m) => notices.push(m) });
     newChats(fb, 'primary', 1, 11);
     t += 4 * 60_000;
-    expect(fb.observeChat('primary', 'c12', { isNew: true })).toBe(true);    // a new chat keeps it going
+    expect(held(fb, 'primary', 'c12', { isNew: true })).toBe(true);    // a new chat keeps it going
     t += 4 * 60_000;
-    expect(fb.observeChat('primary', 'c1')).toBe(true);                      // 4m since the last new chat: still on
+    expect(held(fb, 'primary', 'c1')).toBe(true);                      // 4m since the last new chat: still on
     t += 60_000;
-    expect(fb.observeChat('primary', 'c1')).toBe(false);
-    expect(fb.observeChat('primary', 'c13', { isNew: true })).toBe(false);
+    expect(held(fb, 'primary', 'c1')).toBe(false);
+    expect(held(fb, 'primary', 'c13', { isNew: true })).toBe(false);
     expect(notices[1]).toBe('new-chat burst on primary lifted: 12 chats were held');
     expect(notices).toHaveLength(2);
   });
@@ -188,7 +202,7 @@ describe('flood-ban: observeChat — a burst of new chats on one connection is h
     const fb = createFloodBan({ now: () => 0 });
     newChats(fb, 'primary', 1, 6);
     newChats(fb, 'secondary', 7, 12);
-    expect(fb.observeChat('primary', 'c7', { isNew: true })).toBe(false);
-    expect(fb.observeChat('secondary', 'c1', { isNew: true })).toBe(false);
+    expect(held(fb, 'primary', 'c7', { isNew: true })).toBe(false);
+    expect(held(fb, 'secondary', 'c1', { isNew: true })).toBe(false);
   });
 });

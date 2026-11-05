@@ -1078,6 +1078,16 @@ describe('beeper bridge', () => {
     expect(calls).toBe(1);
   });
 
+  // …videos too: media.save (Route A) skips keyframes + whisper for a meta marked backlog.
+  it('REPRODUCE: a backlog video reaches onMedia marked backlog; a live one is not', async () => {
+    const { media } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'old-clip', type: 'VIDEO', text: null, timestamp: Date.now() - 60_000, attachments: [fakeAttachment({ name: 'old.mp4', mimeType: 'video/mp4' })] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'new-clip', type: 'VIDEO', text: null, attachments: [fakeAttachment({ name: 'new.mp4', mimeType: 'video/mp4' })] })] });
+    await waitFor(() => media.length === 2);
+    expect(media.find((m) => m.msgId === 'old-clip')).toMatchObject({ kind: 'video', backlog: true });
+    expect(media.find((m) => m.msgId === 'new-clip')).toMatchObject({ kind: 'video', backlog: false });
+  });
+
   // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): the per-note gate is now
   // echoPlan(noteId) → { rank, winner } — rank 1 posts now, rank>1 HOLDS + arms a promotion, rank 0
   // is the echo:false hard opt-out. The rank/order itself is unit-tested in echo-hrw.test.mjs; here

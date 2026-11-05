@@ -68,8 +68,10 @@ export function createFloodBan({
     },
 
     // Is this chat held as backlog? `isNew`: the node has never seen it (the caller's conversations.yaml read).
+    // `notice`: the start line, on the one call that starts a burst (boot posts it to the admin chat).
     observeChat(connection, chatId, { isNew = false, chatName = '' } = {}) {
       const t = now();
+      let notice = null;
       let b = newChats.get(connection);
       if (!b) newChats.set(connection, (b = { firsts: new Map(), held: null, last: 0 }));
       for (const [c, at] of b.firsts) { if (t - at < NEW_CHAT_WINDOW_MS) break; b.firsts.delete(c); }
@@ -84,10 +86,11 @@ export function createFloodBan({
         else if (b.firsts.size > NEW_CHAT_BURST) {
           b.held = new Set(b.firsts.keys());
           const m = NEW_CHAT_WINDOW_MS / 60_000;
-          onLog(`new-chat burst on ${connection}: ${b.firsts.size} new chats in ${m}m (last: ${chatName || chatId}) — every chat first seen in it is held as backlog (recorded, not dispatched, not transcribed) until ${m}m pass with no new chat`);
+          notice = `new-chat burst on ${connection}: ${b.firsts.size} new chats in ${m}m (last: ${chatName || chatId}) — every chat first seen in it is held as backlog (recorded, not dispatched, not transcribed) until ${m}m pass with no new chat`;
+          onLog(notice);
         }
       }
-      return !!b.held?.has(chatId);
+      return { held: !!b.held?.has(chatId), notice };
     },
 
     // A ban decided by a caller rather than the media counter (commands.mjs: the /agents flood).

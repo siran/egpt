@@ -36,7 +36,7 @@ export function createMedia({
 
   return {
     // The bridge's onMedia(meta): meta = { chatID, chatName, msgId, senderName,
-    // ts, kind, mime, fileName, localPath, caption, isVoiceNote, ... }. Returns
+    // ts, kind, mime, fileName, localPath, caption, isVoiceNote, backlog, ... }. Returns
     // the saved path, or null on failure (never throws — media must not block text).
     async save(meta) {
       try {
@@ -58,7 +58,8 @@ export function createMedia({
         // ROUTE A — a video gets keyframes + an audio transcript so E can SEE it
         // (it has no ffmpeg in its sandbox). The .jpg frames land in this chat's
         // media/, the transcript rides the dispatch line. Best-effort, never fatal.
-        if (meta.kind === 'video') {
+        // A backlog video gets neither (operator 2026-11-05): saved and named, nothing more.
+        if (meta.kind === 'video' && !meta.backlog) {
           const ffmpeg = transcribeCfg?.ffmpeg_command || 'ffmpeg';
           const baseName = name.replace(/\.[^.]+$/, '');
           let framePaths = [];
