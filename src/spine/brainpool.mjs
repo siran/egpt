@@ -27,6 +27,7 @@
 // its own `personality:` (see wrapFresh below), and its thread persists in a per-agent
 // NESTED block (recordThread(..., being)).
 import { slugDir, getBeing, getContact, forkKeyOf, recordThread, patchBeing, readIdentityFeed, seedIdentityLayers, readAutoModeLayer, appendThreadStat, recordAgentTurn, turnUser, mutateState, nowIsoString, rollTranscript, stampThreadId, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { backgroundAgentEnvOf } from '../background-agents.mjs';
 // THE wake vocabulary, imported — not re-read here. `handles:` (else the map key) plus the
 // CONDITIONAL fallback_handle, exactly as the mention matcher resolves them, so what the card
 // tells an agent it answers to can never drift from what actually wakes it (feedConfig below).
@@ -1274,6 +1275,8 @@ export function createBrainPool({
       // unboxed turn runs as the operator in his own. Read per turn like the credential above, so
       // an invalid entry is named in this turn's log.
       const sandboxReadMounts = sandboxed === true ? globalReadPathsOf(getConfig()?.global_read_paths, onLog) : [];
+      const cfgNow = getConfig();
+      const backgroundAgentEnv = ccode ? backgroundAgentEnvOf(cfgNow?.background_agents, cfgNow?.agents?.[being]?.background_agents, onLog) : [];
       // THE PIN (sandbox_pin): this being's own pool account in this conversation, and its standing paths
       // through the same allowed_paths walk — the launcher's -PinKey / -PinSharePath[ReadOnly].
       const sandboxPin = sandboxed === true && pin ? { key: pin.key, ...sandboxSharePathsFor({ allowed_paths: pin.paths }) } : null;
@@ -1351,6 +1354,8 @@ export function createBrainPool({
         // argv it had.
         ...(sandboxReadMounts.length ? { sandboxReadMounts } : {}),
         ...(sandboxPin ? { sandboxPin } : {}),
+        // Sub-agent model/effort (config background_agents): env for the spawn, boxed or not. Applies when a process spawns.
+        ...(backgroundAgentEnv.length ? { backgroundAgentEnv } : {}),
         // ...and the one way a being can ask its spine for anything (operator 2026-09-26: "for now
         // only the browser"): a handle that mints a per-session credential for THIS being in THIS
         // room, revoked at close (src/spine/being-link.mjs) — -SetEnv entries for a boxed session

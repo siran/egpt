@@ -332,7 +332,9 @@ export function createWarmCliSession(options = {}) {
   // THE BEING LINK for an UNBOXED session (src/spine/being-link.mjs): its credential rides the spawn
   // env, revoked at close. A boxed session's rides the launcher's -SetEnv and hands none in here.
   const link = typeof options.beingLink?.mint === 'function' ? options.beingLink.mint() : null;
-  const env = link ? { ...process.env, ...Object.fromEntries(link.env.map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)])) } : null;
+  // ...and the sub-agent model/effort (config `background_agents`), unboxed the same way.
+  const extraEnv = [...(link ? link.env : []), ...(Array.isArray(options.backgroundAgentEnv) ? options.backgroundAgentEnv : [])];
+  const env = extraEnv.length ? { ...process.env, ...Object.fromEntries(extraEnv.map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)])) } : null;
 
   function spawnProc() {
     // Reuse the tested confinement/model/effort/--resume arg-builder, then add

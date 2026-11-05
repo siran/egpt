@@ -449,6 +449,7 @@ export function createSandboxCliSession(options = {}) {
     ...(jsonlStoreDir ? [`${CONFIG_DIR_ENV}=${jsonlStoreDir}`] : []),
     ...(gitBash ? [`${GIT_BASH_ENV}=${gitBash}`, MSYS2_PATH_TYPE_ENTRY] : []),
     ...(link ? link.env : []),
+    ...(isCcode && Array.isArray(options.backgroundAgentEnv) ? options.backgroundAgentEnv : []),
   ];
 
   function sandboxSpawn(bin, args, spawnOpts) {
@@ -471,7 +472,7 @@ export function createSandboxCliSession(options = {}) {
   // `options.sessionId` to `--resume`, so a resumed thread's argv is unchanged. Spread in only
   // when there is one (ccode), so the codex/pi options object is untouched.
   return withLinkRevoked(withOauthRemedy(
-    createWarmCliSession({ ...options, beingLink: null, spawn: sandboxSpawn, ...(threadId ? { newSessionId: threadId } : {}) }),
+    createWarmCliSession({ ...options, beingLink: null, backgroundAgentEnv: null, spawn: sandboxSpawn, ...(threadId ? { newSessionId: threadId } : {}) }),
     oauthToken.length,
   ), link);
 }

@@ -2086,6 +2086,9 @@ export const CONFIG_SCHEMA = {
         RETIRED (2026-10-22), ignored — boot logs one line per agent carrying it.
         (A conversation's OWN agents.<name>.default: true in conversations.yaml
         is a different thing: that chat's owner; see heartbeats.)
+      background_agents
+        OPTIONAL { model, effort } for the sub-agents this being launches; wins over
+        the node's top-level background_agents key by key. See background_agents.
       heartbeats
         OPTIONAL Boolean (operator 2026-10-15). false = a conversation whose
         own default agent this is (conversations.yaml agents.<name>.default:
@@ -2509,6 +2512,25 @@ export const CONFIG_SCHEMA = {
     needs a real filesystem ACE on the folder; that is what the share list
     above grants per turn, but the folder must still be reachable by the pool
     group at all (setup/SANDBOX.md).
+  `,
+
+  background_agents: `
+    The model and effort of the sub-agents a being launches in the background
+    (the CLI's Agent tool), set per node and overridable per being:
+
+      background_agents: { model: sonnet, effort: medium }
+      agents:
+        wren:
+          background_agents: { effort: high }   # this being only; model stays the node's
+
+    model: sonnet | opus | haiku. effort: low | medium | high | xhigh | max.
+    Handed to the CLI as CLAUDE_CODE_SUBAGENT_MODEL / CLAUDE_CODE_SUBAGENT_EFFORT,
+    boxed or not. An agents.<name> key wins over the node's, key by key.
+
+    DEFAULT: unset - nothing is passed and the CLI's own default applies. An
+    invalid value is logged once and ignored. It applies when a CLI process
+    spawns (a new session, or a respawn); a warm process keeps what it started
+    with, like a type file's model/effort. Claude Code beings only.
   `,
 
   global_read_paths: `
