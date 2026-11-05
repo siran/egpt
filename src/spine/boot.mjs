@@ -2112,10 +2112,15 @@ export async function boot({
     isBanned: (network, chatId, senderId) => floodBan.isBanned(surfaceOf(network), chatId, senderId),
     observe: (network, chatId, senderId, meta) => floodBan.observe(surfaceOf(network), chatId, senderId, meta),
   };
-  // An EAR's new-chat burst check, per connection: "never seen" = no conversations.yaml entry.
+  // An EAR's new-chat burst check, per connection: "never seen" = no conversations.yaml entry. The
+  // burst's START is the node's own line in log_to_group, as "kg · spine recovered…" is (forward ref).
   const floodBanForEar = (connection) => ({
     ...floodBanForBridge,
-    observeChat: async (network, chatId, meta) => floodBan.observeChat(connection, chatId, { ...meta, isNew: !getContact(await _loadState(), surfaceOf(network), chatId) }),
+    observeChat: async (network, chatId, meta) => {
+      const r = floodBan.observeChat(connection, chatId, { ...meta, isNew: !getContact(await _loadState(), surfaceOf(network), chatId) });
+      if (r.notice) Promise.resolve().then(() => logToGroup(`${getConfig()?.node_name ?? '?'} · ${r.notice}`)).catch((e) => log.line?.(`[media-flood] burst notice not posted: ${e?.message ?? e}`));
+      return r;
+    },
   });
   const sharedBridgeOpts = {
     floodBan: floodBanForBridge,

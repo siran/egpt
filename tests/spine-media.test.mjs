@@ -90,6 +90,24 @@ describe('media.save', () => {
     expect(txCalls).toHaveLength(1);                              // audio transcribed
   });
 
+  // BACKLOG IS NOT TRANSCRIBED (operator 2026-11-05), videos included: saved and named, no keyframes, no whisper.
+  it('REPRODUCE: a backlog video is saved — no keyframes, no transcription, just its saved path', async () => {
+    let state = emptyState();
+    const copies = [];
+    const io = { copyFile: async (src, dest) => copies.push({ src, dest }), mkdir: async () => {}, appendFile: async () => {} };
+    const seen = { frames: 0, tx: 0, asked: 0 };
+    const media = createMedia({
+      contacts: createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io }), io,
+      extractFrames: async () => { seen.frames++; return []; },
+      transcribe: async () => { seen.tx++; return '(video) gol de Enciso'; },
+      resolveTranscriptionService: async () => { seen.asked++; return { enabled: true }; },
+    });
+    const r = await media.save({ ...META, kind: 'video', mime: 'video/mp4', fileName: 'clip.mp4', localPath: '/tmp/clip.mp4', backlog: true });
+    expect(r).toMatch(/media[\\/].*\.mp4$/);
+    expect(copies).toHaveLength(1);
+    expect(seen).toEqual({ frames: 0, tx: 0, asked: 0 });
+  });
+
   // VIDEOS ON THE SAME PATH AS VOICE NOTES (operator 2026-09-16). A voice note is transcribed only when
   // resolveTranscriptionService(chatID).enabled (beeper.mjs); a video's audio was transcribed whatever
   // the chat's verdict. Same resolver, same verdict, and the keyframes are not the transcriber's business.

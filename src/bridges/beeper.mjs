@@ -645,7 +645,7 @@ export async function startBeeperBridge(opts = {}) {
     // media into a chat is muted; while muted EVERY message of theirs — media AND text — is
     // dropped HERE, before persistMedia + onIncoming, so nothing hits disk or the spine. Null
     // (a directly-built bridge) ⇒ no flood gate, byte-identical to before. An ear's also carries
-    // observeChat (network, chatId, { chatName }) => held, the new-chat burst (boot).
+    // observeChat (network, chatId, { chatName }) => { held }, the new-chat burst (boot).
     floodBan = null,
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
@@ -1316,7 +1316,7 @@ export async function startBeeperBridge(opts = {}) {
 
   // What onMedia is handed for one attachment; null when the download policy skips its kind. A pending
   // voice note's arrival carries it too (`voiceMedia`), so a restart saves the audio the same way.
-  function mediaMeta(msg, info, att, localPath, caption) {
+  function mediaMeta(msg, info, att, localPath, caption, backlog = false) {
     const mime = att?.mimeType || att?.mimetype || att?.mime || '';
     const extHint = String(att?.fileName || '').split('.').pop();
     const kind = mediaKind(mime, extHint);
@@ -1338,6 +1338,7 @@ export async function startBeeperBridge(opts = {}) {
       localPath,
       caption,
       isVoiceNote: !!att?.isVoiceNote,
+      backlog,   // media.save gives a backlog video no keyframes and no transcript
     };
   }
 
@@ -1350,14 +1351,14 @@ export async function startBeeperBridge(opts = {}) {
   // the caller can ANNOUNCE non-voice media to the model (the saved path) — a
   // photo/gif/video/doc must reach E, not just disk (operator 2026-06-16: this
   // regressed; onMedia's returned path was discarded here).
-  async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null, voiceInText = true } = {}) {
+  async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null, backlog = false } = {}) {
     const saved = [];
     if (typeof onMedia !== 'function') return saved;
     if (mediaDownloadPolicy === 'off') return saved;
     const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
     if (!atts.length) return saved;
     for (const att of atts) {
-      const meta = mediaMeta(msg, info, att, null, (att === voiceAtt) ? voiceCaption : (htmlToMarkdown(att?.caption) || htmlToMarkdown(msg.text) || null));
+      const meta = mediaMeta(msg, info, att, null, (att === voiceAtt) ? voiceCaption : (htmlToMarkdown(att?.caption) || htmlToMarkdown(msg.text) || null), backlog);
       if (!meta) continue;
       const localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
       if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
@@ -1365,7 +1366,7 @@ export async function startBeeperBridge(opts = {}) {
       try {
         // inText: this attachment is the one the voice branch already transcribed
         // into `text` — don't ALSO announce its path (avoids a double mention).
-        saved.push(savedEntry(await onMedia({ ...meta, localPath }), { kind, localPath, fileName: att?.fileName ?? null, inText: att === voiceAtt && voiceInText }));
+        saved.push(savedEntry(await onMedia({ ...meta, localPath }), { kind, localPath, fileName: att?.fileName ?? null, inText: att === voiceAtt && !backlog }));
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
     return saved;
@@ -2057,7 +2058,7 @@ export async function startBeeperBridge(opts = {}) {
       onLog(`beeper: backlog message [${info.title}] (${new Date(tsMs).toISOString()} < cutoff ${new Date(backlogCutoffMs).toISOString()}) — backfilled to transcript, not dispatched`);
     }
     // …and so is a chat first seen in a NEW-CHAT BURST on this connection (src/flood-ban.mjs observeChat).
-    if (floodBan?.observeChat && await floodBan.observeChat(acct || 'whatsapp', chatID, { chatName: info.title })) {
+    if (floodBan?.observeChat && (await floodBan.observeChat(acct || 'whatsapp', chatID, { chatName: info.title })).held) {
       if (!isBacklog) onLog(`beeper: held [${info.title}] — first seen in a new-chat burst, backfilled to transcript, not dispatched`);
       isBacklog = true;
     }
@@ -2124,7 +2125,7 @@ export async function startBeeperBridge(opts = {}) {
     // transcribed is persisted with its outcome line (its sidecar caption IS the
     // transcription), at the end of this function.
     const withMedia = async (body, voiceCaption) => {
-      const saved = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption, voiceInText: !isBacklog });
+      const saved = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption, backlog: isBacklog });
       return withMediaLines(body, saved);
     };
     if (!_voicePending) text = await withMedia(text, null);

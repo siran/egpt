@@ -415,10 +415,41 @@ describe('the new-chat burst check rides the ear and reads conversations.yaml', 
     try {
       expect(byConnection.secondary.opts.floodBan.observeChat).toBeUndefined();
       const ear = byConnection.primary.opts.floodBan;
-      for (let i = 1; i <= 10; i++) expect(await ear.observeChat('whatsapp', `!new-${i}`, { chatName: `n${i}` })).toBe(false);
-      expect(await ear.observeChat('whatsapp', '!known', { chatName: 'Casa' })).toBe(false);
-      expect(await ear.observeChat('whatsapp', '!new-11', { chatName: 'n11' })).toBe(true);
+      for (let i = 1; i <= 10; i++) expect((await ear.observeChat('whatsapp', `!new-${i}`, { chatName: `n${i}` })).held).toBe(false);
+      expect((await ear.observeChat('whatsapp', '!known', { chatName: 'Casa' })).held).toBe(false);
+      expect((await ear.observeChat('whatsapp', '!new-11', { chatName: 'n11' })).held).toBe(true);
       expect(lines.filter((l) => l.startsWith('[media-flood] new-chat burst on primary: 11 new chats'))).toHaveLength(1);
+    } finally { app.stop(); }
+  });
+
+  // The node's own line to the admin chat — the path "kg · spine recovered after 2m" takes (logToGroup).
+  it('REPRODUCE: the burst START reaches log_to_group once, as a node line; the chats held after it say nothing more', async () => {
+    let opts = null;
+    const sent = [];
+    const start = async (o) => {
+      opts = o;
+      return {
+        async send(text, so) { sent.push({ text, chatId: so?.chatId }); return { ok: true }; },
+        async sendAndGetId(text, so) { sent.push({ text, chatId: so?.chatId }); return 'id-1'; },
+        startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; },
+        async resolveChatId(s) { return String(s); },
+        async chatHasParticipant() { return null; },
+        isAlive: () => true, stop() {},
+      };
+    };
+    const app = await boot({
+      readConfig: () => ({ node_name: 'kg', log_to_group: 'eGPT Admin', agents: AG(), beeper: { primary: { account: 'an@example.com', token: T_PRIMARY } } }),
+      startBridge: start, makeSession: fakeSession, probeEndpoint: fakeProbe,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    try {
+      for (let i = 1; i <= 14; i++) await opts.floodBan.observeChat('whatsapp', `!new-${i}`, { chatName: `n${i}` });
+      const admin = () => sent.filter((m) => m.chatId === 'eGPT Admin').map((m) => m.text);
+      await vi.waitFor(() => expect(admin()).toHaveLength(1));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(admin()).toHaveLength(1);
+      expect(admin()[0]).toContain('kg · new-chat burst on primary: 11 new chats in 5m (last: n11)');
     } finally { app.stop(); }
   });
 });
