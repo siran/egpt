@@ -75,6 +75,8 @@ const TRAIN_COPY_WAIT_MS = 6000;
 // thinking_frame_ms override, read live). 'random' (operator 2026-11-04, the default: no one reads time off the
 // train): 🤔, then any of TELEGRAM_REACTIONS but the one showing. A list steps through it in order.
 export const THINKING_FRAMES = 'random';
+// Never drawn at random (wren 2026-11-04): rude, sad or alarming ones, and the train/steer glyphs themselves.
+const RANDOM_SKIP = new Set(['👎', '🤬', '😢', '🤮', '💩', '🤡', '🥴', '💔', '💋', '🖕', '😈', '😭', '😱', '😨', '😡', '🍌', '🌭', '💊', '✍️', '👾']);
 export const THINKING_FRAME_MS = 2000;
 
 /**
@@ -273,7 +275,7 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
       }), () => {});
     }
     const list = () => { const f = frames?.(); return f === 'random' ? f : Array.isArray(f) ? f.filter((g) => typeof g === 'string' && g) : []; };
-    const any = () => { const pool = TELEGRAM_REACTIONS.filter((g) => g !== on[at]); return pool[Math.floor(rng() * pool.length)]; };
+    const any = () => { const pool = TELEGRAM_REACTIONS.filter((g) => g !== on[at] && !RANDOM_SKIP.has(g)); return pool[Math.floor(rng() * pool.length)]; };
     const every = () => { const ms = Number(thinkingFrameMs()); return ms > 0 ? ms : THINKING_FRAME_MS; };
     const arm = () => { timer = setTimeoutFn(frame, every()); timer?.unref?.(); };
     function frame() {
