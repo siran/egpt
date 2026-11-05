@@ -13,12 +13,20 @@ const SEP = '\u0000';
 const KEY = (surface, chatId, senderId) => `${surface}${SEP}${chatId}${SEP}${senderId}`;
 const lc = (x) => String(x ?? '').toLowerCase();
 
+// NEW-CHAT BURST (operator 2026-11-05: a linked Telegram imported years of chats at once). More than
+// NEW_CHAT_BURST chats the node has never seen, first seen within NEW_CHAT_WINDOW_MS on one connection,
+// hold every chat first seen in that window as backlog — and every later one — until a window passes
+// with no new chat. Lifts lazily, like a ban.
+export const NEW_CHAT_BURST = 10;
+export const NEW_CHAT_WINDOW_MS = 5 * 60_000;
+
 export function createFloodBan({
   count = 5, windowMs = 20_000, cooldownMs = 600_000,
   neverBan = [], now = () => Date.now(), onLog = () => {},
 } = {}) {
   const hits = new Map();   // key -> [t,...] recent MEDIA timestamps (the sliding window)
   const bans = new Map();   // key -> { until, senderName, chatName }
+  const newChats = new Map();   // connection -> { firsts: Map(chatId -> t) in the window, held: Set | null, last }
   const never = new Set(neverBan.map(lc).filter(Boolean));
 
   const isNever = (senderId, senderName) => never.has(lc(senderId)) || never.has(lc(senderName));
@@ -57,6 +65,29 @@ export function createFloodBan({
       }
       hits.set(key, arr);
       return { banned: false, justBanned: false };
+    },
+
+    // Is this chat held as backlog? `isNew`: the node has never seen it (the caller's conversations.yaml read).
+    observeChat(connection, chatId, { isNew = false, chatName = '' } = {}) {
+      const t = now();
+      let b = newChats.get(connection);
+      if (!b) newChats.set(connection, (b = { firsts: new Map(), held: null, last: 0 }));
+      for (const [c, at] of b.firsts) { if (t - at < NEW_CHAT_WINDOW_MS) break; b.firsts.delete(c); }
+      if (b.held && t - b.last >= NEW_CHAT_WINDOW_MS) {
+        onLog(`new-chat burst on ${connection} lifted: ${b.held.size} chats were held`);
+        b.held = null;
+      }
+      if (isNew && !b.firsts.has(chatId) && !b.held?.has(chatId)) {
+        b.firsts.set(chatId, t);
+        b.last = t;
+        if (b.held) b.held.add(chatId);
+        else if (b.firsts.size > NEW_CHAT_BURST) {
+          b.held = new Set(b.firsts.keys());
+          const m = NEW_CHAT_WINDOW_MS / 60_000;
+          onLog(`new-chat burst on ${connection}: ${b.firsts.size} new chats in ${m}m (last: ${chatName || chatId}) — every chat first seen in it is held as backlog (recorded, not dispatched, not transcribed) until ${m}m pass with no new chat`);
+        }
+      }
+      return !!b.held?.has(chatId);
     },
 
     // A ban decided by a caller rather than the media counter (commands.mjs: the /agents flood).

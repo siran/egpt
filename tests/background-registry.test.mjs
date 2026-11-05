@@ -151,14 +151,21 @@ describe('a voice note pending across a spine restart', () => {
     }
   });
 
-  it('a note whose ARRIVAL was already backlog (older than the last spine) stays backlog: recorded, not dispatched', async () => {
+  // BACKLOG IS NOT TRANSCRIBED (operator 2026-11-05). New code never leaves a backlog note pending;
+  // one an older spine left there is closed untranscribed, its audio still saved.
+  it('REPRODUCE: a note whose ARRIVAL was backlog is closed untranscribed — audio saved, recorded, not dispatched', async () => {
     const dir = home();
     const audio = join(dir, 'note.ogg');
     writeFileSync(audio, 'OggS');
     const { files, before } = await arriveThenDie(dir, audio, { from: { backlog: true } });
-    const { next } = await restart(dir, files, { transcribe: fakeTranscriber('e, hola').transcribe });
-    expect(transcriptText(files).slice(before.length)).toContain('[re #31503] (voice transcription, 11s) e, hola');
+    const tx = fakeTranscriber('e, hola');
+    const saved = [];
+    const { next } = await restart(dir, files, { transcribe: tx.transcribe, saveAudio: (m) => saved.push(m) });
+    expect(transcriptText(files).slice(before.length)).toContain('[re #31503] (voice note not transcribed: backlog)');
+    expect(tx.calls).toEqual([]);
+    expect(saved).toEqual([{ ...MEDIA(audio), caption: null }]);
     expect(next.brain.calls).toHaveLength(0);
+    expect(readReg(dir).transcriptions).toEqual([]);
   });
 
   // contract 8.3

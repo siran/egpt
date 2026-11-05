@@ -331,6 +331,31 @@ describe('telegram limb — inbound media (the shared intake)', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  // BACKLOG IS NOT TRANSCRIBED (operator 2026-11-05) — the shared intake's rule, on this limb too.
+  it('REPRODUCE: a backlog voice note is saved and named, never transcribed, nothing pending', async () => {
+    const dir = withDir();
+    try {
+      const api = fakeApi();
+      api.files['voice/n1.oga'] = 'opus';
+      const { saved, onMedia } = saver();
+      let calls = 0;
+      const { bridge, incoming } = start(api, {
+        onMedia, mediaDir: dir, transcribe: async () => { calls++; return '@ed hola'; }, postsBackDelayMs: 0,
+        resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+      });
+      await bridge.startupReady;
+      api.updates(privateMsg({ date: NOW_S - 3600, text: undefined, voice: { file_id: 'n1', duration: 3, mime_type: 'audio/ogg' } }));
+      await vi.waitFor(() => expect(incoming).toHaveLength(1));
+      expect(incoming[0].body).toBe('(voice note not transcribed: backlog)\n(audio) [saved: media/audio-7.bin]');
+      expect(incoming[0].from).toMatchObject({ backlog: true });
+      expect(incoming[0].from).not.toHaveProperty('voiceLine');
+      expect(saved).toHaveLength(1);
+      expect(calls).toBe(0);
+      expect(api.of('sendMessage')).toHaveLength(0);
+      bridge.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   // contract 8.4
   it('a bare name reply from the owner to a voice note posts its 👂 transcript from transcript.md and wakes no one', async () => {
     const api = fakeApi();

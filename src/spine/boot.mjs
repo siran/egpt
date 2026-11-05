@@ -2112,6 +2112,11 @@ export async function boot({
     isBanned: (network, chatId, senderId) => floodBan.isBanned(surfaceOf(network), chatId, senderId),
     observe: (network, chatId, senderId, meta) => floodBan.observe(surfaceOf(network), chatId, senderId, meta),
   };
+  // An EAR's new-chat burst check, per connection: "never seen" = no conversations.yaml entry.
+  const floodBanForEar = (connection) => ({
+    ...floodBanForBridge,
+    observeChat: async (network, chatId, meta) => floodBan.observeChat(connection, chatId, { ...meta, isNew: !getContact(await _loadState(), surfaceOf(network), chatId) }),
+  });
   const sharedBridgeOpts = {
     floodBan: floodBanForBridge,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
@@ -2469,10 +2474,12 @@ export async function boot({
   const bridgeForEndpoint = async (ep, { ear = false, name = null } = {}) => {
     const key = endpointKey(ep);
     if (!bridgeByEndpoint.has(key)) {
+      const owned = ear && wakesOn(ep);
       // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
       // defaults standing, never an explicit undefined that would override them.
       const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}),
         ...(ep.networks?.length ? { networks: ep.networks } : {}),
+        ...(owned ? { floodBan: floodBanForEar(name ?? 'default') } : {}),   // a mouth ingests nothing: no new-chat burst check
         // THE 🎧 LISTENING MARK goes through the one placement boot's own lines use (`outbound`,
         // below — makeOutbound with the mouth), as a node line (`being` null), so it comes from the
         // mouth on its own copy (operator 2026-09-16). Read at call time, as speakingIdentities is:
@@ -2488,7 +2495,6 @@ export async function boot({
         earIdentities };   // the operator's account: excepted from "a reaction by a mouth is ours" (beeper.mjs _maybeEmitReactions)
       const port = sendGuard.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
       if (ep.networks?.length) log.line?.(`[bridge] connection ${name ? `'${name}' ` : ''}hears only accounts starting ${JSON.stringify(ep.networks)} (networks:) — every other network on it is dropped on arrival; sending is unaffected`);
-      const owned = ear && wakesOn(ep);
       // A PER-CHAT ear: not one of the node's ears, but a connection allowed to be the ear of the
       // chats that ear is not in (perChatEars, above). Decided by NAME because that is what the
       // rules there are written in, and `owned` still wins — an endpoint that is already an ear

@@ -45,10 +45,10 @@ const _PRIVATE_HOME = vi.hoisted(() => {
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 
-let boot, emptyState;
+let boot, emptyState, ensureContact;
 beforeAll(async () => {
   ({ boot } = await import('../src/spine/boot.mjs'));
-  ({ emptyState } = await import('../src/conversations-state.mjs'));
+  ({ emptyState, ensureContact } = await import('../src/conversations-state.mjs'));
 });
 afterAll(async () => {
   delete process.env.EGPT_HOME;
@@ -113,10 +113,10 @@ function fakeTransport() {
   return { start, built };
 }
 
-async function bootWith(config) {
+async function bootWith(config, state = emptyState()) {
   const { start, built } = fakeTransport();
   const lines = [];
-  let convState = emptyState();
+  let convState = state;
   const app = await boot({
     readConfig: () => ({ node_name: 'kg', user_name: 'An', ...config }),
     startBridge: start,
@@ -399,5 +399,26 @@ describe('the ear and the mouth are two answers (operator 2026-09-10)', () => {
     expect(replies()).toEqual([]);
     expect(lines.filter((l) => /no INGEST connection/.test(l))).toHaveLength(1);
     app.stop();
+  });
+});
+
+// NEW-CHAT BURST (operator 2026-11-05): the EAR's floodBan answers observeChat from conversations.yaml
+// (never seen = no entry there), and its notice goes out the media-flood line. A mouth ingests
+// nothing, so it gets no burst check.
+describe('the new-chat burst check rides the ear and reads conversations.yaml', () => {
+  it('ear: a chat conversations.yaml holds is never counted, the 11th unknown one is held; mouth: no check', async () => {
+    const known = ensureContact(emptyState(), 'whatsapp', '!known', { pushedName: 'Casa' }).state;
+    const { byConnection, lines, app } = await bootWith({
+      agents: AG(),
+      beeper: { primary: { account: 'an@example.com', token: T_PRIMARY }, secondary: { account: 'rodz@example.com', token: T_SECONDARY } },
+    }, known);
+    try {
+      expect(byConnection.secondary.opts.floodBan.observeChat).toBeUndefined();
+      const ear = byConnection.primary.opts.floodBan;
+      for (let i = 1; i <= 10; i++) expect(await ear.observeChat('whatsapp', `!new-${i}`, { chatName: `n${i}` })).toBe(false);
+      expect(await ear.observeChat('whatsapp', '!known', { chatName: 'Casa' })).toBe(false);
+      expect(await ear.observeChat('whatsapp', '!new-11', { chatName: 'n11' })).toBe(true);
+      expect(lines.filter((l) => l.startsWith('[media-flood] new-chat burst on primary: 11 new chats'))).toHaveLength(1);
+    } finally { app.stop(); }
   });
 });

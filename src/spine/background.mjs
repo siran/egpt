@@ -89,9 +89,10 @@ export function createBackgroundRegistry({ path, node = null, liveAgents = () =>
         body = voiceFailedBody('restart');
       } else {
         const meta = {};
-        const text = await transcribeVoiceNote({ localPath: n.file, audioCfg, transcribe, onLog: (m) => onLog(`${where}: ${m}`), meta });
-        body = text ? voiceTranscriptBody(text, { durationSec: meta.durationSec }) : voiceFailedBody(meta.error ?? 'no transcript');
-        onLog(`${where}: resumed after the restart — ${text ? 'transcribed' : 'no transcript'}`);
+        // A backlog note is never transcribed (operator 2026-11-05); an older spine may have left one here.
+        const text = n.from.backlog ? null : await transcribeVoiceNote({ localPath: n.file, audioCfg, transcribe, onLog: (m) => onLog(`${where}: ${m}`), meta });
+        body = n.from.backlog ? voiceFailedBody('backlog') : text ? voiceTranscriptBody(text, { durationSec: meta.durationSec }) : voiceFailedBody(meta.error ?? 'no transcript');
+        onLog(`${where}: resumed after the restart — ${n.from.backlog ? 'backlog, not transcribed' : text ? 'transcribed' : 'no transcript'}`);
         if (n.media && saveAudio) {
           try { await saveAudio({ ...n.media, caption: text || null }, n.from); }
           catch (e) { onLog(`${where}: audio not saved — ${e?.message ?? e}`); }
