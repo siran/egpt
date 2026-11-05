@@ -48,6 +48,12 @@
 #   owner_node         WHICH node wakes on this connection, when the SAME account
 #                      is live on several nodes. Every other node still SENDS on
 #                      it. Absent = every node wakes, which is right for one node.
+#   networks           The networks this connection HEARS, e.g. [whatsapp]. Absent
+#                      = every network on the account. Each entry is a PREFIX of
+#                      the message's Beeper account id (whatsapp..., telegram...);
+#                      anything else is dropped on arrival, reactions and edits
+#                      too. Inbound only: sending and creating chats still work
+#                      on every network.
 #   use                On `beeper:` ITSELF, not inside a connection. OVERRIDES the
 #                      default MOUTH the names derive. OUTPUT ONLY: it can never
 #                      move the ear, and it cannot put a message into a chat its
@@ -62,6 +68,7 @@ limbs:
     main:
       account: "you@example.com"    # the account this token belongs to (label)
       token: "PASTE_YOUR_TOKEN_HERE"
+      # networks: [whatsapp]        # OPTIONAL - hear only these networks here - see above
     # alt:
     #   account: "other@example.com"
     #   token: "PASTE_YOUR_TOKEN_HERE"

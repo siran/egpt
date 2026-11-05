@@ -1646,6 +1646,20 @@ describe('beeper bridge', () => {
     expect(incoming.map((i) => i.text).sort()).toEqual(['no-acct', 'sig', 'tg']);
   });
 
+  it('network scope also drops a foreign network\'s REACTIONS and EDITS (they ride the message re-upsert)', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { incoming } = await startBridge({ networks: ['whatsapp'] });
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    const tg = (over) => ({ id, chatID: CHAT('chat-tg'), type: 'TEXT', text: 'hola', senderName: 'Bea', senderID: 'bea@beeper.local', isSender: false, timestamp: Date.now(), ...over });
+    fake.emit({ type: 'message.upserted', entries: [tg()] });
+    fake.emit({ type: 'message.upserted', entries: [tg({ reactions: [{ participantID: 'cy@beeper.local', reactionKey: '👍' }] })] });
+    fake.emit({ type: 'message.upserted', entries: [tg({ text: 'hola, editado' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(incoming.filter((i) => i.from.chatId === 'chat-tg')).toEqual([]);
+  });
+
   it('👂 ack only where posts_back; elsewhere still transcribes silently', async () => {
     // resolveTranscriptionService is a host-facing (downstream) hook — it's called
     // with the SHORT id, not the wire's full Matrix form.
@@ -5386,5 +5400,69 @@ describe('beeper bridge — recentMessages / awaitMessage', () => {
     const waiting = bridge.awaitMessage(null, (m) => m.text === 'the one', 5000);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'a-1', text: 'not it' }), { ...liveMsg({ id: 'a-2', text: 'the one' }), chatID: CHAT('room-r') }] });
     expect(await waiting).toMatchObject({ id: 'a-2', chatID: 'room-r' });
+  });
+});
+
+// limbs.beeper.<account>.networks, THROUGH THE WHOLE NODE: boot() with the REAL bridge on the fake
+// Desktop. A Telegram chat on the account is never heard where the account names only whatsapp.
+describe('the whole node — limbs.beeper.<account>.networks scopes what that account hears', () => {
+  function memIo() {
+    const files = new Map();
+    const dirs = new Set();
+    const missing = (p) => Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    return {
+      files,
+      appendFile: async (p, data) => files.set(p, `${files.get(p) ?? ''}${data}`),
+      writeFile: async (p, data) => files.set(p, String(data)),
+      readFile: async (p) => { if (!files.has(p)) throw missing(p); return files.get(p); },
+      mkdir: async (p) => { dirs.add(p); },
+      existsSync: (p) => files.has(p) || dirs.has(p),
+      readdir: async (p) => [...files.keys()].filter((f) => dirname(f) === p).map((f) => f.slice(p.length + 1)),
+      rename: async (from, to) => { if (!files.has(from)) throw missing(from); files.set(to, files.get(from)); files.delete(from); },
+    };
+  }
+  const fakeSession = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(m) { return { text: `↩ ${m}`, sessionId: this.sessionId }; }, close() {} });
+  const TG = CHAT('tg-personal'), WA = CHAT('wa-familia');
+  const RUN = Math.random().toString(36).slice(2, 8);   // boot's bridge keeps seen-ids in the profile's state/
+  const said = (id, chatID, accountID, text) => ({ type: 'message.upserted', entries: [{ id: `${id}-${RUN}`, chatID, accountID, text, senderName: 'Bea', senderID: 'bea@beeper.local', isSender: false, timestamp: Date.now() }] });
+
+  async function bootNu(primary) {
+    fake.chats.set(TG, { title: 'Personal TG', type: 'single', isMuted: false, accountID: 'telegram' });
+    fake.chats.set(WA, { title: 'Familia', type: 'group', isMuted: false, accountID: 'whatsapp' });
+    const io = memIo();
+    const base = fake.subscribed();
+    const app = await boot({
+      readConfig: () => ({
+        node_name: 'nu', user_name: 'An',
+        limbs: { beeper: { primary: { account: 'an@example.com', token: 'TOK-nu', base_url: `http://127.0.0.1:${fake.port}`, ...primary } } },
+        agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } },
+      }),
+      makeSession: fakeSession, probeEndpoint: async () => ({ ok: false, status: 0 }),
+      loadState: async () => emptyState(), writeState: async () => {},
+      io, ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    await waitFor(() => fake.subscribed() > base);
+    const recorded = (needle) => [...io.files.values()].some((v) => v.includes(needle));
+    return { app, recorded };
+  }
+
+  it('networks: [whatsapp] → the Telegram chat is dropped, the WhatsApp chat is recorded', { timeout: 15_000 }, async () => {
+    const node = await bootNu({ networks: ['whatsapp'] });
+    try {
+      fake.emit(said('tg-1', TG, 'telegram', 'secreto de telegram'));
+      fake.emit(said('wa-1', WA, 'whatsapp', 'hola desde whatsapp'));
+      await waitFor(() => node.recorded('hola desde whatsapp'));
+      await new Promise((r) => setTimeout(r, 200));
+      expect(node.recorded('secreto de telegram')).toBe(false);
+    } finally { node.app.stop(); }
+  });
+
+  it('networks absent → both are recorded (every network, as before)', { timeout: 15_000 }, async () => {
+    const node = await bootNu({});
+    try {
+      fake.emit(said('tg-2', TG, 'telegram', 'telegram sin filtro'));
+      fake.emit(said('wa-2', WA, 'whatsapp', 'whatsapp sin filtro'));
+      await waitFor(() => node.recorded('whatsapp sin filtro') && node.recorded('telegram sin filtro'));
+    } finally { node.app.stop(); }
   });
 });
