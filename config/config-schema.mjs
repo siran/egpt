@@ -1070,6 +1070,15 @@ export const CONFIG_SCHEMA = {
       <name>:
         account   label — the Beeper address this token belongs to
         token     that account's Desktop API token
+        networks  OPTIONAL — the networks this account HEARS, e.g. [whatsapp]
+                  (a bare string is one). Absent or [] = every network Beeper
+                  bridges on it. Each entry is a case-insensitive PREFIX of the
+                  message's Beeper account id, which reads 'whatsapp…',
+                  'telegram…', 'signal…'; with a list set, a message whose
+                  account id is unknown is dropped too. Dropped means never
+                  transcribed, recorded or dispatched, its reactions and edits
+                  included. Inbound only: sending, chat lookup and creating a
+                  chat on any network are unaffected.
       auto_update:
         <os>: { method: auto | manual | none }      os = windows | linux | mac
         Keeping Beeper Desktop itself current (src/tools/beeper-update.mjs).

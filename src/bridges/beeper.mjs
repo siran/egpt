@@ -454,7 +454,7 @@ export async function startBeeperBridge(opts = {}) {
     // — a Beeper token belongs to an install, so probing the port range with it finds that
     // install). null ⇒ the reconnect path is exactly what it was. async () => { baseUrl, wsUrl } | null.
     rediscover = null,
-    networks = [],   // [] / null = process EVERY network Beeper bridges (signal/telegram/whatsapp/…). Beeper is the transport; network is metadata on each message, NOT a gate — anything that reaches the spine is processed (operator 2026-06-25). Set ['whatsapp', ...] to restrict scope.
+    networks = [],   // [] / null = process EVERY network Beeper bridges (signal/telegram/whatsapp/…). Beeper is the transport; network is metadata on each message, NOT a gate — anything that reaches the spine is processed (operator 2026-06-25). Set ['whatsapp', ...] to restrict scope (boot: limbs.beeper.<connection>.networks).
     // Host verdict for this chat's transcription service (a per-entity ROOM
     // service, NOT E enrollment — the host reads the conversation/room config
     // and supplies { enabled, postsBack }; see src/transcription-service.mjs).
@@ -1980,6 +1980,15 @@ export async function startBeeperBridge(opts = {}) {
   // --- dispatch one incoming message ---
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
+    // SCOPE (fail-closed): with a network scope active, a message whose
+    // account can't be determined is DROPPED, not passed. Prefix match so
+    // account-instance ids ('whatsapp', 'whatsappgo_2', …) still scope.
+    // First, so a dropped network's reactions and edits are dropped with it.
+    if (networks && networks.length) {
+      const scoped = msg.accountID || (await chatInfo(chatID)).accountID;
+      if (!scoped) { onLog(`beeper: DROP [${chatID}] — accountID unknown with network scope ${JSON.stringify(networks)} active (fail-closed)`); return; }
+      if (!networks.some(n => String(scoped).toLowerCase().startsWith(String(n).toLowerCase()))) return;
+    }
     // Remember sender display names for reactor resolution (reactions[] only
     // carries the participant id, not a name). Store the leak-safe form (pushed name
     // → non-private id, NEVER the saved contact label) so a later reaction/edit
@@ -2016,14 +2025,7 @@ export async function startBeeperBridge(opts = {}) {
     if (text) text = await mouthMentionsAsAddresses(text, msg);
 
     const info = await chatInfo(chatID);
-    // SCOPE (fail-closed): with a network scope active, a message whose
-    // account can't be determined is DROPPED, not passed. Prefix match so
-    // account-instance ids ('whatsapp', 'whatsappgo_2', …) still scope.
     const acct = msg.accountID || info.accountID;
-    if (networks && networks.length) {
-      if (!acct) { onLog(`beeper: DROP [${chatID}] — accountID unknown with network scope ${JSON.stringify(networks)} active (fail-closed)`); return; }
-      if (!networks.some(n => String(acct).toLowerCase().startsWith(String(n).toLowerCase()))) return;
-    }
 
     // Backlog gate → BACKFILL (operator 2026-07-08, trusted network / S3 wake): a node
     // that slept and woke MUST keep a complete record. A replayed/old message (older than

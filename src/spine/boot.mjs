@@ -1680,7 +1680,7 @@ export async function boot({
     return name && b && typeof b === 'object' && b[name] && typeof b[name] === 'object' ? b[name] : null;
   };
   // One candidate (or the connection block itself, which is the SAME shape minus `endpoints`)
-  // read as an endpoint. `owner_node` is taken from the CONNECTION, never from the candidate.
+  // read as an endpoint. `owner_node` and `networks` are taken from the CONNECTION, never from the candidate.
   const endpointOf = (src, acct) => {
     const baseUrl = src?.base_url ?? undefined;
     return {
@@ -1688,6 +1688,7 @@ export async function boot({
       baseUrl,
       wsUrl: src?.ws_url ?? wsFromBase(baseUrl),
       ownerNode: acct?.owner_node ?? null,
+      networks: acct?.networks == null ? null : [acct.networks].flat().map(String),   // the bridge's `networks` scope; null = every network
     };
   };
   // Filled by the resolution pass immediately below, BEFORE anything asks for an endpoint. It
@@ -2471,6 +2472,7 @@ export async function boot({
       // baseUrl/wsUrl are spread in ONLY when set: absent must leave startBeeperBridge's own
       // defaults standing, never an explicit undefined that would override them.
       const opts = { ...sharedBridgeOpts, beeperToken: ep.token, ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}), ...(ep.wsUrl ? { wsUrl: ep.wsUrl } : {}), ...(ep.rediscover ? { rediscover: ep.rediscover } : {}),
+        ...(ep.networks?.length ? { networks: ep.networks } : {}),
         // THE 🎧 LISTENING MARK goes through the one placement boot's own lines use (`outbound`,
         // below — makeOutbound with the mouth), as a node line (`being` null), so it comes from the
         // mouth on its own copy (operator 2026-09-16). Read at call time, as speakingIdentities is:
@@ -2485,6 +2487,7 @@ export async function boot({
         // whisper — the cross-bridge audio-hash fan it replaced is gone (beeper.mjs, 2026-10-13).
         earIdentities };   // the operator's account: excepted from "a reaction by a mouth is ours" (beeper.mjs _maybeEmitReactions)
       const port = sendGuard.wrap(await createBeeperBridgePort(opts, startBridge ? { start: startBridge } : {}));
+      if (ep.networks?.length) log.line?.(`[bridge] connection ${name ? `'${name}' ` : ''}hears only accounts starting ${JSON.stringify(ep.networks)} (networks:) — every other network on it is dropped on arrival; sending is unaffected`);
       const owned = ear && wakesOn(ep);
       // A PER-CHAT ear: not one of the node's ears, but a connection allowed to be the ear of the
       // chats that ear is not in (perChatEars, above). Decided by NAME because that is what the
