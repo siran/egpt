@@ -88,6 +88,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {string|null} fromNode   WHICH NODE's spine committed this text. null = UNSIGNED (a human, the ordinary case); '' = SIGNED BY A NODE WE CANNOT NAME; otherwise the node name. Read by the guard (isHumanTurn: OUR OWN output is not a human turn) and by the room relay. A signed line wakes only a being it explicitly addresses (@mention or a quote of its post), never by fall-through or mode (handleFast, operator 2026-10-18)
  * @property {{surface: string, chatId: string, chatName?: string}|null} origin  WHERE this message ACTUALLY ARRIVED, when a synthetic re-addressed it elsewhere (the room relay's wa-group tunnel). The address above is its IDENTITY (thread/warm process/queue/access_level); this is its PROVENANCE, read ONLY by the gates that ask "where did this arrive" (router.mjs's surface pin + fallback_handle roster question). null on every genuine inbound ⇒ those gates read ev itself
  * @property {string|null} via   'ingest' when the ingest box's `/to` typed it (the line's entry point renders as `.ingest`); null on every limb's inbound
+ * @property {boolean} recorded  ALREADY ON THE RECORD: a limb's stand-in for the echo its surface never delivers (Telegram: a bot never receives its own posts). The being's reply line is the record, so the ingestion point skips it; everything else runs as for any echo. false on every genuine inbound
  * @property {string} [line]    the formatted dispatch line every brain sees, built once here (C7.6e)
  * @property {any}    raw       the bridge's original `from` payload
  */
@@ -788,7 +789,10 @@ export function createSpine({
     // isEnvelope into it would be unreachable — and hoisting the widened test above the envelope
     // branch would kill mesh routing outright. That ordering is what keeps "skipping the record"
     // from ever becoming "skipping the routing".
-    if (!isTransit(ev) && !isEnvelope(ev)) await timed('transcript', ev, () => transcript.log(ev));   // ←── THE INGESTION POINT (C1.2). The only one.
+    //
+    // …and a limb's stand-in echo (ev.recorded, the Telegram limb's) is not recorded twice: the
+    // being's reply line written when it was said is its record.
+    if (!isTransit(ev) && !isEnvelope(ev) && !ev.recorded) await timed('transcript', ev, () => transcript.log(ev));   // ←── THE INGESTION POINT (C1.2). The only one.
     background?.noteVoice(ev);
     // Radio relay: a genuine inbound voice note, in a room joined to a radio, airs on the
     // station (createRadioNoteRelay owns the rest of the gate — joined+enabled, sender→speaker,
