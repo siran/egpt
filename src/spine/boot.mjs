@@ -4186,6 +4186,9 @@ export async function boot({
     })().catch((e) => log.line?.(`[ingest] open questions: ${e?.message ?? e}`)).finally(() => { asking = null; });
     return asking;
   }
+  // Resolves once no pass over the open questions is running. The tick starts one and does not wait for it, so a
+  // test that pulses the spine awaits this (exposed below) instead of sleeping.
+  async function asksIdle() { while (asking) await asking; }
   async function answerIngest(ev) {
     const a = await ingestAnswerOf(ev);
     if (!a) return;
@@ -4243,6 +4246,7 @@ export async function boot({
     requestLogin,                                        // the spine's being-facing auto-login entry ("egpt can request to log in") — exposed so its outcome is assertable without a live Chrome
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
     ingestLine,                                          // the ingest box's handler — exposed so a dropped file is assertable without the watcher
+    asksIdle,                                            // the open questions' tick pass, awaitable — exposed so a pulse of the spine is assertable without sleeping
 
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's

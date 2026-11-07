@@ -537,10 +537,10 @@ describe('an open /to question expires', () => {
   const asksFile = (io) => JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')) ?? 'null');
   const edited = (spy) => spy.edits.map((e) => ({ ...e, text: plain(e.text) }));
   const HEAD = '📥 An (ingest): e, resume the thread';
-  // The spine's own pulse, between two waits long enough for a sweep (in-memory fakes) to finish: a pulse that finds the
-  // last sweep still running leaves the question alone, as it does in production.
-  const flush = () => new Promise((r) => setTimeout(r, 15));
-  const pulse = async (app) => { await flush(); app.spine.tick(); await flush(); };
+  // The spine's own pulse, awaited: the tick starts the pass over the open questions and does not wait for it, so this
+  // waits out any pass already running (a pulse that finds one leaves the questions alone, as in production), ticks,
+  // and waits for the pass that tick started. No sleeping: every edit and write it made has landed when this returns.
+  const pulse = async (app) => { await app.asksIdle(); app.spine.tick(); await app.asksIdle(); };
   const minutesShown = (spy) => edited(spy).map((e) => /⏳ (\d+) min$/.exec(e.text)?.[1]);
   const askedFor = async (config, opts = {}) => {
     const clock = opts.clock ?? fakeClock();

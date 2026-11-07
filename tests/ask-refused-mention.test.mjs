@@ -363,8 +363,9 @@ async function bootNode(script, { io = null, now = null, finchList, ingest } = {
   const transcript = () => fs.readFile(Room.forChat('telegram', st.contacts.telegram[TOPIC].slug).transcriptPath, 'utf8').catch(() => '');
   // the edits of one post (a streamed reply is edited too: only the question's are counted)
   const edits = (q) => api.of('editMessageText').filter((c) => c.body.message_id === (q?.id ?? 501)).map((c) => c.body.text);
-  // the spine's own pulse, between two waits long enough for a sweep to finish
-  const pulse = async () => { await settle(); app.spine.tick(); await settle(); };
+  // the spine's own pulse, awaited (the tick starts the pass over the open questions and does not wait for it): wait out
+  // any pass already running, tick, wait for the one that tick started. Every edit and write it made has landed on return.
+  const pulse = async () => { await app.asksIdle(); app.spine.tick(); await app.asksIdle(); };
   return { app, api, turns, lines, posted, questions, answerTo, transcript, edits, pulse, of: (being) => turns.filter((t) => t.being === being) };
 }
 const SCRIPT = { lark: () => '@finch can you check the plan?', finch: () => 'checked: the plan is fine' };
@@ -373,6 +374,8 @@ const count = (s, part) => s.split(part).length - 1;
 async function larkNamesFinch(n) {
   n.api.updates(inTopic('@lark ask finch about the plan'));
   await vi.waitFor(() => expect(n.questions()).toHaveLength(1), { timeout: 10_000 });
+  // the question is on the store only once boot logs "asked" (after the post's id came back and the entry was written)
+  await vi.waitFor(() => expect(n.lines.some((l) => /\[ingest\] @finch .*: asked \(#/.test(l))).toBe(true), { timeout: 10_000 });
   return n.questions()[0];
 }
 
