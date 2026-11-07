@@ -24,12 +24,13 @@ and is always allowed. Every list below the root, whether
 `networks.<surface>`, `agents.<name>.conversation_defaults` or a chat's entry, only
 adds people, so who may wake a being is the union of all of them. `'*'` in any one
 is anyone; `[]` adds nobody and shuts nobody out. A person on none is ignored. The
-account-owner and console flags count only for a person's line, never a being's.
-A being's own line that names a being whose lists do not admit that sender (on
-Telegram every being posts through one bot, so lark's `@finch …` is the bot's) asks
-the chat once: `❓ lark → finch: pass it on? reply yes / no · ⏳ 10 min`. Only someone
-who may wake finch (an owner, or on one of its lists) may answer; yes hands the line
-to finch alone, no drops it. The question closes after `ingest.ttl_ms` (default 10
+account-owner and console flags count only for a person's line; a being's own line is
+admitted only by `'*'`, otherwise the chat is asked. A being's own line that names a
+being whose lists do not admit it (on Telegram every being posts through one bot, on
+Beeper through your own account, so lark's `@finch …` carries a person's id) asks the
+chat once: `❓ lark → finch: pass it on? reply yes / no · ⏳ 10 min`. Only someone who
+may wake finch (an owner, or on one of its lists) may answer; yes hands the line to
+finch alone, no drops it. The question closes after `ingest.ttl_ms` (default 10
 minutes): the time left is edited into it each minute, then it reads
 `⌛ lark → finch: expired, not passed on` and a later yes is ordinary chat. The
 ingest box's questions and answers below, the same

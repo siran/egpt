@@ -119,7 +119,8 @@ untested id not in `contracts-gaps.json`.
    where set, always allowed; `agents.<name>.conversation_defaults` and the
    chat's own list only add people. A list holds ids or `'*'`: `'*'` in any
    one = anyone, `[]` adds nobody. The account-owner and console flags count
-   only for a person's line, never a being's.
+   only for a person's line; a being's own line (`fromBeing`) is admitted by
+   `'*'` alone, whatever id it carries.
 
 8. Media is saved, per conversation.
 

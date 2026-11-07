@@ -4,7 +4,9 @@
 // agents.<being>.conversation_defaults ∪ the chat entry's list (∪ a new chat's seed). '*' anywhere = anyone;
 // [] adds nobody. The account-owner / console flags (isSender, authorized) speak for a PERSON's line only: on
 // Telegram every being posts through one bot, whose echo arrives isSender + authorized + fromBeing, and a being's
-// line must never count as the Operator (a being→being wake is the question, not a pass).
+// line must never count as the Operator (a being→being wake is the question, not a pass). Ids name people: a
+// being's line (fromBeing) is admitted by a '*' in the joined lists alone, never by an id, a root owner or a flag
+// (on Beeper every being posts through the operator's own account, so its sender id is the operator's).
 import { describe, it, expect } from 'vitest';
 import { createRouter, mayWake, ownersOf, isOwner, configWarnings } from '../src/spine/router.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
@@ -161,6 +163,48 @@ describe('a being\'s own line is never the Operator', () => {
     expect(await w.wakes(echoOf())).toEqual([]);
     expect(await w.refused(echoOf())).toEqual(['finch']);
     expect(w.may(lineOf(ROOT))).toBe(true);
+  });
+});
+
+describe('on Beeper a being posts as the account: its line is admitted by "*" alone', () => {
+  const ACCT = '@acct:example.com';   // the account every being posts through: the Operator's own id
+  const beeperLine = (over = {}) => lineOf(ACCT, '@finch hola', { surface: 'whatsapp', chatId: '!room', isSender: true, authorized: true, ...over });
+  const beingPost = (over = {}) => beeperLine({ fromNode: 'nodeA', fromBeing: 'lark', ...over });
+  // The id on every list that could admit it: the root, the surface's, the being's, the chat's.
+  const worldOf = (extra = {}) => {
+    const config = { conversation_defaults: { allowed_users: [ACCT, ...(extra.root ?? [])] }, networks: { whatsapp: { allowed_users: [ACCT, ...(extra.network ?? [])] } }, agents: { finch: { handles: ['finch'], conversation_defaults: { allowed_users: [ACCT, ...(extra.agent ?? [])] } } } };
+    const state = { contacts: { whatsapp: { '!room': { slug: 'room', agents: { finch: { allowed_users: [ACCT, ...(extra.chat ?? [])] } } } } } };
+    const router = createRouter({ getAgents: () => config.agents, getConfig: () => config, loadState: async () => state });
+    return { config, state, router, may: (ev) => mayWake('finch', config.agents.finch, ev, { state, config }) };
+  };
+
+  it('its id on every list (root, surface, being, chat) does not admit a being\'s line: no wake, the router refuses it', async () => {
+    const w = worldOf();
+    expect(isOwner(beingPost(), w.config)).toBe(false);
+    expect(w.may(beingPost())).toBe(false);
+    const r = await w.router.resolve(beingPost());
+    expect(r.targets).toEqual([]);
+    expect(r.refused.map((t) => t.being)).toEqual(['finch']);   // what spine classify hands to boot's askMention
+  });
+
+  it.each(['root', 'network', 'agent', 'chat'])('a "*" at %s admits it', async (level) => {
+    const w = worldOf({ [level]: ['*'] });
+    expect(w.may(beingPost())).toBe(true);
+    expect((await w.router.resolve(beingPost())).targets.map((t) => t.being)).toEqual(['finch']);
+  });
+
+  it('LOCK: the account owner typing the same line (no fromBeing) is the Operator, by flag and by id', () => {
+    const w = worldOf();
+    expect(isOwner(beeperLine(), w.config)).toBe(true);
+    expect(w.may(beeperLine())).toBe(true);
+    expect(w.may(beeperLine({ isSender: false, authorized: false }))).toBe(true);   // by its id on the lists
+  });
+
+  it('LOCK: another node\'s relayed human frame (a node, no being) keeps its current id behaviour', () => {
+    const w = worldOf();
+    const frame = beeperLine({ fromNode: 'nodeB' });
+    expect(w.may(frame)).toBe(true);                                         // its id is on the lists
+    expect(w.may({ ...frame, senderId: STRANGER })).toBe(false);             // the flags of a node's frame never count
   });
 });
 

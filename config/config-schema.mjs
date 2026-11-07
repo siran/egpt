@@ -1536,8 +1536,9 @@ export const CONFIG_SCHEMA = {
         a conversation's own) only ADD people, so who may wake a being is the
         union of them all. "*" in any list = anyone; [] adds nobody and shuts
         nobody out. "*" names nobody as an owner here. The account owner and the
-        authenticated console always pass, on a person's line only - never a
-        being's (src/spine/router.mjs ownersOf / isOwner / mayWake).
+        authenticated console always pass, on a person's line only. A being's
+        own line is admitted by "*" alone, whatever id it carries; else the chat
+        is asked (src/spine/router.mjs ownersOf / isOwner / mayWake).
   `,
 
   networks: `

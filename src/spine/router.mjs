@@ -80,15 +80,22 @@ export function ownersOf(config = {}, surface) {
   return nodeListsOf(config, surface).filter((u) => u !== '*');
 }
 
-// Does an account-owner / console flag (isSender, authorized) speak for a PERSON? Only on a human line:
-// never our own output coming back (on Telegram every being posts through one bot, whose echo arrives
-// isSender + authorized), a being's line, or any node's frame. Provenance is stop-guard's isHumanTurn,
-// the one the spine's humanTurn / kindOf are built on; its backlog clause is about age, not authorship.
-const personLine = (ev) => ev?.fromBeing == null && isHumanTurn({ ...ev, backlog: false });
+// A being's line (ev.fromBeing) is never a person's, whatever account posted it: on Beeper every being posts
+// through the operator's own account, so its sender id IS the operator's id, and on Telegram its echo arrives
+// isSender + authorized through the one bot. Ids name people and flags speak for people, so neither admits it:
+// only a '*' in the joined lists does (mayWake); otherwise a being→being wake is the question (spine `refused`).
+const fromBeing = (ev) => ev?.fromBeing != null;
+
+// Does an account-owner / console flag (isSender, authorized) speak for a PERSON? Only on a human line, never
+// our own output coming back, another node's frame or a brain member's line. Provenance is stop-guard's
+// isHumanTurn, the one the spine's humanTurn / kindOf are built on; its backlog clause is about age, not authorship.
+const personLine = (ev) => isHumanTurn({ ...ev, backlog: false });
 
 // Is this sender the Operator where the line ARRIVED? Its id on that surface's owner lists, or, for a
 // person's line, the flag its bridge set (the account owner, an id on that list, the authenticated console).
+// Never a being's line.
 export function isOwner(ev, config = {}) {
+  if (fromBeing(ev)) return false;
   if ((ev?.authorized === true || ev?.isSender === true) && personLine(ev)) return true;
   return allowedUsersPermits(ownersOf(config, (ev?.origin ?? ev)?.surface), ev?.senderId);
 }
@@ -96,13 +103,14 @@ export function isOwner(ev, config = {}) {
 // THE reachability test, for router.resolve, mesh's responder and /agents. The lists JOIN: the Operator
 // (isOwner) always passes, and whoever is on the node's lists, the agent's conversation_defaults or the
 // conversation's own may wake the being. A list holds ids or '*' only: '*' anywhere is anyone, [] adds
-// nobody. `seed`: the block a conversation with no entry yet will be created with — its list is the
-// conversation's.
+// nobody. A being's line is admitted by '*' alone. `seed`: the block a conversation with no entry yet will
+// be created with — its list is the conversation's.
 export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId, seed = null } = {}) {
   let conv = null;
   if (state) { try { conv = getBeing(state, surface, chatId, being)?.allowedUsers; } catch { conv = null; } }
-  const lists = [nodeListsOf(config, (ev?.origin ?? ev)?.surface), agent?.conversation_defaults?.allowed_users, conv, seed?.allowed_users];
-  return isOwner(ev, config) || allowedUsersPermits(lists.filter(Array.isArray).flat(), ev?.senderId);
+  const lists = [nodeListsOf(config, (ev?.origin ?? ev)?.surface), agent?.conversation_defaults?.allowed_users, conv, seed?.allowed_users].filter(Array.isArray).flat();
+  if (fromBeing(ev)) return lists.includes('*');
+  return isOwner(ev, config) || allowedUsersPermits(lists, ev?.senderId);
 }
 
 // THE STRANGER RULE (operator 2026-10-15): dispatch.stranger_agent maps a CONNECTION to the agent

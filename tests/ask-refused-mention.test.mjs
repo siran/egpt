@@ -27,6 +27,7 @@ import { createGating } from '../src/spine/gating.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
 import { mentionAsk, mentionExpired, withCountdown } from '../src/spine/ingest.mjs';
 import { editAction } from '../src/dispatch-line.mjs';
+import { encodeNodeSignature } from '../src/node-signature.mjs';
 import { emptyState, ensureContact, recordThread } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
 
@@ -237,6 +238,51 @@ describe('a being\'s own line is never the Operator: it asks, a person does not'
     await settle();
     expect(ran(brain)).toEqual(['ghost', 'ghost']);
     expect(asks).toEqual([]);
+  });
+
+  // BEEPER (operator 2026-11-07): every being posts through the operator's OWN account, so its post arrives
+  // isSender + authorized with the account's id as sender, and its being only in the invisible frame. Ids name
+  // people: a being's line (fromBeing, read off that frame) is admitted by a '*' alone, whoever's id it carries.
+  describe('on Beeper, where a being posts as the account', () => {
+    const ACCT = '@acct:example.com';
+    const beeper = (over = {}) => ({ chatId: '!room', chatName: 'Plan', network: 'whatsapp', userId: ACCT, senderName: 'Account', isSender: true, authorized: true, msgKey: '500', msgTs: 1000, atEStart: false, atEAnywhere: true, ...over });
+    const beingPost = (text, being = 'lark', node = 'nodeA') => ({ body: `${text}${encodeNodeSignature(node, being)}`, from: beeper() });
+    const typed = (text, over = {}) => ({ body: text, from: beeper({ atEStart: true, ...over }) });
+    const world = (finch) => ({ agents: { lark: { handles: ['lark'], conversation_defaults: { allowed_users: ['*'] } }, finch: { handles: ['finch'], conversation_defaults: { allowed_users: finch } } }, config: { conversation_defaults: { allowed_users: [ACCT] } } });
+
+    it('a being\'s post naming a being whose list holds the account id wakes nobody, and the chat is asked', async () => {
+      const { spine, brain, asks } = buildSpine(world([ACCT]));
+      await spine.handleInbound(beingPost('🐦 Lark: @finch can you check the plan?'));
+      await vi.waitFor(() => expect(asks).toHaveLength(1));
+      expect(asks[0].asked.map((a) => a.being)).toEqual(['finch']);
+      expect(asks[0].ev).toMatchObject({ senderId: ACCT, fromBeing: 'lark', fromNode: 'nodeA' });
+      expect(brain.calls).toEqual([]);
+    });
+
+    it('the same post with "*" on that being wakes it, no question', async () => {
+      const { spine, brain, asks } = buildSpine(world(['*']));
+      await spine.handleInbound(beingPost('🐦 Lark: @finch can you check the plan?'));
+      await settle();
+      expect(ran(brain)).toEqual(['finch']);
+      expect(asks).toEqual([]);
+    });
+
+    it('LOCK: the account owner typing the same line (no being in it) is still the Operator', async () => {
+      const { spine, brain, asks } = buildSpine(world([ACCT]));
+      await spine.handleInbound(typed('@finch hola'));
+      await spine.handleInbound(typed('@finch hola otra vez', { msgKey: '501' }));
+      await settle();
+      expect(ran(brain)).toEqual(['finch', 'finch']);
+      expect(asks).toEqual([]);
+    });
+
+    it('LOCK: another node\'s relayed frame (a node, no being) keeps its id behaviour: an id on the list wakes', async () => {
+      const { spine, brain, asks } = buildSpine(world([ACCT]));
+      await spine.handleInbound({ body: `@finch hola${encodeNodeSignature('nodeB')}`, from: beeper({ atEStart: true }) });
+      await settle();
+      expect(ran(brain)).toEqual(['finch']);
+      expect(asks).toEqual([]);
+    });
   });
 
   it('LOCK: the Operator wakes a being whose list does not name it, no question', async () => {
