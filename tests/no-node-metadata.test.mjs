@@ -111,10 +111,11 @@ describe('no node or personal metadata in tracked files', () => {
       .map((l, i) => ({ n: i + 1, v: l.trim() }))
       .filter((e) => e.v && !e.v.startsWith('#'));
     const hits = [];
+    const lowered = new Map([...texts].map(([f, t]) => [f, t.toLowerCase()]));   // once per file, not once per entry
     for (const { n, v } of entries) {
       const needle = v.toLowerCase();
       for (const [f, t] of texts) {
-        const low = t.toLowerCase();
+        const low = lowered.get(f);
         let at = low.indexOf(needle);
         while (at !== -1) {
           hits.push(`${f}:${t.slice(0, at).split('\n').length}: denylist line ${n}`);
