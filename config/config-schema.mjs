@@ -3534,9 +3534,11 @@ export const CONFIG_SCHEMA = {
         ("⌛ lark → finch: expired, not passed on" / "⌛ expired, not dispatched"), the
         question leaves the store and a line is logged: an answer after that is
         ordinary chat. The deadline is stored with the question, so a restart keeps
-        it; a question stored before expiry existed gets a fresh one at load. 0 or
-        negative = never expire (no countdown). Read live; it applies to the
-        questions asked after the change.
+        it. A question stored before expiry existed (its post never showed a
+        countdown) gets a fresh deadline at load and, when it runs out, ends in the
+        log alone: nothing is edited or said in the chat. 0 or negative = never
+        expire (no countdown). Read live; it applies to the questions asked after
+        the change.
   `,
 
   admin_channel: `

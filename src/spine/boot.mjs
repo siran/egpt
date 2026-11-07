@@ -4153,14 +4153,16 @@ export async function boot({
       return !!(await out.say(async (on, room, own) => own != null && !!(await on.editStatus?.(room, own, text)), { msgId: id, keyOf: out.keyOf(id, 'edit'), what: 'ingest edit' }));
     } catch (e) { log.line?.(`[ingest] ${chatId}: could not edit #${id} — ${e?.message ?? e}`); return false; }
   }
+  // An entry with no `post` was asked before expiry existed (or with ttl 0): its post never showed a countdown, so
+  // it ends in the log alone, no edit and no line in the chat. One with a post whose edit fails is said as a new line.
   async function expireAsk(ask) {
     await ingestAsks.take(ask);   // first: from here an answer is ordinary chat
     const what = ask.being ? `@${ask.being}` : '/to';
-    const expired = ask.post?.expired ?? (ask.being ? mentionExpired(ask.ev?.fromBeing ?? '?', ask.being) : INGEST_EXPIRED);
-    const edited = ask.post?.id != null && !askNoEdit.has(ask) && await editAskPost(ask.chatId, ask.post.id, expired);
-    log.line?.(`[ingest] ${what} ${ask.chatId}: expired (#${ask.ids.join(' #')}) — ${ask.being ? `${ask.ev?.fromBeing ?? '?'}'s line` : 'the line'} not ${ask.being ? 'passed on' : 'dispatched'}${edited ? '' : ' (said as a new line: the post could not be edited)'}`);
-    if (edited) return;
-    try { await sayOnce({ chatId: ask.chatId, text: expired, opts: { systemLine: true }, what: 'ingest' }); }
+    const post = ask.post?.id != null ? ask.post : null;
+    const edited = !!post && !askNoEdit.has(ask) && await editAskPost(ask.chatId, post.id, post.expired);
+    log.line?.(`[ingest] ${what} ${ask.chatId}: expired (#${ask.ids.join(' #')}) — ${ask.being ? `${ask.ev?.fromBeing ?? '?'}'s line` : 'the line'} not ${ask.being ? 'passed on' : 'dispatched'}${edited ? '' : post ? ' (said as a new line: the post could not be edited)' : ' (asked before expiry existed: nothing said in the chat)'}`);
+    if (edited || !post) return;
+    try { await sayOnce({ chatId: ask.chatId, text: post.expired, opts: { systemLine: true }, what: 'ingest' }); }
     catch (e) { log.line?.(`[ingest] ${what} ${ask.chatId}: ${e?.message ?? e}`); }
   }
   async function countdownAsk(ask, at) {

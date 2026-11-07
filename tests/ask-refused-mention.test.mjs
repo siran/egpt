@@ -651,15 +651,21 @@ describe('a Telegram node: the open question expires', () => {
     n.app.stop();
   });
 
-  it('a legacy question that then runs out has no post to edit: a new line says the end', async () => {
+  it('a legacy question that then runs out expires silently: logged, no edit and nothing said in the chat, and a yes after it is ordinary chat', async () => {
     const clock = fakeClock();
     const { io, q } = await legacyStore(clock);
     const n = await bootNode(SCRIPT, { now: clock.now, io });
+    const said = n.api.of('sendMessage').length;
     clock.advance(10 * MIN); await n.pulse();
     expect(stored(io)).toEqual([]);
     expect(n.edits(q)).toEqual([]);
-    expect(n.api.of('sendMessage').at(-1).body.text).toBe(mentionExpired('lark', 'finch'));
-    expect(n.lines.some((l) => /@finch .* expired \(#501\) — lark's line not passed on \(said as a new line/.test(l))).toBe(true);
+    expect(n.api.of('sendMessage')).toHaveLength(said);          // no line, however many were open
+    expect(n.lines.some((l) => /@finch .* expired \(#501\) — lark's line not passed on \(asked before expiry existed: nothing said in the chat\)$/.test(l))).toBe(true);
+    n.answerTo(q, 'yes');                                       // Sam, on the list: too late
+    await settle();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(n.of('finch')).toEqual([]);
+    expect(n.posted().some((t) => t?.includes('dispatched'))).toBe(false);
     n.app.stop();
   });
 

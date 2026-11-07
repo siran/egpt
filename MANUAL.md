@@ -301,7 +301,8 @@ What the chat sees, and when the line is dispatched (`ingest:` in config.yaml):
   runs down; at the deadline it is edited to `⌛ expired, not dispatched`, leaves
   the store (the deadline is kept across a restart) and a line is logged. A yes after that
   is ordinary chat. A chat that cannot edit shows the clock time instead (`· ⏳ until 14:35`).
-  `0` or less: never expires.
+  A question still open from before expiry existed gets a fresh deadline at the first boot
+  and, when it runs out, is only logged (nothing is said in the chat). `0` or less: never expires.
 
 Once dispatched the line takes the normal path: addressing and the chat's mode
 decide who answers, the answer goes to that chat, and the transcript records the

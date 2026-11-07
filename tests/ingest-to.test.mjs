@@ -668,16 +668,35 @@ describe('an open /to question expires', () => {
     app.stop();
   });
 
-  it('a legacy question that then runs out has no post to edit: a new line says so', async () => {
+  it('a legacy question that then runs out expires silently: logged, no edit and nothing said in the chat, and a yes after it is ordinary chat', async () => {
     const io = memIo();
     io.files.set(join(_HOME, 'state', 'ingest-asks.json'), JSON.stringify([{ chatId: CHAT, ids: ['m7'], body: 'e, hola' }]));
     const clock = fakeClock();
-    const { app, beeper, lines } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io, now: clock.now });
+    const { app, beeper, handled, lines } = await bootWith(BEEPER_ONLY(null), { state: onMode(seed('whatsapp', CHAT, 'fam')), io, now: clock.now });
+    expect(asksFile(io)[0].expiresAt).toBe(T0 + 10 * MIN);
     clock.advance(10 * MIN); await pulse(app);
-    expect(edited(beeper[0])).toEqual([]);
-    expect(posts(beeper[0]).map((p) => p.text)).toEqual([INGEST_EXPIRED]);
     expect(asksFile(io)).toEqual([]);
-    expect(lines.some((l) => /expired \(#m7\) — the line not dispatched \(said as a new line/.test(l))).toBe(true);
+    expect(edited(beeper[0])).toEqual([]);
+    expect(beeper[0].sent).toEqual([]);
+    expect(lines.some((l) => /\[ingest\] \/to !fam:beeper\.com: expired \(#m7\) — the line not dispatched \(asked before expiry existed: nothing said in the chat\)$/.test(l))).toBe(true);
+    await replyTo(app, 'm7', 'yes');                                // too late: ordinary chat (it wakes the on-mode being)
+    await settled(handled);
+    expect(ingestCalls(handled)).toEqual([]);
+    expect(beeper[0].streams).toHaveLength(1);
+    app.stop();
+  });
+
+  it('four legacy questions run out together and still say nothing', async () => {
+    const io = memIo();
+    io.files.set(join(_HOME, 'state', 'ingest-asks.json'), JSON.stringify([1, 2, 3, 4].map((n) => ({ chatId: CHAT, ids: [`m${n}`], body: `e, hola ${n}` }))));
+    const clock = fakeClock();
+    const { app, beeper, lines } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io, now: clock.now });
+    expect(lines.some((l) => /4 open question\(s\) from before expiry now close in 10 min/.test(l))).toBe(true);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(asksFile(io)).toEqual([]);
+    expect(beeper[0].sent).toEqual([]);
+    expect(beeper[0].edits).toEqual([]);
+    expect(lines.filter((l) => /expired \(#m\d\)/.test(l))).toHaveLength(4);
     app.stop();
   });
 
