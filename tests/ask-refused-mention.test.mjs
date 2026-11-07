@@ -1,8 +1,10 @@
 // ask-refused-mention.test.mjs — a being's line that names a being its sender (the bot, on Telegram) may not
-// wake is no longer dropped silently: the chat is asked "pass it on?", and only a member of that being's
-// allowed_users may answer. A person off the list is ignored, as before. The question and its answer are the
-// ingest box's own (ingest.mjs createIngestAsks / answerOf, boot's answerIngest); yes hands the line, as it
-// arrived, to that being alone (spine.dispatchApproved).
+// wake is no longer dropped silently: the chat is asked "pass it on?", and a member of that being's
+// allowed_users may answer, and so may any owner of the node (even when the list is empty or leaves them out). A
+// stranger is ignored, as before. The question and its answer are the ingest box's own (ingest.mjs
+// createIngestAsks / answerOf, boot's answerIngest); yes hands the line, as it arrived, to that being alone
+// (spine.dispatchApproved). The question expires (ingest.ttl_ms): its post counts the minutes down, is edited
+// as they pass, and says it expired; after that the yes is ordinary chat.
 //   1. the spine: which lines ask, and what approval runs (real spine + identity + router + gating)
 //   2. a whole Telegram node: a being's post naming a being the bot may not wake (PR #12's echo) → question → yes
 import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
@@ -23,7 +25,8 @@ import { createIdentity } from '../src/spine/identity.mjs';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
-import { mentionAsk } from '../src/spine/ingest.mjs';
+import { mentionAsk, mentionExpired, withCountdown } from '../src/spine/ingest.mjs';
+import { editAction } from '../src/dispatch-line.mjs';
 import { emptyState, ensureContact, recordThread } from '../src/conversations-state.mjs';
 import { Room } from '../src/room-core.mjs';
 
@@ -44,14 +47,14 @@ const AGENTS = {
 };
 const fromThisNode = (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === 'nodea';
 
-function buildSpine({ mode = 'mention', guard = null, ask = true, ...extra } = {}) {
+function buildSpine({ mode = 'mention', guard = null, ask = true, ours = [], ...extra } = {}) {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body, senderId: ev.senderId, senderName: ev.senderName }); return { text: 'x' }; } };
   const config = { node_name: 'nodeA', dispatch: { auto_default_mode: mode } };
   const transcript = { logged: [], async log(ev, reply) { this.logged.push({ ev, reply }); } };
   const asks = [];
   const answers = [];
   const spine = createSpine({
-    bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: () => false },
+    bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: (chatId, id) => ours.includes(String(id)) },
     brain, identity: createIdentity({ now: () => 1000 }),
     router: createRouter({ getAgents: () => AGENTS, getConfig: () => config }),
     gating: createGating({ getConfig: () => config, loadState: null }),
@@ -185,6 +188,24 @@ describe('the spine asks when a being\'s own line names a being allowed_users tu
     expect(brain.calls).toEqual([]);
     expect(asks).toEqual([]);
   });
+
+  it('nor does the question as it is edited — the countdown, the clock form, the expired line — in an echo or as an edit stage-direction, even in an "on" chat', async () => {
+    const { spine, brain, asks } = buildSpine({ mode: 'on', ours: ['500'] });   // the bridge knows message #500 is ours
+    const first = withCountdown(mentionAsk('lark', 'finch'), 600_000);
+    const texts = [first, withCountdown(mentionAsk('lark', 'finch'), 61_000), `${mentionAsk('lark', 'finch')} · ⏳ until 14:15`, mentionExpired('lark', 'finch')];
+    for (const [i, t] of texts.entries()) await spine.handleInbound(echo(t, null, { msgKey: `6${i}`, recorded: false }));
+    for (const [i, t] of texts.entries()) {
+      // a Beeper edit event: our own account, a stage direction on our own message #500, naming nobody (beeper.mjs _maybeEmitEdits)
+      await spine.handleInbound(echo(editAction({ targetId: '500', oldText: first, newText: t }), null, { msgKey: '500', recorded: false, isStageDirection: true, atEStart: false, atEAnywhere: false, fromNode: undefined }));
+    }
+    await settle();
+    expect(brain.calls).toEqual([]);
+    expect(asks).toEqual([]);
+  });
+
+  it('every question line opens on a glyph, never on a being\'s name', () => {
+    for (const t of [mentionAsk('lark', 'finch'), withCountdown(mentionAsk('lark', 'finch'), 600_000), mentionExpired('lark', 'finch')]) expect(t).toMatch(/^[❓⌛]/u);
+  });
 });
 
 describe('router.resolve reports the beings allowed_users turned away', () => {
@@ -261,7 +282,7 @@ function fakeApi() {
   const answers = {
     getMe: () => ok(ME),
     sendMessage: (b) => ok({ message_id: nextId++, chat: { id: Number(b.chat_id) }, text: b.text }),
-    editMessageText: () => ok(true),
+    editMessageText: () => (api.editsRefused ? { status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: message to edit not found' }) } : ok(true)),
     setMessageReaction: () => ok(true),
   };
   const fetch = async (url, init) => {
@@ -281,24 +302,27 @@ function fakeApi() {
     return res;
   };
   const push = (r) => { if (parked) { const p = parked; parked = null; p(r); } else queue.push(r); };
-  return {
-    fetch, calls,
+  const api = {
+    fetch, calls, editsRefused: false,
     updates: (...msgs) => push(ok(msgs.map((message) => ({ update_id: ++updateId, message })))),
     of: (method) => calls.filter((c) => c.method === method),
   };
+  return api;
 }
 
 const now = () => Math.floor(Date.now() / 1000);
 let mid = 300;
 const root = { message_id: 77, date: now(), chat: CHAT, from: ME, is_topic_message: true, message_thread_id: 77, forum_topic_created: { name: 'Plan', icon_color: 7322096 } };
 const inTopic = (text, from = OPERATOR, quoted = root) => ({ message_id: ++mid, date: now(), chat: CHAT, from, text, is_topic_message: true, message_thread_id: 77, reply_to_message: quoted });
-const NODE = () => ({
+// finchList: who Finch's own list admits (Sam, by default: an owner is not on it); ingest: the `ingest:` block.
+const NODE = ({ finchList = [88], ingest = null } = {}) => ({
   node_name: 'nodeA', user_name: 'Operator',
   limbs: { telegram: { main: { account: 'nodea_bot' } } },
   networks: { telegram: { allowed_users: [42] } },
+  ...(ingest ? { ingest } : {}),
   agents: {
     lark: { configuration: 'egpt', handles: ['lark'], name: 'Lark', body_emoji: '🐦' },
-    finch: { configuration: 'egpt', handles: ['finch'], name: 'Finch', body_emoji: '🐤', conversation_defaults: { allowed_users: [88] } },
+    finch: { configuration: 'egpt', handles: ['finch'], name: 'Finch', body_emoji: '🐤', conversation_defaults: { allowed_users: finchList } },
   },
 });
 function topicState() {
@@ -310,7 +334,7 @@ function topicState() {
   return s;
 }
 // A memory io over the real fs for everything but the ask store, so a second boot can read it back.
-async function bootNode(script, { io = null } = {}) {
+async function bootNode(script, { io = null, now = null, finchList, ingest } = {}) {
   await fs.mkdir(join(HOME, 'secrets'), { recursive: true });
   await fs.writeFile(join(HOME, 'secrets', 'telegram-main.token'), `${TOKEN}\n`);
   const api = fakeApi();
@@ -318,7 +342,7 @@ async function bootNode(script, { io = null } = {}) {
   const lines = [];
   let st = topicState();
   const app = await boot({
-    readConfig: () => NODE(),
+    readConfig: () => NODE({ finchList, ingest }),
     startTelegram: (opts) => startTelegramBridge({ ...opts, fetch: api.fetch }),
     makeSession: (opts) => {
       const being = String(opts.sessionId ?? '').split('-')[0];
@@ -329,6 +353,7 @@ async function bootNode(script, { io = null } = {}) {
     writeState: async (s) => { st = s; },
     ingest: false, tickMs: 0,
     ...(io ? { io } : {}),
+    ...(now ? { now } : {}),
     log: { line: (l) => lines.push(l) },
   });
   await vi.waitFor(() => expect(api.of('getUpdates').length).toBeGreaterThan(0));
@@ -336,7 +361,11 @@ async function bootNode(script, { io = null } = {}) {
   const questions = () => api.of('sendMessage').filter((c) => c.body.text?.includes('pass it on?'));
   const answerTo = (q, text, from = MEMBER) => api.updates(inTopic(text, from, { message_id: q.id, chat: CHAT, from: ME, text: q.body.text, is_topic_message: true, message_thread_id: 77 }));
   const transcript = () => fs.readFile(Room.forChat('telegram', st.contacts.telegram[TOPIC].slug).transcriptPath, 'utf8').catch(() => '');
-  return { app, api, turns, lines, posted, questions, answerTo, transcript, of: (being) => turns.filter((t) => t.being === being) };
+  // the edits of one post (a streamed reply is edited too: only the question's are counted)
+  const edits = (q) => api.of('editMessageText').filter((c) => c.body.message_id === (q?.id ?? 501)).map((c) => c.body.text);
+  // the spine's own pulse, between two waits long enough for a sweep to finish
+  const pulse = async () => { await settle(); app.spine.tick(); await settle(); };
+  return { app, api, turns, lines, posted, questions, answerTo, transcript, edits, pulse, of: (being) => turns.filter((t) => t.being === being) };
 }
 const SCRIPT = { lark: () => '@finch can you check the plan?', finch: () => 'checked: the plan is fine' };
 const count = (s, part) => s.split(part).length - 1;
@@ -351,8 +380,8 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
   it('the topic is asked, nobody runs; the question names who said it and to whom, and is not itself echoed', async () => {
     const n = await bootNode(SCRIPT);
     const q = await larkNamesFinch(n);
-    expect(q.body).toMatchObject({ chat_id: String(GROUP), message_thread_id: 77, text: mentionAsk('lark', 'finch') });
-    expect(q.body.text).toBe('❓ lark → finch: pass it on? reply yes / no');
+    expect(q.body).toMatchObject({ chat_id: String(GROUP), message_thread_id: 77, text: withCountdown(mentionAsk('lark', 'finch'), 600_000) });
+    expect(q.body.text).toBe('❓ lark → finch: pass it on? reply yes / no · ⏳ 10 min');
     await settle();
     expect(n.of('finch')).toEqual([]);
     expect(n.of('lark')).toHaveLength(1);
@@ -402,16 +431,62 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     n.app.stop();
   });
 
-  it('a "yes" from anyone else, the node\'s owner included, is ordinary chat: ignored, the question stays open for the list', async () => {
+  it('a "yes" from a stranger is ordinary chat: ignored, the question stays open for Finch\'s list and the owners', async () => {
     const n = await bootNode(SCRIPT);
     const q = await larkNamesFinch(n);
     n.answerTo(q, 'yes', STRANGER);
-    n.answerTo(q, 'yes', OPERATOR);
+    n.answerTo(q, 'no', STRANGER);
     await settle();
+    await new Promise((r) => setTimeout(r, 300));
     expect(n.of('finch')).toEqual([]);
-    expect(n.posted().some((t) => t?.includes('dispatched'))).toBe(false);
-    n.answerTo(q, 's');
+    expect(n.posted().some((t) => t?.includes('dispatched') || t?.includes('dropped'))).toBe(false);
+    n.answerTo(q, 's');                                         // Sam, on Finch's list
     await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    n.app.stop();
+  });
+
+  it('the node\'s owner may always answer: Finch\'s list holds only Sam, and the owner\'s yes still wakes Finch alone', async () => {
+    const n = await bootNode(SCRIPT);
+    const q = await larkNamesFinch(n);
+    n.answerTo(q, 'yes', OPERATOR);
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    expect(n.of('finch')[0].prompt).toContain('can you check the plan?');
+    expect(n.lines.some((l) => /\[ingest\] @finch tg:-1001234\/77: dispatched by Operator/.test(l))).toBe(true);
+    expect(n.of('lark')).toHaveLength(1);                       // the owner's yes woke nobody else
+    n.app.stop();
+  });
+
+  it('the owner\'s "no" drops it too; the list\'s member may still answer a question the owner left open', async () => {
+    const a = await bootNode(SCRIPT);
+    await larkNamesFinch(a).then((q) => a.answerTo(q, 'no', OPERATOR));
+    await vi.waitFor(() => expect(a.posted().some((t) => t?.includes('🚫 dropped'))).toBe(true), { timeout: 10_000 });
+    expect(a.of('finch')).toEqual([]);
+    a.app.stop();
+  });
+
+  it('an empty list (allowed_users: []) wakes nobody, yet the owner answers; a stranger and Sam still cannot', async () => {
+    const n = await bootNode(SCRIPT, { finchList: [] });
+    const q = await larkNamesFinch(n);
+    n.answerTo(q, 'yes', STRANGER);
+    n.answerTo(q, 'yes', MEMBER);
+    await settle();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(n.of('finch')).toEqual([]);
+    n.answerTo(q, 'yes', OPERATOR);
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    n.app.stop();
+  });
+
+  it('a list that excludes the owner does not shut the owner out of the answer — and answering never makes the owner (or the bot) a waker of Finch', async () => {
+    const n = await bootNode(SCRIPT, { finchList: [88] });
+    const q = await larkNamesFinch(n);
+    n.answerTo(q, 'yes', OPERATOR);
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    n.api.updates(inTopic('@finch hola', STRANGER));             // the wake rules are untouched: Finch\'s own list still decides
+    n.api.updates(inTopic('@finch hola, again', OPERATOR));
+    await settle();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(n.of('finch')).toHaveLength(1);                      // the owner is not on Finch\'s list: asking Finch directly still wakes no one
     n.app.stop();
   });
 
@@ -454,11 +529,174 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     n.answerTo(ingestQ, 'yes', OPERATOR);
     await vi.waitFor(() => expect(n.of('lark')).toHaveLength(2), { timeout: 10_000 });
     expect(n.of('finch')).toEqual([]);                         // the owner's yes was for the ingest line, not for Finch
-    n.answerTo(q, 'yes', OPERATOR);                             // an owner, but not on Finch's list
+    n.answerTo(q, 'yes');                                       // Sam, on Finch's list: answers Finch's question
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    n.app.stop();
+  });
+});
+
+// ── the question runs out (ingest.ttl_ms, default 10 minutes) ────────────────────────────────────────────
+describe('a Telegram node: the open question expires', () => {
+  const T0 = Date.now();
+  const MIN = 60_000;
+  const fakeClock = () => { let t = T0; return { now: () => t, advance: (ms) => { t += ms; } }; };
+  const asksPath = join(HOME, 'state', 'ingest-asks.json');
+  const memIo = (initial = null) => {
+    const files = new Map(initial ? [[asksPath, JSON.stringify(initial)]] : []);
+    return { files, readFile: async (p) => { if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return files.get(p); }, writeFile: async (p, d) => { files.set(p, String(d)); }, rename: async (a, b) => { files.set(b, files.get(a)); files.delete(a); }, mkdir: async () => {} };
+  };
+  const stored = (io) => JSON.parse(io.files.get(asksPath) ?? 'null');
+  const ASK = mentionAsk('lark', 'finch');
+
+  it('the post counts down once a minute, edited in place: an edit only when the shown value changes', async () => {
+    const clock = fakeClock();
+    const n = await bootNode(SCRIPT, { now: clock.now });
+    const q = await larkNamesFinch(n);
+    expect(q.body.text).toBe(`${ASK} · ⏳ 10 min`);
+    clock.advance(25_000); await n.pulse();
+    expect(n.edits(q)).toEqual([]);                             // 9:35 left still reads 10 min
+    clock.advance(40_000); await n.pulse();                    // 8:55
+    expect(n.edits(q)).toEqual([`${ASK} · ⏳ 9 min`]);
+    expect(n.api.of('editMessageText').find((c) => c.body.message_id === q.id).body).toMatchObject({ chat_id: String(GROUP), message_id: q.id });
+    await n.pulse(); await n.pulse();
+    clock.advance(5_000); await n.pulse();
+    expect(n.edits(q)).toHaveLength(1);                         // the same minute: nothing more
+    clock.advance(MIN); await n.pulse();
+    expect(n.edits(q)).toEqual([`${ASK} · ⏳ 9 min`, `${ASK} · ⏳ 8 min`]);
+    expect(n.questions()).toHaveLength(1);                      // edits are not new questions
+    expect(n.turns.filter((t) => t.being === 'finch')).toEqual([]);
+    n.app.stop();
+  });
+
+  it('at the deadline the question is edited to say it expired, the entry leaves the store and a line is logged; a later yes is ordinary chat', async () => {
+    const clock = fakeClock();
+    const io = memIo();
+    const n = await bootNode(SCRIPT, { now: clock.now, io });
+    const q = await larkNamesFinch(n);
+    expect(stored(io)).toHaveLength(1);
+    clock.advance(10 * MIN); await n.pulse();
+    expect(n.edits(q).at(-1)).toBe('⌛ lark → finch: expired, not passed on');
+    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(n.api.of('editMessageText').at(-1).body).toMatchObject({ message_id: q.id });
+    expect(stored(io)).toEqual([]);
+    expect(n.lines.some((l) => /\[ingest\] @finch tg:-1001234\/77: expired \(#501\) — lark's line not passed on$/.test(l))).toBe(true);
+    n.answerTo(q, 'yes');                                       // Sam, on the list: too late
+    n.answerTo(q, 'yes', OPERATOR);                             // the owner: too late
     await settle();
+    await new Promise((r) => setTimeout(r, 300));
     expect(n.of('finch')).toEqual([]);
+    expect(n.posted().some((t) => t?.includes('dispatched'))).toBe(false);
+    expect(n.edits(q).filter((t) => t.includes('expired'))).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('a yes at the deadline, before the pulse took the entry out, is already not an answer', async () => {
+    const clock = fakeClock();
+    const n = await bootNode(SCRIPT, { now: clock.now });
+    const q = await larkNamesFinch(n);
+    clock.advance(10 * MIN);
+    n.answerTo(q, 'yes');
+    await settle();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(n.of('finch')).toEqual([]);
+    await n.pulse();
+    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    n.app.stop();
+  });
+
+  it('a restart keeps the deadline: the next boot counts down from it and expires on it, not from its own clock', async () => {
+    const clock = fakeClock();
+    const io = memIo();
+    const first = await bootNode(SCRIPT, { now: clock.now, io });
+    const q = await larkNamesFinch(first);
+    first.app.stop();
+    expect(stored(io)[0]).toMatchObject({ expiresAt: T0 + 10 * MIN, shown: 10, post: { id: String(q.id), text: ASK, expired: mentionExpired('lark', 'finch') } });
+
+    clock.advance(7 * MIN);
+    const second = await bootNode(SCRIPT, { now: clock.now, io });
+    expect(stored(io)[0].expiresAt).toBe(T0 + 10 * MIN);
+    await second.pulse();
+    expect(second.edits(q)).toEqual([`${ASK} · ⏳ 3 min`]);
+    expect(second.api.of('editMessageText')[0].body).toMatchObject({ message_id: q.id });   // the post the first boot made
+    clock.advance(3 * MIN); await second.pulse();
+    expect(second.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(stored(io)).toEqual([]);
+    second.app.stop();
+  });
+
+  // The store as the code before expiry wrote it: no deadline, no post.
+  async function legacyStore(clock) {
+    const io = memIo();
+    const first = await bootNode(SCRIPT, { now: clock.now, io });
+    const q = await larkNamesFinch(first);
+    first.app.stop();
+    io.files.set(asksPath, JSON.stringify(stored(io).map(({ expiresAt, shown, post, ...old }) => old)));
+    expect(Object.keys(stored(io)[0]).sort()).toEqual(['being', 'chatId', 'ev', 'ids', 'target']);
+    return { io, q };
+  }
+
+  it('a question stored before expiry existed gets a fresh deadline at load (not expired at once) and is answerable until then', async () => {
+    const clock = fakeClock();
+    const { io, q } = await legacyStore(clock);
+    clock.advance(30 * MIN);                                    // however long the old question has been open
+    const n = await bootNode(SCRIPT, { now: clock.now, io });
+    expect(stored(io)[0]).toMatchObject({ ids: [String(q.id)], expiresAt: clock.now() + 10 * MIN });
+    expect(n.lines.some((l) => /1 open question\(s\) from before expiry now close in 10 min/.test(l))).toBe(true);
+    await n.pulse();
+    expect(stored(io)).toHaveLength(1);
+    expect(n.edits(q)).toEqual([]);                             // no post of its own is known: nothing to count down
+    clock.advance(9 * MIN);
     n.answerTo(q, 'yes');
     await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    n.app.stop();
+  });
+
+  it('a legacy question that then runs out has no post to edit: a new line says the end', async () => {
+    const clock = fakeClock();
+    const { io, q } = await legacyStore(clock);
+    const n = await bootNode(SCRIPT, { now: clock.now, io });
+    clock.advance(10 * MIN); await n.pulse();
+    expect(stored(io)).toEqual([]);
+    expect(n.edits(q)).toEqual([]);
+    expect(n.api.of('sendMessage').at(-1).body.text).toBe(mentionExpired('lark', 'finch'));
+    expect(n.lines.some((l) => /@finch .* expired \(#501\) — lark's line not passed on \(said as a new line/.test(l))).toBe(true);
+    n.app.stop();
+  });
+
+  it('ingest.ttl_ms sets the length, and 0 means never: no countdown, no deadline', async () => {
+    const clock = fakeClock();
+    const a = await bootNode(SCRIPT, { now: clock.now, ingest: { ttl_ms: 3 * MIN } });
+    const q = await larkNamesFinch(a);
+    expect(q.body.text).toBe(`${ASK} · ⏳ 3 min`);
+    clock.advance(3 * MIN); await a.pulse();
+    expect(a.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    a.app.stop();
+
+    const io = memIo();
+    const b = await bootNode(SCRIPT, { now: clock.now, io, ingest: { ttl_ms: 0 } });
+    const qb = await larkNamesFinch(b);
+    expect(qb.body.text).toBe(ASK);
+    expect(stored(io)[0]).not.toHaveProperty('expiresAt');
+    clock.advance(72 * 60 * MIN); await b.pulse();
+    expect(b.edits(qb)).toEqual([]);
+    b.answerTo(qb, 'yes');
+    await vi.waitFor(() => expect(b.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    b.app.stop();
+  });
+
+  it('a post Telegram will not edit: tried once, left as posted, a new line says the end; nothing throws', async () => {
+    const clock = fakeClock();
+    const n = await bootNode(SCRIPT, { now: clock.now });
+    const q = await larkNamesFinch(n);
+    n.api.editsRefused = true;
+    clock.advance(61_000); await n.pulse();
+    clock.advance(MIN); await n.pulse();
+    clock.advance(MIN); await n.pulse();
+    expect(n.edits(q)).toHaveLength(1);                         // tried once; no hammering a post that refuses
+    expect(n.lines.some((l) => /the post #501 would not take an edit/.test(l))).toBe(true);
+    clock.advance(10 * MIN); await n.pulse();
+    expect(n.edits(q)).toHaveLength(1);
+    expect(n.api.of('sendMessage').at(-1).body.text).toBe(mentionExpired('lark', 'finch'));
     n.app.stop();
   });
 });

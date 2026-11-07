@@ -26,9 +26,11 @@
 //
 // The chat must already have a conversations.yaml entry; an unknown id or empty text is ignored.
 // `/file <path>` lines attach files. ingest.show posts the line in the chat; ingest.auto false holds
-// it until an owner answers the posted question (boot ingestTo / answerIngest).
+// it until an owner answers the posted question (boot ingestTo / answerIngest). An unanswered question
+// expires after ingest.ttl_ms (default 10 min), showing the time left and edited as it runs down.
 import { readdir as fsReaddir, readFile as fsReadFile, unlink as fsUnlink, mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { hhmm } from '../dispatch-line.mjs';
 
 export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = () => {} } = {}) {
   if (!dir) throw new Error('createIngest: dir is required');
@@ -96,6 +98,21 @@ export const INGEST_ASK = 'received message, dispatch? reply yes / no';
 // The question for a being's mention allowed_users turned away (spine classify → boot askMention): the
 // being that said it, the being it names. The glyph keeps the first name from opening the line as an address.
 export const mentionAsk = (sender, being) => `❓ ${sender} → ${being}: pass it on? reply yes / no`;
+// What a question is edited to when it runs out. The glyph leads for the same reason: a being name never opens the line.
+export const mentionExpired = (sender, being) => `⌛ ${sender} → ${being}: expired, not passed on`;
+export const INGEST_EXPIRED = '⌛ expired, not dispatched';
+
+// HOW LONG A QUESTION STAYS OPEN: ingest.ttl_ms, default 10 minutes; 0 or less = never (the answer is waited for forever).
+export const ASK_TTL_MS = 10 * 60_000;
+export function askTtlMs(cfg) {
+  const v = cfg?.ingest?.ttl_ms;
+  return v == null || v === '' || !Number.isFinite(Number(v)) ? ASK_TTL_MS : Math.round(Number(v));
+}
+// The time left, in whole minutes, rounded up: it changes once a minute, so the question is edited once a minute.
+export const minutesLeft = (ms) => Math.max(1, Math.ceil(ms / 60_000));
+// A question as posted: the countdown, or (where the chat's connection cannot edit it) the clock time it closes.
+export const withCountdown = (text, leftMs) => `${text} · ⏳ ${minutesLeft(leftMs)} min`;
+export const withDeadline = (text, at, timeZone) => `${text} · ⏳ until ${hhmm(at, timeZone)}`;
 
 const YES = new Set(['yes', 'si', 'sí', 'y', 's', 'ok', '👍']);
 const NO = new Set(['no', 'n', 'non', '👎']);
@@ -107,9 +124,13 @@ export function answerOf(text) {
 
 // The open questions — { chatId, ids (the posts that ask it), body } for a `/to` line (an owner answers), or
 // { chatId, ids, being, ev, target } for a mention that being's allowed_users turned away (a member of that
-// list answers; ev is the line as it arrived, target the router's refused target) — kept in `path` so a restart
-// keeps them. No expiry. Rewritten whole, temp + rename.
-export function createIngestAsks({ path, io = {}, onLog = () => {} }) {
+// list, or an owner, answers; ev is the line as it arrived, target the router's refused target) — kept in `path` so a
+// restart keeps them. Each carries `expiresAt` (ms; boot gives it a deadline when it asks), `shown` (the minutes
+// its post last said) and `post` { id, text, expired }: the post that carries the question, what it says without
+// the countdown, and what it is edited to at the end. An entry from before expiry existed gets a fresh deadline
+// at load; with a ttl of 0 or less it has none and never expires. An expired entry is not found (an answer
+// after the deadline is ordinary chat) even before boot's tick takes it out. Rewritten whole, temp + rename.
+export function createIngestAsks({ path, io = {}, onLog = () => {}, now = Date.now, ttlMs = () => ASK_TTL_MS }) {
   const readFile = io.readFile ?? fsReadFile;
   const writeFile = io.writeFile ?? fsWriteFile;
   const rename = io.rename ?? fsRename;
@@ -122,15 +143,28 @@ export function createIngestAsks({ path, io = {}, onLog = () => {} }) {
     await writeFile(tmp, `${JSON.stringify(asks, null, 2)}\n`, 'utf8');
     await rename(tmp, path);
   }).catch((e) => onLog(`could not write ${path}: ${e?.message ?? e}`)));
+  const live = (a) => a.expiresAt == null || a.expiresAt > now();
   return {
     async load() {
       try { const d = JSON.parse(await readFile(path, 'utf8')); asks = Array.isArray(d) ? d.filter((a) => a?.chatId && Array.isArray(a.ids)) : []; }
       catch (e) { if (e?.code !== 'ENOENT') onLog(`${path} unreadable (${e?.message ?? e}) — no open questions`); }
+      const ttl = ttlMs();
+      const old = ttl > 0 ? asks.filter((a) => !Number.isFinite(a.expiresAt)) : [];
+      if (old.length) {
+        for (const a of old) a.expiresAt = now() + ttl;
+        onLog(`${old.length} open question(s) from before expiry now close in ${minutesLeft(ttl)} min`);
+        await persist();
+      }
     },
+    // When a question asked now closes: null = never.
+    deadline() { const ttl = ttlMs(); return ttl > 0 ? now() + ttl : null; },
     add(ask) { asks = [...asks, ask]; return persist(); },
     // A reaction on Telegram names no topic: `tg:<chat>` finds a question asked in `tg:<chat>/<topic>`.
-    find(chatId, id) { return id == null ? null : asks.find((a) => (a.chatId === chatId || a.chatId.startsWith(`${chatId}/`)) && a.ids.includes(String(id))) ?? null; },
+    find(chatId, id) { return id == null ? null : asks.find((a) => live(a) && (a.chatId === chatId || a.chatId.startsWith(`${chatId}/`)) && a.ids.includes(String(id))) ?? null; },
     take(ask) { asks = asks.filter((a) => a !== ask); return persist(); },
+    has(ask) { return asks.includes(ask); },
+    list() { return [...asks]; },
+    mark(ask, patch) { if (!asks.includes(ask)) return chain; Object.assign(ask, patch); return persist(); },
   };
 }
 
