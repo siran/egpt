@@ -1601,7 +1601,7 @@ export async function boot({
               : (cfg[surface] && typeof cfg[surface] === 'object') ? cfg[surface]
               : {};
     const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
-    const allowed_users = ownersOf(cfg, surface);   // networks.<surface> ?? conversation_defaults
+    const allowed_users = ownersOf(cfg, surface);   // networks.<surface> joined with conversation_defaults
     return { ...raw, chat_ids, allowed_users };
   };
   // === THE SELF CHAT — ONE definition, three readers ===================================
@@ -2141,9 +2141,10 @@ export async function boot({
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
     // NAMESPACES — a WhatsApp jid authorizes nothing on Telegram — so the sender
-    // is checked against the origin network's OWN allowed_users (surfaceOf maps
-    // the network → whatsapp|telegram|signal block). Empty list = deny
-    // (fail-closed). isSender (the account owner) still authorizes globally — that
+    // is checked against the origin network's OWN allowed_users, joined with the root's
+    // conversation_defaults (2026-11-07; surfaceOf maps the network →
+    // whatsapp|telegram|signal block). Empty list = deny (fail-closed).
+    // isSender (the account owner) still authorizes globally — that
     // flag is orthogonal, set by the bridge, not here. BACK-COMPAT: a whatsapp
     // message resolves to cfg.whatsapp.allowed_users exactly as before; other
     // surfaces move from borrowing whatsapp's list to fail-closed deny, the
@@ -4100,8 +4101,8 @@ export async function boot({
     } }).catch((e) => log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`));
   }
   // A BEING'S MENTION allowed_users TURNED AWAY (operator 2026-11-07; spine classify hands it over after the record):
-  // one question per being in the chat the line was said in, in the same store as the ingest box's. A member of
-  // that being's allowed_users answers it (ingestAnswerOf); yes hands the line to the spine for that being alone.
+  // one question per being in the chat the line was said in, in the same store as the ingest box's. Whoever may wake
+  // that being (the Operator, or its allowed_users lists) answers it (ingestAnswerOf); yes hands the line to the spine for that being alone.
   async function askMention(ev, asked) {
     const sender = ev.fromBeing;
     const kept = JSON.parse(JSON.stringify(ev));
@@ -4112,16 +4113,16 @@ export async function boot({
       const id = await ingestPost(ev.chatId, (on, room) => on.send?.(room, shown.text, { systemLine: true }));
       if (id == null) { log.line?.(`[ingest] @${being} ${ev.chatId}: the question has no posted message an allowed user can answer — not asked`); continue; }
       await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target, ...askClock(expiresAt, shown.minutes, id, question, mentionExpired(sender, being)) });
-      log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from its allowed_users or an owner${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
+      log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from whoever may wake it (the Operator or its allowed_users lists)${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
     }
   }
-  // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner always answers,
-  // the ingest box's and a refused mention's alike; a refused mention's is also answered by whoever its being's
-  // allowed_users let wake it (mayWake). Only here: who may WAKE a being is the router's rule and stays as it is.
+  // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner answers the
+  // ingest box's; a refused mention's is answered by whoever may wake its being (mayWake: the Operator, always, then
+  // the being's allowed_users lists, which join), so an owner answers it whatever those lists say, even [].
   async function ingestAnswerOf(ev) {
     const ask = ingestAsks.find(ev.chatId, ev.kind === 'reaction' ? ev.msgId : ev.kind === 'text' ? ev.replyToId : null);
     const agent = ask?.being && Object.entries(cfg.agents ?? {}).find(([k]) => k.toLowerCase() === ask.being)?.[1];
-    const may = ask && (isOwner(ev, cfg) || (ask.being && mayWake(ask.being, agent, ev, { state: await _loadState(), config: cfg, chatId: ask.chatId })));
+    const may = ask && (ask.being ? mayWake(ask.being, agent, ev, { state: await _loadState(), config: cfg, chatId: ask.chatId }) : isOwner(ev, cfg));
     const yes = may ? answerOf(ev.kind === 'reaction' ? reactionEmoji(ev.body) : ev.body) : null;
     return yes == null ? null : { ask, yes };
   }

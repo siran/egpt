@@ -39,14 +39,14 @@ agents:
         # ── reachability and capability ───────────────────────────────────────────────────
         # Identical in meaning to the same keys on a conversations.yaml row and to
         # `agents.<being>.conversation_defaults.*` in config.yaml — this is the NEARER tier and
-        # it REPLACES the further one, never merges with it.
+        # it REPLACES the further one, never merges with it (allowed_users alone JOINS: it only adds people).
         #
         # access_level: all | regular   points at config/permissions/<level>.md, read fresh
         #                               every turn. `all` REQUIRES allowed_users (the spine
         #                               refuses the turn otherwise: unconfined capability plus
         #                               unrestricted reachability is the combination to catch).
-        # allowed_users:                who may WAKE this being. `["*"]` is the explicit
-        #                               wildcard; an empty/absent list is unrestricted.
+        # allowed_users:                who else may WAKE this being, besides the node's owners.
+        #                               `["*"]` is the explicit wildcard; [] adds nobody.
         # sandboxed:                    OS-level process isolation. Defaults to TRUE when unset
         #                               at every tier.
         # verbose_thinking:             render the chain of thought. Has a THIRD tier below

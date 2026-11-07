@@ -363,9 +363,9 @@ describe('addressed() — a bare handle opening the message (operator 2026-07-27
 //    agents.<handle>.conversation_defaults.allowed_users in config.yaml (already sitting on
 //    hit.agent — no extra wiring); a PER-CONVERSATION override lives FLAT under conversations.yaml
 //    agents.<being>.allowed_users (read via getBeing off an injected `loadState`, mirroring
-//    gating.mjs) and REPLACES — never merges with — the global default when set. UNSET at both
-//    tiers = only the node's owners (operator 2026-10-26). Only an unset list reads
-//    ev.authorized (the network-level allowed_users/isSender concept). No
+//    gating.mjs) and JOINS the global default (2026-11-07: lists only ever add people). Neither
+//    set = only the node's owners (operator 2026-10-26), who always pass: ev.authorized is the
+//    network-level allowed_users/isSender concept, so these tests send strangers with it off. No
 //    refusal text on a failed match — same silent-fallthrough convention the surface pin uses. ──
 describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
   const agents = {
@@ -376,9 +376,15 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
 
   it('REPRODUCE-FIRST: a sender NOT on the GLOBAL allowed_users is dropped — exactly like an unmatched @token', async () => {
     const arouter = createRouter({ getAgents: () => agents });
-    const r = await arouter.resolve({ ...ev('@wren do X'), senderId: 'stranger' });
+    const r = await arouter.resolve({ ...ev('@wren do X'), authorized: false, senderId: 'stranger' });
     expect(r.being).toBeNull();
     expect(r.targets).toEqual([]);   // no refusal, no trace of @wren
+  });
+
+  it('the node\'s owner reaches it too, though not on its list: the list only adds people', async () => {
+    const arouter = createRouter({ getAgents: () => agents, getConfig: () => ({ conversation_defaults: { allowed_users: ['op'] } }) });
+    expect((await arouter.resolve({ ...ev('@wren do X'), authorized: false, senderId: 'op' })).being).toBe('wren');
+    expect((await arouter.resolve({ ...ev('@wren do X'), authorized: true, senderId: 'stranger' })).being).toBe('wren');   // the account owner
   });
 
   it('a sender ON the GLOBAL allowed_users reaches the being directly', async () => {
@@ -405,14 +411,14 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
   it('REGRESSION: allowed_users: ["boss"] (no wildcard) still gates on the exact entry — others are denied', async () => {
     const arouter = createRouter({ getAgents: () => agents });
     expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'boss' })).being).toBe('wren');
-    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'someone-else' })).being).toBeNull();
+    expect((await arouter.resolve({ ...ev('@wren hi'), authorized: false, senderId: 'someone-else' })).being).toBeNull();
   });
 
   it('shortChatId normalizes both sides: a legacy full-form config entry matches a short delivered sender id', async () => {
     const ag = { egpt: agents.egpt, wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['!abc:beeper.local'] } } };
     const arouter = createRouter({ getAgents: () => ag });
     expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'abc' })).being).toBe('wren');
-    expect((await arouter.resolve({ ...ev('@wren hi'), senderId: 'someone-else' })).being).toBeNull();
+    expect((await arouter.resolve({ ...ev('@wren hi'), authorized: false, senderId: 'someone-else' })).being).toBeNull();
   });
 
   it('a being with NEITHER tier set answers only its owners (operator 2026-10-26)', async () => {
@@ -422,26 +428,27 @@ describe('router.resolve — allowed_users gate (operator 2026-08-15)', () => {
     expect((await arouter.resolve({ ...ev('@don hi'), authorized: false, senderId: null })).being).toBeNull();
   });
 
-  it('a PER-CONVERSATION allowed_users override REPLACES (never merges with) the global default and wins', async () => {
+  it('a PER-CONVERSATION allowed_users list JOINS the global default (2026-11-07): both lists reach, a stranger does not', async () => {
     const state = { contacts: { whatsapp: { CHAT: { slug: 'chat', agents: { wren: { allowed_users: ['other'] } } } } } };
     const arouter = createRouter({ getAgents: () => agents, loadState: async () => state });
-    const base = { ...ev('@wren hi'), surface: 'whatsapp', chatId: 'CHAT' };
-    // 'boss' is on the GLOBAL list, but this conversation's override REPLACED it — not merged.
-    expect((await arouter.resolve({ ...base, senderId: 'boss' })).being).toBeNull();
-    // 'other' is on the per-conversation override list.
+    const base = { ...ev('@wren hi'), authorized: false, surface: 'whatsapp', chatId: 'CHAT' };
+    // 'boss' is on the GLOBAL list and this conversation's list ADDED 'other' — not replaced.
+    expect((await arouter.resolve({ ...base, senderId: 'boss' })).being).toBe('wren');
     expect((await arouter.resolve({ ...base, senderId: 'other' })).being).toBe('wren');
+    expect((await arouter.resolve({ ...base, senderId: 'stranger' })).being).toBeNull();
   });
 
   it('other addressed targets in the SAME message survive: a dropped @wren hit does not affect a co-addressed @don hit', async () => {
-    const arouter = createRouter({ getAgents: () => agents });
-    const r = await arouter.resolve({ ...ev('@wren and @don, both please'), senderId: 'stranger' });
+    const open = { ...agents, don: { ...agents.don, conversation_defaults: { allowed_users: ['*'] } } };
+    const arouter = createRouter({ getAgents: () => open });
+    const r = await arouter.resolve({ ...ev('@wren and @don, both please'), authorized: false, senderId: 'stranger' });
     expect(r.targets.map((t) => t.being)).toEqual(['don']);
   });
 
   it('no loadState injected (default) → per-conversation overrides are never consulted, only the global tier — today\'s behaviour for a caller that supplies nothing', async () => {
     const bare = createRouter({ getAgents: () => agents });
     expect((await bare.resolve({ ...ev('@wren hi'), senderId: 'boss' })).being).toBe('wren');
-    expect((await bare.resolve({ ...ev('@wren hi'), senderId: 'stranger' })).being).toBeNull();
+    expect((await bare.resolve({ ...ev('@wren hi'), authorized: false, senderId: 'stranger' })).being).toBeNull();
   });
 });
 
@@ -659,7 +666,7 @@ describe('fallback_handle — a conditional wake token gated on membership (oper
       egpt: { handles: ['ekg'], fallback_handle: { handle: 'e', unless_present: '+15550100002' }, conversation_defaults: { allowed_users: ['someone-else'] } },
     };
     const s = seam(false);
-    const r = await createRouter({ getAgents: () => gated, isPresent: s.fn }).resolve(chat('@e hola'));
+    const r = await createRouter({ getAgents: () => gated, isPresent: s.fn }).resolve(chat('@e hola', { authorized: false }));
     expect(r.targets).toEqual([]);
     expect(s.asked).toEqual([]);
   });
@@ -1069,7 +1076,7 @@ describe('router.resolve — a quote-reply to a being\'s own post addresses that
     const otherEar = await router({ inboundOf: () => 'primary' }).resolve(quoting('ken', 'x', { connection: 'secondary' }));
     expect(beings(otherEar)).not.toContain('ken');
     const restricted = { ...agents, ken: { ...agents.ken, conversation_defaults: { allowed_users: ['someone-else'] } } };
-    expect(beings(await router({}, restricted).resolve(quoting('ken')))).not.toContain('ken');
+    expect(beings(await router({}, restricted).resolve(quoting('ken', 'x', { authorized: false })))).not.toContain('ken');
     const pinned = { ...agents, ken: { ...agents.ken, surface: 'shell' } };
     expect(beings(await router({}, pinned).resolve(quoting('ken')))).not.toContain('ken');
   });

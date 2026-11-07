@@ -1,10 +1,10 @@
 // ask-refused-mention.test.mjs — a being's line that names a being its sender (the bot, on Telegram) may not
-// wake is no longer dropped silently: the chat is asked "pass it on?", and a member of that being's
-// allowed_users may answer, and so may any owner of the node (even when the list is empty or leaves them out). A
-// stranger is ignored, as before. The question and its answer are the ingest box's own (ingest.mjs
-// createIngestAsks / answerOf, boot's answerIngest); yes hands the line, as it arrived, to that being alone
-// (spine.dispatchApproved). The question expires (ingest.ttl_ms): its post counts the minutes down, is edited
-// as they pass, and says it expired; after that the yes is ordinary chat.
+// wake is no longer dropped silently: the chat is asked "pass it on?", and only someone who may wake that being
+// (the Operator, or a member of its allowed_users lists, which join) may answer. A person off them is ignored, as
+// before. The question and its answer are the ingest box's own (ingest.mjs createIngestAsks / answerOf, boot's
+// answerIngest); yes hands the line, as it arrived, to that being alone (spine.dispatchApproved). The question
+// expires (ingest.ttl_ms): its post counts the minutes down, is edited as they pass, and says it expired; after
+// that the yes is ordinary chat.
 //   1. the spine: which lines ask, and what approval runs (real spine + identity + router + gating)
 //   2. a whole Telegram node: a being's post naming a being the bot may not wake (PR #12's echo) → question → yes
 import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
@@ -47,16 +47,16 @@ const AGENTS = {
 };
 const fromThisNode = (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === 'nodea';
 
-function buildSpine({ mode = 'mention', guard = null, ask = true, ours = [], ...extra } = {}) {
+function buildSpine({ mode = 'mention', guard = null, ask = true, ours = [], agents = AGENTS, config: configOver = {}, ...extra } = {}) {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body, senderId: ev.senderId, senderName: ev.senderName }); return { text: 'x' }; } };
-  const config = { node_name: 'nodeA', dispatch: { auto_default_mode: mode } };
+  const config = { node_name: 'nodeA', dispatch: { auto_default_mode: mode }, ...configOver };
   const transcript = { logged: [], async log(ev, reply) { this.logged.push({ ev, reply }); } };
   const asks = [];
   const answers = [];
   const spine = createSpine({
     bridge: { onMessage() {}, send() {}, stop() {}, wasSentByUs: (chatId, id) => ours.includes(String(id)) },
     brain, identity: createIdentity({ now: () => 1000 }),
-    router: createRouter({ getAgents: () => AGENTS, getConfig: () => config }),
+    router: createRouter({ getAgents: () => agents, getConfig: () => config }),
     gating: createGating({ getConfig: () => config, loadState: null }),
     sender: { open() { return { activate() {}, begin() {}, update() {}, async finish() {}, fail() {} }; } },
     transcript, heartbeats: { runDue() {} }, mesh: { isEnvelope: () => false, async handle() {} },
@@ -208,6 +208,46 @@ describe('the spine asks when a being\'s own line names a being allowed_users tu
   });
 });
 
+// The bot's echo arrives isSender + authorized (it is this node's own account), but a being's line is never the
+// Operator (2026-11-07): the flags speak for a person only, so a being→being wake is always the question.
+describe('a being\'s own line is never the Operator: it asks, a person does not', () => {
+  const agents = { lark: { handles: ['lark'], conversation_defaults: { allowed_users: ['*'] } }, ghost: { handles: ['ghost'] }, finch: { handles: ['finch'], conversation_defaults: { allowed_users: ['42'] } } };
+  const root = { conversation_defaults: { allowed_users: ['42'] } };   // the Operator, at the root
+
+  it('an echo naming a being with NO list asks (it used to pass by isSender); nothing runs', async () => {
+    const { spine, brain, asks } = buildSpine({ agents, config: root });
+    await spine.handleInbound(echo('🐦 Lark: @ghost can you check the plan?'));
+    await vi.waitFor(() => expect(asks).toHaveLength(1));
+    expect(asks[0].asked.map((a) => a.being)).toEqual(['ghost']);
+    expect(brain.calls).toEqual([]);
+  });
+
+  it('an echo naming a being with an id list asks too, whoever the root names', async () => {
+    const { spine, brain, asks } = buildSpine({ agents, config: root });
+    await spine.handleInbound(echo(LINE));
+    await vi.waitFor(() => expect(asks).toHaveLength(1));
+    expect(asks[0].asked.map((a) => a.being)).toEqual(['finch']);
+    expect(brain.calls).toEqual([]);
+  });
+
+  it('LOCK: the Operator by id, and a person typing on the account, wake a being with no list — no question', async () => {
+    const { spine, brain, asks } = buildSpine({ agents, config: root });
+    await spine.handleInbound(person('@ghost hola', '42'));
+    await spine.handleInbound(person('@ghost hola otra vez', '77', { isSender: true, authorized: true, msgKey: '8' }));
+    await settle();
+    expect(ran(brain)).toEqual(['ghost', 'ghost']);
+    expect(asks).toEqual([]);
+  });
+
+  it('LOCK: the Operator wakes a being whose list does not name it, no question', async () => {
+    const { spine, brain, asks } = buildSpine({ agents: { ...agents, finch: { handles: ['finch'], conversation_defaults: { allowed_users: ['88'] } } }, config: root });
+    await spine.handleInbound(person('@finch hola', '42'));
+    await settle();
+    expect(ran(brain)).toEqual(['finch']);
+    expect(asks).toEqual([]);
+  });
+});
+
 describe('router.resolve reports the beings allowed_users turned away', () => {
   const ev = (body, senderId) => ({ surface: 'telegram', chatId: 'tg:42', senderId, body });
   const router = (agents = AGENTS, extra = {}) => createRouter({ getAgents: () => agents, getConfig: () => ({ dispatch: { auto_default_mode: 'on' } }), ...extra });
@@ -314,7 +354,7 @@ const now = () => Math.floor(Date.now() / 1000);
 let mid = 300;
 const root = { message_id: 77, date: now(), chat: CHAT, from: ME, is_topic_message: true, message_thread_id: 77, forum_topic_created: { name: 'Plan', icon_color: 7322096 } };
 const inTopic = (text, from = OPERATOR, quoted = root) => ({ message_id: ++mid, date: now(), chat: CHAT, from, text, is_topic_message: true, message_thread_id: 77, reply_to_message: quoted });
-// finchList: who Finch's own list admits (Sam, by default: an owner is not on it); ingest: the `ingest:` block.
+// finchList: who Finch's own list adds (Sam, by default: an owner is not on it, and wakes Finch all the same); ingest: the `ingest:` block.
 const NODE = ({ finchList = [88], ingest = null } = {}) => ({
   node_name: 'nodeA', user_name: 'Operator',
   limbs: { telegram: { main: { account: 'nodea_bot' } } },
@@ -434,7 +474,7 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     n.app.stop();
   });
 
-  it('a "yes" from a stranger is ordinary chat: ignored, the question stays open for Finch\'s list and the owners', async () => {
+  it('a "yes" from a stranger is ordinary chat: ignored, the question stays open for whoever may wake Finch', async () => {
     const n = await bootNode(SCRIPT);
     const q = await larkNamesFinch(n);
     n.answerTo(q, 'yes', STRANGER);
@@ -445,6 +485,17 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     expect(n.posted().some((t) => t?.includes('dispatched') || t?.includes('dropped'))).toBe(false);
     n.answerTo(q, 's');                                         // Sam, on Finch's list
     await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    expect(n.lines.some((l) => /\[ingest\] @finch .*: dispatched by Sam/.test(l))).toBe(true);
+    expect(n.lines.some((l) => /dispatched by Maya/.test(l))).toBe(false);
+    n.app.stop();
+  });
+
+  it('the node\'s owner may answer too, on Finch\'s list or not: the Operator is always allowed (2026-11-07)', async () => {
+    const n = await bootNode(SCRIPT);
+    const q = await larkNamesFinch(n);
+    n.answerTo(q, 'yes', OPERATOR);
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
+    expect(n.lines.some((l) => /\[ingest\] @finch .*: dispatched by Operator/.test(l))).toBe(true);
     n.app.stop();
   });
 
@@ -467,7 +518,7 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     a.app.stop();
   });
 
-  it('an empty list (allowed_users: []) wakes nobody, yet the owner answers; a stranger and Sam still cannot', async () => {
+  it('an empty list (allowed_users: []) adds nobody, yet the owner answers; a stranger and Sam still cannot', async () => {
     const n = await bootNode(SCRIPT, { finchList: [] });
     const q = await larkNamesFinch(n);
     n.answerTo(q, 'yes', STRANGER);
@@ -480,16 +531,17 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     n.app.stop();
   });
 
-  it('a list that excludes the owner does not shut the owner out of the answer — and answering never makes the owner (or the bot) a waker of Finch', async () => {
+  it('a list that excludes the owner does not shut the owner out — of the answer, nor of waking Finch directly (the lists join, 2026-11-07); a stranger still wakes nothing', async () => {
     const n = await bootNode(SCRIPT, { finchList: [88] });
     const q = await larkNamesFinch(n);
     n.answerTo(q, 'yes', OPERATOR);
     await vi.waitFor(() => expect(n.of('finch')).toHaveLength(1), { timeout: 10_000 });
-    n.api.updates(inTopic('@finch hola', STRANGER));             // the wake rules are untouched: Finch\'s own list still decides
-    n.api.updates(inTopic('@finch hola, again', OPERATOR));
+    n.api.updates(inTopic('@finch hola', STRANGER));             // Finch\'s lists still decide for anyone who is not the Operator
     await settle();
     await new Promise((r) => setTimeout(r, 300));
-    expect(n.of('finch')).toHaveLength(1);                      // the owner is not on Finch\'s list: asking Finch directly still wakes no one
+    expect(n.of('finch')).toHaveLength(1);                      // answering the question made nobody a waker of Finch
+    n.api.updates(inTopic('@finch hola, again', OPERATOR));
+    await vi.waitFor(() => expect(n.of('finch')).toHaveLength(2), { timeout: 10_000 });   // the Operator is on none of Finch\'s lists and wakes it all the same
     n.app.stop();
   });
 
@@ -520,7 +572,7 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
     second.app.stop();
   });
 
-  it('the ingest box\'s question beside it: an owner answers that one, a member of Finch\'s list only this one', async () => {
+  it('the ingest box\'s question beside it: an owner answers that one, a member of Finch\'s list only this one (the owner may answer this one too)', async () => {
     const n = await bootNode(SCRIPT);
     const q = await larkNamesFinch(n);
     await n.app.ingestLine(`/to ${TOPIC}\nlark, resume the thread`);

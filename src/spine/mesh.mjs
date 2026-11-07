@@ -102,8 +102,7 @@ export function createMeshService({
   // the same way (mirrored, not duplicated). Absent (tests, a caller that doesn't need per-
   // conversation overrides) → relayDispatch's allowed_users gate simply never reads a per-
   // conversation override, and a being's reachability falls straight to its global
-  // agents.<handle>.conversation_defaults.allowed_users default (or the owners, when neither
-  // tier is set).
+  // agents.<handle>.conversation_defaults.allowed_users joined with the node's owners.
   loadState = null,
   // THE SPINE'S OWN TURN MACHINERY (src/spine/turns.mjs, operator 2026-08-31), THE SAME INSTANCE
   // createSpine got — boot.mjs builds it once, above both. A relayed turn is a turn: it belongs on
@@ -186,12 +185,12 @@ export function createMeshService({
   // reached this node, NOT meshEv's synthetic senderId:null)? Replaces the evicted TYPE-FILE
   // `dangerous:true` reachability gate (old dangerousDenial, meta-engineer.yaml — see git
   // history) with the SAME two-tier allowed_users rule router.mjs's resolve() enforces at the
-  // ORIGIN before a mesh envelope is ever sent: a per-conversation override (conversations.yaml
-  // agents.<being>.allowed_users, read via getBeing off ONE state read) REPLACES — never merges
-  // with — the node's global default (config.yaml's NESTED
-  // agents.<handle>.conversation_defaults.allowed_users). UNSET at both tiers = the owners (operator
-  // 2026-10-26), judged on route.ev. Returns the denial string to surface, or null when the turn
-  // may proceed. Checked in relayDispatch BEFORE brain.turn ever runs for a local being — never
+  // ORIGIN before a mesh envelope is ever sent: the lists JOIN (operator 2026-11-07) — the node's
+  // owners, config.yaml's NESTED agents.<handle>.conversation_defaults.allowed_users and the
+  // conversation's own (conversations.yaml agents.<being>.allowed_users, read via getBeing off ONE
+  // state read) only add people. The Operator always passes (the requester's flags count only for a
+  // person's line, not a node's frame), judged on route.ev. Returns the denial string to surface, or
+  // null when the turn may proceed. Checked in relayDispatch BEFORE brain.turn ever runs for a local being — never
   // for a relay hop (those don't reach here).
   //
   // EXPLICIT DENIAL, deliberately unlike router.mjs's silent drop: this file's own convention is

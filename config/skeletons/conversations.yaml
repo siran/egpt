@@ -82,11 +82,12 @@ contacts:
           # here falls to that global default, then to this node's ordinary default.
           #access_level: all
 
-          # this agent's reachability allow-list for THIS conversation only - a list of
-          # sender ids (same shape as config.yaml networks.*.allowed_users). REPLACES
-          # (does not merge with) this agent's global config.yaml
-          # agents.<name>.allowed_users default when set; unset here falls to that
-          # global default, then to "reachable by anyone" (today's ordinary default).
+          # more people who may wake this agent in THIS conversation only - a list of
+          # sender ids (same shape as config.yaml networks.*.allowed_users). JOINS
+          # (does not replace) this agent's global config.yaml
+          # agents.<name>.conversation_defaults.allowed_users and the node's owners
+          # (config.yaml conversation_defaults.allowed_users), who always may; ['*'] =
+          # anyone, [] adds nobody.
           #allowed_users: []
 
           # the names that address this agent IN THIS CHAT (@name, a leading bare name,

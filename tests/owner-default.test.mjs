@@ -1,8 +1,10 @@
 // A being answers only its owners by default (operator 2026-10-26: "E must only listen to its owner
 // by default"; "join networks.telegram.allowed_users into conversation_defaults.allowed_users").
-// Rungs for who may wake a being: the chat's list → agents.<b>.conversation_defaults.allowed_users →
-// the owners = networks.<surface>.allowed_users ?? the node's conversation_defaults.allowed_users ??
-// nobody. A list holds ids or '*' (operator 2026-10-26: no `owner` token): ['*'] anyone, [] nobody.
+// Who may wake a being (operator 2026-11-07: the lists JOIN, none replaces another): the owners =
+// the node's conversation_defaults.allowed_users ∪ networks.<surface>.allowed_users, always allowed;
+// agents.<b>.conversation_defaults.allowed_users and the chat's list only add people. A list holds
+// ids or '*' (operator 2026-10-26: no `owner` token): '*' in any of them is anyone, [] adds nobody.
+// The joined matrix and the Operator-is-never-a-being cases are in allowed-users-joined.test.mjs.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -25,17 +27,17 @@ const routerOf = (config, state = null) => createRouter({ getAgents: () => confi
 
 describe('ownersOf — the one owner list (commands and beings)', () => {
   const cfg = { conversation_defaults: { allowed_users: [AN, TG_AN] }, networks: { whatsapp: { chat_ids: [] }, telegram: { allowed_users: ['tg-only'] } } };
-  it('a surface with no list of its own uses the node list; one with a list uses only its own', () => {
+  it('a surface with no list of its own uses the node list; one with a list ADDS it to the node list (its own ids first)', () => {
     expect(ownersOf(cfg, 'whatsapp')).toEqual([AN, TG_AN]);
     expect(ownersOf(cfg, 'googlevoice')).toEqual([AN, TG_AN]);
-    expect(ownersOf(cfg, 'telegram')).toEqual(['tg-only']);
+    expect(ownersOf(cfg, 'telegram')).toEqual(['tg-only', AN, TG_AN]);
   });
   it('no list anywhere = nobody; "*" names nobody in it', () => {
     expect(ownersOf({}, 'whatsapp')).toEqual([]);
     expect(ownersOf({ conversation_defaults: { allowed_users: ['*', AN] } }, 'whatsapp')).toEqual([AN]);
   });
-  it('the legacy top-level <surface>: block still overrides, as boot read it', () => {
-    expect(ownersOf({ conversation_defaults: { allowed_users: [AN] }, whatsapp: { allowed_users: ['old'] } }, 'whatsapp')).toEqual(['old']);
+  it('the legacy top-level <surface>: block is read as networks.<surface> is: joined with the node list', () => {
+    expect(ownersOf({ conversation_defaults: { allowed_users: [AN] }, whatsapp: { allowed_users: ['old'] } }, 'whatsapp')).toEqual(['old', AN]);
   });
   it('isKnownSender counts the node list (the stranger rule)', () => {
     expect(isKnownSender(AN, { conversation_defaults: { allowed_users: [AN] } })).toBe(true);
@@ -58,7 +60,7 @@ describe('isOwner', () => {
   });
 });
 
-describe('mayWake — the rungs, nearest first', () => {
+describe('mayWake — the rungs join', () => {
   const base = { conversation_defaults: { allowed_users: [AN] }, networks: { telegram: { allowed_users: [TG_AN] } } };
   const state = (list) => ({ contacts: { whatsapp: { '!dm': { slug: 'dm', agents: { e: { allowed_users: list } } } } } });
   const may = (agent, ev, { config = base, st = null } = {}) => mayWake('e', agent, ev, { state: st, config });
@@ -68,25 +70,28 @@ describe('mayWake — the rungs, nearest first', () => {
     expect(may({}, line(STRANGER, 'x'))).toBe(false);
     expect(may({}, line(AN, 'x'), { config: {} })).toBe(false);   // no owners configured: nobody
   });
-  it('networks.<surface>.allowed_users replaces the node list for its surface', () => {
+  it('networks.<surface>.allowed_users ADDS to the node list for its surface', () => {
     expect(may({}, line(TG_AN, 'x', { surface: 'telegram' }))).toBe(true);
-    expect(may({}, line(AN, 'x', { surface: 'telegram' }))).toBe(false);
+    expect(may({}, line(AN, 'x', { surface: 'telegram' }))).toBe(true);   // the root owner still passes there
+    expect(may({}, line(STRANGER, 'x', { surface: 'telegram' }))).toBe(false);
   });
-  it('the agent list beats the owners; the chat list beats the agent list', () => {
+  it('the agent list and the chat list ADD to the owners, and to each other', () => {
     const agent = { conversation_defaults: { allowed_users: [STRANGER] } };
     expect(may(agent, line(STRANGER, 'x'))).toBe(true);
-    expect(may(agent, line(AN, 'x'))).toBe(false);
-    expect(may(agent, line(STRANGER, 'x'), { st: state(['friend']) })).toBe(false);
+    expect(may(agent, line(AN, 'x'))).toBe(true);
+    expect(may(agent, line(STRANGER, 'x'), { st: state(['friend']) })).toBe(true);
     expect(may(agent, line('friend', 'x'), { st: state(['friend']) })).toBe(true);
+    expect(may(agent, line(AN, 'x'), { st: state(['friend']) })).toBe(true);
+    expect(may(agent, line('bystander', 'x'), { st: state(['friend']) })).toBe(false);
   });
   it('"owner" in a list is an id like any other: it does not expand to the owners', () => {
     const listed = { conversation_defaults: { allowed_users: ['owner', 'x'] } };
     expect(may(listed, line('x', 'h'))).toBe(true);
     expect(may(listed, line(STRANGER, 'h'))).toBe(false);
-    expect(may(listed, line(AN, 'h'))).toBe(false);                                     // an owner whose id is not "owner"
-    expect(may(listed, line(AN, 'h', { authorized: true, isSender: true }))).toBe(false);
+    expect(may(listed, line(AN, 'h'))).toBe(true);                                      // admitted as the Operator, not as "owner"
     expect(may(listed, line('owner', 'h'))).toBe(true);                                 // matched only by its id
     expect(may({}, line(STRANGER, 'h'), { st: state(['owner']) })).toBe(false);
+    expect(may({}, line('owner', 'h'), { st: state(['owner']) })).toBe(true);
     expect(isKnownSender('owner', { agents: { e: { conversation_defaults: { allowed_users: ['owner'] } } } })).toBe(true);
     expect(ownersOf({ conversation_defaults: { allowed_users: ['owner'] } }, 'whatsapp')).toEqual(['owner']);
   });
@@ -95,11 +100,13 @@ describe('mayWake — the rungs, nearest first', () => {
     expect(may({}, line('@me', 'h', { isSender: true }), { config: {} })).toBe(true);
     expect(may({}, { surface: 'room', chatId: 'lobby', senderId: 'operator', authorized: true }, { config: {} })).toBe(true);
   });
-  it('REGRESSION LOCKS: ["*"] anyone, [] nobody, ids as written (an owner not on an id list is refused)', () => {
+  it('REGRESSION LOCKS: ["*"] anyone, [] adds nobody and shuts nobody out, ids as written; a stranger stays refused', () => {
     expect(may({ conversation_defaults: { allowed_users: ['*'] } }, line(STRANGER, 'h'))).toBe(true);
-    expect(may({ conversation_defaults: { allowed_users: [] } }, line(AN, 'h', { authorized: true }))).toBe(false);
+    expect(may({ conversation_defaults: { allowed_users: [] } }, line(STRANGER, 'h'))).toBe(false);
+    expect(may({ conversation_defaults: { allowed_users: [] } }, line(AN, 'h', { authorized: true }))).toBe(true);
     expect(may({ conversation_defaults: { allowed_users: ['boss'] } }, line('boss', 'h'))).toBe(true);
-    expect(may({ conversation_defaults: { allowed_users: ['boss'] } }, line(AN, 'h', { authorized: true }))).toBe(false);
+    expect(may({ conversation_defaults: { allowed_users: ['boss'] } }, line(STRANGER, 'h'))).toBe(false);
+    expect(may({ conversation_defaults: { allowed_users: ['boss'] } }, line(AN, 'h', { authorized: true }))).toBe(true);
     expect(may({}, line(STRANGER, 'h'), { st: state(['*']) })).toBe(true);
   });
 });
@@ -114,9 +121,9 @@ describe('the router — E with no list', () => {
     expect(await woken(r, line(STRANGER, 'e hola'))).toEqual([]);
     expect(await woken(r, group(STRANGER, 'e hola'))).toEqual([]);
   });
-  it('["owner"] wakes neither the owner nor a stranger', async () => {
+  it('["owner"] adds an id called "owner", and nobody else: the owner still wakes it as the Operator, a stranger does not', async () => {
     const r = routerOf({ ...config, agents: { egpt: { handles: ['e'], conversation_defaults: { allowed_users: ['owner'] } } } });
-    expect(await woken(r, group(AN, 'e hola'))).toEqual([]);
+    expect(await woken(r, group(AN, 'e hola'))).toEqual(['egpt']);
     expect(await woken(r, group(STRANGER, 'e hola'))).toEqual([]);
   });
 });

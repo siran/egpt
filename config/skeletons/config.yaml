@@ -224,11 +224,10 @@ agents:
     # conversation_defaults:      # THIS AGENT'S global defaults for fields conversations.yaml can
     #                             # override per-conversation - the nesting IS the allowlist (only
     #                             # fields living here get a per-conversation override at all).
-    #   allowed_users: ['*']      # who may wake it: ids, or ['*'] = anyone; [] = nobody. Unset = only this
-    #                             # node's owners (the top-level conversation_defaults.allowed_users below).
-    #                             # Overridable per-conversation (conversations.yaml
-    #                             # agents.<name>.allowed_users) - the override REPLACES this list
-    #                             # there, it does not merge with it.
+    #   allowed_users: ['*']      # who else may wake it: ids, or ['*'] = anyone; [] adds nobody. The node's
+    #                             # owners (the top-level conversation_defaults.allowed_users below) always may.
+    #                             # A conversation's own list (conversations.yaml
+    #                             # agents.<name>.allowed_users) JOINS this one, it does not replace it.
     #   access_level: regular     # access_level default (all|regular) - points at
     #                             # config/permissions/<level>.md. Overridable per-conversation
     #                             # (conversations.yaml agents.<name>.access_level, same replace-not-merge rule).
@@ -294,7 +293,7 @@ agents:
   #   conversation_defaults:
   #     access_level: all         # runs as you, unboxed
   #     sandboxed: false
-  #     allowed_users: []         # no line wakes it (not even a quote of its post); the command does
+  #     allowed_users: []         # adds nobody (an owner's quote of its post still wakes it); the command reads neither
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
@@ -315,10 +314,11 @@ agents:
 
 # --- Owners (who may command this node, and whom its beings answer) ---------
 # Your STABLE ids (jids / phone numbers / Telegram numeric ids, never display
-# names); ids of every network may be mixed here. [] = nobody (the account owner
-# is always allowed).
+# names); ids of every network may be mixed here. The Operator is defined here, at
+# the root, and is always allowed; lists below the root only ADD people (2026-11-07).
+# [] = no listed owner (the account owner is always allowed).
 conversation_defaults:
-  allowed_users: [] # your ids: beings answer only them by default, and they may run commands; networks.<surface>.allowed_users overrides per network
+  allowed_users: [] # your ids: they may run commands and always wake your beings; networks.<surface>.allowed_users and the beings' lists add to them
 
 # --- Surfaces ----------------------------------------------------------------
 # Per-surface, because ids are per-network namespaces. chat_id = your Self-DM
@@ -326,7 +326,7 @@ conversation_defaults:
 networks:
   whatsapp:
     chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
-    # allowed_users: [] # this network's owners, REPLACING conversation_defaults.allowed_users here
+    # allowed_users: [] # more owners on this network, ADDED to conversation_defaults.allowed_users
   telegram: { chat_ids: [] } # limbs.telegram bot; its owners are Telegram numeric ids
   signal:   { chat_ids: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it

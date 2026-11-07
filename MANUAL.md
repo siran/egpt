@@ -15,21 +15,24 @@ API**. You operate it from your **Self-DM** on any surface.
 
 A slash command typed in an authorized chat is intercepted by the node itself,
 not answered by the persona. Authorization = the surface's own `chat_id`
-(Self-DM), an owner (the node's `conversation_defaults.allowed_users`, or
+(Self-DM), an owner (the node's `conversation_defaults.allowed_users` plus
 `networks.<surface>.allowed_users` where that surface sets one), or the account owner.
 
-The same owners are whom a being answers by default: a being with no
-`allowed_users` (in the chat's entry or its `agents.<name>.conversation_defaults`)
-wakes only for them. A list holds ids or `'*'`: `['*']` is anyone, `[]` is
-nobody, ids are exactly those senders; the nearest list wins (2026-10-26).
-A person off a being's list is ignored. A being's own line that names a being whose
-list does not admit that sender (on Telegram every being posts through one bot, so
-lark's `@finch …` is the bot's) asks the chat once: `❓ lark → finch: pass it on?
-reply yes / no · ⏳ 10 min`. A member of finch's list may answer, and so may any owner of
-the node, whatever that list says (even `[]`); yes hands the line to finch alone, no drops
-it. The question closes after `ingest.ttl_ms` (default 10 minutes): the time left is
-edited into it each minute, then it reads `⌛ lark → finch: expired, not passed on`
-and a later yes is ordinary chat. The ingest box's questions and answers below, the same
+`allowed_users` lists join by inheritance, never replace (2026-11-07). The Operator
+is defined once, at the root of config.yaml (`conversation_defaults.allowed_users`),
+and is always allowed. Every list below the root, whether
+`networks.<surface>`, `agents.<name>.conversation_defaults` or a chat's entry, only
+adds people, so who may wake a being is the union of all of them. `'*'` in any one
+is anyone; `[]` adds nobody and shuts nobody out. A person on none is ignored. The
+account-owner and console flags count only for a person's line, never a being's.
+A being's own line that names a being whose lists do not admit that sender (on
+Telegram every being posts through one bot, so lark's `@finch …` is the bot's) asks
+the chat once: `❓ lark → finch: pass it on? reply yes / no · ⏳ 10 min`. Only someone
+who may wake finch (an owner, or on one of its lists) may answer; yes hands the line
+to finch alone, no drops it. The question closes after `ingest.ttl_ms` (default 10
+minutes): the time left is edited into it each minute, then it reads
+`⌛ lark → finch: expired, not passed on` and a later yes is ordinary chat. The
+ingest box's questions and answers below, the same
 `state/ingest-asks.json`.
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
@@ -322,8 +325,8 @@ all`). You may run it, and so may a being: a being's line ("🐶 E: /e super
 check X") is read past its stamp and frame, and `super` is the only command a
 being's line runs. Another person's `/e super` is refused like any owner-only
 command, S's own line never runs it, and a being's run counts in
-`loop_guard.inbound`. With `handles: []` and `allowed_users: []` nothing else
-wakes it, not even a quote of its post; the command reads neither. Its block:
+`loop_guard.inbound`. With `handles: []` no name wakes it, and `allowed_users: []`
+adds nobody, so only an owner's quote of its post does; the command reads neither. Its block:
 config-schema `agents` (THE SUPERINTENDENT); personality
 `config/agents/identities/super.md`.
 
@@ -368,8 +371,8 @@ default; commented blocks are optional overrides.
 | `user_name` | Your handle, shown in cross-surface mirroring as `<user_name>@<surface>`. |
 | `emojis` | Author tags for mirroring: `user` / `egpt` / `persona` / `human`. |
 | `agents` | **Required.** The unified registry: persona, local beings, and mesh relays. Each agent = `{ configuration, personality?, handles, relay_channel? }`. `configuration` names an agent-type file (`config/agents/<type>.yaml`), an inline map, or the literal `relay`. `personality` names `config/agents/identities/<name>.md` and sits BESIDE `configuration` — a being composes a shared brain def with its own identity, no per-being type file needed; it outranks a `personality:` written inside the def, and absent both it is `egpt`. A node without an `agents` block or a persona entry (handles include `e`/`egpt`) refuses to boot. |
-| `conversation_defaults` | `allowed_users`: the node's owners, ids of any network mixed. They may command the node, and a being with no list of its own answers only them. Unset or `[]` = nobody (the account owner always passes). |
-| `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }`. A surface's `allowed_users`, when set, replaces the node's `conversation_defaults.allowed_users` there (empty = deny). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
+| `conversation_defaults` | `allowed_users`: the Operator and the node's other owners, ids of any network mixed. They may command the node and always wake its beings; lists below the root only add. Unset or `[]` = no listed owner (the account owner always passes). |
+| `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }`. A surface's `allowed_users`, when set, adds to the node's `conversation_defaults.allowed_users` there (empty adds nobody). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
 | `default_time_zone` | Interprets timezone-less heartbeat `when:` times (IANA name or an alias like `ET`/`PT`). |
 | `warm` | Warm sessions. Eviction is memory-based, built in: under a reserve of max(15% of memory, 500 MB), or Linux PSI > 10, idle sessions go one at a time, chatbox first, resident/system last, least recently used within. Optional: `max` (a backstop), `idle_ttl` / `idle_ttl_by_class` (timers, off by default: `15m`, `-1` = never, `0` = at turn end), `keep` (never evicted). A chat sets its own `idle_ttl` / `keep` in its folder's `config.yaml`. |
 | `loop_guard` | Both loop limits. `inbound: { turns, window }`: `turns` (6) non-human turns within `window` (2) minutes, or the same line repeated, pauses that chat until `resume`; -1 = off. `outbound`: over `messages` per `window_ms` node-wide STOPS the node. Per chat, any of three rules pauses THAT chat until `resume`: `chat_similar_count` (5) near-identical sends in `chat_similar_window_ms` (2 s); `chat_burst_count` (10) sends in `chat_burst_window_ms` (2 s); `chat_messages` (5) in each of two consecutive `chat_window_ms` (3 s). ≤0 = that rule off. |

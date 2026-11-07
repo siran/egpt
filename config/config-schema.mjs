@@ -452,9 +452,9 @@ export const CONFIG_SCHEMA = {
         STABLE sender ids that may command this node ON TELEGRAM — a network
         jid / Beeper room id, NEVER a display name, since a chat title is
         attacker-controllable.
-        Set, it REPLACES the top-level conversation_defaults.allowed_users here;
-        unset, that list applies. EMPTY = deny (fail-closed). The account owner
-        (isSender) is always authorized regardless.
+        Set, it ADDS to the top-level conversation_defaults.allowed_users here (the
+        lists join, 2026-11-07); that list applies either way. EMPTY adds nobody.
+        The account owner (isSender) is always authorized regardless.
 
     Ids are per-surface NAMESPACES — a WhatsApp jid authorizes NOTHING here.
 
@@ -483,9 +483,9 @@ export const CONFIG_SCHEMA = {
       allowed_users
         STABLE sender ids that may command this node ON SIGNAL — a network jid /
         Beeper room id, NEVER a display name.
-        Set, it REPLACES the top-level conversation_defaults.allowed_users here;
-        unset, that list applies. EMPTY = deny (fail-closed). The account owner
-        (isSender) is always authorized regardless.
+        Set, it ADDS to the top-level conversation_defaults.allowed_users here (the
+        lists join, 2026-11-07); that list applies either way. EMPTY adds nobody.
+        The account owner (isSender) is always authorized regardless.
 
     Ids are per-surface NAMESPACES — a WhatsApp/Telegram id authorizes NOTHING
     here.
@@ -1528,13 +1528,16 @@ export const CONFIG_SCHEMA = {
 
     KEYS:
       allowed_users
-        THE NODE'S OWNERS: stable sender ids of any network, mixed. They may
-        command this node, and a being whose own allowed_users is unset (at
-        the conversation and at agents.<name>.conversation_defaults) answers
-        only them. networks.<surface>.allowed_users, when set, replaces this
-        list on that surface. Unset or [] = nobody (the account owner, and the
-        authenticated console, always pass). "*" names nobody here
-        (src/spine/router.mjs ownersOf / mayWake).
+        THE OPERATOR AND THE NODE'S OTHER OWNERS: stable sender ids of any
+        network, mixed. Defined here, at the ROOT, and always allowed: they
+        command this node and wake every one of its beings. allowed_users lists
+        JOIN by inheritance, never replace (operator 2026-11-07): the lists
+        below the root (networks.<surface>, agents.<name>.conversation_defaults,
+        a conversation's own) only ADD people, so who may wake a being is the
+        union of them all. "*" in any list = anyone; [] adds nobody and shuts
+        nobody out. "*" names nobody as an owner here. The account owner and the
+        authenticated console always pass, on a person's line only - never a
+        being's (src/spine/router.mjs ownersOf / isOwner / mayWake).
   `,
 
   networks: `
@@ -1547,10 +1550,10 @@ export const CONFIG_SCHEMA = {
           LIST; a node may own several.
         allowed_users
           OPTIONAL. This surface's owners — STABLE sender ids that may command
-          this node on THIS surface, and whom a being with no list of its own
-          answers here — jids / Beeper room ids, NEVER display names. Set, it
-          REPLACES the top-level conversation_defaults.allowed_users on this
-          surface; unset, that list applies. [] = deny (fail-closed). The
+          this node on THIS surface, and whom a being answers here — jids /
+          Beeper room ids, NEVER display names. Set, it ADDS to the top-level
+          conversation_defaults.allowed_users on this surface (the lists join,
+          2026-11-07); that list applies either way. [] adds nobody. The
           account owner is always allowed.
 
     Ids are per-surface NAMESPACES (a WhatsApp jid authorizes nothing on
@@ -2216,11 +2219,12 @@ export const CONFIG_SCHEMA = {
           allowed_users
             A list of sender ids (same shape/normalization as
             networks.*.allowed_users - matched via shortChatId, so a short or
-            legacy full-form id both work). UNSET = only the node's owners
-            (operator 2026-10-26: top-level conversation_defaults.allowed_users,
-            or networks.<surface>.allowed_users where set). A list holds ids or
-            "*" only: ["*"] = anyone; [] = nobody. Set = ONLY a sender whose id
-            is in the list can reach it; every other sender's @mention falls through exactly as
+            legacy full-form id both work). ADDS people to the node's owners
+            (operator 2026-11-07: top-level conversation_defaults.allowed_users
+            plus networks.<surface>.allowed_users where set, always allowed);
+            the lists join, never replace. A list holds ids or "*" only: "*" in
+            any of them = anyone; [] adds nobody. A sender on none of the
+            lists cannot reach it; its @mention falls through exactly as
             if it never matched (silent, same convention as the surface pin).
             No mode is above it (operator 2026-10-16): such a sender never
             wakes this agent, not by handle, quote-reply, the persona
@@ -2268,7 +2272,7 @@ export const CONFIG_SCHEMA = {
             all
               Unconfined at the CLI level - dangerously_skip_permissions plus
               bare Bash/Agent and no path confinement, exactly like an
-              interactive claude session. With no allowed_users at either tier
+              interactive claude session. With no allowed_users of its own
               it answers only the node's owners (2026-10-26); ['*'] opens it to
               anyone.
 
@@ -2396,7 +2400,8 @@ export const CONFIG_SCHEMA = {
         wrapper: that block is already scoped to one being in one
         conversation, so there is no registry-field ambiguity to guard
         against). When set, the per-conversation value REPLACES this global
-        default for that one conversation (never merged/unioned with it);
+        default for that one conversation (never merged/unioned with it) -
+        except allowed_users, whose lists all JOIN (2026-11-07);
         unset there falls back to this global default, then to "no override"
         (today's behavior).
 
@@ -2499,8 +2504,9 @@ export const CONFIG_SCHEMA = {
     or by a being's line (a node-signed one, read past its stamp and frame) —
     the only command a being's line runs; never by another person, never by
     S's own line here. A being's run counts in loop_guard.inbound. Give it
-    handles: [] and allowed_users: [] so nothing else wakes it (the command reads
-    neither). Absent → "/<handle> super" says so.
+    handles: [] so no name wakes it; allowed_users: [] adds nobody, so only an
+    owner's quote of its post can (the command reads neither). Absent →
+    "/<handle> super" says so.
       super: { configuration: { type: ccode, model: opus, effort: xhigh,
                personality: super }, handles: [], name: "S", body_emoji: "🦉",
                mode: accum,
@@ -3531,9 +3537,10 @@ export const CONFIG_SCHEMA = {
         answer. The same store holds a being's line that names a being whose
         allowed_users refuse its sender ("❓ lark → finch: pass it on? reply yes /
         no", boot askMention), so this covers both kinds. (An owner answers either
-        kind; the mention's is also answered by its being's allowed_users.) The post ends with the
-        time left, "· ⏳ 10 min", and is EDITED once a minute as it runs down
-        (a connection that cannot edit shows the clock time it closes at instead:
+        kind; the mention's is answered by whoever may wake its being: the Operator,
+        or its allowed_users lists.) The post ends with the time left, "· ⏳ 10 min",
+        and is EDITED once a minute as it runs down (a connection that cannot edit
+        shows the clock time it closes at instead:
         "· ⏳ until 14:35"). At the deadline the post is edited to say it expired
         ("⌛ lark → finch: expired, not passed on" / "⌛ expired, not dispatched"), the
         question leaves the store and a line is logged: an answer after that is

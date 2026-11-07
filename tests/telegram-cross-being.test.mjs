@@ -164,10 +164,12 @@ describe('telegram limb — a being\'s settled line that names a handle comes ba
 
 // ── the spine's half: the real spine + identity + router + gating (clean-ingest.test.mjs's harness), fed
 // the very payload the limb hands over ───────────────────────────────────────────────────────────────────
+// The bot's echo is never the Operator (2026-11-07), so a being it wakes must admit it by its own list:
+// finch and owl are open to anyone. (A being with no list, or an id list, asks instead: ask-refused-mention.)
 const ANYONE = { allowed_users: ['*'] };
 const AGENTS = {
   lark: { handles: ['lark'] },
-  finch: { handles: ['finch'] },
+  finch: { handles: ['finch'], conversation_defaults: ANYONE },
   owl: { handles: ['owl'], conversation_defaults: ANYONE },
 };
 const fromThisNode = (ev) => ev?.fromNode != null && String(ev.fromNode).toLowerCase() === 'nodea';
@@ -261,8 +263,8 @@ const NODE = (extra = {}) => ({
   limbs: { telegram: { main: { account: 'nodea_bot' } } },
   networks: { telegram: { allowed_users: [42] } },
   agents: {
-    lark: { configuration: 'egpt', handles: ['lark'], name: 'Lark', body_emoji: '🐦' },
-    finch: { configuration: 'egpt', handles: ['finch'], name: 'Finch', body_emoji: '🐤' },
+    lark: { configuration: 'egpt', handles: ['lark'], name: 'Lark', body_emoji: '🐦', conversation_defaults: { allowed_users: ['*'] } },
+    finch: { configuration: 'egpt', handles: ['finch'], name: 'Finch', body_emoji: '🐤', conversation_defaults: { allowed_users: ['*'] } },
   },
   ...extra,
 });

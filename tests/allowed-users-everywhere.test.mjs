@@ -2,7 +2,8 @@
 // handles [q], allowed_users [@dalia]) woke on "q …" from a sender NOT on that list. The explicit `q`
 // hit was dropped by allowed_users, and the persona fall-through then woke her anyway on the bridge's
 // atE. Every wake the router hands out is now tested against the woken being's allowed_users; a denied
-// line is still recorded and wakes nobody.
+// line is still recorded and wakes nobody. Since 2026-11-07 the lists JOIN: the node's owner (Y, root
+// conversation_defaults) always passes, and the being's and the conversation's lists only add people.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -10,7 +11,9 @@ import { createSpine } from '../src/spine/spine.mjs';
 import { mentionStatus } from '../src/auto-mode.mjs';
 
 const X = '@dalia:beeper.com';
-const Y = '@anaprueba:beeper.com';
+const Y = '@anaprueba:beeper.com';   // the node's owner: the Operator, at the root of config
+const Z = '+1555';                   // on no list
+const W = '@wendy:beeper.com';       // added by a conversation's own list
 const CHAT = { surface: 'whatsapp', chatId: '!g', chatName: 'grupo', kind: 'text', raw: { chatType: 'group' } };
 
 const queen = (mode = 'mention', extra = {}) => ({
@@ -51,18 +54,25 @@ function build(agents, { state = null } = {}) {
 }
 
 describe('allowed_users holds on every wake — the persona fall-through (dg, Queen D)', () => {
-  it('REPRODUCTION: Y writes "q hola" — nobody wakes, and the line is still recorded', async () => {
+  it('REPRODUCTION: Z (on no list) writes "q hola" — nobody wakes, and the line is still recorded', async () => {
     const { bridge, brain, inbound } = build(queen('mention'));
-    await bridge.emit(msg(Y, 'q hola'));
+    await bridge.emit(msg(Z, 'q hola'));
     expect(brain.calls).toEqual([]);
     expect(inbound()).toEqual(['q hola']);
   });
 
+  it('Y, the node\'s owner, writes "q hola" — her list only adds people, so Queen D wakes', async () => {
+    const { bridge, brain } = build(queen('mention'));
+    await bridge.emit(msg(Y, 'q hola'));
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+  });
+
   it('the router drops a denied sender\'s being, named or taken by its mode — no target at all', async () => {
     const { router } = build(queen('on'));
-    expect((await router.resolve(msg(Y, 'q hola'))).targets).toEqual([]);
-    expect((await router.resolve(msg(Y, 'buenas'))).targets).toEqual([]);
+    expect((await router.resolve(msg(Z, 'q hola'))).targets).toEqual([]);
+    expect((await router.resolve(msg(Z, 'buenas'))).targets).toEqual([]);
     expect((await router.resolve(msg(X, 'buenas'))).targets).toEqual([{ being: 'egpt', mention: {}, address: null, fallthrough: true }]);
+    expect((await router.resolve(msg(Y, 'buenas'))).targets).toEqual([{ being: 'egpt', mention: {}, address: null, fallthrough: true }]);
   });
 
   it('X writes "q hola" — Queen D wakes', async () => {
@@ -71,46 +81,52 @@ describe('allowed_users holds on every wake — the persona fall-through (dg, Qu
     expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
   });
 
-  it('Y quote-replies to her message — not woken; X doing the same is', async () => {
+  it('Z quote-replies to her message — not woken; X doing the same is, and so is the owner', async () => {
     const { bridge, brain, inbound } = build(queen('mention'));
-    await bridge.emit(msg(Y, 'y esto?', { replyToBeing: 'egpt' }));
+    await bridge.emit(msg(Z, 'y esto?', { replyToBeing: 'egpt' }));
     expect(brain.calls).toEqual([]);
     expect(inbound()).toEqual(['y esto?']);
     await bridge.emit(msg(X, 'y esto?', { replyToBeing: 'egpt' }));
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    await bridge.emit(msg(Y, 'y esto?', { replyToBeing: 'egpt' }));
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
   });
 
-  it('mode on: Y\'s unaddressed line wakes nobody (recorded); X\'s does', async () => {
+  it('mode on: Z\'s unaddressed line wakes nobody (recorded); X\'s and the owner\'s do', async () => {
     const { bridge, brain, inbound } = build(queen('on'));
-    await bridge.emit(msg(Y, 'buenas'));
+    await bridge.emit(msg(Z, 'buenas'));
     expect(brain.calls).toEqual([]);
     expect(inbound()).toEqual(['buenas']);
     await bridge.emit(msg(X, 'buenas'));
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    await bridge.emit(msg(Y, 'buenas'));
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
   });
 
-  it('mode accum: Y wakes nobody, addressed or not; X addressing her does', async () => {
+  it('mode accum: Z wakes nobody, addressed or not; X and the owner addressing her do', async () => {
     const { bridge, brain, inbound } = build(queen('accum'));
-    await bridge.emit(msg(Y, 'buenas'));
-    await bridge.emit(msg(Y, 'q hola'));
+    await bridge.emit(msg(Z, 'buenas'));
+    await bridge.emit(msg(Z, 'q hola'));
     expect(brain.calls).toEqual([]);
     expect(inbound()).toEqual(['buenas', 'q hola']);
     await bridge.emit(msg(X, 'q hola'));
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
-  });
-
-  it('the conversation\'s own allowed_users replaces the global list for the fall-through too', async () => {
-    const state = { contacts: { whatsapp: { '!g': { slug: 'grupo', agents: { egpt: { allowed_users: [Y] } } } } } };
-    const { bridge, brain } = build(queen('mention'), { state });
-    await bridge.emit(msg(X, 'q hola'));
-    expect(brain.calls).toEqual([]);
     await bridge.emit(msg(Y, 'q hola'));
-    expect(brain.calls.map((c) => c.being)).toEqual(['egpt']);
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt']);
   });
 
-  it('another being Y may reach still answers: "@wren" from Y wakes wren, not the persona', async () => {
-    const { bridge, brain } = build(queen('on'));
-    await bridge.emit(msg(Y, '@wren hola'));
+  it('the conversation\'s own allowed_users JOINS the being\'s and the owner\'s for the fall-through too', async () => {
+    const state = { contacts: { whatsapp: { '!g': { slug: 'grupo', agents: { egpt: { allowed_users: [W] } } } } } };
+    const { bridge, brain } = build(queen('mention'), { state });
+    await bridge.emit(msg(Z, 'q hola'));
+    expect(brain.calls).toEqual([]);
+    await bridge.emit(msg(W, 'q hola'));   // added by the conversation
+    await bridge.emit(msg(X, 'q hola'));   // still on the being's own list
+    await bridge.emit(msg(Y, 'q hola'));   // the owner
+    expect(brain.calls.map((c) => c.being)).toEqual(['egpt', 'egpt', 'egpt']);
+  });
+
+  it('another being Z may reach still answers: "@wren" from Z wakes wren, not the persona', async () => {
+    const agents = queen('on', { wren: { configuration: 'egpt', handles: ['wren'], conversation_defaults: { allowed_users: ['*'] } } });
+    const { bridge, brain } = build(agents);
+    await bridge.emit(msg(Z, '@wren hola'));
     expect(brain.calls.map((c) => c.being)).toEqual(['wren']);
   });
 });

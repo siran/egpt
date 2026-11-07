@@ -195,6 +195,21 @@ describe('brainpool writes the card at the start of every turn', () => {
     expect(cardOf(h.io)).toMatch(/verbose_thinking: text\s+# this conversation/);
   });
 
+  it("allowed_users on the card JOINS the agent's list and the conversation's (2026-11-07), and names both sources", async () => {
+    const config = baseConfig();
+    config.agents.egpt.conversation_defaults.allowed_users = ['agent-id'];
+    const h = harness({ config });
+    await h.brain.turn('egpt', ev);
+    expect(cardOf(h.io)).toMatch(/allowed_users: \[ agent-id \]\s+# agent default/);
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { allowed_users: ['chat-id'] }));
+    await h.brain.turn('egpt', ev);
+    expect(YAML.parse(cardOf(h.io)).egpt.allowed_users).toEqual(['agent-id', 'chat-id']);
+    expect(cardOf(h.io)).toMatch(/allowed_users: \[ agent-id, chat-id \]\s+# agent default \(config\.yaml\) \+ this conversation/);
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { allowed_users: [] }));   // adds nobody
+    await h.brain.turn('egpt', ev);
+    expect(YAML.parse(cardOf(h.io)).egpt.allowed_users).toEqual(['agent-id']);
+  });
+
   it('the file never holds a node-level key', async () => {
     const h = harness();
     await h.brain.turn('egpt', ev);

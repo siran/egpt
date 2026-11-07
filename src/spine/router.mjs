@@ -33,6 +33,7 @@ import { mentionHits } from '../auto-mode.mjs';
 import { VOICE_MARK } from '../incoming-media.mjs';
 import { BEING_STAMP } from '../bridges/persona-wrap.mjs';
 import { stripInvisible } from '../invisible.mjs';
+import { isHumanTurn } from '../stop-guard.mjs';
 import { getBeing, getContact, allowedUsersPermits, defaultBeingOf } from '../conversations-state.mjs';
 import { surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { fromOtherNode } from './node-names.mjs';
@@ -60,36 +61,48 @@ export function isKnownSender(senderId, config = {}) {
   return allowedUsersPermits(lists, senderId);
 }
 
-// ── WHO MAY WAKE A BEING (operator 2026-10-26: "E must only listen to its owner by default") ──
-// This node's owners on a surface — who may command it (boot's isAllowedUser) and whom a being with
-// no list of its own answers: networks.<surface>.allowed_users (else a legacy top-level <surface>:
-// block's) when set, else the node's conversation_defaults.allowed_users, else nobody.
-export function ownersOf(config = {}, surface) {
+// ── WHO MAY WAKE A BEING (operator 2026-10-26: "E must only listen to its owner by default"; 2026-11-07:
+// allowed_users lists JOIN by inheritance, never replace) ──
+// The Operator is defined at the ROOT of config.yaml (conversation_defaults.allowed_users) and is always
+// allowed; every list below the root only ADDS people. The node's own lists on a surface, as written
+// ('*' kept): networks.<surface>.allowed_users (else a legacy top-level <surface>: block's) first, so an
+// owner's [0] stays that surface's own id, then the root's.
+function nodeListsOf(config = {}, surface) {
   const s = String(surface ?? '').toLowerCase();
   const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const block = isMap(config?.networks?.[s]) ? config.networks[s] : isMap(config?.[s]) ? config[s] : {};
-  const list = Array.isArray(block.allowed_users) ? block.allowed_users : config?.conversation_defaults?.allowed_users;
-  return (Array.isArray(list) ? list : []).filter((u) => u !== '*');
+  return [block.allowed_users, config?.conversation_defaults?.allowed_users].filter(Array.isArray).flat();
 }
 
-// Is this sender an owner where the line ARRIVED? Authorized by its bridge (the account owner, an id
-// on that surface's list, the authenticated console), or its id on that surface's list.
+// This node's owners on a surface — who may command it (boot's isAllowedUser): the two node lists
+// joined. "*" names nobody here: it opens beings (mayWake), it does not make strangers owners.
+export function ownersOf(config = {}, surface) {
+  return nodeListsOf(config, surface).filter((u) => u !== '*');
+}
+
+// Does an account-owner / console flag (isSender, authorized) speak for a PERSON? Only on a human line:
+// never our own output coming back (on Telegram every being posts through one bot, whose echo arrives
+// isSender + authorized), a being's line, or any node's frame. Provenance is stop-guard's isHumanTurn,
+// the one the spine's humanTurn / kindOf are built on; its backlog clause is about age, not authorship.
+const personLine = (ev) => ev?.fromBeing == null && isHumanTurn({ ...ev, backlog: false });
+
+// Is this sender the Operator where the line ARRIVED? Its id on that surface's owner lists, or, for a
+// person's line, the flag its bridge set (the account owner, an id on that list, the authenticated console).
 export function isOwner(ev, config = {}) {
-  if (ev?.authorized === true || ev?.isSender === true) return true;
+  if ((ev?.authorized === true || ev?.isSender === true) && personLine(ev)) return true;
   return allowedUsersPermits(ownersOf(config, (ev?.origin ?? ev)?.surface), ev?.senderId);
 }
 
-// THE reachability test, for router.resolve, mesh's responder and /agents. Nearest list wins: the
-// conversation's, else the agent's conversation_defaults, else the owners (isOwner). A list holds
-// ids or '*' only: ['*'] anyone, [] nobody. `seed`: the block a conversation with no entry yet will
-// be created with — its list is the conversation's.
+// THE reachability test, for router.resolve, mesh's responder and /agents. The lists JOIN: the Operator
+// (isOwner) always passes, and whoever is on the node's lists, the agent's conversation_defaults or the
+// conversation's own may wake the being. A list holds ids or '*' only: '*' anywhere is anyone, [] adds
+// nobody. `seed`: the block a conversation with no entry yet will be created with — its list is the
+// conversation's.
 export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId, seed = null } = {}) {
   let conv = null;
   if (state) { try { conv = getBeing(state, surface, chatId, being)?.allowedUsers; } catch { conv = null; } }
-  conv ??= seed?.allowed_users;
-  const own = agent?.conversation_defaults?.allowed_users;
-  const list = Array.isArray(conv) ? conv : Array.isArray(own) ? own : null;
-  return list ? allowedUsersPermits(list, ev?.senderId) : isOwner(ev, config);
+  const lists = [nodeListsOf(config, (ev?.origin ?? ev)?.surface), agent?.conversation_defaults?.allowed_users, conv, seed?.allowed_users];
+  return isOwner(ev, config) || allowedUsersPermits(lists.filter(Array.isArray).flat(), ev?.senderId);
 }
 
 // THE STRANGER RULE (operator 2026-10-15): dispatch.stranger_agent maps a CONNECTION to the agent
@@ -119,8 +132,8 @@ export function configWarnings(config = {}) {
   const strangers = config.dispatch?.stranger_agent;
   for (const [conn, name] of Object.entries(strangers && typeof strangers === 'object' && !Array.isArray(strangers) ? strangers : {})) {
     const key = localAgentKey(config.agents, name);
-    const list = key ? config.agents[key]?.conversation_defaults?.allowed_users : null;
-    if (key && !(Array.isArray(list) && list.includes('*'))) out.push(`WARNING dispatch.stranger_agent.${conn}: ${key} does not allow ['*'], so a stranger reaches nobody. Set agents.${key}.conversation_defaults.allowed_users: ['*'].`);
+    const open = key && [config.agents[key]?.conversation_defaults?.allowed_users, config.conversation_defaults?.allowed_users].some((l) => Array.isArray(l) && l.includes('*'));   // lists join: '*' on either opens it
+    if (key && !open) out.push(`WARNING dispatch.stranger_agent.${conn}: ${key} does not allow ['*'], so a stranger reaches nobody. Set agents.${key}.conversation_defaults.allowed_users: ['*'].`);
   }
   return out;
 }
@@ -442,7 +455,7 @@ export function addressingView(ev) {
 // conversations-state IO gating.mjs's createGating takes, injected the same way (mirrored, not
 // duplicated). Absent (tests, a caller that doesn't need per-conversation overrides) → resolve()
 // simply never reads any per-conversation allowed_users, and every being's reachability falls
-// straight to its global `agents:` default (or the owners, when neither is set).
+// straight to its global `agents:` default joined with the node's owners.
 // `isPresent` (operator 2026-08-31, fallback_handle) — async (identity, ev) => true | false | null
 // ("unknown"), THE membership question, injected exactly the way loadState is: the router never
 // opens a socket of its own, it ASKS. boot binds it to the node's own Beeper bridge, which answers
@@ -540,7 +553,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       const refused = [];   // addressed beings admitted but for allowed_users (see `admits`, the loop below)
       // ONE conv-state read for the whole call (never per-hit) — mirrors gating.mjs's own
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
-      // every hit below falls straight to its GLOBAL allowed_users (or the owners).
+      // every hit below falls straight to its GLOBAL allowed_users joined with the owners.
       const state = loadState ? await loadState().catch(() => null) : null;
       // WHERE THIS MESSAGE ARRIVED (operator 2026-08-31), which is not always where it is being
       // dispatched. Since 8227b99 a wa-group's message re-enters the room it was invited to as a
@@ -628,22 +641,19 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // is able to trigger the agent … i think the 'dangerous' key is mistake" — replaces the
         // evicted TYPE-FILE `dangerous:true` reachability mechanism (meta-engineer.yaml, gone;
         // see brainpool.mjs's confinementFor for what `dangerously_skip_permissions` still
-        // means — a CAPABILITY tier only, never a reachability gate any more). Two-tier, the SAME override pattern
-        // access_level already uses: a per-conversation `allowedUsers` (conversations.yaml
-        // agents.<being>.allowed_users, read via getBeing off the ONE state read above,
-        // FLAT — that block is already scoped to one being in one conversation) REPLACES —
-        // never merges with — the node's global default, which lives NESTED under
-        // agents.<handle>.conversation_defaults.allowed_users in config.yaml: the nesting IS
-        // the allowlist of which agent fields get this two-tier treatment (a registry/
-        // structural field like handles/configuration/relay_channel, sitting as a direct
-        // sibling, is never eligible — no code-side allowlist to keep in sync). UNSET at both
-        // tiers = only this node's owners (isOwner, operator 2026-10-26). mayWake (top
-        // of file) is the one test — a literal "*" entry permits any sender (operator
-        // 2026-08-16), otherwise shortChatId normalizes both sides
-        // (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
-        // allowed_users check uses — so a short OR legacy full-form entry matches either way.
-        // Only an unset list reads ev.authorized/ev.isSender (the NETWORK-level concept); an
-        // explicit id list never does. A hit failing it is dropped from `targets`, same
+        // means — a CAPABILITY tier only, never a reachability gate any more). The lists JOIN (operator
+        // 2026-11-07): the Operator at the root of config.yaml always passes, and the node's lists, the
+        // agent's NESTED agents.<handle>.conversation_defaults.allowed_users and the conversation's own
+        // `allowedUsers` (conversations.yaml agents.<being>.allowed_users, read via getBeing off the ONE
+        // state read above, FLAT — that block is already scoped to one being in one conversation) only ADD
+        // people: the nesting IS the allowlist of which agent fields are read this way (a registry/
+        // structural field like handles/configuration/relay_channel, sitting as a direct sibling, is never
+        // eligible — no code-side allowlist to keep in sync). mayWake (top of file) is the one test — a
+        // literal "*" entry in any of them permits any sender (operator 2026-08-16), otherwise shortChatId
+        // normalizes both sides (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate,
+        // network-level) allowed_users check uses — so a short OR legacy full-form entry matches either way.
+        // The account-owner / console flags (ev.authorized/ev.isSender) pass only a PERSON's line, never a
+        // being's (isOwner). A hit failing it is dropped from `targets`, same
         // convention as the surface-pin mismatch above: it falls through exactly as if the
         // @token had never matched — except an ADDRESSED being, listed in `refused` (operator
         // 2026-11-07: when a being's line named it the chat is asked, and a member of that list may let it through).

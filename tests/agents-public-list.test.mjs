@@ -94,13 +94,13 @@ describe('bare /agents from a non-operator: the public list', () => {
     }
   });
 
-  it('"you can call it" follows allowed_users: the conversation tier wins over conversation_defaults', async () => {
-    let st = patchBeing(seed(), 'whatsapp', GROUP, 'wren', { allowed_users: [MEMBER] });
-    st = patchBeing(st, 'whatsapp', GROUP, 'e', { allowed_users: [] });
+  it('"you can call it" follows allowed_users: the conversation\'s list JOINS conversation_defaults (2026-11-07), and [] shuts nobody out', async () => {
+    let st = patchBeing(seed(), 'whatsapp', GROUP, 'wren', { allowed_users: [MEMBER] });   // adds the member to Wren's [operator]
+    st = patchBeing(st, 'whatsapp', GROUP, 'e', { allowed_users: [] });                  // adds nobody: E's ['*'] still holds
     const { cmds, sent } = harness({ st });
     await cmds.run(msg('/agents'));
     const lines = sent[0].text.split('\n');
-    expect(lines[1]).toMatch(/^🐶 E — .* · you can call it: no$/);
+    expect(lines[1]).toMatch(/^🐶 E — .* · you can call it: yes$/);
     expect(lines[2]).toMatch(/^🐦 Wren — .* · you can call it: yes$/);
   });
 

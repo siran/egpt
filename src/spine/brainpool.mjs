@@ -892,6 +892,7 @@ export function createBrainPool({
     }
     const box = resolveSandboxedRung({ accessLevel, conversationValue: convSandboxed, agentDefaultValue: cd.sandboxed ?? null, platform });
     const tierOf = (conv, agent) => (conv != null ? 'conversation' : agent != null ? 'agent' : 'default');
+    const joinedUsers = [cd.allowed_users, b?.allowedUsers].filter(Array.isArray);
     return {
       scope,
       slug,
@@ -899,7 +900,7 @@ export function createBrainPool({
       sessionId: b?.threadId ?? null,
       sources: {
         accessLevel: tierOf(b?.accessLevel, cd.access_level),
-        allowedUsers: tierOf(b?.allowedUsers, cd.allowed_users),
+        allowedUsers: b?.allowedUsers != null && cd.allowed_users != null ? 'joined' : tierOf(b?.allowedUsers, cd.allowed_users),
         verboseThinking: tierOf(b0?.verboseThinking ?? b?.verboseThinking, cd.verbose_thinking),
         compaction: tierOf(b?.compaction, cd.compaction),
         outboxTo: tierOf(b?.outboxTo, cd.outbox_to),
@@ -964,9 +965,9 @@ export function createBrainPool({
       // `allowed_users` that gates WHO may wake the being (router.mjs/mesh.mjs's reachability
       // check; no list at either tier = only the node's owners) — and room/acim already carries one.
       accessLevel,
-      // ALLOWED_USERS, same two-tier resolution as accessLevel just above — for the room's config
-      // card (being-config-card.mjs). null = no list: only the owners (router.mjs mayWake).
-      allowedUsers: b?.allowedUsers ?? getConfig()?.agents?.[being]?.conversation_defaults?.allowed_users ?? null,
+      // ALLOWED_USERS, for the room's config card (being-config-card.mjs): the agent's list and the
+      // conversation's JOINED, as router.mjs mayWake reads them (2026-11-07). null = no list: only the owners.
+      allowedUsers: joinedUsers.length ? joinedUsers.flat() : null,
       // SANDBOXED — the whole precedence is resolveSandboxed (above), which is the ONE thing that
       // answers this field for every caller. Rungs 2 and 3 are the same two-tier read
       // accessLevel/allowedUsers use above; rung 1 is the level, rung 4 this node's OS.

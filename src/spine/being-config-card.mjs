@@ -33,6 +33,7 @@ const HEADER = [
 const FROM = {
   conversation: 'this conversation',
   agent: 'agent default (config.yaml)',
+  joined: 'agent default (config.yaml) + this conversation',
   node: 'node default (config.yaml)',
   default: 'built-in default',
   level: 'access_level sandbox forces it',

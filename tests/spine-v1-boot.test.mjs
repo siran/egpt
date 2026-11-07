@@ -677,18 +677,19 @@ describe('boot() — config-shape migration', () => {
     app.stop();
   });
 
-  // ONE OWNER LIST (operator 2026-10-26): commands read networks.<surface>.allowed_users when set,
-  // else the node's conversation_defaults.allowed_users — ids of any network, mixed.
+  // ONE OWNER LIST (operator 2026-10-26): commands read the node's conversation_defaults.allowed_users
+  // — ids of any network, mixed — joined (2026-11-07) with networks.<surface>.allowed_users when set.
   // contract 7.1
-  it('commands follow the node owner list; networks.<surface>.allowed_users replaces it on that surface', async () => {
+  it('commands follow the node owner list; networks.<surface>.allowed_users adds to it on that surface', async () => {
     const { opts, app } = await captureBoot({ agents: AG, conversation_defaults: { allowed_users: ['op@any', '*'] }, networks: {
       whatsapp: { chat_ids: ['self-1'] },
       telegram: { chat_ids: [], allowed_users: ['op@tg'] },
     } });
     expect(opts.isAllowedUser('op@any', 'whatsapp')).toBe(true);     // no list here: the node's
     expect(opts.isAllowedUser('op@any', 'googlevoice')).toBe(true);  // no block at all: the node's
-    expect(opts.isAllowedUser('op@any', 'telegram')).toBe(false);    // this surface's own list wins
-    expect(opts.isAllowedUser('op@tg', 'telegram')).toBe(true);
+    expect(opts.isAllowedUser('op@any', 'telegram')).toBe(true);     // the node's owner stays one on a surface with a list of its own
+    expect(opts.isAllowedUser('op@tg', 'telegram')).toBe(true);      // …and this surface's list adds its own
+    expect(opts.isAllowedUser('op@tg', 'whatsapp')).toBe(false);     // but only there
     expect(opts.isAllowedUser('stranger', 'whatsapp')).toBe(false);  // "*" names nobody here
     app.stop();
   });

@@ -3448,7 +3448,7 @@ export function createCommands({
   }
 
   // Whom a being would wake for this sender here, by router.resolve's allowed_users test (the
-  // conversation's block, else the agent's conversation_defaults, else its owners; a stranger reaches only the
+  // conversation's block, the agent's conversation_defaults and its owners, joined; a stranger reaches only the
   // conversation's own agent). Bare /agents' public list reads it.
   const senderMayWake = (state, surface, chatId, ev, being) => {
     const owner = defaultBeingOf(getContact(state, surface, chatId)?.entry);

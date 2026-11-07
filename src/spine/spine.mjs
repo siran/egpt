@@ -1031,7 +1031,7 @@ export function createSpine({
     let { targets, receives, refused } = await routeOf(ev);
 
     // A BEING'S LINE THAT NAMES A BEING allowed_users TURNED AWAY IS ASKED ABOUT (operator 2026-11-07): the chat gets
-    // one question per being (boot askMention), and a member of that being's list may let the line through
+    // one question per being (boot askMention), and whoever may wake that being (the Operator, or its lists) may let the line through
     // (dispatchApproved). Only this node's own output with its author set (the echo below): a person not on the
     // list stays ignored, as before. Only what would have run — a being taken by its mode is never in `refused`,
     // one whose gate ignores the line is no question, a stopped channel is not asked. After the record,

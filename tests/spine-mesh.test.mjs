@@ -1078,7 +1078,9 @@ describe('spine seam — handleInbound ↔ mesh', () => {
 //    dangerousDenial, meta-engineer.yaml — "i think the 'dangerous' key is mistake"). UNLIKE
 //    router.mjs's silent drop, this file's own convention is NEVER SILENCE: the requester here is
 //    a different, already-trusted node peer (it reached this node at all), so it gets an explicit
-//    reason. ──
+//    reason. Since 2026-11-07 the lists JOIN (the node's owners always pass; the being's and the
+//    conversation's lists only add people), so a stranger here is sent with isSender: false —
+//    svc() posts every envelope as the account's own, an owner of this node. ──
 describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
   const agents = { wren: { configuration: 'sonnet-high', name: 'wren', conversation_defaults: { allowed_users: ['boss'] } } };
 
@@ -1087,7 +1089,7 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
     const { bridge, mesh } = svc({ node: 'do', agents, brain });
     const req = encodeMesh({ by: 'Stranger', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
     // no `senderId` on the ev handed to mesh.handle → route.ev.senderId is undefined, off the list
-    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'stranger' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'stranger', isSender: false });
     await flush();
     expect(brain.calls).toHaveLength(0);
     expect(bridge.streams).toHaveLength(0);          // denied before the placeholder stream ever opened
@@ -1147,51 +1149,60 @@ describe('mesh service — allowed_users gate (operator 2026-08-15)', () => {
   // mean the opposite of what it says.
   //
   //   absent  -> inherit, and with nothing to inherit, permit (the test above)
-  //   []      -> deny everyone (these two)
+  //   []      -> names nobody: it adds no one (and, since 2026-11-07, shuts no owner out)
   //   ['*']   -> permit everyone (the test above that)
-  it('REPRODUCE-FIRST: allowed_users: [] is DENY — no mesh requester reaches the being', async () => {
+  it('REPRODUCE-FIRST: allowed_users: [] adds nobody — an unlisted mesh requester does not reach the being, the node\'s owner does', async () => {
     const shutAgents = { wren: { configuration: 'sonnet-high', name: 'wren', conversation_defaults: { allowed_users: [] } } };
     const brain = fakeBrain({ reply: 'ok' });
     const { bridge, mesh } = svc({ node: 'do', agents: shutAgents, brain });
     const req = encodeMesh({ by: 'Anyone', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'totally-unlisted' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'totally-unlisted', isSender: false });
     await flush();
     expect(brain.calls).toHaveLength(0);
+    const req2 = encodeMesh({ by: 'An', body: '@wren do Y', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p2' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm2', body: req2, senderId: 'totally-unlisted' });   // the account's own post: an owner
+    await flush();
+    expect(brain.calls).toHaveLength(1);
   });
 
-  it('REPRODUCE-FIRST: a per-conversation allowed_users: [] SHUTS a being the global default would have allowed', async () => {
-    // The nearest rung wins for deny exactly as it does for allow: 'boss' is on the global list
-    // and is still refused, because this conversation set the list to nothing.
+  it('a per-conversation allowed_users: [] shuts nobody out: the global list still reaches the being', async () => {
+    // [] adds nobody and takes nobody away: 'boss' is on the global list and is still admitted.
     const state = { contacts: { whatsapp: { RELAY: { slug: 'chat', agents: { wren: { allowed_users: [] } } } } } };
     const brain = fakeBrain({ reply: 'ok' });
     const { bridge, mesh } = svc({ node: 'do', agents, brain, loadState: async () => state });
     const req = encodeMesh({ by: 'Boss', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'boss' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req, senderId: 'boss', isSender: false });
     await flush();
-    expect(brain.calls).toHaveLength(0);
+    expect(brain.calls).toHaveLength(1);
   });
 
-  it('a PER-CONVERSATION allowed_users override REPLACES (never merges with) the global default via the mesh path too', async () => {
+  it('a PER-CONVERSATION allowed_users list JOINS the global default via the mesh path too', async () => {
     // surface/chatId keys mirror the RESPONDER's own resolution (route.limb/route.room_id — the
     // arriving envelope's ev.surface/ev.chatId): 'whatsapp'/'RELAY', same as mesh.handle below.
     const state = { contacts: { whatsapp: { RELAY: { slug: 'chat', agents: { wren: { allowed_users: ['other'] } } } } } };
     const brain = fakeBrain({ reply: 'ok' });
     const { bridge, mesh } = svc({ node: 'do', agents, brain, loadState: async () => state });
 
-    // 'boss' is on the GLOBAL list, but this conversation's override REPLACED it — not merged.
+    // 'boss' is on the GLOBAL list, and this conversation's list only ADDED 'other' — not replaced.
     const req1 = encodeMesh({ by: 'Boss', body: '@wren do X', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p1' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req1, senderId: 'boss' });
-    await flush();
-    expect(brain.calls).toHaveLength(0);
-
-    // 'other' is on the per-conversation override list (body differs so the engine's own replay
-    // guard, keyed on being+from+body, does not itself explain a second miss).
-    const req2 = encodeMesh({ by: 'Other', body: '@wren do Y', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p2' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm2', body: req2, senderId: 'other' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req1, senderId: 'boss', isSender: false });
     await flush();
     expect(brain.calls).toHaveLength(1);
-    expect(brain.calls[0].being).toBe('wren');
-    expect(bridge.streams).toHaveLength(1);
+
+    // 'other' is on the per-conversation list (body differs so the engine's own replay
+    // guard, keyed on being+from+body, does not itself explain a miss).
+    const req2 = encodeMesh({ by: 'Other', body: '@wren do Y', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p2' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm2', body: req2, senderId: 'other', isSender: false });
+    await flush();
+    expect(brain.calls).toHaveLength(2);
+    expect(brain.calls[1].being).toBe('wren');
+    expect(bridge.streams).toHaveLength(2);
+
+    // …and someone on neither list is still refused.
+    const req3 = encodeMesh({ by: 'Eve', body: '@wren do Z', from: 'HFM', from_node: 'kg', to: 'wren.do', post_id: 'p3' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm3', body: req3, senderId: 'eve', isSender: false });
+    await flush();
+    expect(brain.calls).toHaveLength(2);
   });
 
   it('no loadState injected (default) → the gate falls straight to the global tier — today\'s behaviour for a caller that supplies nothing', async () => {

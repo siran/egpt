@@ -123,12 +123,12 @@ export function answerOf(text) {
 }
 
 // The open questions — { chatId, ids (the posts that ask it), body } for a `/to` line (an owner answers), or
-// { chatId, ids, being, ev, target } for a mention that being's allowed_users turned away (a member of that
-// list, or an owner, answers; ev is the line as it arrived, target the router's refused target) — kept in `path` so a
-// restart keeps them. Each carries `expiresAt` (ms; boot gives it a deadline when it asks), `shown` (the minutes
-// its post last said) and `post` { id, text, expired }: the post that carries the question, what it says without
-// the countdown, and what it is edited to at the end. An entry from before expiry existed (no `post`) gets a fresh
-// deadline at load and, boot's tick finding it past it, leaves the store with a log line and nothing in the chat;
+// { chatId, ids, being, ev, target } for a mention that being's allowed_users turned away (whoever may wake that
+// being answers: the Operator or its lists; ev is the line as it arrived, target the router's refused target) — kept
+// in `path` so a restart keeps them. Each carries `expiresAt` (ms; boot gives it a deadline when it asks), `shown`
+// (the minutes its post last said) and `post` { id, text, expired }: the post that carries the question, what it says
+// without the countdown, and what it is edited to at the end. An entry from before expiry existed (no `post`) gets a
+// fresh deadline at load and, boot's tick finding it past it, leaves the store with a log line and nothing in the chat;
 // with a ttl of 0 or less it has none and never expires. An expired entry is not found (an answer
 // after the deadline is ordinary chat) even before boot's tick takes it out. Rewritten whole, temp + rename.
 export function createIngestAsks({ path, io = {}, onLog = () => {}, now = Date.now, ttlMs = () => ASK_TTL_MS }) {

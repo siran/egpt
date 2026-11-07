@@ -99,8 +99,8 @@ untested id not in `contracts-gaps.json`.
 
    7.1 Each surface owns its own `{chat_id, allowed_users}`; an id is a
    per-surface namespace (a WhatsApp jid authorizes nothing on Signal); empty
-   `allowed_users` = deny. A surface with no list of its own uses the node's
-   `conversation_defaults.allowed_users`.
+   `allowed_users` adds nobody. A surface's list joins the node's
+   `conversation_defaults.allowed_users`; it does not replace it.
 
    7.2 The operator is a STABLE id, never a display name (a chat title is
    attacker-controllable); the account owner always passes.
@@ -113,12 +113,13 @@ untested id not in `contracts-gaps.json`.
    engine-first, never fanned to rooms or mirrored to another surface to
    re-interpret.
 
-   7.5 A being wakes only for its owners unless its `allowed_users` says
-   otherwise. The nearest list wins: the chat's, then
-   `agents.<name>.conversation_defaults`, then the owners = the surface's own
-   `allowed_users` where set, else the node's `conversation_defaults.allowed_users`,
-   else nobody (the account owner always passes). A list holds ids or `'*'`:
-   `['*']` = anyone, `[]` = nobody.
+   7.5 A being wakes for its owners, and for whoever else its lists add.
+   The lists join (2026-11-07): the owners = the node's root
+   `conversation_defaults.allowed_users` plus the surface's own `allowed_users`
+   where set, always allowed; `agents.<name>.conversation_defaults` and the
+   chat's own list only add people. A list holds ids or `'*'`: `'*'` in any
+   one = anyone, `[]` adds nobody. The account-owner and console flags count
+   only for a person's line, never a being's.
 
 8. Media is saved, per conversation.
 

@@ -1222,9 +1222,10 @@ export function getBeing(state, surface, jid, being) {
     // brainpool.mjs resolves them fresh from config on every turn instead).
     accessLevel:        b?.access_level        ?? null,
     // Per-conversation allowed_users OVERRIDE (operator 2026-08-15) — router.mjs's being-
-    // reachability gate. Same override home/shape as access_level above: set here REPLACES
-    // (never merges with) the node's global agents.<being>.allowed_users default in config.yaml;
-    // null = this conversation states no override, fall to the global tier.
+    // reachability gate. Same home/shape as access_level above, but the list JOINS (operator
+    // 2026-11-07): it ADDS people to the node's owners and the agent's own
+    // agents.<being>.conversation_defaults.allowed_users in config.yaml, never replaces them;
+    // null = this conversation adds nobody.
     allowedUsers:       b?.allowed_users        ?? null,
     // OS-level process isolation on top of access_level:'all' (operator 2026-08-20) — per-
     // conversation override, same shape/tier as accessLevel/allowedUsers above. null = no
@@ -1306,9 +1307,9 @@ export function defaultBeingOf(entry) {
 // THREE STATES, NOT TWO (operator 2026-09-05):
 //
 //   absent   permits HERE. A being's reachability never hands it absent any more: router.mjs's
-//            mayWake answers no list at either tier with the owners (operator 2026-10-26).
-//   []       DENY EVERYONE. Somebody wrote a list and put nobody on it; that is an answer,
-//            not a silence.
+//            mayWake hands this the JOIN of every list it has, always an array.
+//   []       names nobody. Somebody wrote a list and put nobody on it; that is an answer, not a
+//            silence. mayWake asks the Operator first (isOwner), so a [] shuts out only the others.
 //   ["*"]    permit everyone. The explicit wildcard — without it, "*" would just be an entry
 //            no real sender id ever equals, denying everyone.
 //
@@ -1319,8 +1320,8 @@ export function defaultBeingOf(entry) {
 // an absent list to null and a present one to the array itself, so `convAllowed ?? globalAllowed`
 // was already handing this predicate null for absent and [] for empty. Only the fold was wrong.
 //
-// Nearest rung still wins, now in both directions: a conversation that sets [] shuts a being its
-// global default would have allowed.
+// The rungs JOIN (operator 2026-11-07): the node's lists, the agent's and the conversation's reach
+// this predicate as one array, so a [] on any of them adds nobody and removes nobody.
 //
 // NOT the same list as the per-SURFACE allowed_users (boot.mjs's isAllowedUser), which has always
 // been correctly fail-closed on empty because it tests with .includes() and nothing else.

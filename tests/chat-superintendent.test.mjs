@@ -2,7 +2,8 @@
 // superintendent being `super` ("🦉 S"), one per chat, on the node of that handle, answered in that chat.
 // The operator or a being may run it (a being's line read past its stamp and frame); a non-owner human
 // may not. A being's run counts in loop_guard.inbound; S's own line never runs S. Only `super` is open
-// to a being's line. Nothing else wakes S: it has no handle.
+// to a being's line. Nothing else wakes S: it has no handle, and its `allowed_users: []` adds nobody (only
+// the Operator, who is always allowed, can wake it by quoting its post).
 //
 // Harness: one kg node — the REAL spine, identity, router, gating, commands, sender and brainpool,
 // over a fake warm pool (records the CLI options) and a fake streaming bridge.
@@ -213,11 +214,14 @@ describe('nothing else wakes S', () => {
     expect(n.runs).toEqual([]);
   });
 
-  it('a quote-reply to S\'s post wakes nothing either (allowed_users: [] — no line wakes it, only the command)', async () => {
+  it('a quote-reply to S\'s post wakes nothing for a member or a being (allowed_users: [] adds nobody), only for the Operator', async () => {
     const n = node();
-    await n.say('gracias, sigue', { ...OPERATOR, replyToBeing: 'super' });
+    await n.say('gracias, sigue', { ...MEMBER, replyToBeing: 'super' });
     await n.say(`🐶 E: de acuerdo${SIG_KG_E}`, { ...MOUTH, replyToBeing: 'super' });
     expect(n.runs).toEqual([]);
+    // the Operator is always allowed (2026-11-07): [] cannot shut the node's owner out of a quote of S's own post
+    await n.say('gracias, sigue', { ...OPERATOR, replyToBeing: 'super' });
+    expect(n.runs.map((r) => r.key.split(':')[0])).toEqual(['super']);
   });
 
   it('other beings are unchanged: "e hola" wakes E alone', async () => {
