@@ -22,6 +22,12 @@ The same owners are whom a being answers by default: a being with no
 `allowed_users` (in the chat's entry or its `agents.<name>.conversation_defaults`)
 wakes only for them. A list holds ids or `'*'`: `['*']` is anyone, `[]` is
 nobody, ids are exactly those senders; the nearest list wins (2026-10-26).
+A person off a being's list is ignored. A being's own line that names a being whose
+list does not admit that sender (on Telegram every being posts through one bot, so
+lark's `@finch …` is the bot's) asks the chat once: `❓ lark → finch: pass it on?
+reply yes / no`. Only a member of finch's list may answer; yes hands the line to finch
+alone, no drops it. The ingest box's questions and answers below, the same
+`state/ingest-asks.json`.
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
 e.g. `/e restart`, `/don agents`, `/e split viaje`. The node that hosts that being
@@ -281,9 +287,9 @@ What the chat sees, and when the line is dispatched (`ingest:` in config.yaml):
   `📥 An (ingest): ed, pick up…`, with its files.
 - `auto` (default `false`): the post also asks `ask` (default `received message,
   dispatch? reply yes / no`) and nothing reaches a being until an owner answers:
-  reply to the post (or react on it) with yes / si / sí / y / ok / 👍 to dispatch,
-  no / n / 👎 to drop. A one-line outcome is posted and logged; the answer itself
-  wakes nobody. Anyone else's reply is ordinary chat. Open questions survive a
+  reply to the post (or react on it) with yes / y / si / sí / s / ok / 👍 to dispatch,
+  no / n / non / 👎 to drop (a reaction counts only as 👍 or 👎). A one-line outcome
+  is posted and logged; the answer itself wakes nobody. Anyone else's reply is ordinary chat. Open questions survive a
   restart (`state/ingest-asks.json`) and never expire. `auto: true` dispatches at
   once. `show: false` + `auto: false` posts only the question; `show: false` +
   `auto: true` posts nothing.

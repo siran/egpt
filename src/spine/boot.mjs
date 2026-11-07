@@ -67,7 +67,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf, isOwner } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf, isOwner, mayWake } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
@@ -81,7 +81,7 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
-import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, answerOf } from './ingest.mjs';
+import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, mentionAsk, answerOf } from './ingest.mjs';
 import { savedEntry, withMediaLines } from '../bridges/limb-intake.mjs';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
 import { reactionEmoji } from '../dispatch-line.mjs';
@@ -3916,7 +3916,7 @@ export async function boot({
   await ingestAsks.load();
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: (ev) => ingestAnswerOf(ev) != null, answer: answerIngest }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -4098,21 +4098,39 @@ export async function boot({
       authorized: true, via: 'ingest', msgKey: null, atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
     } }).catch((e) => log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`));
   }
-  // An owner's yes / no to an open question: a reply to one of its posts, or a reaction on one.
-  function ingestAnswerOf(ev) {
+  // A BEING'S MENTION allowed_users TURNED AWAY (operator 2026-11-07; spine classify hands it over after the record):
+  // one question per being in the chat the line was said in, in the same store as the ingest box's. A member of
+  // that being's allowed_users answers it (ingestAnswerOf); yes hands the line to the spine for that being alone.
+  async function askMention(ev, asked) {
+    const sender = ev.fromBeing;
+    const kept = JSON.parse(JSON.stringify(ev));
+    for (const { being, target } of asked) {
+      const id = await ingestPost(ev.chatId, (on, room) => on.send?.(room, mentionAsk(sender, being), { systemLine: true }));
+      if (id == null) { log.line?.(`[ingest] @${being} ${ev.chatId}: the question has no posted message an allowed user can answer — not asked`); continue; }
+      await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target });
+      log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from its allowed_users`);
+    }
+  }
+  // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner answers the
+  // ingest box's; a refused mention's is answered by whoever its being's allowed_users let wake it (mayWake).
+  async function ingestAnswerOf(ev) {
     const ask = ingestAsks.find(ev.chatId, ev.kind === 'reaction' ? ev.msgId : ev.kind === 'text' ? ev.replyToId : null);
-    const yes = ask && isOwner(ev, cfg) ? answerOf(ev.kind === 'reaction' ? reactionEmoji(ev.body) : ev.body) : null;
+    const agent = ask?.being && Object.entries(cfg.agents ?? {}).find(([k]) => k.toLowerCase() === ask.being)?.[1];
+    const may = ask && (ask.being ? mayWake(ask.being, agent, ev, { state: await _loadState(), config: cfg, chatId: ask.chatId }) : isOwner(ev, cfg));
+    const yes = may ? answerOf(ev.kind === 'reaction' ? reactionEmoji(ev.body) : ev.body) : null;
     return yes == null ? null : { ask, yes };
   }
   async function answerIngest(ev) {
-    const a = ingestAnswerOf(ev);
+    const a = await ingestAnswerOf(ev);
     if (!a) return;
     await ingestAsks.take(a.ask);
     const { chatId } = a.ask;
-    log.line?.(`[ingest] /to ${chatId}: ${a.yes ? 'dispatched' : 'dropped'} by ${ev.senderName ?? ev.senderId ?? '?'}`);
+    const what = a.ask.being ? `@${a.ask.being}` : '/to';
+    log.line?.(`[ingest] ${what} ${chatId}: ${a.yes ? 'dispatched' : 'dropped'} by ${ev.senderName ?? ev.senderId ?? '?'}`);
     try { await sayOnce({ chatId, text: a.yes ? '✅ dispatched' : '🚫 dropped', opts: { systemLine: true }, what: 'ingest' }); }
-    catch (e) { log.line?.(`[ingest] /to ${chatId}: ${e?.message ?? e}`); }
-    if (a.yes) await dispatchIngest(chatId, a.ask.body);
+    catch (e) { log.line?.(`[ingest] ${what} ${chatId}: ${e?.message ?? e}`); }
+    if (!a.yes) return;
+    return a.ask.being ? spine.dispatchApproved(a.ask) : await dispatchIngest(chatId, a.ask.body);   // `{ turn }`, as a command's
   }
 
   // Command ingest: drop /restart, /upgrade or /rewind <ref> into

@@ -12,10 +12,12 @@
 // on/auto (gating.resolveMode) takes the line too, named or not — each being once. Nobody
 // named and nobody on → no target; `receives` says whether the line is recorded at all.
 //
-// resolve() returns { being, mesh?, mention, targets, receives } — `targets` is the FULL list (the
+// resolve() returns { being, mesh?, mention, targets, receives, refused? } — `targets` is the FULL list (the
 // spine runs every one through its per-target path), with the first target mirrored at the top
 // level. Each target carries its OWN mention — the matcher's real per-agent { atEStart,
 // atEAnywhere, replyToBot } — so the mode vocabulary keeps its meaning (mention-direct ≠ mention).
+// `refused` (present only when non-empty) is the same shape: the addressed beings that allowed_users
+// alone turned away — the spine has the chat asked when a being's own line named them (boot askMention).
 //
 // Cross-node reach is AGENT-BASED (operator 2026-07-25): the ONLY way to leave this machine is
 // a RELAY agent, whose relay_channel is the route — resolve() returns { being: null, mesh:
@@ -535,6 +537,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
     async resolve(ev) {
       const agents = getAgents() ?? {};
       const targets = [];
+      const refused = [];   // addressed beings admitted but for allowed_users (see `admits`, the loop below)
       // ONE conv-state read for the whole call (never per-hit) — mirrors gating.mjs's own
       // beingView seam/failure mode: no loadState injected, or a read that throws → null, and
       // every hit below falls straight to its GLOBAL allowed_users (or the owners).
@@ -600,7 +603,8 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
       // false drops that being from this line (it is still recorded). `anyArrival` = exempt from the
       // connection gate: a hit won by a fallback_handle token (its own guard below decides), or a
       // being taken by its mode (as the old default fall-through was: it never arbitrated arrivals).
-      const admits = (name, agent, anyArrival = false) => {
+      // `asked`: the caller answers allowed_users itself (an addressed hit, which it asks the chat about when refused).
+      const admits = (name, agent, anyArrival = false, asked = false) => {
         if (ownerOnly && name.toLowerCase() !== owner.toLowerCase()) return false;
         // SURFACE PIN (operator 2026-07-25): an agent may carry `surface: <name>` so it is an
         // agent ONLY on that surface; on any OTHER surface the @mention falls through (as if
@@ -639,10 +643,11 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // (src/bridges/chat-id.mjs) — the SAME normalizer boot.mjs's OWN (separate, network-level)
         // allowed_users check uses — so a short OR legacy full-form entry matches either way.
         // Only an unset list reads ev.authorized/ev.isSender (the NETWORK-level concept); an
-        // explicit id list never does. A hit failing it is dropped SILENTLY, same
+        // explicit id list never does. A hit failing it is dropped from `targets`, same
         // convention as the surface-pin mismatch above: it falls through exactly as if the
-        // @token had never matched.
-        if (!permits(name, agent)) return false;
+        // @token had never matched — except an ADDRESSED being, listed in `refused` (operator
+        // 2026-11-07: when a being's line named it the chat is asked, and a member of that list may let it through).
+        if (!asked && !permits(name, agent)) return false;
         // THE CONNECTION GATE (operator 2026-09-08) — another post-match filter, same shape as
         // the two above and placed before the fallback guard so that guard keeps being the last
         // thing to run and the only one that can cost a lookup. The ONE matcher decided the
@@ -725,7 +730,12 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // The handles are the ARRIVAL chat's (`org`): where the line was typed is whose names it uses.
         const here = agentsInChat(agents, state, org?.surface, org?.chatId);
         for (const hit of addressed(ev?.kind === 'reaction' ? '' : addressingView(ev), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
-          if (!admits(hit.name, hit.agent, hit.unlessPresent != null || hit.unlessPeerAlive != null)) continue;
+          // allowed_users is read here, not in `admits`: a hit it alone turns away lands in `refused`
+          // instead of `targets`. Not a fallback-token hit: that token may be another account's, and the
+          // guards below (the only lookups) are for hits that survived everything else.
+          const permitted = permits(hit.name, hit.agent);
+          const guarded = hit.unlessPresent != null || hit.unlessPeerAlive != null;
+          if (!admits(hit.name, hit.agent, guarded, true) || (guarded && !permitted)) continue;
           // FALLBACK-HANDLE GUARD (operator 2026-08-31) — the LAST post-match filter here, and
           // deliberately shaped like the two above (surface pin, allowed_users): the ONE matcher
           // decided the token was addressed, this decides whether THIS node is the one to answer
@@ -769,7 +779,7 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
             if (present == null) onLog(`fallback_handle: @${hit.name} NOT woken by its fallback handle in ${ev?.surface}/${ev?.chatId} — could not establish whether ${hit.unlessPresent} is in the chat (unknown ⇒ the token stays its owner's; use a declared handle)`);
             if (present !== false) continue;
           }
-          targets.push(targetFor(hit));
+          (permitted ? targets : refused).push(targetFor(hit));
         }
       }
       // EVERY BEING WHOSE MODE HERE IS on/auto TAKES THE LINE TOO (operator 2026-10-22/23: no default
@@ -794,7 +804,8 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         if (targets.some((t) => t.being === name) || !admits(key, agent, true)) continue;
         targets.push({ being: name, mention: {}, address: null, fallthrough: true });
       }
-      return targets.length ? { ...targets[0], targets, receives } : { being: null, mention: undefined, targets, receives };
+      const asked = refused.length ? { refused } : {};
+      return targets.length ? { ...targets[0], targets, receives, ...asked } : { being: null, mention: undefined, targets, receives, ...asked };
     },
   };
 }

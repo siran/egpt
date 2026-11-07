@@ -93,16 +93,21 @@ export function toLine(content) {
 
 // The question under a `/to` line while ingest.auto is false (config ingest.ask overrides it).
 export const INGEST_ASK = 'received message, dispatch? reply yes / no';
+// The question for a being's mention allowed_users turned away (spine classify → boot askMention): the
+// being that said it, the being it names. The glyph keeps the first name from opening the line as an address.
+export const mentionAsk = (sender, being) => `❓ ${sender} → ${being}: pass it on? reply yes / no`;
 
-const YES = new Set(['yes', 'si', 'sí', 'y', 'ok', '👍']);
-const NO = new Set(['no', 'n', '👎']);
-// An owner's answer to that question: true = dispatch, false = drop, null = not an answer.
+const YES = new Set(['yes', 'si', 'sí', 'y', 's', 'ok', '👍']);
+const NO = new Set(['no', 'n', 'non', '👎']);
+// An answer to an open question: true = dispatch, false = drop, null = not an answer.
 export function answerOf(text) {
   const t = String(text ?? '').trim().toLowerCase().replace(/[\u{1F3FB}-\u{1F3FF}\uFE0F]/gu, '').replace(/[.!]+$/, '');
   return YES.has(t) ? true : NO.has(t) ? false : null;
 }
 
-// The open questions — { chatId, ids (the posts that ask it), body } — kept in `path` so a restart
+// The open questions — { chatId, ids (the posts that ask it), body } for a `/to` line (an owner answers), or
+// { chatId, ids, being, ev, target } for a mention that being's allowed_users turned away (a member of that
+// list answers; ev is the line as it arrived, target the router's refused target) — kept in `path` so a restart
 // keeps them. No expiry. Rewritten whole, temp + rename.
 export function createIngestAsks({ path, io = {}, onLog = () => {} }) {
   const readFile = io.readFile ?? fsReadFile;

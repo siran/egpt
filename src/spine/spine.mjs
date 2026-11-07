@@ -157,7 +157,7 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
-  ingestAsk = null,                    // optional { isAnswer(ev), answer(ev) } — an owner's yes/no to the ingest box's question (boot)
+  ingestAsk = null,                    // optional { isAnswer(ev), answer(ev), ask(ev, [{ being, target }]) } — the open yes/no questions (boot): the ingest box's (an owner answers) and a refused mention's (its being's allowed_users answer)
   guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
   stopPhrase = () => STOP_PHRASE,      // () => the kill phrase (boot: config stop_phrase; unset → STOP_PHRASE, '' → off)
@@ -815,13 +815,15 @@ export function createSpine({
     const routed = await router.resolve(ev);
     const targets = Array.isArray(routed?.targets) ? routed.targets
       : [typeof routed === 'string' ? { being: routed } : { being: routed?.being, mesh: routed?.mesh ?? null, mention: routed?.mention }];
-    return { targets, receives: routed?.receives };
+    return { targets, receives: routed?.receives, refused: routed?.refused ?? [] };
   }
   async function gateOf(target, ev) {
     const to = gateAs(target, null);
     const mention = target.mention ?? ev.mention;
     return { target, meshTarget: target.mesh ?? null, to, mention, d: await gating.decide(to, ev, mention, { denied: !!target.denied, bot: !humanTurn(ev), reacts: target.mesh ? null : marksHere(to, ev) }) };
   }
+  // Would this gate let its being run on the line? (the operator's own line in an auto chat runs none)
+  const reaches = (ev) => ({ d }) => d.mayReply && !(d.mode === 'auto' && ev.isSender);
   // The targets whose gate receives the line, and whether the line is RECORDED at all: the router's
   // answer for the beings here, or any target receiving it ('off' for all → not received, C4).
   async function gatesOf(targets, ev, receives) {
@@ -841,7 +843,7 @@ export function createSpine({
     const cmd = commands?.commandOf?.(ev, await router.agentsIn?.(ev)) ?? ev;
     if (cmd.commandElsewhere || await commands?.isCommand?.(cmd) || isEnvelope(ev) || isTransit(ev) || advice?.isAnswer?.(ev)) return false;
     const { gated } = await gatesOf((await routeOf(ev)).targets, ev);
-    return gated.some(({ d }) => d.mayReply && !(d.mode === 'auto' && ev.isSender));
+    return gated.some(reaches(ev));
   }
 
   // THE KILL SWITCH, pulled from a chat (the STOP safe word, the kill phrase).
@@ -936,8 +938,8 @@ export function createSpine({
       if (guard && (word === 'resume' || word === 'resume_all')) return () => { guard.applyControl(word, channel); note(`guard: '${word}' @ ${channel}`); };
     }
 
-    // The owner's yes/no to the ingest box's question: recorded, consumed here, routed to no being.
-    if (humanTurn(ev) && ingestAsk?.isAnswer?.(ev)) return async () => { await ingestAsk.answer(ev); };
+    // The yes/no to an open question (the ingest box's, a refused mention's): recorded, consumed here, routed to no being.
+    if (humanTurn(ev) && await ingestAsk?.isAnswer?.(ev)) return () => ingestAsk.answer(ev);
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
     // to the brain. Recorded like any inbound, then executed (lifecycle exits the
@@ -1025,7 +1027,22 @@ export function createSpine({
     // 2026-07-25: one matcher over the node's whole addressable set — `@e and @don you here?`
     // addresses BOTH), then every being whose mode here is on/auto (operator 2026-10-22/23: no
     // default being). Every target takes the SAME per-target path (dispatchTarget).
-    let { targets, receives } = await routeOf(ev);
+    let { targets, receives, refused } = await routeOf(ev);
+
+    // A BEING'S LINE THAT NAMES A BEING allowed_users TURNED AWAY IS ASKED ABOUT (operator 2026-11-07): the chat gets
+    // one question per being (boot askMention), and a member of that being's list may let the line through
+    // (dispatchApproved). Only this node's own output with its author set (the echo below): a person not on the
+    // list stays ignored, as before. Only what would have run — a being taken by its mode is never in `refused`,
+    // one whose gate ignores the line is no question, a stopped channel is not asked. After the record,
+    // fire-and-forget as remindClosed is; the exits below that dispatch or record wrap their action in it.
+    const asking = (act) => !(refused.length && ingestAsk?.ask) ? act : async () => {
+      Promise.resolve().then(async () => {
+        if (guard?.blocked(channel)) return;
+        const asked = (await gatesOf(refused, ev, receives)).gated.filter(reaches(ev));
+        if (asked.length) await ingestAsk.ask(ev, asked.map((g) => ({ being: g.to, target: g.target })));
+      }).catch((e) => note(`ask: ${guardChannel(ev)} — ${e?.message ?? e}`));
+      return act();
+    };
 
     // A SIGNED LINE (our own output, or any node's frame) wakes ONLY a being it EXPLICITLY addresses
     // (@mention/quote of its post) — never a being taken by its mode (operator 2026-10-13 own output,
@@ -1036,14 +1053,16 @@ export function createSpine({
     const echo = kindOf(ev) === 'echo';
     if (echo || ev.fromNode != null) {
       const author = echo && fromThisNode(ev) && ev.fromBeing ? String(ev.fromBeing).toLowerCase() : null;
-      const woke = (author || !echo) ? targets.filter((t) => !t.fallthrough && String(gateAs(t, '')).toLowerCase() !== author) : [];
+      const wakes = (t) => !t.fallthrough && String(gateAs(t, '')).toLowerCase() !== author;
+      const woke = (author || !echo) ? targets.filter(wakes) : [];
+      refused = author ? refused.filter(wakes) : [];
       if (!woke.length) {
         if (!echo && !(await gatesOf(targets, { ...ev, backlog: true }, receives)).received) return null;
-        return () => { note(echo ? `echo: ${guardChannel(ev)} — this node's own output re-entered; recorded, prompts nobody` : `signed: ${guardChannel(ev)} — node <${ev.fromNode}>'s line addresses no being; recorded, prompts nobody`); };
+        return asking(() => { note(echo ? `echo: ${guardChannel(ev)} — this node's own output re-entered; recorded, prompts nobody` : `signed: ${guardChannel(ev)} — node <${ev.fromNode}>'s line addresses no being; recorded, prompts nobody`); });
       }
       targets = woke;
       crossBeingWake = true;
-    }
+    } else refused = [];
 
     // META ENGINEERS ARE BEYOND THE GUARD (operator 2026-09-16; isMetaEngineer above). The routed
     // targets ARE the addressees, known here and nowhere earlier, so this is where it is decided —
@@ -1099,7 +1118,7 @@ export function createSpine({
     // rides on from here as a normal dispatch. The old wholesale `kindOf==='echo'` return lived
     // here; it is gone because it suppressed a DIFFERENT being's wake too (the same-node sibling).
 
-    return () => dispatchChat({ ev, gated, channel });
+    return asking(() => dispatchChat({ ev, gated, channel }));
   }
 
   // Ordinary chat, ALREADY on the record: every gated target takes the per-target path
@@ -1136,6 +1155,20 @@ export function createSpine({
     const turn = first ? (await dispatchTarget(ev, first))?.turn : undefined;
     if (!sideTurn) return turn === undefined ? undefined : { turn };
     return { turn: turn ? Promise.all([turn, sideTurn]).then(() => {}) : sideTurn };
+  }
+
+  // A BEING'S LINE AN allowed_users MEMBER APPROVED FOR ONE BEING (boot answerIngest): it was recorded when it
+  // arrived and the chat was asked, so it is neither recorded nor routed again. The being's gate, the loop
+  // guard (it counts as the cross-being wake it is) and its per-target path (dispatchTarget) run it as
+  // classify's tail does. `target`: the router's refused target, kept with the question.
+  async function dispatchApproved({ ev, target }) {
+    const channel = guard ? guardChannel(ev) : null;
+    if (guard) {
+      if (guard.blocked(channel)) { note(`guard: ${channel} stopped — approved line suppressed`); return null; }
+      await guardCountNonHuman(ev, channel, true);
+    }
+    const [g] = (await gatesOf([target], ev, true)).gated;
+    return g ? dispatchTarget(ev, g) : null;
   }
 
   // ONE TARGET'S PATH (operator 2026-10-23: every target, primary or not, runs THIS — the auto +
@@ -1940,5 +1973,5 @@ export function createSpine({
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound, stats, drainForRestart, noteStoppedBackground, resumedAt, backlogOf, wakeOnBackground, commandTurn };
+  return { start, stop, tick, handleInbound, stats, drainForRestart, noteStoppedBackground, resumedAt, backlogOf, wakeOnBackground, commandTurn, dispatchApproved };
 }

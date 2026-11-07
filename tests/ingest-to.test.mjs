@@ -283,10 +283,10 @@ describe('ingest.show / ingest.auto', () => {
 });
 
 describe('answering the question', () => {
-  it('answerOf: yes/si/sí/y/ok/👍 dispatch, no/n/👎 drop, anything else is not an answer', () => {
-    for (const s of ['yes', 'Yes', 'si', 'Sí', 'sí.', 'y', 'OK', 'ok!', '👍', '👍🏽', ' yes ']) expect(answerOf(s), s).toBe(true);
-    for (const s of ['no', 'No', 'n', 'NO.', '👎', '👎🏻']) expect(answerOf(s), s).toBe(false);
-    for (const s of ['', 'yes please', 'maybe', 'nope', '❤️', null]) expect(answerOf(s), String(s)).toBe(null);
+  it('answerOf: yes/y/si/sí/s/ok/👍 dispatch, no/n/non/👎 drop, anything else (any other emoji) is not an answer', () => {
+    for (const s of ['yes', 'Yes', 'si', 'Sí', 'sí.', 'y', 's', 'S', 'OK', 'ok!', '👍', '👍🏽', ' yes ']) expect(answerOf(s), s).toBe(true);
+    for (const s of ['no', 'No', 'n', 'non', 'Non.', 'NO.', '👎', '👎🏻']) expect(answerOf(s), s).toBe(false);
+    for (const s of ['', 'yes please', 'maybe', 'nope', 'ya', 'nah', '❤️', '🙂', '👏', '🆗', null]) expect(answerOf(s), String(s)).toBe(null);
   });
 
   it('an owner\'s "yes" reply dispatches the line once; the yes itself wakes no being (on-mode chat)', async () => {
@@ -337,6 +337,28 @@ describe('answering the question', () => {
     const b = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
     await drop(b.app, `/to ${CHAT}\ne, dos`);
     await reactTo(b.app, posts(b.beeper[0])[0]?.id, '👎');
+    await settled(b.handled);
+    expect(ingestCalls(b.handled)).toEqual([]);
+    expect(posts(b.beeper[0]).map((p) => p.text)).toContainEqual(expect.stringContaining('🚫 dropped'));
+    b.app.stop();
+  });
+
+  it('"s" and "non" answer too; another emoji on the post is not an answer', async () => {
+    const a = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(a.app, `/to ${CHAT}\ne, uno`);
+    const ask = posts(a.beeper[0])[0];
+    await reactTo(a.app, ask?.id, '❤️');
+    await replyTo(a.app, ask?.id, 'maybe');
+    await settled(a.handled);
+    expect(ingestCalls(a.handled)).toEqual([]);
+    await replyTo(a.app, ask?.id, 's');
+    await settled(a.handled);
+    expect(ingestCalls(a.handled)).toHaveLength(1);
+    a.app.stop();
+
+    const b = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam') });
+    await drop(b.app, `/to ${CHAT}\ne, dos`);
+    await replyTo(b.app, posts(b.beeper[0])[0]?.id, 'non');
     await settled(b.handled);
     expect(ingestCalls(b.handled)).toEqual([]);
     expect(posts(b.beeper[0]).map((p) => p.text)).toContainEqual(expect.stringContaining('🚫 dropped'));

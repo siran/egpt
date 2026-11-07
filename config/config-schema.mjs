@@ -3516,7 +3516,7 @@ export const CONFIG_SCHEMA = {
       auto
         DEFAULT: false. false = nothing reaches a being until an owner answers
         the posted question: a reply to it (or a reaction on it) saying yes / si /
-        sí / y / ok / 👍 dispatches it, no / n / 👎 drops it. Pending questions
+        sí / y / s / ok / 👍 dispatches it, no / n / non / 👎 drops it. Pending questions
         survive a restart (state/ingest-asks.json) and never expire. true =
         dispatched at once. show false + auto false posts only the question;
         show false + auto true posts nothing.
