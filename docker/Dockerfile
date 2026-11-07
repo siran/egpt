@@ -1,4 +1,4 @@
-# eGPT node blueprint: Beeper Desktop, Chrome, whisper.cpp, piper and claude in one container.
+# eGPT node blueprint: Beeper Desktop, Chrome, whisper.cpp, piper, claude and gh in one container.
 # Beeper is a GUI app, so it runs on a virtual X screen (Xvfb). x11vnc exposes
 # that screen on :5900 for the one-time login; keep that port private.
 # No eGPT code and no secrets in the image: the checkout is cloned onto its own volume at first boot.
@@ -39,6 +39,13 @@ RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /usr/share/k
   && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
        > /etc/apt/sources.list.d/google-chrome.list \
   && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+  && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (gh), from GitHub's signed apt repo. No auth in the image: gh reads GH_TOKEN at run time.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
 # Beeper Desktop, unpacked from its AppImage (no FUSE needed at runtime).
