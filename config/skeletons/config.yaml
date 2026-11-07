@@ -507,7 +507,7 @@ networks:
 # ear_probe: { every: 30m, timeout: 45s, telegram: { token: "BOT_TOKEN", chat_id: -1001234567890 } }   # deaf-Beeper check: a bot posts into a chat Beeper bridges; no token/chat = off
 # media_flood: { count: 5, window_ms: 20000, cooldown_ms: 600000, never_ban: [] }   # mute a sender posting count media within window_ms; count <= 0 = off
 # agents_list: { every_ms: 60000, ban_after: 5, ban_window_ms: 600000 }   # public /agents: one list per chat per every_ms; ban_after 0 = never mute
-# ingest: { show: true, auto: false, ask: "received message, dispatch? reply yes / no" }   # state/ingest /to files: post the line; auto false = an owner's yes dispatches it
+# ingest: { show: true, auto: false, ask: "received message, dispatch? reply yes / no", ttl_ms: 600000 }   # state/ingest /to files: post the line; auto false = an owner's yes dispatches it; an open question (this one, or a refused mention's) expires after ttl_ms
 
 # --- Chrome control (optional) -----------------------------------------------
 # The brain Chrome (CDP :9221) and the per-group Chrome pool. WHICH chat uses which Chrome is

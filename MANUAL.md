@@ -25,8 +25,11 @@ nobody, ids are exactly those senders; the nearest list wins (2026-10-26).
 A person off a being's list is ignored. A being's own line that names a being whose
 list does not admit that sender (on Telegram every being posts through one bot, so
 lark's `@finch …` is the bot's) asks the chat once: `❓ lark → finch: pass it on?
-reply yes / no`. Only a member of finch's list may answer; yes hands the line to finch
-alone, no drops it. The ingest box's questions and answers below, the same
+reply yes / no · ⏳ 10 min`. A member of finch's list may answer, and so may any owner of
+the node, whatever that list says (even `[]`); yes hands the line to finch alone, no drops
+it. The question closes after `ingest.ttl_ms` (default 10 minutes): the time left is
+edited into it each minute, then it reads `⌛ lark → finch: expired, not passed on`
+and a later yes is ordinary chat. The ingest box's questions and answers below, the same
 `state/ingest-asks.json`.
 
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
@@ -290,9 +293,15 @@ What the chat sees, and when the line is dispatched (`ingest:` in config.yaml):
   reply to the post (or react on it) with yes / y / si / sí / s / ok / 👍 to dispatch,
   no / n / non / 👎 to drop (a reaction counts only as 👍 or 👎). A one-line outcome
   is posted and logged; the answer itself wakes nobody. Anyone else's reply is ordinary chat. Open questions survive a
-  restart (`state/ingest-asks.json`) and never expire. `auto: true` dispatches at
+  restart (`state/ingest-asks.json`). `auto: true` dispatches at
   once. `show: false` + `auto: false` posts only the question; `show: false` +
   `auto: true` posts nothing.
+- `ttl_ms` (default `600000`, 10 minutes): how long a question waits, this one and the
+  refused-mention one above. It ends with `· ⏳ 10 min`, edited each minute as it
+  runs down; at the deadline it is edited to `⌛ expired, not dispatched`, leaves
+  the store (the deadline is kept across a restart) and a line is logged. A yes after that
+  is ordinary chat. A chat that cannot edit shows the clock time instead (`· ⏳ until 14:35`).
+  `0` or less: never expires.
 
 Once dispatched the line takes the normal path: addressing and the chat's mode
 decide who answers, the answer goes to that chat, and the transcript records the

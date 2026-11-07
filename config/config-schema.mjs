@@ -3517,11 +3517,26 @@ export const CONFIG_SCHEMA = {
         DEFAULT: false. false = nothing reaches a being until an owner answers
         the posted question: a reply to it (or a reaction on it) saying yes / si /
         sí / y / s / ok / 👍 dispatches it, no / n / non / 👎 drops it. Pending questions
-        survive a restart (state/ingest-asks.json) and never expire. true =
+        survive a restart (state/ingest-asks.json) and expire (ttl_ms). true =
         dispatched at once. show false + auto false posts only the question;
         show false + auto true posts nothing.
       ask
         DEFAULT: "received message, dispatch? reply yes / no". The question text.
+      ttl_ms
+        DEFAULT: 600000 (10 minutes) — how long an open question waits for its
+        answer. The same store holds a being's line that names a being whose
+        allowed_users refuse its sender ("❓ lark → finch: pass it on? reply yes /
+        no", boot askMention), so this covers both kinds. (An owner answers either
+        kind; the mention's is also answered by its being's allowed_users.) The post ends with the
+        time left, "· ⏳ 10 min", and is EDITED once a minute as it runs down
+        (a connection that cannot edit shows the clock time it closes at instead:
+        "· ⏳ until 14:35"). At the deadline the post is edited to say it expired
+        ("⌛ lark → finch: expired, not passed on" / "⌛ expired, not dispatched"), the
+        question leaves the store and a line is logged: an answer after that is
+        ordinary chat. The deadline is stored with the question, so a restart keeps
+        it; a question stored before expiry existed gets a fresh one at load. 0 or
+        negative = never expire (no countdown). Read live; it applies to the
+        questions asked after the change.
   `,
 
   admin_channel: `
