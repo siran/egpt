@@ -477,6 +477,7 @@ networks:
 # auto_restart_on_config_change: false   # true = editing this file auto-triggers /restart (full drain+respawn) so the edit applies; keyed on content (no-op saves + mid-write/malformed files never restart). Default false.
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
+# warm: { memory_floor_mb: 700, memory_pressure_psi: 10, max_by_class: { conversation: 8 } }  # memory-aware eviction; unset = off
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
 # Graceful compaction (all OPTIONAL; unset = today's behavior - no handoff turn, re-feed with no
 # welcome). {agent} is replaced with the being's handle, {YYMMDD-HHMM} with the warn's local time
