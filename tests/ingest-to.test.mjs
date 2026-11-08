@@ -1,6 +1,7 @@
 // ingest-to.test.mjs — `/to <chatId>` in the ingest box: the text enters that chat through the
 // spine's handleInbound as the owner's line, marked `.ingest`; addressing and the chat's mode
-// decide who answers; the answer goes to that chat. Lifecycle lines are unchanged.
+// decide who answers; the answer goes to that chat. Lifecycle lines are unchanged. An unanswered question
+// expires (ingest.ttl_ms): its post counts the minutes down, is edited as they pass, and says it expired.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 
 const _HOME = vi.hoisted(() => {
@@ -12,9 +13,9 @@ const _HOME = vi.hoisted(() => {
 
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createIngest, toLine, answerOf, INGEST_ASK } from '../src/spine/ingest.mjs';
+import { createIngest, createIngestAsks, toLine, answerOf, askTtlMs, minutesLeft, withCountdown, withDeadline, INGEST_ASK, INGEST_EXPIRED, mentionAsk, mentionExpired, ASK_TTL_MS } from '../src/spine/ingest.mjs';
 import { stripNodeSignature } from '../src/node-signature.mjs';
-import { reactionAction } from '../src/dispatch-line.mjs';
+import { reactionAction, editAction } from '../src/dispatch-line.mjs';
 
 let boot, emptyState, ensureContact;
 beforeAll(async () => {
@@ -66,9 +67,10 @@ function fakeTransport(declared = {}) {
   const built = [];
   let n = 0;
   const start = async (opts) => {
-    const spy = { opts, sent: [], streams: [], media: [] };
+    const spy = { opts, sent: [], streams: [], media: [], edits: [] };
     built.push(spy);
     return {
+      async editMessage(chatId, id, text) { spy.edits.push({ chatId, id, text }); return true; },
       ...declared,
       async send(text, o) { const id = `m${++n}`; spy.sent.push({ text, chatId: o?.chatId, id }); return { ok: true, confirmedId: id }; },
       async sendMedia(chatId, path, o) { const id = `m${++n}`; spy.media.push({ chatId, path, caption: o?.caption ?? null, id }); return { ok: true, confirmedId: id }; },
@@ -77,15 +79,15 @@ function fakeTransport(declared = {}) {
         const h = { init, finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
         spy.streams.push(h); return h;
       },
-      wasSentByUs: () => false,
+      wasSentByUs: (chatId, id) => spy.sent.some((m) => m.id === id) || spy.media.some((m) => m.id === id),
       isAlive: () => true, stop() {},
     };
   };
   return { start, built };
 }
 
-async function bootWith(config, { state, telegram = false, session = fakeSession, io = memIo() } = {}) {
-  const beeper = fakeTransport();
+async function bootWith(config, { state, telegram = false, session = fakeSession, io = memIo(), now = () => Date.UTC(2026, 9, 26, 14, 5), declared = {} } = {}) {
+  const beeper = fakeTransport(declared);
   const tg = fakeTransport({ visibleOnly: true });
   const lines = [];
   const exits = [];
@@ -100,7 +102,7 @@ async function bootWith(config, { state, telegram = false, session = fakeSession
     writeState: async (s) => { convState = s; },
     io, ingest: false, tickMs: 0,
     exit: (c) => exits.push(c),
-    now: () => Date.UTC(2026, 9, 26, 14, 5),
+    now,
     log: { line: (s) => lines.push(s) },
   });
   const handled = vi.spyOn(app.spine, 'handleInbound');
@@ -239,6 +241,7 @@ describe('ingest.show / ingest.auto', () => {
     const [post] = posts(beeper[0]);
     expect(post?.text).toContain('📥 An (ingest): e, resume the thread');
     expect(post?.text).toContain(INGEST_ASK);
+    expect(post?.text).toMatch(/ · ⏳ 10 min$/);                   // the question's own line ends with the time left
     expect(ingestCalls(handled)).toEqual([]);
     expect(beeper[0].streams).toEqual([]);
     app.stop();
@@ -247,7 +250,7 @@ describe('ingest.show / ingest.auto', () => {
   it('show:false + auto:false posts only the question', async () => {
     const { app, beeper, handled } = await bootWith(BEEPER_ONLY({ show: false }), { state: seed('whatsapp', CHAT, 'fam') });
     await drop(app, `/to ${CHAT}\ne, resume the thread`);
-    expect(posts(beeper[0]).map((p) => p.text.trim())).toEqual([INGEST_ASK]);
+    expect(posts(beeper[0]).map((p) => p.text.trim())).toEqual([withCountdown(INGEST_ASK, ASK_TTL_MS)]);
     expect(ingestCalls(handled)).toEqual([]);
     app.stop();
   });
@@ -386,7 +389,7 @@ describe('answering the question', () => {
     await drop(first.app, `/to ${CHAT}\ne, resume the thread`);
     const ask = posts(first.beeper[0])[0];
     first.app.stop();
-    expect(JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')) ?? 'null')).toEqual([{ chatId: CHAT, ids: [ask?.id], body: 'e, resume the thread' }]);
+    expect(JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')) ?? 'null')).toEqual([{ chatId: CHAT, ids: [ask?.id], body: 'e, resume the thread', expiresAt: Date.UTC(2026, 9, 26, 14, 15), shown: 10, post: { id: ask?.id, text: expect.stringContaining(INGEST_ASK), expired: expect.stringContaining(INGEST_EXPIRED) } }]);
 
     const second = await bootWith(BEEPER_ONLY(null), { state, io });
     await replyTo(second.app, ask?.id, 'yes');
@@ -476,5 +479,268 @@ describe('the question on a Telegram topic', () => {
     await settled(b.handled);
     expect(ingestCalls(b.handled)).toHaveLength(1);
     b.app.stop();
+  });
+});
+
+// ── an open question runs out (ingest.ttl_ms, default 10 min) ─────────────────────────────────────────────
+describe('the question store: deadlines', () => {
+  const memStore = (initial, { now, ttlMs } = {}) => {
+    const files = new Map(initial ? [['/s/asks.json', JSON.stringify(initial)]] : []);
+    const io = { readFile: async (p) => { if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return files.get(p); }, writeFile: async (p, d) => { files.set(p, String(d)); }, rename: async (a, b) => { files.set(b, files.get(a)); files.delete(a); }, mkdir: async () => {} };
+    return { files, store: createIngestAsks({ path: '/s/asks.json', io, now, ttlMs }) };
+  };
+
+  it('askTtlMs: 10 minutes unless ingest.ttl_ms says otherwise; minutesLeft rounds up and never shows 0', () => {
+    expect(askTtlMs({})).toBe(600_000);
+    expect(askTtlMs({ ingest: { ttl_ms: 120_000 } })).toBe(120_000);
+    expect(askTtlMs({ ingest: { ttl_ms: 0 } })).toBe(0);
+    expect(askTtlMs({ ingest: { ttl_ms: 'soon' } })).toBe(600_000);
+    expect([600_000, 599_999, 540_001, 540_000, 61_000, 60_000, 1].map(minutesLeft)).toEqual([10, 10, 10, 9, 2, 1, 1]);
+    expect(withCountdown('❓ q', 540_000)).toBe('❓ q · ⏳ 9 min');
+    expect(withDeadline('❓ q', Date.UTC(2026, 9, 26, 14, 15), null)).toBe('❓ q · ⏳ until 14:15');
+  });
+
+  it('find skips a question past its deadline, before anything takes it out; deadline() is null with a ttl of 0', async () => {
+    let t = 1_000;
+    const { store } = memStore(null, { now: () => t, ttlMs: () => 5_000 });
+    const ask = { chatId: 'c', ids: ['1'], body: 'b', expiresAt: store.deadline() };
+    expect(ask.expiresAt).toBe(6_000);
+    await store.add(ask);
+    expect(store.find('c', '1')).toBe(ask);
+    t = 5_999; expect(store.find('c', '1')).toBe(ask);
+    t = 6_000; expect(store.find('c', '1')).toBe(null);
+    expect(store.has(ask)).toBe(true);                            // still held: boot's tick is what takes it out
+    expect(memStore(null, { ttlMs: () => 0 }).store.deadline()).toBe(null);
+  });
+
+  it('load gives an entry with no deadline a fresh one (now + ttl) and keeps the file honest; a stored deadline is kept', async () => {
+    const { files, store } = memStore([{ chatId: 'c', ids: ['1'], body: 'old' }, { chatId: 'c', ids: ['2'], body: 'new', expiresAt: 42_000 }], { now: () => 1_000_000, ttlMs: () => 600_000 });
+    await store.load();
+    await store.mark(store.list()[0], {});                        // the chain: wait for the write
+    expect(store.list().map((a) => a.expiresAt)).toEqual([1_600_000, 42_000]);
+    expect(JSON.parse(files.get('/s/asks.json')).map((a) => a.expiresAt)).toEqual([1_600_000, 42_000]);
+    expect(store.find('c', '1')?.body).toBe('old');               // not expired at load
+  });
+
+  it('with a ttl of 0 a legacy entry stays without a deadline (it never expires)', async () => {
+    const { store } = memStore([{ chatId: 'c', ids: ['1'], body: 'old' }], { now: () => 1_000_000, ttlMs: () => 0 });
+    await store.load();
+    expect(store.list()[0].expiresAt).toBeUndefined();
+    expect(store.find('c', '1')?.body).toBe('old');
+  });
+});
+
+describe('an open /to question expires', () => {
+  const T0 = Date.UTC(2026, 9, 26, 14, 5);
+  const MIN = 60_000;
+  const fakeClock = () => { let t = T0; return { now: () => t, advance: (ms) => { t += ms; } }; };
+  const asksFile = (io) => JSON.parse(io.files.get(join(_HOME, 'state', 'ingest-asks.json')) ?? 'null');
+  const edited = (spy) => spy.edits.map((e) => ({ ...e, text: plain(e.text) }));
+  const HEAD = '📥 An (ingest): e, resume the thread';
+  // The spine's own pulse, awaited: the tick starts the pass over the open questions and does not wait for it, so this
+  // waits out any pass already running (a pulse that finds one leaves the questions alone, as in production), ticks,
+  // and waits for the pass that tick started. No sleeping: every edit and write it made has landed when this returns.
+  const pulse = async (app) => { await app.asksIdle(); app.spine.tick(); await app.asksIdle(); };
+  const minutesShown = (spy) => edited(spy).map((e) => /⏳ (\d+) min$/.exec(e.text)?.[1]);
+  const askedFor = async (config, opts = {}) => {
+    const clock = opts.clock ?? fakeClock();
+    const n = await bootWith(config, { state: seed('whatsapp', CHAT, 'fam'), now: clock.now, ...opts });
+    await drop(n.app, `/to ${CHAT}\ne, resume the thread`);
+    return { ...n, clock, ask: posts(n.beeper[0])[0] };
+  };
+
+  it('the post counts down once a minute: an edit only when the shown value changes', async () => {
+    const { app, beeper, clock, ask } = await askedFor(BEEPER_ONLY(null));
+    expect(ask.text).toBe(`${HEAD}\n\n${INGEST_ASK} · ⏳ 10 min`);
+    clock.advance(20_000); await pulse(app);
+    expect(edited(beeper[0])).toEqual([]);                          // 9:40 left still reads 10 min
+    clock.advance(41_000); await pulse(app);                       // 8:59
+    expect(edited(beeper[0])).toEqual([{ chatId: CHAT, id: ask.id, text: `${HEAD}\n\n${INGEST_ASK} · ⏳ 9 min` }]);
+    clock.advance(10_000); await pulse(app);
+    await pulse(app);
+    expect(edited(beeper[0])).toHaveLength(1);                      // the same minute: nothing more, however often it pulses
+    clock.advance(MIN); await pulse(app);                          // 7:49
+    expect(minutesShown(beeper[0])).toEqual(['9', '8']);
+    app.stop();
+  });
+
+  it('at the deadline the post is edited to say it expired (the line stays), the entry leaves the store, a line is logged', async () => {
+    const io = memIo();
+    const { app, beeper, clock, ask, lines } = await askedFor(BEEPER_ONLY(null), { io });
+    expect(asksFile(io)).toHaveLength(1);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(edited(beeper[0]).at(-1)).toEqual({ chatId: CHAT, id: ask.id, text: `${HEAD}\n\n${INGEST_EXPIRED}` });
+    expect(INGEST_EXPIRED).toBe('⌛ expired, not dispatched');
+    expect(asksFile(io)).toEqual([]);
+    expect(lines.some((l) => /\[ingest\] \/to !fam:beeper\.com: expired \(#m1\) — the line not dispatched$/.test(l))).toBe(true);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(edited(beeper[0]).filter((e) => e.text.includes('expired'))).toHaveLength(1);   // once
+    app.stop();
+  });
+
+  it('an answer after the deadline is not an answer: the yes is ordinary chat (it wakes the on-mode being), even before the tick took the entry out', async () => {
+    const { app, beeper, handled, clock, ask } = await askedFor(BEEPER_ONLY(null));
+    await pulse(app);
+    clock.advance(9 * MIN + 59_000);
+    await replyTo(app, ask?.id, 'ok');                               // one second early: an answer
+    await settled(handled);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    app.stop();
+
+    const late = await askedFor(BEEPER_ONLY(null));
+    late.clock.advance(10 * MIN);                                    // the deadline, no pulse yet
+    await replyTo(late.app, late.ask?.id, 'yes');
+    await settled(late.handled);
+    expect(ingestCalls(late.handled)).toEqual([]);
+    expect(posts(late.beeper[0]).map((p) => p.text)).not.toContainEqual(expect.stringContaining('✅ dispatched'));
+    await pulse(late.app);
+    expect(edited(late.beeper[0]).at(-1).text).toContain(INGEST_EXPIRED);
+    await replyTo(late.app, late.ask.id, 'yes');
+    await settled(late.handled);
+    expect(ingestCalls(late.handled)).toEqual([]);
+    late.app.stop();
+  });
+
+  it('show:false posts only the question: it is what expires, and only the expired line remains', async () => {
+    const { app, beeper, clock, ask } = await askedFor(BEEPER_ONLY({ show: false }));
+    expect(ask.text).toBe(`${INGEST_ASK} · ⏳ 10 min`);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(edited(beeper[0]).at(-1).text).toBe(INGEST_EXPIRED);
+    app.stop();
+  });
+
+  it('ingest.ttl_ms sets the length: the countdown starts at its whole minutes, rounded up', async () => {
+    const { app, beeper, clock, ask } = await askedFor(BEEPER_ONLY({ ttl_ms: 90_000 }));
+    expect(ask.text).toMatch(/ · ⏳ 2 min$/);
+    clock.advance(31_000); await pulse(app);
+    expect(minutesShown(beeper[0])).toEqual(['1']);
+    clock.advance(60_000); await pulse(app);
+    expect(edited(beeper[0]).at(-1).text).toContain(INGEST_EXPIRED);
+    app.stop();
+  });
+
+  it('ttl_ms 0: no countdown, no deadline, and nothing ever expires', async () => {
+    const io = memIo();
+    const { app, beeper, handled, clock, ask } = await askedFor(BEEPER_ONLY({ ttl_ms: 0 }), { io });
+    expect(ask.text).toBe(`${HEAD}\n\n${INGEST_ASK}`);
+    expect(asksFile(io)[0]).not.toHaveProperty('expiresAt');
+    clock.advance(48 * 60 * MIN); await pulse(app);
+    expect(edited(beeper[0])).toEqual([]);
+    await replyTo(app, ask.id, 'yes');
+    await settled(handled);
+    expect(ingestCalls(handled)).toHaveLength(1);
+    app.stop();
+  });
+
+  it('a restart keeps the deadline: the second boot counts down from the first one\'s, and expires on it', async () => {
+    const io = memIo();
+    const clock = fakeClock();
+    const first = await askedFor(BEEPER_ONLY(null), { io, clock });
+    const { ask } = first;
+    first.app.stop();
+    expect(asksFile(io)[0]).toMatchObject({ expiresAt: T0 + 10 * MIN, shown: 10 });
+
+    clock.advance(6 * MIN);
+    const second = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io, now: clock.now });
+    expect(asksFile(io)[0]).toMatchObject({ expiresAt: T0 + 10 * MIN });          // not restarted from the boot's clock
+    await pulse(second.app);
+    expect(edited(second.beeper[0])).toEqual([{ chatId: CHAT, id: ask.id, text: `${HEAD}\n\n${INGEST_ASK} · ⏳ 4 min` }]);
+    clock.advance(4 * MIN); await pulse(second.app);
+    expect(edited(second.beeper[0]).at(-1).text).toBe(`${HEAD}\n\n${INGEST_EXPIRED}`);
+    expect(asksFile(io)).toEqual([]);
+    second.app.stop();
+  });
+
+  it('a question stored before expiry existed gets a fresh deadline at load (not expired at once), and is answerable until it', async () => {
+    const io = memIo();
+    io.files.set(join(_HOME, 'state', 'ingest-asks.json'), JSON.stringify([{ chatId: CHAT, ids: ['m7'], body: 'e, hola' }]));
+    const clock = fakeClock();
+    const { app, beeper, handled, lines } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io, now: clock.now });
+    expect(asksFile(io)).toEqual([{ chatId: CHAT, ids: ['m7'], body: 'e, hola', expiresAt: T0 + 10 * MIN }]);
+    expect(lines.some((l) => /1 open question\(s\) from before expiry now close in 10 min/.test(l))).toBe(true);
+    await pulse(app);
+    expect(asksFile(io)).toHaveLength(1);
+    expect(edited(beeper[0])).toEqual([]);                          // no post of its own is known: nothing to count down
+    clock.advance(9 * MIN);
+    await replyTo(app, 'm7', 'yes');
+    await settled(handled);
+    expect(ingestCalls(handled)[0]?.[0].body).toBe('e, hola');
+    app.stop();
+  });
+
+  it('a legacy question that then runs out expires silently: logged, no edit and nothing said in the chat, and a yes after it is ordinary chat', async () => {
+    const io = memIo();
+    io.files.set(join(_HOME, 'state', 'ingest-asks.json'), JSON.stringify([{ chatId: CHAT, ids: ['m7'], body: 'e, hola' }]));
+    const clock = fakeClock();
+    const { app, beeper, handled, lines } = await bootWith(BEEPER_ONLY(null), { state: onMode(seed('whatsapp', CHAT, 'fam')), io, now: clock.now });
+    expect(asksFile(io)[0].expiresAt).toBe(T0 + 10 * MIN);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(asksFile(io)).toEqual([]);
+    expect(edited(beeper[0])).toEqual([]);
+    expect(beeper[0].sent).toEqual([]);
+    expect(lines.some((l) => /\[ingest\] \/to !fam:beeper\.com: expired \(#m7\) — the line not dispatched \(asked before expiry existed: nothing said in the chat\)$/.test(l))).toBe(true);
+    await replyTo(app, 'm7', 'yes');                                // too late: ordinary chat (it wakes the on-mode being)
+    await settled(handled);
+    expect(ingestCalls(handled)).toEqual([]);
+    expect(beeper[0].streams).toHaveLength(1);
+    app.stop();
+  });
+
+  it('four legacy questions run out together and still say nothing', async () => {
+    const io = memIo();
+    io.files.set(join(_HOME, 'state', 'ingest-asks.json'), JSON.stringify([1, 2, 3, 4].map((n) => ({ chatId: CHAT, ids: [`m${n}`], body: `e, hola ${n}` }))));
+    const clock = fakeClock();
+    const { app, beeper, lines } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), io, now: clock.now });
+    expect(lines.some((l) => /4 open question\(s\) from before expiry now close in 10 min/.test(l))).toBe(true);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(asksFile(io)).toEqual([]);
+    expect(beeper[0].sent).toEqual([]);
+    expect(beeper[0].edits).toEqual([]);
+    expect(lines.filter((l) => /expired \(#m\d\)/.test(l))).toHaveLength(4);
+    app.stop();
+  });
+
+  it('a post that will not take an edit: tried once, left as posted, and a new line says the end; nothing throws', async () => {
+    let tries = 0;
+    const declared = { editMessage: async () => { tries += 1; throw new Error('message can no longer be edited'); } };
+    const { app, beeper, clock, lines } = await askedFor(BEEPER_ONLY(null), { declared });
+    clock.advance(61_000); await pulse(app);
+    clock.advance(MIN); await pulse(app);
+    clock.advance(MIN); await pulse(app);
+    expect(tries).toBe(1);                                          // no hammering a post that refuses
+    expect(lines.some((l) => /the post #m1 would not take an edit/.test(l))).toBe(true);
+    clock.advance(10 * MIN); await pulse(app);
+    expect(tries).toBe(1);
+    expect(posts(beeper[0]).map((p) => p.text).at(-1)).toBe(`${HEAD}\n\n${INGEST_EXPIRED}`);   // the line again, with its end
+    expect(lines.some((l) => /expired .* \(said as a new line/.test(l))).toBe(true);
+    app.stop();
+  });
+
+  it('the expiry edit coming back on the ear (an edit of our own post, as the Beeper bridge hands it over) wakes nobody, even in an on-mode chat', async () => {
+    const state = onMode(seed('whatsapp', CHAT, 'fam'));
+    const { app, beeper, handled, clock, ask } = await askedFor(BEEPER_ONLY(null), { state });
+    clock.advance(10 * MIN); await pulse(app);
+    const done = edited(beeper[0]).at(-1);
+    expect(done.text).toContain(INGEST_EXPIRED);
+    await app.spine.handleInbound({ body: editAction({ targetId: ask.id, oldText: ask.text, newText: done.text }), from: {
+      chatId: CHAT, chatName: 'fam', network: 'whatsapp', userId: 'an', senderName: 'An', isSender: true, authorized: true,
+      isStageDirection: true, atEStart: false, atEAnywhere: false, msgKey: ask.id,
+    } });
+    await settled(handled);
+    expect(beeper[0].streams).toEqual([]);
+    expect(ingestCalls(handled)).toEqual([]);
+    app.stop();
+  });
+
+  it('a chat the console owns has no edit verb: the question says the clock time it closes at instead', async () => {
+    const clock = fakeClock();
+    const { app } = await bootWith(BEEPER_ONLY(null), { state: seed('whatsapp', CHAT, 'fam'), now: clock.now });
+    app.shellPort.claim(CHAT);
+    const said = [];
+    app.shellPort.send = async (chatId, text) => { said.push(String(text)); return { ok: true }; };
+    await app.ingestLine(`/to ${CHAT}\ne, resume the thread`);
+    expect(said).toHaveLength(1);
+    expect(plain(said[0])).toBe(`${HEAD}\n\n${INGEST_ASK} · ⏳ until 14:15`);
+    app.stop();
   });
 });

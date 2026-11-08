@@ -81,7 +81,7 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
-import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, mentionAsk, answerOf } from './ingest.mjs';
+import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, INGEST_EXPIRED, mentionAsk, mentionExpired, askTtlMs, minutesLeft, withCountdown, withDeadline, answerOf } from './ingest.mjs';
 import { savedEntry, withMediaLines } from '../bridges/limb-intake.mjs';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
 import { reactionEmoji } from '../dispatch-line.mjs';
@@ -3912,11 +3912,13 @@ export async function boot({
   // allBackground: all of it, whoever holds it — what a /standdown ends (the daemon ends its sessions).
   // backgroundOutcome: how a finished task ended — what the chat's status marks it (✓ ✗ ⏹, ◦ not known).
   // The ingest box's open questions (ingest.auto false), kept across restarts (ingestTo, below).
-  const ingestAsks = createIngestAsks({ path: join(EGPT_HOME, 'state', 'ingest-asks.json'), io, onLog: (m) => log.line?.(`[ingest] ${m}`) });
+  const ingestAsks = createIngestAsks({ path: join(EGPT_HOME, 'state', 'ingest-asks.json'), io, onLog: (m) => log.line?.(`[ingest] ${m}`), now, ttlMs: () => askTtlMs(cfg) });
   await ingestAsks.load();
+  const askNoEdit = new WeakSet();   // open questions whose post would not take an edit: left alone, and a fresh line says the end
+  let asking = null;                  // the tick's pass over them, while it runs (declared here: the spine's first tick is below)
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -4060,12 +4062,16 @@ export async function boot({
     const ids = [];
     if (show) for (const m of saved) ids.push(await ingestPost(chatId, (on, room) => on.sendMedia?.(room, m.savedPath, { caption: who })));
     const head = [show && `${who}: ${text}`.trim(), ...lost.map((p) => `⚠️ /file ${p}: missing or unreadable`)].filter(Boolean).join('\n');
-    if (show || ask) ids.push(await ingestPost(chatId, (on, room) => on.send?.(room, [head, ask].filter(Boolean).join('\n\n'), { systemLine: true })));
+    const question = [head, ask].filter(Boolean).join('\n\n');
+    const expiresAt = auto ? null : ingestAsks.deadline();
+    const shown = askShown(question, expiresAt, chatId);
+    let postId = null;
+    if (show || ask) { postId = await ingestPost(chatId, (on, room) => on.send?.(room, shown.text, { systemLine: true })); ids.push(postId); }
     if (auto) { await dispatchIngest(chatId, body); return; }
     const posted = ids.filter((id) => id != null).map(String);
     if (!posted.length) { log.line?.(`[ingest] /to ${chatId}: the question has no posted message an owner can answer — not dispatched`); return; }
-    await ingestAsks.add({ chatId, ids: posted, body });
-    log.line?.(`[ingest] /to ${chatId}: asked (#${posted.join(' #')}) — waiting for an owner's yes / no`);
+    await ingestAsks.add({ chatId, ids: posted, body, ...askClock(expiresAt, shown.minutes, postId, question, [head, INGEST_EXPIRED].filter(Boolean).join('\n\n')) });
+    log.line?.(`[ingest] /to ${chatId}: asked (#${posted.join(' #')}) — waiting for an owner's yes / no${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
   }
   // One post through the one placement. Its id as the chat's own connection holds it, since that is
   // the copy an owner replies to: a local mouth's post is found there by its cross-account key.
@@ -4105,21 +4111,84 @@ export async function boot({
     const sender = ev.fromBeing;
     const kept = JSON.parse(JSON.stringify(ev));
     for (const { being, target } of asked) {
-      const id = await ingestPost(ev.chatId, (on, room) => on.send?.(room, mentionAsk(sender, being), { systemLine: true }));
+      const question = mentionAsk(sender, being);
+      const expiresAt = ingestAsks.deadline();
+      const shown = askShown(question, expiresAt, ev.chatId);
+      const id = await ingestPost(ev.chatId, (on, room) => on.send?.(room, shown.text, { systemLine: true }));
       if (id == null) { log.line?.(`[ingest] @${being} ${ev.chatId}: the question has no posted message an allowed user can answer — not asked`); continue; }
-      await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target });
-      log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from its allowed_users`);
+      await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target, ...askClock(expiresAt, shown.minutes, id, question, mentionExpired(sender, being)) });
+      log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from its allowed_users or an owner${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
     }
   }
-  // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner answers the
-  // ingest box's; a refused mention's is answered by whoever its being's allowed_users let wake it (mayWake).
+  // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner always answers,
+  // the ingest box's and a refused mention's alike; a refused mention's is also answered by whoever its being's
+  // allowed_users let wake it (mayWake). Only here: who may WAKE a being is the router's rule and stays as it is.
   async function ingestAnswerOf(ev) {
     const ask = ingestAsks.find(ev.chatId, ev.kind === 'reaction' ? ev.msgId : ev.kind === 'text' ? ev.replyToId : null);
     const agent = ask?.being && Object.entries(cfg.agents ?? {}).find(([k]) => k.toLowerCase() === ask.being)?.[1];
-    const may = ask && (ask.being ? mayWake(ask.being, agent, ev, { state: await _loadState(), config: cfg, chatId: ask.chatId }) : isOwner(ev, cfg));
+    const may = ask && (isOwner(ev, cfg) || (ask.being && mayWake(ask.being, agent, ev, { state: await _loadState(), config: cfg, chatId: ask.chatId })));
     const yes = may ? answerOf(ev.kind === 'reaction' ? reactionEmoji(ev.body) : ev.body) : null;
     return yes == null ? null : { ask, yes };
   }
+  // ── AN OPEN QUESTION RUNS OUT (operator 2026-11-07) ─────────────────────────────────────────────
+  // Every question carries a deadline (ingest.ttl_ms). Its post says the minutes left and is edited as they
+  // go (once a minute: the shown value is the whole minutes, rounded up); at the deadline the entry leaves the
+  // store, the post is edited to say it expired and a line is logged. It rides the spine's tick (ingestAsk.tick),
+  // no timer of its own. A connection that cannot edit gets the clock time it closes at instead of a countdown.
+  function canEditPost(chatId) { return typeof (shellPort.owns(chatId) ? shellPort : outbound(null, chatId).bridge)?.editStatus === 'function'; }   // the console has no edit verb
+  function askShown(text, expiresAt, chatId) {
+    if (expiresAt == null) return { text, minutes: null };
+    if (!canEditPost(chatId)) return { text: withDeadline(text, expiresAt, transcriptTimeZone), minutes: null };
+    return { text: withCountdown(text, expiresAt - now()), minutes: minutesLeft(expiresAt - now()) };
+  }
+  // What an entry keeps to run its clock: nothing at all when the question never expires.
+  function askClock(expiresAt, shown, id, text, expired) { return expiresAt == null ? {} : { expiresAt, shown, post: { id: id == null ? null : String(id), text, expired } }; }
+  // The one outbound edit path (/edit's: makeOutbound say, the target named to a local mouth by its key) on the
+  // post's own id. editStatus, the port's edit of a signed system line, not editOwn: its sent-by-us guard reads a
+  // memory Telegram loses at a restart, and this id is one this store took from our own post. Never throws.
+  async function editAskPost(chatId, id, text) {
+    if (id == null) return false;
+    try {
+      const out = outbound(null, chatId);
+      return !!(await out.say(async (on, room, own) => own != null && !!(await on.editStatus?.(room, own, text)), { msgId: id, keyOf: out.keyOf(id, 'edit'), what: 'ingest edit' }));
+    } catch (e) { log.line?.(`[ingest] ${chatId}: could not edit #${id} — ${e?.message ?? e}`); return false; }
+  }
+  // An entry with no `post` was asked before expiry existed (or with ttl 0): its post never showed a countdown, so
+  // it ends in the log alone, no edit and no line in the chat. One with a post whose edit fails is said as a new line.
+  async function expireAsk(ask) {
+    await ingestAsks.take(ask);   // first: from here an answer is ordinary chat
+    const what = ask.being ? `@${ask.being}` : '/to';
+    const post = ask.post?.id != null ? ask.post : null;
+    const edited = !!post && !askNoEdit.has(ask) && await editAskPost(ask.chatId, post.id, post.expired);
+    log.line?.(`[ingest] ${what} ${ask.chatId}: expired (#${ask.ids.join(' #')}) — ${ask.being ? `${ask.ev?.fromBeing ?? '?'}'s line` : 'the line'} not ${ask.being ? 'passed on' : 'dispatched'}${edited ? '' : post ? ' (said as a new line: the post could not be edited)' : ' (asked before expiry existed: nothing said in the chat)'}`);
+    if (edited || !post) return;
+    try { await sayOnce({ chatId: ask.chatId, text: post.expired, opts: { systemLine: true }, what: 'ingest' }); }
+    catch (e) { log.line?.(`[ingest] ${what} ${ask.chatId}: ${e?.message ?? e}`); }
+  }
+  async function countdownAsk(ask, at) {
+    const p = ask.post;
+    const minutes = minutesLeft(ask.expiresAt - at);
+    if (p?.id == null || askNoEdit.has(ask) || minutes === ask.shown || !canEditPost(ask.chatId)) return;
+    await ingestAsks.mark(ask, { shown: minutes });   // before the edit: a failed one is not tried again within the minute
+    if (!(await editAskPost(ask.chatId, p.id, withCountdown(p.text, ask.expiresAt - at)))) {
+      askNoEdit.add(ask);
+      log.line?.(`[ingest] ${ask.being ? `@${ask.being}` : '/to'} ${ask.chatId}: the post #${p.id} would not take an edit — its countdown stays as posted`);
+    }
+  }
+  function asksTick(at) {
+    if (asking || !ingestAsks.list().length) return asking;
+    asking = (async () => {
+      for (const ask of ingestAsks.list()) {
+        if (!ingestAsks.has(ask) || !Number.isFinite(ask.expiresAt)) continue;   // answered meanwhile / never expires
+        try { await (ask.expiresAt <= at ? expireAsk(ask) : countdownAsk(ask, at)); }
+        catch (e) { log.line?.(`[ingest] ${ask.chatId}: ${e?.message ?? e}`); }
+      }
+    })().catch((e) => log.line?.(`[ingest] open questions: ${e?.message ?? e}`)).finally(() => { asking = null; });
+    return asking;
+  }
+  // Resolves once no pass over the open questions is running. The tick starts one and does not wait for it, so a
+  // test that pulses the spine awaits this (exposed below) instead of sleeping.
+  async function asksIdle() { while (asking) await asking; }
   async function answerIngest(ev) {
     const a = await ingestAnswerOf(ev);
     if (!a) return;
@@ -4177,6 +4246,7 @@ export async function boot({
     requestLogin,                                        // the spine's being-facing auto-login entry ("egpt can request to log in") — exposed so its outcome is assertable without a live Chrome
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed
     ingestLine,                                          // the ingest box's handler — exposed so a dropped file is assertable without the watcher
+    asksIdle,                                            // the open questions' tick pass, awaitable — exposed so a pulse of the spine is assertable without sleeping
 
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's

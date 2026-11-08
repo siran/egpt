@@ -157,7 +157,7 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
-  ingestAsk = null,                    // optional { isAnswer(ev), answer(ev), ask(ev, [{ being, target }]) } — the open yes/no questions (boot): the ingest box's (an owner answers) and a refused mention's (its being's allowed_users answer)
+  ingestAsk = null,                    // optional { isAnswer(ev), answer(ev), ask(ev, [{ being, target }]), tick(now) } — the open yes/no questions (boot): the ingest box's (an owner answers) and a refused mention's (its being's allowed_users, or an owner, answer); tick(now) counts their time down and expires them, on this pulse
   guard = null,                        // optional §2c stop-guard: the per-channel loop-breaker + RESUME (createStopGuard, boot-wired). Null = pipe runs unguarded (tests).
   stopSwitch = null,                   // optional §2c KILL SWITCH (boot-wired): { present(): does EGPT_HOME/STOP exist, async pull(why): warn in why.chatId (capped, best-effort) + write the file + take the SERVICE down }. Two call sites, both on paths that already exist — tick() (the operator touched the file; no chatId, so nothing to warn) and classify() (the chat safe word, which carries its chat). Null = no kill switch (tests).
   stopPhrase = () => STOP_PHRASE,      // () => the kill phrase (boot: config stop_phrase; unset → STOP_PHRASE, '' → off)
@@ -1847,6 +1847,7 @@ export function createSpine({
     background?.sync();
     beeperUpdate?.tick(clock.now());
     sandboxPins?.tick(clock.now());
+    ingestAsk?.tick?.(clock.now());
     heartbeats.runDue(clock.now());
   }
 
