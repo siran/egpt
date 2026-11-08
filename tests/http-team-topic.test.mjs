@@ -159,7 +159,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo Contoso
     const id = c.out.result.message_id;
     return { id, text: api.of('editMessageText').filter((e) => e.body.message_id === id).at(-1)?.body.text ?? c.body.text };
   });
-  return { app, api, turns, lines, url, post, messages, slugOf, transcript, inThread, state: () => st };
+  return { app, api, io, turns, lines, url, post, messages, slugOf, transcript, inThread, state: () => st };
 }
 const answered = (msgs, n = 1) => msgs.filter((m) => m.from === 'being' && m.done && /respuesta a/.test(m.text)).length >= n;
 const settle = () => new Promise((r) => setTimeout(r, 300));
@@ -427,7 +427,7 @@ describe('a signed visitor (identity)', () => {
     const dir = n.turns[0].cwd;
     const usuario = JSON.parse(await fs.readFile(join(dir, 'usuario.json'), 'utf8'));
     expect(usuario).toMatchObject({ abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', user_id: '4711' });
-    expect(usuario).not.toHaveProperty('exp');
+    expect(Object.keys(usuario)).toEqual(['abrin', 'user_type', 'short_name', 'username', 'user_id', 'verified_at']);
     const md = await fs.readFile(join(dir, 'usuario.md'), 'utf8');
     expect(md.trim().split('\n')).toHaveLength(1);
     expect(md).toMatch(/Juan Pérez \(jperez\).*P.*IEV/);
@@ -473,6 +473,54 @@ describe('a signed visitor (identity)', () => {
     await settle();
     expect(n.turns).toEqual([]);
     expect(n.api.of('createForumTopic')).toEqual([]);
+    n.app.stop();
+  });
+
+  it('generic claims: topic_title names any claim; the key (user_id) binds the session', async () => {
+    const n = await bootTeam({ ...client({ mode: 'required', required: ['user_id'], key: ['user_id'] }), topic_title: '{org} #{user_id}' });
+    const identity = signed({ user_id: 7, org: 'Acme' });
+    const a = await n.post({ text: 'hola', identity });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['Acme #7']), { timeout: 5000 });
+    n.app.stop();
+  });
+
+  it('conversation_by: identity — two sessions of one user are one folder, one thread and one topic', async () => {
+    const n = await bootTeam({ ...client(), conversation_by: 'identity' });
+    const a = await n.post({ text: 'desde el portátil', identity: signed(JP) });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JP)))).toBe(true), { timeout: 5000 });
+    const b = await n.post({ text: 'desde el móvil', identity: signed(JP) });
+    expect(b.session).not.toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(n.turns[1].cwd).toBe(n.turns[0].cwd);
+    expect(n.turns[1].session).toBe(n.turns[0].session);
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JP)), 2)).toBe(true), { timeout: 5000 });
+    await settle();
+    expect(n.api.of('createForumTopic')).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('init: one transcript line with the claims, no turn and no topic; a repeated init adds nothing; the first line is answered in that conversation and seats the topic', async () => {
+    const n = await bootTeam({ ...client(), init: true });
+    const identity = signed({ ...JP, user_id: 4711 });
+    const i = await n.post({ kind: 'init', identity });
+    expect(i.session).toEqual(expect.any(String));
+    const folders = () => [...n.io.files.keys()].filter((f) => /[\\/]conversations[\\/]http[\\/]contoso-[0-9a-f]{16}[\\/]transcript\.md$/.test(f));
+    await vi.waitFor(() => expect(folders()).toHaveLength(1), { timeout: 5000 });
+    const slug = folders()[0].split(/[\\/]/).at(-2);
+    await vi.waitFor(() => expect(n.transcript(slug)).toContain('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})'), { timeout: 5000 });
+    expect((await n.post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);
+    await settle();
+    expect(n.turns).toEqual([]);
+    expect(n.api.of('createForumTopic')).toEqual([]);
+    expect(folders()).toHaveLength(1);
+    expect(n.transcript(slug).split('opened the chatbox')).toHaveLength(2);
+    const a = await n.post({ session: i.session, text: 'hola', identity });
+    expect(a.session).toBe(i.session);
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
+    expect(n.turns).toHaveLength(1);
+    expect(n.slugOf(n.turns[0])).toBe(slug);
+    await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['IEV P Juan Pérez (jperez)']), { timeout: 5000 });
     n.app.stop();
   });
 

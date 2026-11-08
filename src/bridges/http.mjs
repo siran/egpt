@@ -1,9 +1,10 @@
 // http.mjs — the website chatbox limb (limbs.http): node:http under a path prefix, one conversation
-// per visitor session. It is the "real" bridge behind the port adapter (beeper-port.mjs), as
-// telegram.mjs is, so replies leave through the one sender path.
+// per visitor session (conversation_by: identity — per signed identity). It is the "real" bridge behind
+// the port adapter (beeper-port.mjs), as telegram.mjs is, so replies leave through the one sender path.
 // Inside the spine a chat id is `http:<client>-<sid>`; sid is a hash of the session token, so the
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
-//   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message}; a repeated id (a retry) gets the first answer
+//   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message}; a repeated id (a retry) gets the first answer;
+//                                        {kind: init, session?, identity} → {session} (init: the widget's page load)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -60,6 +61,7 @@ const sidOf = (token) => createHash('sha256').update(String(token)).digest('hex'
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 
 export const IDENTITY_MODES = Object.freeze(['off', 'optional', 'required']);
+export const IDENTITY_CLAIMS = Object.freeze(['abrin', 'username']);   // the default required claims, and the default key
 const IDENTITY_MAX = 2048;                     // characters of a signed identity
 const IDENTITY_RE = /^([A-Za-z0-9_-]+={0,2})\.([A-Za-z0-9_-]+={0,2})$/;
 const FIELD_MAX = 80;
@@ -79,28 +81,35 @@ function signedPayload(token, key, nowMs) {
   if (p.exp * 1000 <= nowMs) return { why: 'expired' };
   return { p };
 }
-// { identity: {abrin, user_type, short_name, username, user_id?} } or { why: 'invalid' | 'expired' }.
-export function verifyIdentity(token, key, nowMs = Date.now()) {
+// { identity: {abrin, user_type, short_name, username, user_id?, claims} } or { why: 'invalid' | 'expired' }.
+// claims: each string (as field), finite number or boolean claim, exp too; each `required` one non-empty.
+export function verifyIdentity(token, key, nowMs = Date.now(), required = IDENTITY_CLAIMS) {
   const { p, why } = signedPayload(token, key, nowMs);
   if (why) return { why };
+  const claims = Object.fromEntries(Object.entries(p)
+    .filter(([, v]) => typeof v === 'string' || typeof v === 'boolean' || Number.isFinite(v))
+    .map(([k, v]) => [k, typeof v === 'string' ? field(v) : v]));
+  if (required.some((k) => !field(claims[k]))) return { why: 'invalid' };
   const identity = { abrin: field(p.abrin), user_type: field(p.user_type), short_name: field(p.short_name), username: field(p.username) };
-  if (!identity.abrin || !identity.username) return { why: 'invalid' };
   if (field(p.user_id)) identity.user_id = field(p.user_id);
+  identity.claims = claims;
   return { identity };
 }
 const AYDE_REFUSED = (level) => (level === 'team' ? 'Sign in with your ayde user.' : `This needs the ${level} level: sign in with a ${level} user.`);
 const AYDE_LOCKED = 'Too many failed logins. Wait 15 minutes.';
 const AYDE_INTERNAL = (level) => `The ${level} level opens only from the internal network.`;
 const LOGIN_FAILS = 10, LOGIN_MS = 15 * 60_000;   // failed ayde logins per address in LOGIN_MS → 429 for LOGIN_MS
-const whoOf = (identity) => (identity ? createHash('sha256').update(JSON.stringify([identity.abrin, identity.username])).digest('hex').slice(0, 16) : null);
+// A signed identity's key: a hash of its client's key claims (default abrin + username); null when unsigned.
+const whoOf = (c, identity) => (identity ? createHash('sha256').update(JSON.stringify(c.key.map((k) => field(identity.claims[k])))).digest('hex').slice(0, 16) : null);
 
-// A team topic's name: {abrin} {user_type} {short_name} {username} {title} {sid}; a missing value is
-// empty, spaces collapse, empty brackets go. Nothing left: the default. At most Telegram's 128.
+// A team topic's name: {abrin} {user_type} {short_name} {username} {title} {sid}, or any other value given
+// (boot: the identity's claims); a missing value is empty, spaces collapse, empty brackets go. Nothing
+// left: the default. At most Telegram's 128.
 export const DEFAULT_TOPIC_TITLE = '{title} · {sid}';
 export const TOPIC_TITLE_MAX = 128;
 const TITLE_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'title', 'sid'];
 export function renderTopicTitle(template, values = {}) {
-  const fill = (t) => t.replace(/\{([a-z_]+)\}/g, (all, k) => (TITLE_KEYS.includes(k) ? field(values[k]) : all))
+  const fill = (t) => t.replace(/\{(\w+)\}/g, (all, k) => (TITLE_KEYS.includes(k) || Object.hasOwn(values, k) ? field(values[k]) : all))
     .replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim();
   const out = (typeof template === 'string' && fill(template)) || fill(DEFAULT_TOPIC_TITLE);
   if (out.length <= TOPIC_TITLE_MAX) return out;
@@ -109,9 +118,20 @@ export function renderTopicTitle(template, values = {}) {
   return `${cut}…`;
 }
 
+// A client's identity mode: `identity: <mode>`, or the mode of `identity: { mode, required, key }` (default
+// required); not a mode: null.
+export const identityModeOf = (v) => {
+  const mode = isMap(v) ? v.mode ?? 'required' : v;
+  return mode == null || mode === false ? 'off' : IDENTITY_MODES.includes(mode) ? mode : null;
+};
+const HOUR_MS = 3600_000;
+
 function clientConfig(name, c = {}) {
   const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
+  const idc = isMap(c.identity) ? c.identity : {};
+  const key = Array.isArray(idc.key) && idc.key.length ? idc.key.map(String) : IDENTITY_CLAIMS;
+  const init = c.init === true;
   return {
     name,
     label: String(c.label ?? '').trim() || String(c.title ?? '').trim() || name,   // its section in /ayde
@@ -123,11 +143,16 @@ function clientConfig(name, c = {}) {
     newCount: posInt(c.new_sessions?.count, HTTP_DEFAULTS.newSessions),
     newMs: posInt(c.new_sessions?.minutes, HTTP_DEFAULTS.newSessionsMinutes) * 60_000,
     idleMs: posInt(c.session_days, HTTP_DEFAULTS.sessionDays) * 24 * 3600_000,   // an idle session past this is expired: its token starts a new one
-    identity: c.identity == null || c.identity === false ? 'off' : IDENTITY_MODES.includes(c.identity) ? c.identity : null,
+    identity: identityModeOf(c.identity),
+    required: [...new Set([...(Array.isArray(idc.required) ? idc.required.map(String) : IDENTITY_CLAIMS), ...key])],   // a key claim is required too
+    key,
+    byIdentity: c.conversation_by === 'identity',   // one conversation per signed identity, not per session
+    identityTurns: posInt(c.rate?.turns_per_identity_per_hour, 0),   // 0: no per-identity budget
+    init,
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
-    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT })});\n`,
+    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT, ...(init ? { init } : {}) })});\n`,
   };
 }
 
@@ -186,7 +211,9 @@ export async function startHttpBridge({
   for (const [name, c] of Object.entries(clientsCfg && typeof clientsCfg === 'object' ? clientsCfg : {})) {
     if (!CLIENT_RE.test(name)) { log(`client '${name}' skipped — a client name is lowercase letters, digits, - and _`); continue; }
     const cc = clientConfig(name, c);
-    if (!cc.identity) { log(`${name}: identity '${c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
+    if (!cc.identity) { log(`${name}: identity '${isMap(c.identity) ? c.identity.mode : c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
+    if (c.conversation_by != null && !['session', 'identity'].includes(c.conversation_by)) log(`${name}: conversation_by '${c.conversation_by}' is not session | identity — session`);
+    if ((cc.byIdentity || cc.init) && cc.identity === 'off') log(`${name}: ${cc.init ? 'init' : 'conversation_by: identity'} needs identity optional | required — it is off`);
     clients.set(name, cc);
   }
   let aydeBase = ayde && (ayde.on === true || ayde.on === 'on') && aydeRoot ? `/${String(ayde.path ?? '/ayde').replace(/^\/+|\/+$/g, '')}/` : null;
@@ -194,45 +221,62 @@ export async function startHttpBridge({
   let aydeCap = ayde?.public_max_level ?? 'team';   // the highest level a public request opens
   if (aydeBase && !LEVELS.includes(aydeCap)) { log(`ayde: public_max_level '${aydeCap}' is not ${LEVELS.join(' | ')} — treated as team`); aydeCap = 'team'; }
 
-  // sid → { sid, client, lastAt, who, log, subs, posts }; client + lastAt + who persist across restarts, log in its own file.
-  // who: a hash of the identity the session started with (abrin + username), null when unsigned.
-  const sessions = new Map();
+  // sid → { sid, client, lastAt, who, posts, chat }; client + lastAt + who persist across restarts.
+  // who: whoOf the identity the session started with, null when unsigned.
+  // chat: its conversation's panel, { key, client, log, subs }, the log in its own file. key is the sid; with
+  // conversation_by: identity a signed session's is its identity's, so that identity's sessions share one.
+  const sessions = new Map(), chats = new Map();
   const sessionsPath = stateDir ? join(stateDir, SESSIONS_FILE) : null;
   const messagesDir = stateDir ? join(stateDir, MESSAGES_DIR) : null;
-  const logPath = (sid) => join(messagesDir, `${sid}.json`);
+  const logPath = (key) => join(messagesDir, `${key}.json`);
   const live = (s, n = now()) => !!s && n - s.lastAt < (clients.get(s.client)?.idleMs ?? 0);
-  const fresh = (client, lastAt, sid, log = [], who = null) => ({ sid, client, lastAt, who, log, subs: new Set(), posts: [] });
-  // A reply cut by the restart is settled as it stood.
-  const readLog = async (sid) => {
-    try { return JSON.parse(await readFile(logPath(sid), 'utf8')).slice(-LOG_MAX).map((m) => ({ ...m, done: true })); }
-    catch (e) { if (e?.code !== 'ENOENT') log(`${logPath(sid)} unreadable (${e?.message ?? e}) — that session starts with no history`); return []; }
+  const chatKeyOf = (client, sid, who) => (who && clients.get(client)?.byIdentity ? createHash('sha256').update(JSON.stringify([client, who])).digest('hex').slice(0, 16) : sid);
+  const fresh = (client, lastAt, sid, log = [], who = null) => {
+    const key = chatKeyOf(client, sid, who);
+    if (!chats.has(key)) chats.set(key, { key, client, log, subs: new Set() });
+    return { sid, client, lastAt, who, posts: [], chat: chats.get(key) };
+  };
+  // A reply cut by the restart is settled as it stood. No file: null.
+  const readLog = async (key) => {
+    try { return JSON.parse(await readFile(logPath(key), 'utf8')).slice(-LOG_MAX).map((m) => ({ ...m, done: true })); }
+    catch (e) { if (e?.code === 'ENOENT') return null; log(`${logPath(key)} unreadable (${e?.message ?? e}) — that conversation starts with no history`); return []; }
   };
   if (sessionsPath) {
     try {
       const saved = JSON.parse(await readFile(sessionsPath, 'utf8'));
-      for (const [sid, s] of Object.entries(saved ?? {})) if (clients.has(s?.client) && live(s)) sessions.set(sid, fresh(s.client, s.lastAt, sid, await readLog(sid), s.who ?? null));
+      for (const [sid, s] of Object.entries(saved ?? {})) {
+        if (!clients.has(s?.client) || !live(s)) continue;
+        const key = chatKeyOf(s.client, sid, s.who ?? null);
+        const said = chats.has(key) ? [] : await readLog(key);
+        sessions.set(sid, fresh(s.client, s.lastAt, sid, said ?? [], s.who ?? null));
+        if (said === null && key !== sid) chats.get(key).isNew = true;   // conversation_by: identity switched on: its next line starts it
+      }
     } catch (e) { if (e?.code !== 'ENOENT') log(`${sessionsPath} unreadable (${e?.message ?? e}) — starting with no sessions`); }
     for (const f of await readdir(messagesDir).catch(() => [])) {
-      if (!sessions.has(f.replace(/\.json$/, ''))) await unlink(join(messagesDir, f)).catch((e) => log(`could not remove ${f} — ${e?.message ?? e}`));
+      if (!chats.has(f.replace(/\.json$/, ''))) await unlink(join(messagesDir, f)).catch((e) => log(`could not remove ${f} — ${e?.message ?? e}`));
     }
   }
-  // Every state write goes through one chain. A change rewrites its session's file; changes made
+  // Every state write goes through one chain. A change rewrites its conversation's file; changes made
   // before that write starts ride along in it.
   let saving = Promise.resolve();
-  const saveLog = (s) => {
-    if (!messagesDir || s.dirty) return;
-    s.dirty = true;
-    const file = logPath(s.sid);
+  const saveLog = (chat) => {
+    if (!messagesDir || chat.dirty) return;
+    chat.dirty = true;
+    const file = logPath(chat.key);
     saving = saving.then(async () => {
-      s.dirty = false;
+      chat.dirty = false;
       await mkdir(messagesDir, { recursive: true });
-      await writeFile(`${file}.tmp`, JSON.stringify(s.log), 'utf8');
+      await writeFile(`${file}.tmp`, JSON.stringify(chat.log), 'utf8');
       await rename(`${file}.tmp`, file);
     }).catch((e) => log(`could not save ${file} — ${e?.message ?? e}`));
   };
+  // A session goes; its conversation's panel with its last session.
   const forget = (sid) => {
+    const { chat } = sessions.get(sid);
     sessions.delete(sid);
-    if (messagesDir) saving = saving.then(() => unlink(logPath(sid))).catch((e) => { if (e?.code !== 'ENOENT') log(`could not remove ${logPath(sid)} — ${e?.message ?? e}`); });
+    if ([...sessions.values()].some((s) => s.chat === chat)) return;
+    chats.delete(chat.key);
+    if (messagesDir) saving = saving.then(() => unlink(logPath(chat.key))).catch((e) => { if (e?.code !== 'ENOENT') log(`could not remove ${logPath(chat.key)} — ${e?.message ?? e}`); });
   };
   const persist = () => {
     if (!sessionsPath) return;
@@ -240,7 +284,7 @@ export async function startHttpBridge({
     const out = {};
     for (const [sid, s] of sessions) {
       if (live(s, n)) out[sid] = { client: s.client, lastAt: s.lastAt, ...(s.who ? { who: s.who } : {}) };
-      else if (!s.subs.size) forget(sid);
+      else if (!s.chat.subs.size) forget(sid);
     }
     saving = saving.then(() => mkdir(stateDir, { recursive: true }).then(() => writeFile(sessionsPath, JSON.stringify(out), 'utf8')))
       .catch((e) => log(`could not save ${sessionsPath} — ${e?.message ?? e}`));
@@ -248,32 +292,33 @@ export async function startHttpBridge({
 
   // One clock for ids and cursors: increasing, and past every value from before a restart.
   let tick = 0;
-  for (const s of sessions.values()) for (const m of s.log) tick = Math.max(tick, m.seq);
+  for (const chat of chats.values()) for (const m of chat.log) tick = Math.max(tick, m.seq);
   const nextTick = () => (tick = Math.max(tick + 1, now()));
   const put = (res, chunk) => { if (!res.writableEnded) res.write(chunk); };
   const view = (m) => ({ id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
-  const changed = (s, m) => {
+  // Each frame goes to every open stream of the conversation: each tab of each of its sessions.
+  const changed = (chat, m) => {
     if (m.ended) return;   // cleared by an end: a reply still streaming stays out of the fresh panel
     m.seq = nextTick();
     m.id ??= String(m.seq);
     const frame = `id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`;
-    for (const res of s.subs) put(res, frame);
-    saveLog(s);
+    for (const res of chat.subs) put(res, frame);
+    saveLog(chat);
   };
-  const append = (s, from, text, done) => {
+  const append = (chat, from, text, done) => {
     const m = { id: null, from, text, done, seq: 0 };
-    changed(s, m);
-    s.log.push(m);
-    if (s.log.length > LOG_MAX) s.log.splice(0, s.log.length - LOG_MAX);
+    changed(chat, m);
+    chat.log.push(m);
+    if (chat.log.length > LOG_MAX) chat.log.splice(0, chat.log.length - LOG_MAX);
     return m;
   };
-  const chatIdOf = (client, sid) => `${HTTP_PREFIX}${client}-${sid}`;
-  const sessionOfChat = (chatId) => {
+  const chatIdOf = (chat) => `${HTTP_PREFIX}${chat.client}-${chat.key}`;
+  const chatOf = (chatId) => {
     const hit = CHAT_RE.exec(String(chatId ?? ''));
-    const s = hit && sessions.get(hit[2]);
-    return s && s.client === hit[1] ? s : null;
+    const chat = hit && chats.get(hit[2]);
+    return chat && chat.client === hit[1] ? chat : null;
   };
-  const ownMessage = (s, msgId) => s?.log.find((m) => m.id === String(msgId) && m.from === 'being') ?? null;
+  const ownMessage = (chat, msgId) => chat?.log.find((m) => m.id === String(msgId) && m.from === 'being') ?? null;
   // A known, unexpired token of this client → its session; else null.
   const sessionOfToken = (c, token) => {
     if (typeof token !== 'string' || !token || token.length > 200) return null;
@@ -290,7 +335,7 @@ export async function startHttpBridge({
     if (token == null || token === '') return c.identity === 'required' ? { status: 401, error: 'identity required' } : { identity: null };
     const key = identityKey(c.name);
     if (!key) { log(`${c.name}: a signed visitor refused — no key for this client`); return { status: 503, error: 'identity unavailable' }; }
-    const r = verifyIdentity(token, key, now());
+    const r = verifyIdentity(token, key, now(), c.required);
     if (r.why) { log(`${c.name}: an ${r.why} identity refused`); return { status: 401, error: `identity ${r.why}` }; }
     return r;
   };
@@ -298,7 +343,7 @@ export async function startHttpBridge({
   // A read's or an end's session: only with the identity it started with.
   const ownSession = (c, token, idn) => {
     const hit = sessionOfToken(c, token);
-    return hit && (c.identity === 'off' || hit.s.who === whoOf(idn.identity)) ? hit : null;
+    return hit && (c.identity === 'off' || hit.s.who === whoOf(c, idn.identity)) ? hit : null;
   };
 
   const json = (res, status, body, headers = {}) => {
@@ -323,6 +368,7 @@ export async function startHttpBridge({
   };
 
   const opened = new Map();   // `<client> <address>` → when it opened new sessions, within the window
+  const turns = new Map();    // `<client> <who>` → its lines' times within the hour (rate.turns_per_identity_per_hour)
   const posted = new Map();   // `<client> <id>` → { at, reply }: a retried POST gets the first one's answer
   // Seconds until this session may post again (its window pruned), or 0.
   const rateWait = (c, s, n) => {
@@ -330,8 +376,8 @@ export async function startHttpBridge({
     return s.posts.length >= c.rateMessages ? Math.ceil((s.posts[0] + c.rateMs - n) / 1000) : 0;
   };
   // The panel's settled lines so far, for a team topic seated after them: their count, then the last few.
-  const recapOf = (c, s, { header = true } = {}) => {
-    const said = s.log.filter((m) => m.done && m.text);
+  const recapOf = (c, chat, { header = true } = {}) => {
+    const said = chat.log.filter((m) => m.done && m.text);
     if (!said.length) return null;
     const clip = (t) => ([...t].length > RECAP_CHARS ? `${[...t].slice(0, RECAP_CHARS).join('')}…` : t);
     return [...(header ? [c.earlier.replaceAll('{n}', String(said.length))] : []), ...said.slice(-RECAP_LINES).map((m) => `${m.from === 'visitor' ? 'visitor' : c.being}: ${clip(m.text)}`)].join('\n');
@@ -344,19 +390,30 @@ export async function startHttpBridge({
     if (raw == null) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
     let body;
     try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'not JSON' }, cors); }
-    const text = stripInvisible(String(body?.text ?? ''));
-    if (!text.trim()) return json(res, 400, { error: 'empty message' }, cors);
+    // init (c.init): the widget's page load. A session as for a line; a new one's single transcript line
+    // names its verified claims, recorded and never dispatched (backlog). Nothing on the panel.
+    const init = c.init && body?.kind === 'init';
+    const text = init ? '' : stripInvisible(String(body?.text ?? ''));
+    if (!init && !text.trim()) return json(res, 400, { error: 'empty message' }, cors);
     if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
     const idn = identityOf(c, body?.identity);
     if (idn.status) return refuse(c, res, idn, cors);
-    const who = whoOf(idn.identity);
+    if (init && !idn.identity) return refuse(c, res, { status: 401, error: 'identity required' }, cors);
+    const who = whoOf(c, idn.identity);
     const key = typeof body?.id === 'string' && ID_RE.test(body.id) ? `${c.name} ${body.id}` : null;
     if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
     const n = now();
+    const budget = !init && c.identityTurns && who ? `${c.name} ${who}` : null;
+    const spent = budget ? (turns.get(budget) ?? []).filter((t) => n - t < HOUR_MS) : [];
+    if (budget && spent.length >= c.identityTurns) {
+      const wait = Math.ceil((spent[0] + HOUR_MS - n) / 1000);
+      log(`${c.name}: a line refused — ${c.identityTurns} already from one identity in 60 min`);
+      return json(res, 429, { error: 'too many messages from this identity', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
+    }
     let token = body?.session, hit = sessionOfToken(c, token);
     if (hit && c.identity !== 'off' && hit.s.who !== who) { log(`${c.name}-${hit.sid}: another identity — a new session`); hit = null; }
     if (hit) {
-      const wait = rateWait(c, hit.s, n);
+      const wait = init ? 0 : rateWait(c, hit.s, n);
       if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
     } else {
       const key = `${c.name} ${addressOf(req)}`;
@@ -368,32 +425,37 @@ export async function startHttpBridge({
       }
       opened.set(key, [...times, n]);
       do token = randomBytes(24).toString('base64url'); while (sessions.has(sidOf(token)));
-      hit = { sid: sidOf(token), isNew: true };
-      hit.s = fresh(c.name, n, hit.sid, [], who);
-      sessions.set(hit.sid, hit.s);
-      log(`new session ${c.name}-${hit.sid}`);
+      const sid = sidOf(token);
+      hit = { sid, isNew: !chats.has(chatKeyOf(c.name, sid, who)), started: true };   // isNew: a new conversation
+      hit.s = fresh(c.name, n, sid, [], who);
+      sessions.set(sid, hit.s);
+      log(`new session ${c.name}-${sid}`);
     }
     const { sid, s } = hit;
-    const chatId = chatIdOf(c.name, sid);
-    s.posts.push(n);
+    const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
+    if (!init) s.posts.push(n);
+    if (budget) turns.set(budget, [...spent, n]);
     s.lastAt = n;
     persist();
+    if (init && !hit.started) return json(res, 200, { session: token }, cors);   // a reload or another tab: resumed, nothing recorded
+    const isNew = !!(hit.isNew || s.chat.isNew);
+    s.chat.isNew = false;
     const reply = (async () => {
-      try { await beforeLine?.({ client: c.name, chatId, isNew: !!hit.isNew, recap: (o) => recapOf(c, s, o), identity: idn.identity }); }
+      try { await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
-      const m = append(s, 'visitor', text, true);
-      const st = mentionStatus(text, wakeWords, { addressWithoutAt });
-      log(`incoming [${c.name}-${sid}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(text, {
-        chatId, chatName: `${c.name}-${sid}`, chatType: 'private', network: 'http',
+      const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
+      const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
+      log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
+      deliver(init ? `(opened the chatbox, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })})` : text, {
+        chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
         atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-        // the widget is a reply thread with the client's being: every visitor line addresses it
-        backlog: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only
+        backlog: init, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
         msgKey: m.id, msgTs: n,
       });
-      return { session: token, message: view(m) };
+      return init ? { session: token } : { session: token, message: view(m) };
     })();
     if (key) { posted.set(key, { at: n, reply }); reply.catch(() => posted.delete(key)); }
     return json(res, 200, await reply, cors);
@@ -416,13 +478,13 @@ export async function startHttpBridge({
     if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
     s.lastAt = n;
     persist();
-    if (!s.log.length) return json(res, 200, { ok: true }, cors);
+    if (!s.chat.log.length) return json(res, 200, { ok: true }, cors);
     s.posts.push(n);
-    try { await onEnd?.({ client: c.name, chatId: chatIdOf(c.name, sid), ended: c.ended }); }
+    try { await onEnd?.({ client: c.name, chatId: chatIdOf(s.chat), ended: c.ended }); }
     catch (e) { log(`end ${c.name}-${sid}: ${e?.message ?? e}`); return json(res, 500, { error: 'could not end the conversation' }, cors); }
-    for (const m of s.log) m.ended = true;
-    s.log = [];
-    saveLog(s);
+    for (const m of s.chat.log) m.ended = true;
+    s.chat.log = [];
+    saveLog(s.chat);
     log(`${c.name}-${sid}: the visitor ended the conversation`);
     return json(res, 200, { ok: true }, cors);
   }
@@ -434,8 +496,8 @@ export async function startHttpBridge({
     const hit = ownSession(c, url.searchParams.get('session'), idn);
     if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
     const after = since(req, url);
-    const messages = hit.s.log.filter((m) => m.seq > after).map(view);
-    return json(res, 200, { session: url.searchParams.get('session'), seq: Math.max(after, ...hit.s.log.map((m) => m.seq)), messages }, cors);
+    const messages = hit.s.chat.log.filter((m) => m.seq > after).map(view);
+    return json(res, 200, { session: url.searchParams.get('session'), seq: Math.max(after, ...hit.s.chat.log.map((m) => m.seq)), messages }, cors);
   }
   function events(c, req, res, url, cors) {
     const idn = identityOf(c, url.searchParams.get('identity'));
@@ -445,9 +507,10 @@ export async function startHttpBridge({
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', ...cors });
     res.write('retry: 3000\n\n');
     const after = since(req, url);
-    for (const m of hit.s.log) if (m.seq > after) res.write(`id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`);
-    hit.s.subs.add(res);
-    res.on('close', () => hit.s.subs.delete(res));
+    const { chat } = hit.s;
+    for (const m of chat.log) if (m.seq > after) res.write(`id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`);
+    chat.subs.add(res);
+    res.on('close', () => chat.subs.delete(res));
   }
 
   // /ayde (http-ayde.mjs): off or no users file → 404. GET only, no CORS. HTTP Basic against the users
@@ -558,9 +621,10 @@ export async function startHttpBridge({
   await startupReady;
   const windowMs = Math.max(0, ...[...clients.values()].map((c) => c.newMs));
   const ping = setInterval(() => {
-    for (const s of sessions.values()) for (const res of s.subs) put(res, ': ping\n\n');
+    for (const chat of chats.values()) for (const res of chat.subs) put(res, ': ping\n\n');
     const n = now();
     for (const [key, times] of opened) if (n - times.at(-1) >= windowMs) opened.delete(key);
+    for (const [key, times] of turns) if (n - times.at(-1) >= HOUR_MS) turns.delete(key);
     for (const [key, p] of posted) if (n - p.at >= RETRY_MS) posted.delete(key);
     for (const [key, r] of logins) if (r.until <= n && r.times.every((t) => n - t >= LOGIN_MS)) logins.delete(key);
   }, PING_MS);
@@ -568,39 +632,39 @@ export async function startHttpBridge({
 
   // --- outbound (the port's interface, as telegram.mjs) ---
   async function send(text, { chatId } = {}) {
-    const s = sessionOfChat(chatId);
-    if (!s) { failures.set(chatId, 'no live chatbox session'); log(`send refused — ${chatId} is not a live chatbox session`); return null; }
+    const chat = chatOf(chatId);
+    if (!chat) { failures.set(chatId, 'no live chatbox session'); log(`send refused — ${chatId} is not a live chatbox session`); return null; }
     text = stripInvisible(text);
     if (!text.trim()) return null;
-    const m = append(s, 'being', text, true);
+    const m = append(chat, 'being', text, true);
     failures.delete(chatId);
     return { messageId: m.id, confirmedId: m.id };
   }
   function editMessage(chatId, msgId, text) {
-    const s = sessionOfChat(chatId);
-    const m = ownMessage(s, msgId);
+    const chat = chatOf(chatId);
+    const m = ownMessage(chat, msgId);
     if (!m) return false;
     m.text = stripInvisible(text);
-    changed(s, m);
+    changed(chat, m);
     return true;
   }
   // The placeholder at once, each update an edit, the final text in the same message (done).
   function startStreamMessage(initialText, { chatId, existingMsgId = null } = {}) {
-    const s = sessionOfChat(chatId);
-    let m = existingMsgId != null ? ownMessage(s, existingMsgId) : null;
+    const chat = chatOf(chatId);
+    let m = existingMsgId != null ? ownMessage(chat, existingMsgId) : null;
     let finished = false;
     const h = { delivered: false, lastError: null, get confirmedId() { return m ? m.id : null; } };
-    if (!s) h.lastError = 'no live chatbox session';
-    else if (m) { m.text = stripInvisible(initialText); m.done = false; changed(s, m); }
-    else m = append(s, 'being', stripInvisible(initialText), false);
-    h.update = (t) => { if (finished || !t || !m) return; m.text = stripInvisible(t); changed(s, m); };
+    if (!chat) h.lastError = 'no live chatbox session';
+    else if (m) { m.text = stripInvisible(initialText); m.done = false; changed(chat, m); }
+    else m = append(chat, 'being', stripInvisible(initialText), false);
+    h.update = (t) => { if (finished || !t || !m) return; m.text = stripInvisible(t); changed(chat, m); };
     h.finish = async (t) => {
       if (finished) return;
       finished = true;
       if (!m) return;
       if (t) m.text = stripInvisible(t);
       m.done = true;
-      changed(s, m);
+      changed(chat, m);
       h.delivered = true;
     };
     h.fail = (e) => { finished = true; h.lastError = e?.message ?? String(e); log(`stream fail — ${h.lastError}`); };
@@ -614,7 +678,7 @@ export async function startHttpBridge({
     async sendAndGetId(text, { chatId } = {}) { return (await send(text, { chatId }))?.messageId ?? null; },
     editMessage,
     startStreamMessage,
-    wasSentByUs: (chatId, msgId) => !!ownMessage(sessionOfChat(chatId), msgId),
+    wasSentByUs: (chatId, msgId) => !!ownMessage(chatOf(chatId), msgId),
     sendFailure: (chatId) => failures.get(chatId) ?? null,
     getChatName: (chatId) => { const hit = CHAT_RE.exec(String(chatId ?? '')); return hit ? `${hit[1]}-${hit[2]}` : null; },
     isAlive: () => alive && !stopped,
@@ -623,7 +687,7 @@ export async function startHttpBridge({
       if (stopped) return saving;
       stopped = true;
       clearInterval(ping);
-      for (const s of sessions.values()) { for (const res of s.subs) res.end(); s.subs.clear(); }
+      for (const chat of chats.values()) { for (const res of chat.subs) res.end(); chat.subs.clear(); }
       server.close();
       server.closeAllConnections?.();
       return saving;

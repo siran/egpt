@@ -19,7 +19,7 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
-import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf } from '../bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf, identityModeOf } from '../bridges/http.mjs';
 import { AYDE_USERS_FILE } from '../bridges/http-ayde.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
@@ -2251,7 +2251,8 @@ export async function boot({
     return sendGuard.wrap({ ...port, owns: isTelegramChatId, beingAccount: true });
   })();
   // THE CHATBOX LIMB (limbs.http: bind, port, path, its chatboxes by chatboxesOf): a website's visitors,
-  // one conversation per session (src/bridges/http.mjs). Same port adapter and send guard. Absent ⇒ null.
+  // one conversation per session, or per signed identity (conversation_by: identity) (src/bridges/http.mjs).
+  // Same port adapter and send guard. Absent ⇒ null.
   const httpPort = await (async () => {
     const block = cfg.limbs?.http;
     if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
@@ -2268,9 +2269,10 @@ export async function boot({
       const being = String(c?.being ?? '');
       if (!isLocalAgent(being, agents()[being])) hlog(`chatbox ${name}: being '${being}' is not a local agent here — its visitors reach nobody`);
       if (c?.team_group != null && !telegramPort) hlog(`chatbox ${name}: team_group is set but this node has no Telegram limb — no team topics`);
-      if (['optional', 'required'].includes(c?.identity)) {
+      const mode = identityModeOf(c?.identity);
+      if (['optional', 'required'].includes(mode)) {
         const k = readSecret(EGPT_HOME, chatboxKeyFile(name));
-        if (!k.token) hlog(`chatbox ${name}: identity is ${c.identity} but ${k.path} is ${k.problem} — signed visitors are refused`);
+        if (!k.token) hlog(`chatbox ${name}: identity is ${mode} but ${k.path} is ${k.problem} — signed visitors are refused`);
         else if (k.warn) hlog(`${k.path}: ${k.warn}`);
       }
     }
@@ -2290,7 +2292,7 @@ export async function boot({
         const room = Room.forChat('http', slug);
         if ((await room.members()).some((m) => m.kind === 'tg-group')) return;
         if (!isNew) hlog(`${chatId}: no team topic yet — trying again`);
-        const title = renderTopicTitle(c.topic_title, { ...identity, title: c.title || client, sid: slug.slice(client.length + 1, client.length + 7) });
+        const title = renderTopicTitle(c.topic_title, { ...identity?.claims, title: c.title || client, sid: slug.slice(client.length + 1, client.length + 7) });
         const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
         if (!made?.success) return fail(made?.reason ?? 'the Telegram limb made none');
         failedAt.delete(chatId);
@@ -2302,15 +2304,16 @@ export async function boot({
         if (said) await sayOnce({ chatId: made.chatID, text: said, what: 'chatbox recap' });
       })().catch((e) => fail(e?.message ?? e)).finally(() => seating.delete(chatId)));
     };
-    // A new session's conversation folder starts with its verified user (usuario.json, usuario.md: the
+    // A new conversation's folder starts with its verified user (usuario.json, usuario.md: the
     // drawer's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
-    // The line never waits on Telegram.
-    const beforeLine = async ({ client, chatId, isNew, recap, identity }) => {
+    // The line never waits on Telegram; an init (the widget's page load) seats no team topic.
+    const beforeLine = async ({ client, chatId, isNew, init, recap, identity }) => {
       const c = clients[client] ?? {};
       if (isNew && identity) {
         const dir = slugDir('http', fixedSlugFor('http', chatId));
         await mkdir(dir, { recursive: true });
-        await writeFile(join(dir, 'usuario.json'), `${JSON.stringify({ ...identity, verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
+        const { claims, ...fields } = identity;
+        await writeFile(join(dir, 'usuario.json'), `${JSON.stringify({ ...fields, verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
         const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `tipo ${identity.user_type}`, `colegio ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
         await writeFile(join(dir, 'usuario.md'), `Usuario verificado por el sitio: ${parts.filter(Boolean).join(', ')}.\n`, 'utf8');
         hlog(`${chatId}: its user is on the desk (usuario.json)`);
@@ -2320,7 +2323,7 @@ export async function boot({
         const n = copyTreeIfMissing(from, slugDir('http', fixedSlugFor('http', chatId)));
         hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
       }
-      seatTeamTopic(client, chatId, { isNew, recap, identity });
+      if (!init) seatTeamTopic(client, chatId, { isNew, recap, identity });
     };
     // A visitor's "end conversation": a fresh thread in the same conversation (/agents rethread's
     // own path), and the `ended` line to its chat members seated for replies (the team topic).

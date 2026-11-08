@@ -3,11 +3,11 @@
 // it, binds the session to that user, and renders the team topic's title from it. The widget reads it
 // from data-identity and sends it on every call.
 import { describe, it, expect, afterEach } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHmac, createHash } from 'node:crypto';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startHttpBridge, renderTopicTitle, HTTP_STRINGS } from '../src/bridges/http.mjs';
+import { startHttpBridge, renderTopicTitle, verifyIdentity, HTTP_STRINGS } from '../src/bridges/http.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const KEY = 'dummy-test-key-not-a-secret';
@@ -41,6 +41,28 @@ async function limb(mode = 'required', extra = {}, client = {}) {
   const read = (session, identity, what = 'messages') => fetch(`${url}${what}?session=${encodeURIComponent(session)}${identity ? `&identity=${encodeURIComponent(identity)}` : ''}`);
   const end = (body) => fetch(`${url}end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return { b, got, lines, hooks, url, post, read, end };
+}
+
+// Every `data:` event of an SSE response, as it arrives.
+function sse(href) {
+  const ac = new AbortController();
+  const events = [];
+  const done = (async () => {
+    const res = await fetch(href, { signal: ac.signal });
+    const dec = new TextDecoder();
+    let buf = '';
+    for await (const chunk of res.body) {
+      buf += dec.decode(chunk, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const data = buf.slice(0, i).split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n');
+        buf = buf.slice(i + 2);
+        if (data) events.push(JSON.parse(data));
+      }
+    }
+  })().catch(() => {});
+  const until = async (test) => { for (let t = 0; !test(events); t++) { if (t > 60) throw new Error(`SSE: saw ${JSON.stringify(events)}`); await new Promise((r) => setTimeout(r, 50)); } };
+  return { events, until, close: () => { ac.abort(); return done; } };
 }
 
 describe('clients.<c>.identity', () => {
@@ -80,14 +102,15 @@ describe('clients.<c>.identity', () => {
     }
   });
 
-  it('a valid token: the line enters, beforeLine gets the verified fields (no exp, no token), and the token is never logged', async () => {
+  it('a valid token: the line enters, beforeLine gets the verified fields and every claim (no token), and the token is never logged', async () => {
     const { post, got, hooks, lines } = await limb();
     const identity = tok({ ...JP, user_id: 4711, short_name: 'Juan\nPérez​' });
     const r = await post({ text: 'hola', identity });
     expect(r.status).toBe(200);
     expect(got).toHaveLength(1);
     expect(hooks[0]).toMatchObject({ client: 'acme', isNew: true, identity: { abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', user_id: '4711' } });
-    expect(Object.keys(hooks[0].identity).sort()).toEqual(['abrin', 'short_name', 'user_id', 'user_type', 'username']);
+    expect(Object.keys(hooks[0].identity).sort()).toEqual(['abrin', 'claims', 'short_name', 'user_id', 'user_type', 'username']);
+    expect(hooks[0].identity.claims).toEqual({ ...JP, user_id: 4711, exp: expect.any(Number) });
     expect(lines.join('\n')).not.toContain(identity.split('.')[0]);
   });
 
@@ -187,6 +210,185 @@ describe('clients.<c>.identity', () => {
   });
 });
 
+describe('identity: { mode, required, key } — generic claims', () => {
+  const custom = { mode: 'required', required: ['user_id'], key: ['user_id'] };
+
+  it('custom required + key: a token with no abrin or username verifies, every claim reaches beforeLine, and the key binds the session', async () => {
+    const { post, got, hooks } = await limb(custom);
+    const e = exp();
+    const ana = sign({ user_id: 7, org: 'Acme', staff: true, name: 'Ana\nRuiz', nested: { a: 1 }, list: [1], none: null, exp: e });
+    const a = await post({ text: 'hola', identity: ana });
+    expect(a.status).toBe(200);
+    expect(hooks[0].identity.claims).toEqual({ user_id: 7, org: 'Acme', staff: true, name: 'Ana Ruiz', exp: e });
+    const renamed = await post({ session: a.session, text: 'otra vez', identity: sign({ user_id: 7, name: 'Ana R.', exp: exp() }) });
+    expect(renamed.session).toBe(a.session);
+    const other = await post({ session: a.session, text: 'soy otro', identity: sign({ user_id: 8, exp: exp() }) });
+    expect(other.session).not.toBe(a.session);
+    expect(new Set(got.map((g) => g.from.chatId)).size).toBe(2);
+  });
+
+  it('a missing or empty required claim is refused 401, whatever else the token carries; a key claim is required too', async () => {
+    const { post, got } = await limb({ mode: 'required', required: ['user_id', 'org'] });
+    expect(await post({ text: 'hola', identity: tok({ ...JP, user_id: 4711 }) })).toMatchObject({ status: 401, error: 'identity invalid' });
+    expect(await post({ text: 'hola', identity: tok({ ...JP, user_id: 4711, org: ' ' }) })).toMatchObject({ status: 401, error: 'identity invalid' });
+    expect((await post({ text: 'hola', identity: tok({ ...JP, user_id: 4711, org: 'Acme' }) })).status).toBe(200);
+    expect(got).toHaveLength(1);
+    const keyed = await limb({ mode: 'required', required: [], key: ['user_id'] });
+    expect(await keyed.post({ text: 'hola', identity: tok(JP) })).toMatchObject({ status: 401, error: 'identity invalid' });
+    expect((await keyed.post({ text: 'hola', identity: sign({ user_id: 9, exp: exp() }) })).status).toBe(200);
+  });
+
+  it("the default verifies today's tokens exactly: the same fields, abrin + username required, the same session key on disk", async () => {
+    const r = verifyIdentity(tok({ ...JP, user_id: 4711 }), KEY);
+    expect(r.why).toBeUndefined();
+    expect(r.identity).toMatchObject({ ...JP, user_id: '4711' });
+    expect(verifyIdentity(sign({ user_id: 4711, username: 'jperez', exp: exp() }), KEY)).toEqual({ why: 'invalid' });
+    expect(verifyIdentity(sign({ user_id: 4711, abrin: 'IEV', exp: exp() }), KEY)).toEqual({ why: 'invalid' });
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-identity-'));
+    try {
+      const one = await limb('required', { stateDir });
+      const a = await one.post({ text: 'hola', identity: tok() });
+      await one.b.stop();
+      const saved = JSON.parse(await readFile(join(stateDir, 'http-sessions.json'), 'utf8'));
+      const who = createHash('sha256').update(JSON.stringify(['IEV', 'jperez'])).digest('hex').slice(0, 16);
+      expect(Object.values(saved)).toEqual([expect.objectContaining({ client: 'acme', who })]);
+      expect(one.got[0].from.chatId).toBe(`http:acme-${createHash('sha256').update(a.session).digest('hex').slice(0, 16)}`);
+    } finally { await rm(stateDir, { recursive: true, force: true }); }
+  });
+});
+
+describe('conversation_by', () => {
+  it('identity: two sessions of one identity are one conversation — one chat id, one panel, and every open tab gets each reply', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-identity-'));
+    try {
+      const { b, post, got, hooks, url } = await limb('optional', { stateDir }, { conversation_by: 'identity' });
+      const laptop = await post({ text: 'desde el portátil', identity: tok() });
+      const phone = await post({ text: 'desde el móvil', identity: tok(JP, { exp: exp(2 * HOUR) }) });
+      expect(phone.session).not.toBe(laptop.session);
+      const chatId = got[0].from.chatId;
+      expect(chatId).toMatch(/^http:acme-[0-9a-f]{16}$/);
+      expect(got[1].from.chatId).toBe(chatId);
+      expect(got[1].from.chatName).toBe(chatId.slice('http:'.length));
+      expect(hooks.map((h) => h.isNew)).toEqual([true, false]);
+      const tabs = [laptop, phone].map((s) => sse(`${url}events?session=${encodeURIComponent(s.session)}&identity=${encodeURIComponent(tok())}`));
+      for (const t of tabs) await t.until((ev) => ev.length >= 2);
+      await b.send('respuesta', { chatId });
+      for (const t of tabs) await t.until((ev) => ev.some((m) => m.text === 'respuesta'));
+      for (const t of tabs) await t.close();
+      const panel = async (one) => (await (await fetch(`${url}messages?session=${encodeURIComponent(one.session)}&identity=${encodeURIComponent(tok())}`)).json()).messages.map((m) => m.text);
+      expect(await panel(phone)).toEqual(['desde el portátil', 'desde el móvil', 'respuesta']);
+      // another identity, and an unsigned visitor: their own conversations
+      await post({ text: 'soy otra', identity: tok(ML) });
+      await post({ text: 'anónimo' });
+      await post({ text: 'anónimo 2' });
+      expect(new Set(got.map((g) => g.from.chatId)).size).toBe(4);
+      await b.stop();
+      // after a restart both tokens still name that conversation, its history kept
+      const two = await limb('optional', { stateDir }, { conversation_by: 'identity' });
+      const again = await two.post({ session: phone.session, text: 'de vuelta', identity: tok() });
+      expect(again.session).toBe(phone.session);
+      expect(two.got[0].from.chatId).toBe(chatId);
+      const after = await (await fetch(`${two.url}messages?session=${encodeURIComponent(laptop.session)}&identity=${encodeURIComponent(tok())}`)).json();
+      expect(after.messages.map((m) => m.text)).toEqual(['desde el portátil', 'desde el móvil', 'respuesta', 'de vuelta']);
+    } finally {
+      while (live.length) await live.pop()();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('switched on over live sessions: a session keeps its token, and its next line starts the identity\'s conversation (isNew)', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-identity-'));
+    try {
+      const one = await limb('required', { stateDir });
+      const a = await one.post({ text: 'antes', identity: tok() });
+      const b = await one.post({ text: 'antes también', identity: tok() });
+      await one.b.stop();
+      const two = await limb('required', { stateDir }, { conversation_by: 'identity' });
+      expect((await two.post({ session: a.session, text: 'ahora', identity: tok() })).session).toBe(a.session);
+      expect((await two.post({ session: b.session, text: 'ahora también', identity: tok() })).session).toBe(b.session);
+      expect(two.got[0].from.chatId).not.toBe(one.got[0].from.chatId);
+      expect(two.got[1].from.chatId).toBe(two.got[0].from.chatId);
+      expect(two.hooks.map((h) => h.isNew)).toEqual([true, false]);
+    } finally {
+      while (live.length) await live.pop()();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('session (the default): two sessions of one identity are two conversations', async () => {
+    const { post, got, hooks } = await limb('required');
+    const a = await post({ text: 'uno', identity: tok() });
+    const b = await post({ text: 'dos', identity: tok() });
+    expect(b.session).not.toBe(a.session);
+    expect(got[1].from.chatId).not.toBe(got[0].from.chatId);
+    expect(hooks.map((h) => h.isNew)).toEqual([true, true]);
+  });
+});
+
+describe('rate.turns_per_identity_per_hour', () => {
+  it('past N lines from one identity in an hour, across its sessions: 429 with Retry-After; another identity is unaffected', async () => {
+    const { post, got, lines } = await limb('required', {}, { rate: { turns_per_identity_per_hour: 2 } });
+    const a = await post({ text: '1', identity: tok() });
+    expect((await post({ text: '2', identity: tok() })).status).toBe(200);   // a second session
+    const over = await post({ session: a.session, text: '3', identity: tok() });
+    expect(over).toMatchObject({ status: 429, error: 'too many messages from this identity' });
+    expect(over.retry_after_s).toBeGreaterThan(3500);
+    expect((await post({ text: 'otra', identity: tok(ML) })).status).toBe(200);
+    expect(got.map((g) => g.text)).toEqual(['1', '2', 'otra']);
+    expect(lines.some((l) => /acme: a line refused — 2 already from one identity in 60 min/.test(l))).toBe(true);
+  });
+
+  it('the 429 carries Retry-After, as the other limits do; off by default', async () => {
+    const { url } = await limb('required', {}, { rate: { turns_per_identity_per_hour: 1 } });
+    const send = (body) => fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    expect((await send({ text: '1', identity: tok() })).status).toBe(200);
+    const r = await send({ text: '2', identity: tok() });
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get('retry-after'))).toBeGreaterThan(0);
+    const off = await limb('required');
+    for (let i = 0; i < 3; i++) expect((await off.post({ text: `${i}`, identity: tok() })).status).toBe(200);
+  });
+});
+
+describe('init: the widget opened', () => {
+  it('a session as for a line, one recorded line with the verified claims (backlog: never dispatched), nothing on the panel; a repeated init records nothing; a line after it dispatches', async () => {
+    const { post, got, hooks, read } = await limb('required', {}, { init: true });
+    const identity = tok({ ...JP, user_id: 4711 });
+    const i = await post({ kind: 'init', identity });
+    expect(i).toEqual({ status: 200, session: expect.any(String) });
+    expect(got).toHaveLength(1);
+    expect(got[0].from).toMatchObject({ backlog: true, network: 'http', senderName: 'visitor' });
+    expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})');
+    expect(hooks[0]).toMatchObject({ isNew: true, init: true, identity: { username: 'jperez' } });
+    expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
+    const again = await post({ kind: 'init', session: i.session, identity });
+    expect(again.session).toBe(i.session);
+    expect(got).toHaveLength(1);
+    const line = await post({ session: i.session, text: 'hola', identity });
+    expect(line.session).toBe(i.session);
+    expect(got[1]).toMatchObject({ text: 'hola', from: { backlog: false, chatId: got[0].from.chatId } });
+    expect(hooks.at(-1)).toMatchObject({ isNew: false, init: false });
+  });
+
+  it('under conversation_by: identity, a second device\'s init joins the conversation and records its arrival', async () => {
+    const { post, got } = await limb('required', {}, { init: true, conversation_by: 'identity' });
+    const a = await post({ kind: 'init', identity: tok() });
+    const b = await post({ kind: 'init', identity: tok() });
+    expect(b.session).not.toBe(a.session);
+    expect(got.map((g) => g.from.chatId)).toEqual([got[0].from.chatId, got[0].from.chatId]);
+  });
+
+  it('init needs a verified identity; with init off (the default) a kind: init body is an ordinary POST, as today', async () => {
+    const { post, got } = await limb('optional', {}, { init: true });
+    expect(await post({ kind: 'init' })).toMatchObject({ status: 401, error: 'identity required' });
+    expect(got).toEqual([]);
+    const off = await limb('required');
+    expect(await off.post({ kind: 'init', identity: tok() })).toMatchObject({ status: 400, error: 'empty message' });
+    expect((await off.post({ kind: 'init', text: 'hola', identity: tok() })).status).toBe(200);
+    expect(off.got[0].from.backlog).toBe(false);
+  });
+});
+
 describe('renderTopicTitle', () => {
   const sid = 'a1b2c3';
   it("the default reproduces today's title: <title> · <6 of sid>", () => {
@@ -201,6 +403,10 @@ describe('renderTopicTitle', () => {
     expect(renderTopicTitle('{abrin} {user_type}  {short_name} ({username})', { abrin: 'IEV', username: 'jperez', title: 'Soporte', sid })).toBe('IEV (jperez)');
     expect(renderTopicTitle('{abrin} {user_type} {short_name} ({username})', { title: 'Soporte', sid })).toBe('Soporte · a1b2c3');
     expect(renderTopicTitle('{title} {sid} {nope}', { title: 'Soporte', sid })).toBe('Soporte a1b2c3 {nope}');
+  });
+
+  it('any claim of the identity is a placeholder', () => {
+    expect(renderTopicTitle('{org} #{user_id} · {roleName}', { org: 'Acme', user_id: 7, roleName: 'admin', title: 'Soporte', sid })).toBe('Acme #7 · admin');
   });
 
   it("at most 128 (Telegram's limit), ending in …, never splitting a character", () => {
@@ -270,6 +476,33 @@ describe('widget.js and the identity', () => {
     signals.newUserMessage.listener({ messages: [{ text: 'otra' }] });
     await flush();
     expect(signals.got).toEqual({ error: HTTP_STRINGS.identity });
+  });
+
+  it('init on: the page load sends one init (kind: init, its stored session, the identity) and keeps the answer\'s session', async () => {
+    const { url } = await limb('required', {}, { init: true });
+    const js = await (await fetch(`${url}widget.js`)).text();
+    const identity = tok();
+    const p = page({ identity, stored: { 'egpt-chat:acme:IEV/jperez': 'tok-0' } });
+    p.responses.push({ status: 200, json: { session: 'tok-1' } });
+    p.run(js);
+    await flush();
+    expect(p.calls).toHaveLength(1);
+    expect(p.calls[0].href).toBe('https://x.test/chat/acme/messages');
+    expect(p.calls[0].body).toEqual({ kind: 'init', session: 'tok-0', identity });
+    expect(p.storage.get('egpt-chat:acme:IEV/jperez')).toBe('tok-1');
+  });
+
+  it('init off (the default), or no identity: nothing is sent on load', async () => {
+    const off = await limb('required');
+    const p = page({ identity: tok() });
+    p.run(await (await fetch(`${off.url}widget.js`)).text());
+    await flush();
+    expect(p.calls).toEqual([]);
+    const on = await limb('optional', {}, { init: true });
+    const anon = page();
+    anon.run(await (await fetch(`${on.url}widget.js`)).text());
+    await flush();
+    expect(anon.calls).toEqual([]);
   });
 
   it('a page with no data-identity sends none and keeps the shared slot', async () => {
