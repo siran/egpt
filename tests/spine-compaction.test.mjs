@@ -556,3 +556,23 @@ describe('compaction: compact right after the handoff', () => {
     });
   });
 });
+
+// The chatbox warm class (operator 2026-11-08): a compaction that reopens a cold key opens it in
+// the class its turn ran under, so a chatbox session stays under warm.max_by_class.chatbox.
+describe('compaction service: the warm class of the target', () => {
+  it('a chatbox target runs its handoff and /compact as klass chatbox', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const c = createCompaction({ pool, getConfig: () => ({ compaction: { handoff_prompt: 'HANDOFF {agent}' } }), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn({ ...TARGET, key: 'e:ccode:http:acme-1', klass: 'chatbox' });
+    await sched.fire();
+    expect(pool.runs.map((r) => [r.msg, r.opts.klass])).toEqual([['HANDOFF e', 'chatbox'], ['/compact', 'chatbox']]);
+  });
+
+  it('LOCK: a target that names no klass compacts as conversation, as before', async () => {
+    const pool = fakePool(), sched = makeScheduler();
+    const c = createCompaction({ pool, getConfig: () => ({}), scheduler: sched, dueFor: () => ({ due: true, tokens: 50000, threshold: 40000 }) });
+    c.afterTurn(TARGET);
+    await sched.fire();
+    expect(pool.runs.map((r) => r.opts.klass)).toEqual(['conversation']);
+  });
+});

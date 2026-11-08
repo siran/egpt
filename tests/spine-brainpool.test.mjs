@@ -3522,3 +3522,36 @@ describe('sandboxOauthTokenOf — config value, else the secrets file', () => {
     rmSync(home, { recursive: true, force: true });
   });
 });
+
+// The chatbox warm class (operator 2026-11-08): an http conversation runs as klass `chatbox`, so
+// warm.max_by_class can cap the chatbox limb without touching the node's other conversations.
+describe('brainpool — the chatbox warm class', () => {
+  const httpEv = (sid) => ({ surface: 'http', chatId: `http:acme-${sid}`, chatName: `acme-${sid}`, line: `visitor@[acme-${sid}].http (14:05) #m1: hi`, body: 'hi' });
+
+  it('an http conversation spawns as klass chatbox; a whatsapp one stays conversation', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);
+    await brain.turn('e', httpEv('a1'));
+    await brain.turn('e', ev);
+    expect(pool.calls.map((c) => [c.key.split(':')[2], c.klass])).toEqual([['http', 'chatbox'], ['whatsapp', 'conversation']]);
+  });
+
+  it('the klass rides afterTurn, so compaction reopens a chatbox key as chatbox', async () => {
+    const seen = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], { afterTurn: (t) => seen.push(t.klass) });
+    await brain.turn('e', httpEv('a1'));
+    await brain.turn('e', ev);
+    expect(seen).toEqual(['chatbox', 'conversation']);
+  });
+
+  it('max_by_class { chatbox: 1 } caps the chatbox sessions and never evicts a conversation', async () => {
+    const pool = createWarmPool({ maxByClass: { chatbox: 1 }, makeSession: () => ({ close() {}, turn: async () => ({ text: 'ok', sessionId: 's' }) }) });
+    const { brain } = harness([], { poolOverride: pool });
+    await brain.turn('e', ev);                       // the conversation: the oldest entry of all
+    await brain.turn('e', httpEv('a1'));
+    await brain.turn('e', httpEv('b2'));
+    const keys = pool.stats().keys;
+    expect(keys.map((k) => k.split(':')[2])).toEqual(['whatsapp', 'http']);
+    expect(keys[1]).toMatch(/b2/);
+    pool.close();
+  });
+});

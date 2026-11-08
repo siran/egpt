@@ -3442,11 +3442,14 @@ export const CONFIG_SCHEMA = {
       idle_ttl_ms
         DEFAULT: 1800000 — ms-of-idle before an unlisted class is evicted.
       idle_ttl_by_class
-        Per-class idle TTL.
+        Per-class idle TTL: a ms number or a duration ("15m", "2h"), in the TTL
+        DIALECT below. An unparseable value is logged and that class takes idle_ttl_ms.
         DEFAULT: { system: 43200000, resident: 43200000, conversation: 900000,
                    sibling: 43200000 }
+        chatbox (the http chatbox limb's conversations) takes the conversation TTL
+        unless it is listed itself.
       max_by_class
-        DEFAULT: none — e.g. { conversation: 8 }. A class at its cap evicts its OWN
+        DEFAULT: none — e.g. { chatbox: 4 }. A class at its cap evicts its OWN
         least-recently-used idle session before opening another; never another
         class's. max still applies on top.
       memory_floor_mb
