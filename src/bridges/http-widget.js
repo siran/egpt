@@ -202,7 +202,7 @@ function egptChat(C, base, identity) {
     starting = true;
     wantFocus = !!focus;
     err.hidden = true;
-    Promise.all([loadLib(), fetchLog()]).then(function (r) { build(r[1]); }, function (status) {
+    Promise.all([loadLib(), Promise.resolve(opening).then(fetchLog)]).then(function (r) { build(r[1]); }, function (status) {
       starting = false;
       err.textContent = status === 401 ? S.identity : S.unavailable;
       err.hidden = false;
@@ -226,5 +226,12 @@ function egptChat(C, base, identity) {
   q('.egc-yes').onclick = end;
   q('.egc-bubble').onclick = function () { open(panel.hidden, true); };
   q('.egc-x').onclick = function () { open(false); };
+  // C.init: the page load says so, once (POST messages, kind init); the answer's session is this page's.
+  if (C.init && identity) {
+    opening = fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'init', session: token, identity: identity }) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.session !== token) { token = j.session; store(KEY, token); listen(); } }, function () { /* the next line says what failed */ })
+      .then(function () { opening = null; });
+  }
   try { if (localStorage.getItem(KEY + ':open')) open(true); } catch (e) { /* private mode */ }
 }

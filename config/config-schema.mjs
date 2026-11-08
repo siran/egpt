@@ -835,11 +835,13 @@ export const CONFIG_SCHEMA = {
         A website chatbox (src/bridges/http.mjs, 2026-10-26). Each visitor session
         is its own conversation: chat id http:<client>-<sid>, folder
         conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
-        token itself is never logged). Under <path>/<client>/:
+        token itself is never logged); with conversation_by: identity, each signed
+        identity is (below). Under <path>/<client>/:
           POST messages {session?, text, id?, identity?} → {session, message}; no or an unknown or
             expired session (session_days idle) starts a new one. application/json only.
             id (16-64 of A-Za-z0-9_-, the widget's per-line random): a POST repeating
             an id within 10 min posts nothing and gets the first one's answer (a retry).
+            {kind: init, session?, identity} → {session} with init: true (below).
           GET messages?session=&since=<seq>&identity= → {session, seq, messages}
           GET events?session=&since=<seq>&identity=   SSE, each message as posted/edited/settled
           POST end {session, identity?} → {ok}  the visitor's "end conversation": same
@@ -919,7 +921,10 @@ export const CONFIG_SCHEMA = {
             session_days      idle days before a session expires (its token then
                               starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)
-            rate              { messages: 30, minutes: 10 } per session (429 over it)
+            rate              { messages: 30, minutes: 10 } per session (429 over it);
+                              turns_per_identity_per_hour: N (default off) also caps a
+                              signed identity's lines across all its sessions (429
+                              {error: 'too many messages from this identity', retry_after_s})
             new_sessions      { count: 30, minutes: 60 } new sessions per visitor
                               address (429 over it; see trust_proxy)
             team_group        a Telegram forum supergroup's chat id (the bot an admin
@@ -939,7 +944,8 @@ export const CONFIG_SCHEMA = {
                               line tries again, not within 2 min of a failed try
             team_name         the team's name in the widget, default the title
             topic_title       the team topic's name: {abrin} {user_type} {short_name}
-                              {username} {title} {sid} (6 hex of the sid). Default
+                              {username} {title} {sid} (6 hex of the sid), and {<claim>}
+                              for any claim of the identity (an absent one stays as written). Default
                               "{title} · {sid}". A placeholder with no value is empty,
                               spaces collapse, an empty () or [] goes; nothing left:
                               the default. Cut at 128 (Telegram's limit) with "…".
@@ -950,14 +956,35 @@ export const CONFIG_SCHEMA = {
                               shows. optional: an unsigned visitor works as with off.
                               An invalid or expired identity is always 401, never
                               treated as unsigned; no key file: 503. Any other value:
-                              required. A session belongs to the identity it started
-                              with (abrin + username; unsigned is one too): a line
+                              required. Or a map { mode: <that> (default required),
+                              required: [<claim>, …] (default [abrin, username]),
+                              key: [<claim>, …] (default [abrin, username]) }: the claims
+                              a token must carry non-empty (strings or numbers; a key
+                              claim is required too), and the ones that are the identity.
+                              A session belongs to the identity it started
+                              with (its key; unsigned is one too): a line
                               from another identity starts a new session, folder and
                               topic, its token in the answer; a read or an end with
-                              another identity is 404. A new signed session's folder
-                              gets usuario.json (the verified fields + verified_at,
-                              never the token) and a one-line usuario.md, before the
-                              seed copy.
+                              another identity is 404. A new signed conversation's folder
+                              gets usuario.json (the verified fields abrin, user_type,
+                              short_name, username, user_id + verified_at, never the
+                              token) and a one-line usuario.md, before the seed copy.
+            conversation_by   session (default) | identity: identity puts every session of
+                              one signed identity (its key) in ONE conversation, chat id
+                              http:<client>-<16 hex of client + key>: one folder, thread,
+                              topic and panel; each tab of each session gets every frame.
+                              Unsigned visitors stay one per session. Switched on, a live
+                              session keeps its token and its next line starts its
+                              identity's conversation as new (usuario.json, seed); the old
+                              folders stay, their panels are not carried. Needs identity.
+            init              false (default) | true: the widget POSTs {kind: init} once
+                              per page load. It needs a verified identity (else 401) and
+                              makes or resumes the session as a line would, and answers
+                              {session}. A new session's init records ONE transcript line,
+                              "(opened the chatbox, signed in as {<claims but exp>})",
+                              as backlog: recorded, never dispatched (no turn), not on
+                              the panel, no team topic (the first line seats it). A
+                              reload or another tab (the same session) records nothing.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.
@@ -967,8 +994,10 @@ export const CONFIG_SCHEMA = {
         goes to the host site's server only, never to a browser or a repo.
         Token: base64url(JSON payload) "." base64url(HMAC-SHA256(key, the first part)), no
         padding, at most 2048 characters. Payload {abrin, username, user_type, short_name,
-        user_id?, exp}: exp in unix seconds, abrin and username required, each field cut at
-        80 characters. The page passes it to the widget as data-identity; the widget sends it
+        user_id?, exp}: exp in unix seconds, abrin and username required (identity.required),
+        each field cut at 80 characters. Every string, number or boolean claim is kept as
+        identity.claims (strings cleaned and cut the same way; others dropped): what
+        topic_title and init read. The page passes it to the widget as data-identity; the widget sends it
         with every call and keeps each user's session token apart (localStorage). PHP:
           $b64 = function ($s) { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); };
           $p = $b64(json_encode(['abrin' => $abrin, 'user_type' => $_SESSION['TipoUsuario'],
