@@ -216,7 +216,7 @@ export function createCompaction({
         const handoffPrompt = resolveTpl(cfg().handoff_prompt, agent, stamp);
         if (handoffPrompt) {
           try {
-            const r = await pool.run(key, handoffPrompt, () => {}, { brainOptions: target.brainOptions, klass: 'conversation' });
+            const r = await pool.run(key, handoffPrompt, () => {}, { brainOptions: target.brainOptions, klass: target.klass });
             handoff = true;
             written = typeof r?.text === 'string' && r.text.trim() !== '';
           } catch (e) { handoff = false; onLog(`compact ${key}: handoff turn failed (compacting anyway): ${e?.message ?? e}`); }
@@ -246,7 +246,7 @@ export function createCompaction({
       onLog(`compacting ${key} (${tokens} tok ${force ? '— on demand' : due ? `>= ${threshold}` : '— handoff written'})`);
       // native /compact through the SAME warm session (in place, same id). brainOptions
       // match the turn's so a live entry is reused (never a second session on the jsonl).
-      await pool.run(key, '/compact', () => {}, { brainOptions: target.brainOptions, klass: 'conversation' });
+      await pool.run(key, '/compact', () => {}, { brainOptions: target.brainOptions, klass: target.klass });
       warned.delete(key);   // compacted → clear the once-guard so the next growth warns again
       // …AND THE IDENTITY GOES BACK IN (operator 2026-09-10: the feed rides start, refresh,
       // rethread AND compaction). /compact rewrote this session's context in place, so the
@@ -287,7 +287,7 @@ export function createCompaction({
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted, noticeWarn } = {}) {
+    afterTurn({ key, klass = 'conversation', sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted, noticeWarn } = {}) {
       const over = _obj(compaction);
       if (!pool || !key || !sessionId) return;
       // The resolved ratio is FROZEN ONTO THE TARGET, not re-read when the timer fires: the
@@ -301,7 +301,7 @@ export function createCompaction({
       // `noticeCompacted` / `noticeWarn` are frozen for the same reason: each is bound to the being
       // and the conversation of the turn that armed this compaction, which is what the line names.
       const { window, ratio: frozenRatio } = compactionPolicy(getConfig(), model, over);
-      const target = { sessionId, model, window, ratio: frozenRatio, warnGap: warnGapFor(over), armIdentityRefresh, noticeCompacted, noticeWarn, brainOptions: { sessionId, cwd, model, allowedTools } };
+      const target = { klass, sessionId, model, window, ratio: frozenRatio, warnGap: warnGapFor(over), armIdentityRefresh, noticeCompacted, noticeWarn, brainOptions: { sessionId, cwd, model, allowedTools } };
       targets.set(key, target);   // kept even with compaction off: /agents compact is asked for
       if (!enabledFor(over)) return;
       const prev = pending.get(key);

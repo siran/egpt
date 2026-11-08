@@ -279,11 +279,15 @@ export function parseWarmBlock(doc) {
   const w = (doc && typeof doc === 'object' && doc.warm && typeof doc.warm === 'object' && !Array.isArray(doc.warm))
     ? doc.warm : {};
   const keep = w.keep === true;                        // warm.keep: never idle- or LRU-evicted (keepsWarm)
-  const v = w.idle_ttl;
-  if (v === undefined || v === null) return { idleTtlMs: null, keep };
-  if (v === 0) return { idleTtlMs: 0, keep };               // 0 = always evict (parseFrequency rejects it)
-  if (typeof v === 'number' && v < 0) return { idleTtlMs: v, keep };   // any negative = never evict (matches _armIdle's `ttl < 0`; parseFrequency also rejects negatives)
-  return { idleTtlMs: parseFrequency(v) ?? null, keep };    // garbage → null
+  return { idleTtlMs: parseIdleTtl(w.idle_ttl), keep };
+}
+
+// One warm idle TTL value (a conversation's idle_ttl, a class's idle_ttl_by_class entry) → ms, or null.
+export function parseIdleTtl(v) {
+  if (v === undefined || v === null) return null;
+  if (v === 0) return 0;                                    // 0 = always evict (parseFrequency rejects it)
+  if (typeof v === 'number' && v < 0) return v;             // any negative = never evict (matches _armIdle's `ttl < 0`; parseFrequency also rejects negatives)
+  return parseFrequency(v) ?? null;                         // garbage → null
 }
 
 // Default identity manifest: the shipped e_identity.md (honoring a config
@@ -700,7 +704,7 @@ export function createBrainPool({
   writeCard = writeConfigCard,      // (room, being, block, {io, onLog}) -> <room>/directives/config.readonly.yaml when it changed
   loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
-  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh, noticeCompacted, noticeWarn}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `noticeWarn` ({text}) is the PRE-compaction admin notice (the primary one, said at the warn threshold) and `noticeCompacted` ({tokens}) the post-hoc confirmation, both null unless noticeTo is wired; `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
+  afterTurn = null,                 // ({key, klass, sessionId, model, cwd, allowedTools, compaction, outbox, armIdentityRefresh, noticeCompacted, noticeWarn}) — THE post-turn hook (auto-compaction AND the room-outbox drain ride this one, never a second). `armIdentityRefresh` is a CALLBACK the service invokes after a compact that succeeded — see the arming block at the end of turn(); `noticeWarn` ({text}) is the PRE-compaction admin notice (the primary one, said at the warn threshold) and `noticeCompacted` ({tokens}) the post-hoc confirmation, both null unless noticeTo is wired; `outbox` is {target:{key,to,unknown}, surface, slug, being, chatId} or null (src/room-outbox.mjs)
   loadPermission = loadPermissionLevel,  // (level) -> {dangerouslySkipPermissions, allowedTools}|null — config/permissions/<level>.md for /agents ... access_level; injectable (tests), NO caching in the real implementation (see permission-levels.mjs)
   // THE PLATFORM THIS NODE RUNS ON, injected rather than read off the global, so a test can
   // drive win32 AND posix in one run without redefining process.platform (same options-DI
@@ -1437,7 +1441,8 @@ export function createBrainPool({
       // same warm entry but OMITS idleTtlMs, so it keeps the ttl stamped here — no
       // need to thread the override through it.)
       const idleTtlMs = readWarmTtl(convDir);
-      const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation', idleTtlMs });
+      const klass = scope.surface === 'http' ? 'chatbox' : 'conversation';   // the chatbox limb: its own warm class (warm.max_by_class)
+      const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass, idleTtlMs });
 
       let r, overflow = false, deadSession = false;
       try { r = await run(firstMsg, baseOpts); }
@@ -1582,7 +1587,7 @@ export function createBrainPool({
           text,
         }), being)
         : null;
-      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn }); } catch { /* non-fatal */ }
+      try { afterTurn?.({ key, klass, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn }); } catch { /* non-fatal */ }
       // `verbose` (the one reading of verbose_thinking resolved above) rides out on the reply so the
       // spine can gate the limb-only commandMark on it without a second config read (src/spine/sender.mjs).
       return { text, sessionId: newSession ?? sessionId ?? null, being, verbose, ...(r?.failed ? { failed: true, failReason: r.failReason ?? null } : {}) };

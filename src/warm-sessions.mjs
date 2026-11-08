@@ -30,6 +30,10 @@
 //     LRU-evicted, the same holds as background work; a stop, re-pin, reconfigure or failure still ends it.
 //   - ADOPT (2026-10-16): a process the daemon held across a spine restart (src/cli-host.mjs) is
 //     put back as its key's entry — adopt(), no spawn.
+//   - MEMORY (2026-11-08, all opt-in): maxByClass caps a class against its own LRU only; under
+//     memoryFloorMb a spawn first evicts one LRU idle session, and tick() (the spine's) evicts one
+//     per call while under the floor or over memoryPressurePsi. One at a time: close() frees the
+//     memory after it returns, so the next read is the recheck.
 //
 // Brain-agnostic over the warm primitive: the session factory is INJECTED. egpt
 // wires `createWarmCliSession` — a resident `claude` CLI background agent (no
@@ -37,8 +41,19 @@
 // `stream()` path.
 
 import { isDeepStrictEqual } from 'node:util';
+import { readFileSync } from 'node:fs';
 
 const BACKGROUND_RECHECK_MS = 60_000;   // re-check for an always-evict (ttl 0) session held for background work
+const MB = 2 ** 20;
+
+// Available bytes (cgroup-aware) and, on Linux, PSI memory `some avg10` — null where there is none.
+export function memoryNow({ platform = process.platform, read = readFileSync } = {}) {
+  let psi = null;
+  if (platform === 'linux') {
+    try { psi = Number(/^some avg10=([\d.]+)/m.exec(read('/proc/pressure/memory', 'utf8'))?.[1] ?? NaN); } catch { /* no PSI on this kernel */ }
+  }
+  return { available: process.availableMemory(), psi: Number.isFinite(psi) ? psi : null };
+}
 
 // The options a session keeps from its spawn: all but the session id (its own guard) and the being
 // link (minted per turn). Only these three are logged with their values — the rest may hold a secret.
@@ -50,6 +65,10 @@ const _describe = (changes, opened) => Object.keys(changes).map((k) => (SHOWN.ha
 
 export function createWarmPool({
   max = 6,
+  maxByClass = {},                   // klass → its own cap, enforced on its own LRU (warm.max_by_class)
+  memoryFloorMb = null,              // warm.memory_floor_mb; null = off
+  memoryPressurePsi = null,          // warm.memory_pressure_psi (Linux PSI some avg10); null = off
+  memory = memoryNow,                // () => { available: bytes, psi: avg10 | null }
   idleTtlMs = 180_000,               // fallback for an unlisted class — absent NEVER means 0
   idleTtlByClass = {},
   dispatchTimeoutMs = 600_000,
@@ -63,6 +82,7 @@ export function createWarmPool({
     throw new Error('createWarmPool: makeSession factory is required (e.g. createWarmCliSession)');
   }
   const _s = new Map();   // key -> { session, klass, lastUsed, idleTimer, busy, errored, chain }
+  if (memoryPressurePsi != null && memory().psi == null) onLog('warm: memory_pressure_psi is set, but this host reports no PSI — only memory_floor_mb applies');
 
   const _ttlFor = (klass) => {
     const v = idleTtlByClass?.[klass];
@@ -125,16 +145,56 @@ export function createWarmPool({
     e.idleTimer = setTimeout(() => _idleOut(key, ttl), ttl); e.idleTimer.unref?.();
   }
 
+  // The least-recently-used session that may go (of `klass` only, when given): never a busy one,
+  // one with background work running, or a kept one.
+  function _lruIdle(exceptKey, klass) {
+    let victim = null, oldest = Infinity;
+    for (const [k, e] of _s) {
+      if (k === exceptKey || (klass !== undefined && e.klass !== klass) || e.busy || e.session.background > 0 || keepWarm(k)) continue;
+      if (e.lastUsed < oldest) { oldest = e.lastUsed; victim = k; }
+    }
+    return victim;
+  }
+
   function _lruEvictIfFull(exceptKey) {
     while (_s.size >= max) {
-      let victim = null, oldest = Infinity;
-      for (const [k, e] of _s) {
-        if (k === exceptKey || e.busy || e.session.background > 0 || keepWarm(k)) continue;
-        if (e.lastUsed < oldest) { oldest = e.lastUsed; victim = k; }
-      }
+      const victim = _lruIdle(exceptKey);
       if (!victim) break;   // everything is busy or kept — let it grow over `max`
       _evict(victim, 'maxWarm LRU');
     }
+  }
+
+  // Why memory asks for an eviction, or null. `psi` false: the floor alone (a spawn's admission).
+  function _memoryShort({ psi = true } = {}) {
+    const m = memory();
+    if (memoryFloorMb != null && m.available < memoryFloorMb * MB) return `${Math.round(m.available / MB)}MB available < floor ${memoryFloorMb}MB`;
+    if (psi && memoryPressurePsi != null && m.psi != null && m.psi > memoryPressurePsi) return `PSI some avg10 ${m.psi} > ${memoryPressurePsi}`;
+    return null;
+  }
+
+  // Before a spawn: the class's own quota, the hard max, then the memory floor. Never refuses.
+  function _admit(key, klass) {
+    const cap = maxByClass?.[klass];
+    while (cap != null && [..._s.values()].filter((x) => x.klass === klass).length >= cap) {
+      const victim = _lruIdle(key, klass);
+      if (!victim) break;   // all held: the class grows over its cap, never into another class
+      _evict(victim, `max_by_class ${klass}=${cap} LRU`);
+    }
+    _lruEvictIfFull(key);
+    if (memoryFloorMb == null) return;
+    const why = _memoryShort({ psi: false });
+    if (!why) return;
+    const victim = _lruIdle(key);
+    if (victim) _evict(victim, `memory ${why}, opening ${key}`);
+    else onLog(`warm: memory ${why} — nothing idle to evict, opening ${key} anyway`);
+  }
+
+  // On the spine's tick: one LRU idle session per call while memory is short.
+  function tick() {
+    if (memoryFloorMb == null && memoryPressurePsi == null) return;
+    const why = _memoryShort();
+    const victim = why && _lruIdle();
+    if (victim) _evict(victim, `memory pressure: ${why}`);
   }
 
   async function _doTurn(key, message, onUpdate, _limit) {
@@ -241,7 +301,7 @@ export function createWarmPool({
     // getting `{text:null}` back as its own answer. Weaving is now something a caller ASKS
     // for, by name, once policy (conversation_defaults.allow_new_input) has said it may.
     if (!e) {
-      _lruEvictIfFull(key);
+      _admit(key, klass);
       // `opened` is what the CONFIGURATION GUARD above compares against: the options this
       // process was spawned with, kept on the entry because not every session exposes its own.
       const seam = onBackgroundDone ? { onBackgroundDone: (info) => _backgroundDone(key, info) } : {};
@@ -374,5 +434,5 @@ export function createWarmPool({
   function close() { for (const k of [..._s.keys()]) _evict(k, 'pool close'); }
   function stats() { return { size: _s.size, max, keys: [..._s.keys()] }; }
 
-  return { run, adopt, steer, interrupt, has, busy, pending, background, outcome, evict, close, stats };
+  return { run, adopt, steer, interrupt, has, busy, pending, background, outcome, evict, close, stats, tick };
 }

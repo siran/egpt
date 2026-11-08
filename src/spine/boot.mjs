@@ -72,7 +72,7 @@ import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
 import { createSender, makeOutbound } from './sender.mjs';
-import { createBrainPool, isSandboxContradiction, globalReadPathsOf, sandboxOauthTokenOf } from './brainpool.mjs';
+import { createBrainPool, isSandboxContradiction, globalReadPathsOf, sandboxOauthTokenOf, parseIdleTtl } from './brainpool.mjs';
 import { createRoomRelay } from './room-relay.mjs';
 import { createIdentityScope } from './identity-scope.mjs';
 import { createPeerLiveness, tcpProbe } from './peer-liveness.mjs';
@@ -178,6 +178,19 @@ export function shouldReapStrayWhisper(cfg) {
 // The shell / being-link token: config.yaml's shell.token, else $EGPT_HOME/secrets/shell.token (tokens live in a folder).
 export function shellTokenOf(cfg, home = EGPT_HOME) {
   return shellTokenFrom(cfg) || (readSecret(home, SHELL_TOKEN_FILE).token ?? '');
+}
+
+// warm.idle_ttl_by_class with its defaults, each value in the idle_ttl grammar (parseIdleTtl); an
+// unparseable one is logged and left out (→ idle_ttl_ms). A chatbox is a conversation unless it names its own TTL.
+export function warmTtlByClass(cfg, onLog = () => {}) {
+  const raw = cfg?.warm?.idle_ttl_by_class ?? { system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 };
+  const t = {};
+  for (const [klass, v] of Object.entries(raw)) {
+    const ms = parseIdleTtl(v);
+    if (ms != null) t[klass] = ms;
+    else if (v != null) onLog(`warm.idle_ttl_by_class.${klass}: ${JSON.stringify(v)} is not a TTL (ms, "15m", "2h", 0 or -1) — that class takes idle_ttl_ms`);
+  }
+  return { chatbox: t.conversation, ...t };
 }
 
 export function whisperPortOf(cfg) {
@@ -3010,6 +3023,9 @@ export async function boot({
   const pool = createWarmPool({
     makeSession: hosted,
     max: cfg.warm?.max ?? 6,
+    maxByClass: cfg.warm?.max_by_class ?? {},
+    memoryFloorMb: cfg.warm?.memory_floor_mb ?? null,
+    memoryPressurePsi: cfg.warm?.memory_pressure_psi ?? null,
     // E runs as a PERSISTENT background agent: the claude process stays resident
     // (context in memory) instead of re-spawning + `--resume`-ing (which reloads
     // the whole thread — the slow part) per message. idle_ttl_by_class: ms-of-idle
@@ -3036,8 +3052,8 @@ export async function boot({
     // once, independent of the idle TTL. Per-conversation override: a conversation
     // folder's own config.yaml `warm: { idle_ttl }` beats the class TTL (resolved in
     // brainpool, passed per-run to the pool); a negative there = keep THAT conversation warm.
-    idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
-    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 },
+    idleTtlMs: parseIdleTtl(cfg.warm?.idle_ttl_ms) ?? 1_800_000,   // fallback for any unlisted class ("30m" parses like a class TTL)
+    idleTtlByClass: warmTtlByClass(cfg, (m) => log.line?.(`[warm] ${m}`)),
     // A background task a being started finished with no turn in flight: wake it where that key last ran.
     onBackgroundDone: async (key, info) => {
       const conv = brain.convOfKey(key);
@@ -3918,7 +3934,7 @@ export async function boot({
   let asking = null;                  // the tick's pass over them, while it runs (declared here: the spine's first tick is below)
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

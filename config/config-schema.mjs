@@ -3442,9 +3442,27 @@ export const CONFIG_SCHEMA = {
       idle_ttl_ms
         DEFAULT: 1800000 — ms-of-idle before an unlisted class is evicted.
       idle_ttl_by_class
-        Per-class idle TTL.
+        Per-class idle TTL: a ms number or a duration ("15m", "2h"), in the TTL
+        DIALECT below. An unparseable value is logged and that class takes idle_ttl_ms.
         DEFAULT: { system: 43200000, resident: 43200000, conversation: 900000,
                    sibling: 43200000 }
+        chatbox (the http chatbox limb's conversations) takes the conversation TTL
+        unless it is listed itself.
+      max_by_class
+        DEFAULT: none — e.g. { chatbox: 4 }. A class at its cap evicts its OWN
+        least-recently-used idle session before opening another; never another
+        class's. max still applies on top.
+      memory_floor_mb
+        DEFAULT: null (off). Available memory (cgroup-aware) under this many MB:
+        opening a new session first evicts the least-recently-used idle one, and
+        the spine's tick evicts one more per tick until it recovers. The turn
+        always runs.
+      memory_pressure_psi
+        DEFAULT: null (off). Linux only: PSI memory "some avg10" (% of time stalled
+        on memory, /proc/pressure/memory) over this evicts one idle session per
+        tick. Catches swap pressure that available memory hides.
+      A busy session, one with background work running, or a kept one (KEEP,
+      below) is never evicted by any of these.
 
     TTL DIALECT (operator 2026-07-26 — the same one posts_back_delay_ms and
     loop_guard.inbound.turns speak): -1 = never idle-evict (warm forever), 0 = always evict
