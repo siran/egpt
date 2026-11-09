@@ -4,7 +4,8 @@
 // Inside the spine a chat id is `http:<client>-<sid>`; sid is a hash of the session token, so the
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
 //   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message}; a repeated id (a retry) gets the first answer;
-//                                        {kind: init, session?, identity} → {session} (init: the widget's page load)
+//                                        {kind: init, session?, identity} → {session} (init: the widget's page load; init: true records
+//                                        one line, init: prime also wakes the being so it is warm before the first line)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -42,6 +43,7 @@ export const HTTP_STRINGS = Object.freeze({
   ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
   earlier: '(conversación iniciada antes: {n} mensajes)',   // heads the recap a team topic gets when seated
   intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
+  waiting: [],   // short phrases rotating in the loading bubble instead of ⏳; empty: ⏳
 });
 const LOG_MAX = 200;                           // messages a session keeps for replay
 const RECAP_LINES = 5, RECAP_CHARS = 300;
@@ -128,10 +130,11 @@ const HOUR_MS = 3600_000;
 
 function clientConfig(name, c = {}) {
   const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
+  strings.waiting = (Array.isArray(strings.waiting) ? strings.waiting : []).filter((w) => typeof w === 'string' && w.trim()).slice(0, 12).map((w) => w.trim().slice(0, 80));
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
   const idc = isMap(c.identity) ? c.identity : {};
   const key = Array.isArray(idc.key) && idc.key.length ? idc.key.map(String) : IDENTITY_CLAIMS;
-  const init = c.init === true;
+  const init = c.init === true || c.init === 'prime' ? c.init : false;   // prime: the init line wakes the being, true: record only
   return {
     name,
     label: String(c.label ?? '').trim() || String(c.title ?? '').trim() || name,   // its section in /ayde
@@ -391,7 +394,8 @@ export async function startHttpBridge({
     let body;
     try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'not JSON' }, cors); }
     // init (c.init): the widget's page load. A session as for a line; a new one's single transcript line
-    // names its verified claims, recorded and never dispatched (backlog). Nothing on the panel.
+    // names its verified claims, recorded and never dispatched (backlog); init: prime delivers it as a wake
+    // instead, so the being's process starts before the person types. Nothing on the panel.
     const init = c.init && body?.kind === 'init';
     const text = init ? '' : stripInvisible(String(body?.text ?? ''));
     if (!init && !text.trim()) return json(res, 400, { error: 'empty message' }, cors);
@@ -446,13 +450,13 @@ export async function startHttpBridge({
       const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
       const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
       log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(init ? `(opened the chatbox, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })})` : text, {
+      deliver(init ? `(opened the chatbox, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}${c.init === 'prime' ? '; nothing to answer yet — answer … alone)' : ')'}` : text, {
         chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
         atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only
-        backlog: init, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only (a prime's wakes it)
+        backlog: init && c.init !== 'prime', prime: init && c.init === 'prime', replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
         msgKey: m.id, msgTs: n,
       });
       return init ? { session: token } : { session: token, message: view(m) };

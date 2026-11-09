@@ -96,13 +96,19 @@ function memIo() {
   };
 }
 // A resumed session keeps its id; a fresh one mints the next (sess-1, sess-2, …).
+const hold = { p: null };   // a test's gate: a line with ESPERA waits on it
 function brain(turns) {
   let minted = 0;
   return (opts) => {
     const id = opts.sessionId ?? `sess-${++minted}`;
     return {
       sessionId: id,
-      async turn(m) { turns.push({ cwd: opts.cwd, m, session: id, resumed: opts.sessionId ?? null }); return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: id }; },
+      async turn(m) {
+        turns.push({ cwd: opts.cwd, m, session: id, resumed: opts.sessionId ?? null });
+        if (m.includes('nothing to answer yet')) return { text: '…', sessionId: id };   // the being's silence for a prime
+        if (m.includes('ESPERA') && hold.p) await hold.p;
+        return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: id };
+      },
       close() {},
     };
   };
@@ -499,6 +505,43 @@ describe('a signed visitor (identity)', () => {
     expect(n.api.of('createForumTopic')).toHaveLength(1);
     n.app.stop();
   });
+
+  // The prime: a wake no person typed. The being answers it "…"; nothing reaches the visitor's panel or the team topic,
+  // in mention mode (a team_group) and in mode on (none). A real line still opens its ⏳ bubble and is answered.
+  for (const [label, team] of [['mention (team_group)', { team_group: GROUP, team_name: 'Equipo Contoso' }], ['on (no team_group)', {}]]) {
+    it(`init: prime, ${label}: wakes the being once in its folder, and its "…" is shown nowhere; no topic; a repeated init adds no turn`, async () => {
+      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
+      const identity = signed(JP);
+      const i = await n.post({ kind: 'init', identity });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+      expect(n.turns[0].cwd).toMatch(/contoso-[0-9a-f]{16}/);
+      expect(n.turns[0].m).toContain('(opened the chatbox, signed in as');
+      expect(n.turns[0].m).toContain('nothing to answer yet — answer … alone');
+      expect((await n.post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);
+      await settle();
+      await settle();
+      expect(n.turns).toHaveLength(1);
+      expect(await n.messages(i.session, identity)).toEqual([]);   // no ✓, no ⏳, no "…"
+      expect(n.api.of('createForumTopic')).toEqual([]);
+      expect(n.inThread()).toEqual([]);
+      n.app.stop();
+    });
+
+    it(`regression, ${label}: a visitor's real line still opens its ⏳ bubble while the being works, and the answer posts`, async () => {
+      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
+      const identity = signed(JP);
+      const i = await n.post({ kind: 'init', identity });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+      let release;
+      hold.p = new Promise((r) => { release = r; });
+      try {
+        await n.post({ session: i.session, text: 'ESPERA hola', identity });
+        await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being' && !m.done)).toHaveLength(1), { timeout: 5000 });
+      } finally { release(); hold.p = null; }
+      await vi.waitFor(async () => expect(answered(await n.messages(i.session, identity))).toBe(true), { timeout: 5000 });
+      n.app.stop();
+    });
+  }
 
   it('init: one transcript line with the claims, no turn and no topic; a repeated init adds nothing; the first line is answered in that conversation and seats the topic', async () => {
     const n = await bootTeam({ ...client(), init: true });

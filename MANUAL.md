@@ -460,6 +460,26 @@ them. A `strings:` map in the block still works; a key written beside it wins.
 of a chatbox that is already live: its widget's address, its chat ids and its
 conversation folders all use it.
 
+Two optional widget behaviours, both off by default:
+
+```yaml
+contoso_soporte:
+  identity: required
+  init: prime                  # true: record "(opened the chatbox, signed in as …)", no wake. prime: also wake the being
+  waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]   # loading bubble phrases (2.5 s each, looping) instead of ⏳
+```
+
+`init: prime` delivers that opening line to the being as a normal wake when a
+new session opens, so its process is up and it can read its folder before the
+person types the first line. A reload or another tab of the same session does
+not prime again, and a prime does not count against
+`rate.turns_per_identity_per_hour`. Nothing is shown on the panel and no team
+topic is seated. The being should answer a prime with `…` alone (the silence
+word). A prime's turn is quiet in every mode, so its `…` is never shown; any
+other answer would be posted whole.
+`waiting` takes at most
+12 phrases of 80 characters; they are escaped as text.
+
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
 name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
 no block is logged and skipped. A change to a block takes a `/restart`, as any

@@ -917,7 +917,11 @@ export const CONFIG_SCHEMA = {
                               end, end_confirm, end_yes, cancel, identity; intro (the panel's first
                               line, again after an end; default none); ended (the
                               line the team topic gets on an end); earlier (heads the
-                              recap a late topic gets, {n} = the earlier lines)
+                              recap a late topic gets, {n} = the earlier lines);
+                              waiting (a list of short phrases, at most 12 of 80 characters,
+                              shown in turn every 2.5 s, looping, in the loading bubble
+                              instead of ⏳; default none = ⏳), e.g.
+                              waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]
             session_days      idle days before a session expires (its token then
                               starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)
@@ -977,7 +981,7 @@ export const CONFIG_SCHEMA = {
                               session keeps its token and its next line starts its
                               identity's conversation as new (usuario.json, seed); the old
                               folders stay, their panels are not carried. Needs identity.
-            init              false (default) | true: the widget POSTs {kind: init} once
+            init              false (default) | true | prime: the widget POSTs {kind: init} once
                               per page load. It needs a verified identity (else 401) and
                               makes or resumes the session as a line would, and answers
                               {session}. A new session's init records ONE transcript line,
@@ -985,6 +989,13 @@ export const CONFIG_SCHEMA = {
                               as backlog: recorded, never dispatched (no turn), not on
                               the panel, no team topic (the first line seats it). A
                               reload or another tab (the same session) records nothing.
+                              prime: the same line is delivered as a wake, addressed to the
+                              being like a visitor line, so its process starts and it can
+                              read its folder before the person types (a new session only,
+                              once). Not on the panel, no team topic, not counted by
+                              rate.turns_per_identity_per_hour. The being answers it with
+                              "…" alone (the silence word). Its turn is quiet in every
+                              mode, so that "…" is never shown.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.

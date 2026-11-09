@@ -82,6 +82,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // sent, or any node signed (the bridge's replyToBot/replyToNode) (operator 2026-11-01).
   // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
+  // `ev.prime` (the chatbox's init: prime, a wake no person typed) is quiet in any mode: its '…' is never shown.
   // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
   // So is a human's 'on' line that does not address the being (operator 2026-11-02): `unaddressed`.
   // `emoji`: dispatch.thinking_train is not 'bubble' AND the chat's mouth can mark a line here
@@ -112,7 +113,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
       else if (at) replyChatId = at;
     }
     const unaddressed = !bot && mode === 'on' && !addressed;
-    const quiet = tunnel || (bot ? c.dispatch?.bot_quiet !== false : unaddressed);
+    const quiet = tunnel || !!ev.prime || (bot ? c.dispatch?.bot_quiet !== false : unaddressed);
     let emoji = c.dispatch?.thinking_train !== 'bubble' && mayReply && !!reacts;
     if (emoji) { try { emoji = (await reacts()) === true; } catch { emoji = false; } }
     const direct = emoji && !bot && addressed && ev.msgId != null;

@@ -413,9 +413,10 @@ describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured 
   });
 
   it('a flat string beats the block\'s strings: map; `identity` stays the mode, its text in strings:', async () => {
-    const { app, url } = await bootChatbox({ edit: blocks({ send: 'Mandar', identity: 'required', strings: { send: 'Enviar ya', placeholder: 'Pregunta', identity: 'Inicia sesión' } }) });
+    const { app, url } = await bootChatbox({ edit: blocks({ send: 'Mandar', waiting: ['Un momento…', 'Ya casi'], identity: 'required', strings: { send: 'Enviar ya', placeholder: 'Pregunta', identity: 'Inicia sesión' } }) });
     const js = await widget(url);
     expect(js).toContain('"send":"Mandar"');
+    expect(js).toContain('"waiting":["Un momento…","Ya casi"]');
     expect(js).toContain('"placeholder":"Pregunta"');
     expect(js).toContain('"intro":"¡Hola, soy Edu!"');
     const r = await fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'hola' }) });

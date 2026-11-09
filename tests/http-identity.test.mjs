@@ -357,7 +357,7 @@ describe('init: the widget opened', () => {
     const i = await post({ kind: 'init', identity });
     expect(i).toEqual({ status: 200, session: expect.any(String) });
     expect(got).toHaveLength(1);
-    expect(got[0].from).toMatchObject({ backlog: true, network: 'http', senderName: 'visitor' });
+    expect(got[0].from).toMatchObject({ backlog: true, prime: false, network: 'http', senderName: 'visitor' });
     expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})');
     expect(hooks[0]).toMatchObject({ isNew: true, init: true, identity: { username: 'jperez' } });
     expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
@@ -368,6 +368,34 @@ describe('init: the widget opened', () => {
     expect(line.session).toBe(i.session);
     expect(got[1]).toMatchObject({ text: 'hola', from: { backlog: false, chatId: got[0].from.chatId } });
     expect(hooks.at(-1)).toMatchObject({ isNew: false, init: false });
+  });
+
+  it("init: prime delivers the same line as a wake (not backlog), addressed to the being, once per new session; a reload or another tab primes nothing; the turn budget is not charged and no hook seats a topic", async () => {
+    const { post, got, hooks, read } = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 1 } });
+    const identity = tok({ ...JP, user_id: 4711 });
+    const i = await post({ kind: 'init', identity });
+    expect(i).toEqual({ status: 200, session: expect.any(String) });
+    expect(got).toHaveLength(1);
+    expect(got[0].from).toMatchObject({ backlog: false, replyToBot: true, replyToBeing: 'ed', network: 'http', senderName: 'visitor' });
+    expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711}; nothing to answer yet — answer … alone)');
+    expect(got[0].from).toMatchObject({ prime: true });
+    expect(hooks[0]).toMatchObject({ isNew: true, init: true });
+    expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
+    expect((await post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);   // a reload / another tab
+    expect(got).toHaveLength(1);
+    // the one turn of the hour is still the visitor's
+    expect((await post({ session: i.session, text: 'hola', identity })).status).toBe(200);
+    expect(got[1]).toMatchObject({ text: 'hola', from: { backlog: false } });
+    expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
+  });
+
+  it('init: prime reaches the widget as init (and true stays true)', async () => {
+    for (const init of [true, 'prime']) {
+      const { url } = await limb('required', {}, { init });
+      expect(await (await fetch(`${url}widget.js`)).text()).toContain(`"init":${JSON.stringify(init)}`);
+    }
+    const { url } = await limb('required', {}, { init: 'other' });
+    expect(await (await fetch(`${url}widget.js`)).text()).not.toContain('"init"');
   });
 
   it('under conversation_by: identity, a second device\'s init joins the conversation and records its arrival', async () => {
@@ -490,6 +518,31 @@ describe('widget.js and the identity', () => {
     expect(p.calls[0].href).toBe('https://x.test/chat/acme/messages');
     expect(p.calls[0].body).toEqual({ kind: 'init', session: 'tok-0', identity });
     expect(p.storage.get('egpt-chat:acme:IEV/jperez')).toBe('tok-1');
+  });
+
+  it('waiting: the loading bubble is ⏳ unless the client lists phrases; they rotate by CSS, one cell, escaped as text', async () => {
+    const run = async (client) => {
+      const { url } = await limb('required', {}, client);
+      const js = await (await fetch(`${url}widget.js`)).text();
+      const p = page({ identity: tok() });
+      p.run(js);
+      p.open();
+      await flush();
+      return { js, styles: p.chat().messageStyles };
+    };
+    const off = await run({});
+    expect(off.js).toContain('"waiting":[]');
+    expect(off.styles.loading).toEqual({ message: { html: '⏳' } });
+    const on = await run({ strings: { waiting: ['Un momento…', '<img src=x onerror=alert(1)>', 'Ya casi', 7, ''] } });
+    expect(on.js).toContain('"waiting":["Un momento…","<img src=x onerror=alert(1)>","Ya casi"]');
+    const html = on.styles.loading.message.html;
+    expect(html).toContain('@keyframes egc-w');
+    expect(html.match(/<span style="grid-area/g)).toHaveLength(3);
+    expect(html).toContain('animation:egc-w 7500ms linear 2500ms infinite');
+    expect(html).toContain('Un momento…');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&#60;img src=x onerror=alert(1)&#62;');
+    expect((await run({ strings: { waiting: ['Solo uno'] } })).styles.loading.message.html).toBe('Solo uno');
   });
 
   it('init off (the default), or no identity: nothing is sent on load', async () => {

@@ -158,6 +158,19 @@ function egptChat(C, base, identity) {
     if (!token && !opening) opening = done.then(function () { opening = null; });
   };
 
+  // The loading bubble: ⏳, or S.waiting's phrases stacked in one cell and faded in turn by CSS alone (WAIT_MS each,
+  // looping; no timer to clean up). The phrases are config, so they are escaped as text. The keyframes sit in the
+  // html because Deep Chat's shadow root does not see the page's stylesheet.
+  var WAIT_MS = 2500;
+  var waitingHtml = function () {
+    var w = Array.isArray(S.waiting) ? S.waiting.filter(function (x) { return typeof x === 'string' && x; }) : [];
+    if (!w.length) return '⏳';
+    var esc = function (t) { return t.replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); };
+    var n = w.length, on = (100 / n).toFixed(3);
+    if (n === 1) return esc(w[0]);
+    return '<style>@keyframes egc-w{0%,' + on + '%{opacity:1}' + (+on + 0.001) + '%,100%{opacity:0}}</style><span style="display:inline-grid">'
+      + w.map(function (t, i) { return '<span style="grid-area:1/1;opacity:0;animation:egc-w ' + (n * WAIT_MS) + 'ms linear ' + (i * WAIT_MS) + 'ms infinite">' + esc(t) + '</span>'; }).join('') + '</span>';
+  };
   // Every property is set before the element renders: a later set re-renders Deep Chat from scratch.
   var build = function (messages) {
     var hist = [];
@@ -177,7 +190,7 @@ function egptChat(C, base, identity) {
       listen();
       if (wantFocus) chat.focusInput();
     } };
-    // ⏳ from a sent line until the next message shows (Deep Chat drops it then, or at an error).
+    // ⏳ (or the waiting phrases) from a sent line until the next message shows (Deep Chat drops it then, or at an error).
     chat.displayLoadingBubble = true;
     chat.requestBodyLimits = { maxMessages: 1 };
     chat.errorMessages = { displayServiceErrorMessages: true };
@@ -189,7 +202,7 @@ function egptChat(C, base, identity) {
       shared: { bubble: { maxWidth: '85%' } },
       user: { bubble: { backgroundColor: '#1f6feb', color: '#fff' } },
       ai: { bubble: { backgroundColor: '#fff', color: '#111', border: '1px solid #d0d7de' } },
-    }, loading: { message: { html: '⏳' } } };
+    }, loading: { message: { html: waitingHtml() } } };
     body.appendChild(chat);
   };
 

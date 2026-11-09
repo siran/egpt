@@ -513,7 +513,8 @@ describe('widget.js and routing', () => {
     const { url } = await limb();
     const js = await (await fetch(`${url()}widget.js`)).text();
     expect(js).toContain('chat.displayLoadingBubble = true');
-    expect(js).toContain("loading: { message: { html: '⏳' } }");
+    expect(js).toContain("html: waitingHtml()");
+    expect(js).toContain("if (!w.length) return '⏳';");
     expect(js).toContain('var BACKOFF = [1000, 3000, 9000]');
     expect(js).toContain('JSON.stringify({ session: token, text: text, id: id, identity: identity })');
     expect(js).toContain('crypto.getRandomValues');
