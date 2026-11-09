@@ -12,7 +12,7 @@ const _HOME = vi.hoisted(() => {
   return dir;
 });
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
@@ -418,21 +418,39 @@ describe('a chatbox client with no team_group', () => {
 describe('a signed visitor (identity)', () => {
   const client = (identity = 'required') => ({ team_group: GROUP, team_name: 'Equipo Contoso', identity, topic_title: CONTOSO_TITLE });
 
-  it('a valid token: the topic is "<abrin> <user_type> <short_name> (<username>)", and the user is on the desk (usuario.json, usuario.md), never the token', async () => {
+  it('a valid token: the topic is "<abrin> <user_type> <short_name> (<username>)", and the user is on the desk (desktop/user.json, desktop/user.md), never the token', async () => {
     const n = await bootTeam(client());
     const identity = signed({ ...JP, user_id: 4711 });
     const a = await n.post({ text: 'hola', identity });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
     await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['IEV P Juan Pérez (jperez)']), { timeout: 5000 });
     const dir = n.turns[0].cwd;
-    const usuario = JSON.parse(await fs.readFile(join(dir, 'usuario.json'), 'utf8'));
+    const usuario = JSON.parse(await fs.readFile(join(dir, 'desktop', 'user.json'), 'utf8'));
     expect(usuario).toMatchObject({ abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', user_id: '4711' });
     expect(Object.keys(usuario)).toEqual(['abrin', 'user_type', 'short_name', 'username', 'user_id', 'verified_at']);
-    const md = await fs.readFile(join(dir, 'usuario.md'), 'utf8');
+    const md = await fs.readFile(join(dir, 'desktop', 'user.md'), 'utf8');
     expect(md.trim().split('\n')).toHaveLength(1);
-    expect(md).toMatch(/Juan Pérez \(jperez\).*P.*IEV/);
+    expect(md).toBe('Verified by the site: Juan Pérez (jperez), type P, school IEV, id 4711.\n');
+    expect(existsSync(join(dir, 'usuario.json'))).toBe(false);
+    expect(existsSync(join(dir, 'usuario.md'))).toBe(false);
     for (const text of [JSON.stringify(usuario), md]) expect(text).not.toContain(identity.split('.')[1]);
     n.app.stop();
+  });
+
+  it('a signed conversation with a seed: the seed lands at the folder root as before, the user files under desktop/', async () => {
+    const seedDir = join(_HOME, 'seeds', 'contoso');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(join(seedDir, 'identidad.md'), 'v1');
+    try {
+      const n = await bootTeam({ ...client(), seed: 'seeds/contoso' });
+      await n.post({ text: 'hola', identity: signed(JP) });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+      const dir = n.turns[0].cwd;
+      expect(await fs.readFile(join(dir, 'identidad.md'), 'utf8')).toBe('v1');
+      expect(existsSync(join(dir, 'desktop', 'user.json'))).toBe(true);
+      expect(existsSync(join(dir, 'desktop', 'user.md'))).toBe(true);
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
 
   it("another user's token on the same session: a new session, folder and topic; the first user keeps theirs", async () => {
@@ -443,7 +461,7 @@ describe('a signed visitor (identity)', () => {
     expect(b.session).not.toBe(a.session);
     await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
     expect(n.turns[1].cwd).not.toBe(n.turns[0].cwd);
-    expect(JSON.parse(await fs.readFile(join(n.turns[1].cwd, 'usuario.json'), 'utf8')).username).toBe('mlopez');
+    expect(JSON.parse(await fs.readFile(join(n.turns[1].cwd, 'desktop', 'user.json'), 'utf8')).username).toBe('mlopez');
     await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual(['IEV P Juan Pérez (jperez)', 'IEV R María López (mlopez)']), { timeout: 5000 });
     const a2 = await n.post({ session: a.session, text: 'sigo', identity: signed(JP) });
     expect(a2.session).toBe(a.session);
@@ -455,13 +473,14 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 
-  it('optional, unsigned: the visitor is answered, the topic has the default title, no usuario.json', async () => {
+  it('optional, unsigned: the visitor is answered, the topic has the default title, no user files', async () => {
     const n = await bootTeam(client('optional'));
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
     const slug = n.slugOf(n.turns[0]);
     await vi.waitFor(() => expect(n.api.of('createForumTopic').map((c) => c.body.name)).toEqual([`Contoso · ${slug.slice('contoso-'.length, 'contoso-'.length + 6)}`]), { timeout: 5000 });
-    await expect(fs.access(join(n.turns[0].cwd, 'usuario.json'))).rejects.toThrow();
+    await expect(fs.access(join(n.turns[0].cwd, 'desktop', 'user.json'))).rejects.toThrow();
+    await expect(fs.access(join(n.turns[0].cwd, 'desktop', 'user.md'))).rejects.toThrow();
     n.app.stop();
   });
 

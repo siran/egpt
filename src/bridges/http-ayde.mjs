@@ -194,7 +194,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
   }
 
   const usuarioOf = async (dir) => {
-    const p = join(dir, 'usuario.json');
+    const p = join(dir, 'desktop', 'user.json');
     try {
       if (!(await lstat(p)).isFile()) return null;
       const u = JSON.parse(await readFile(p, 'utf8'));

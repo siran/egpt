@@ -88,7 +88,7 @@ beforeEach(async () => {
   await put('chrome/profiles/brain/Default/Cookies', 'sqlite');
   const conv = async (id, usuario, files, t) => {
     const dir = `conversations/http/${id}`;
-    if (usuario) await put(`${dir}/usuario.json`, JSON.stringify(usuario));
+    if (usuario) await put(`${dir}/desktop/user.json`, JSON.stringify(usuario));
     for (const [f, text] of Object.entries(files)) await put(`${dir}/${f}`, text);
     await put(`${dir}/transcript.md`, `transcript of ${id}\n`);
     await utimes(at(dir, 'transcript.md'), new Date(t), new Date(t));
@@ -218,8 +218,8 @@ describe('limbs.http.ayde — the levels', () => {
   it('team never sees a dot entry; devs and admin do; root lists EGPT_HOME', async () => {
     const { get } = await limb();
     const names = async (user, p) => (await get('tree', { p }, user)).body.entries.map((e) => e.name);
-    expect(await names('tina', `conversations/http/${A}`)).toEqual(['admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
-    for (const user of ['dev', 'ada']) expect(await names(user, `conversations/http/${A}`), user).toEqual(['.secrets', '.ssh', '.tools', 'admin-access.log', 'gavetas', 'transcript.md', 'usuario.json']);
+    expect(await names('tina', `conversations/http/${A}`)).toEqual(['admin-access.log', 'desktop', 'gavetas', 'transcript.md']);
+    for (const user of ['dev', 'ada']) expect(await names(user, `conversations/http/${A}`), user).toEqual(['.secrets', '.ssh', '.tools', 'admin-access.log', 'desktop', 'gavetas', 'transcript.md']);
     expect(await names('tina', `conversations/telegram/${G}`)).toEqual(['admin-access.log', 'transcript-SI+Contoso-an.md', 'transcript.md']);
     expect(await names('ada', `conversations/telegram/${G}`)).toEqual(['.notes.md', 'admin-access.log', 'transcript-SI+Contoso-an.md', 'transcript.md']);
     const top = (await get('tree', { p: '' }, 'rob')).body;
@@ -395,8 +395,8 @@ describe('limbs.http.ayde — the conversation list', () => {
     expect(titles).toEqual({ [G]: 'contoso', [T]: 'contoso-soporte' });
   });
 
-  it('a signed session\'s row: its usuario.json (short_name, username, school, user type), no preview', async () => {
-    await writeFile(at('conversations', 'http', C, 'usuario.json'), JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez', verified_at: '2026-10-25T10:00:00Z', token: 'never' }));
+  it('a signed session\'s row: its desktop/user.json (short_name, username, school, user type), no preview', async () => {
+    await writeFile(at('conversations', 'http', C, 'desktop', 'user.json'), JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez', verified_at: '2026-10-25T10:00:00Z', token: 'never' }));
     const { get } = await limb();
     const rows = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e]));
     expect(rows[A]).toMatchObject({ kind: 'chatbox', title: 'María López', usuario: { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, preview: null });

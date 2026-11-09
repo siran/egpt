@@ -304,8 +304,8 @@ describe('limbs.http.ayde through boot', () => {
     const basic = (user, pass) => ({ headers: { Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}` } });
     await fs.mkdir(dirname(usersFile), { recursive: true });
     await fs.writeFile(usersFile, `${await userLine('ana', 'team', 'clave-de-ana-1')}\n${await userLine('rob', 'root', 'clave-de-rob-1')}\n`);
-    await fs.mkdir(convDir(id), { recursive: true });
-    await fs.writeFile(join(convDir(id), 'usuario.json'), JSON.stringify({ abrin: 'IEV', username: 'mlopez' }));
+    await fs.mkdir(join(convDir(id), 'desktop'), { recursive: true });
+    await fs.writeFile(join(convDir(id), 'desktop', 'user.json'), JSON.stringify({ abrin: 'IEV', username: 'mlopez' }));
     try {
       const other = 'contoso-00000000000000bb';
       let registry = ensureContact(emptyState(), 'http', `http:${id}`).state;
