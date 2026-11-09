@@ -1174,7 +1174,13 @@ export function createBrainPool({
             const granted = new Set(perm.allowedTools.map((t) => toolBase(t).toLowerCase()));
             narrowedTools = own.filter((t) => granted.has(toolBase(t).toLowerCase()));
           }
-          def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions, allowed_tools: narrowedTools ?? perm.allowedTools };
+          // A `sandbox` being whose TYPE lists its own tools does not take the level's bypass flag
+          // (2026-11-09): the list is enforced by the CLI (dontAsk, claude-args.mjs) and the box is
+          // still the OS boundary. confinementFor then sends `osConfined`, which is what claude-args
+          // reads. Without this the level's flag made every `sandbox` being a bypass turn and the
+          // type's scoped `Bash(<bin>:*)` an inert rule. `all` is unchanged: unconfined by definition.
+          const listedInBox = narrowedTools != null && accessLevel === 'sandbox';
+          def = { ...def, dangerously_skip_permissions: perm.dangerouslySkipPermissions && !listedInBox, allowed_tools: narrowedTools ?? perm.allowedTools };
         } else if (isDeskOnly(accessLevel)) {
           throw new Error(`brainpool: ${being} is access_level 'reader' but config/permissions/reader.md is missing or unparseable — refusing the turn`);
         }
