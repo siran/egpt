@@ -401,7 +401,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
   async function area(kind, who, folders, homes, only) {
     const titles = new Map((await conversations(folders)).entries.map((e) => [e.path, e.title]));
     const { sub, match } = AREAS[kind];
-    const ledger = kind === 'heartbeats' ? JSON.parse(await readFile(join(root, 'state', 'heartbeats-daily.json'), 'utf8').catch(() => '{}')) : {};
+    const ledger = kind === 'heartbeats' ? await readFile(join(root, 'state', 'heartbeats-daily.json'), 'utf8').then((t) => JSON.parse(t) ?? {}).catch(() => ({})) : {};
     const groups = [];
     for (const f of folders) {
       if (only && f.parts.join('/') !== only) continue;
