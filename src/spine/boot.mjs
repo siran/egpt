@@ -180,10 +180,10 @@ export function shellTokenOf(cfg, home = EGPT_HOME) {
   return shellTokenFrom(cfg) || (readSecret(home, SHELL_TOKEN_FILE).token ?? '');
 }
 
-// warm.idle_ttl_by_class with its defaults, each value in the idle_ttl grammar (parseIdleTtl); an
-// unparseable one is logged and left out (→ idle_ttl_ms). A chatbox is a conversation unless it names its own TTL.
+// warm.idle_ttl_by_class (none by default: every class takes idle_ttl_ms), each value in the idle_ttl
+// grammar (parseIdleTtl); an unparseable one is logged and left out. A chatbox is a conversation unless it names its own TTL.
 export function warmTtlByClass(cfg, onLog = () => {}) {
-  const raw = cfg?.warm?.idle_ttl_by_class ?? { system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 };
+  const raw = cfg?.warm?.idle_ttl_by_class ?? {};
   const t = {};
   for (const [klass, v] of Object.entries(raw)) {
     const ms = parseIdleTtl(v);
@@ -1097,6 +1097,7 @@ export async function boot({
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
   startTelegram = null,               // the Telegram limb's `start` seam (null = real Bot API transport)
   makeSession = (opts) => (opts.sandboxed ? createSandboxCliSession(opts) : createBrainSession(opts)),   // engine-dispatching session factory (ccode remains default); sandboxed:true wraps the ccode session in setup/sandbox-logon-launcher.ps1's OS-level isolation
+  warmMemory,                         // the warm pool's memory signal (warm-sessions.mjs memoryNow); unset = the host's
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
   io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
   log = { line: stderrLine },         // THE stderr sink — it STAMPS every line (see stderrLine above). A caller that injects its own log is untouched.
@@ -3025,37 +3026,12 @@ export async function boot({
   };
   const pool = createWarmPool({
     makeSession: hosted,
-    max: cfg.warm?.max ?? 6,
-    maxByClass: cfg.warm?.max_by_class ?? {},
-    memoryFloorMb: cfg.warm?.memory_floor_mb ?? null,
-    memoryPressurePsi: cfg.warm?.memory_pressure_psi ?? null,
-    // E runs as a PERSISTENT background agent: the claude process stays resident
-    // (context in memory) instead of re-spawning + `--resume`-ing (which reloads
-    // the whole thread — the slow part) per message. idle_ttl_by_class: ms-of-idle
-    // before a class is evicted; -1 = never idle-evict (0 = always evict), bounded only by `max` LRU.
-    // E's chats are 'conversation'.
-    //
-    // CONVERSATION DEFAULT = 15m (operator 2026-07-02, verbatim: "keep any
-    // conversation as a background agent 15m after the last message, configurable.
-    // i like that you can keep a number or all agents warm. probably we should
-    // honor override per configuration"). This SUPERSEDES the earlier never-evict
-    // default (commit 4eaceaf "E is a persistent background agent — never idle-evict
-    // conversations", which set conversation: 0 — never-evict under the OLD dialect): a conversation now goes cold 15m
-    // after its last turn, and the transcript + `--resume` make the next turn
-    // correct, just colder. system/resident/sibling used to stay NEVER-EVICT (`-1` since the
-    // 2026-07-26 dialect flip — -1 never, 0 ALWAYS evict; they were written `0` when 0 meant
-    // never), which is how kg ended up holding 13 live claude.exe processes at once: nothing
-    // ever idled out. Operator 2026-09-20: "let them idle out, 12h" — so those three now default
-    // to 12h. Evicting is cheap: the thread id lives in the conversation record, so the next turn
-    // resumes the same session. migrations/0013 asks the same of a node that already has a
-    // `warm:` block, which this default does not reach.
-    //
-    // `warm.max` is the "keep a number — or, with a high max, all — agents warm"
-    // knob the operator likes: the LRU cap bounds how many warm sessions live at
-    // once, independent of the idle TTL. Per-conversation override: a conversation
-    // folder's own config.yaml `warm: { idle_ttl }` beats the class TTL (resolved in
-    // brainpool, passed per-run to the pool); a negative there = keep THAT conversation warm.
-    idleTtlMs: parseIdleTtl(cfg.warm?.idle_ttl_ms) ?? 1_800_000,   // fallback for any unlisted class ("30m" parses like a class TTL)
+    // Eviction is memory-based (operator 2026-11-08), built into the pool. Optional: warm.max (a
+    // backstop), warm.idle_ttl_ms / idle_ttl_by_class (timers, -1 = off by default); a conversation's
+    // own `warm: { idle_ttl }` beats the class TTL (brainpool, per run).
+    max: cfg.warm?.max ?? Infinity,
+    memory: warmMemory,
+    idleTtlMs: parseIdleTtl(cfg.warm?.idle_ttl_ms) ?? -1,   // fallback for any unlisted class ("30m" parses like a class TTL)
     idleTtlByClass: warmTtlByClass(cfg, (m) => log.line?.(`[warm] ${m}`)),
     // A background task a being started finished with no turn in flight: wake it where that key last ran.
     onBackgroundDone: async (key, info) => {

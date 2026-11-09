@@ -1815,3 +1815,28 @@ describe("boot() — access_level:'sandbox' beside sandboxed:false is FATAL", ()
     app.stop();
   });
 });
+
+// Warm defaults as boot wires them (operator 2026-11-08: memory-based only): no warm block = no cap
+// and no idle timer, so a conversation idle for a week is still warm.
+describe('boot() — no warm config', () => {
+  it('the pool has no cap, and an idle conversation is never idle-evicted', async () => {
+    const { start, spy } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, node_name: 'kg', agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, conversation_defaults: { access_level: 'regular' } } } };
+    const closed = [];
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: (o) => ({ ...fakeSession(o), close() { closed.push(1); } }),
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false, now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    expect(app.pool.stats().max).toBe(Infinity);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await spy.onIncoming('hola E', { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1' });
+      expect(app.pool.stats().size).toBe(1);
+      await vi.advanceTimersByTimeAsync(7 * 24 * 3600_000);
+      expect(app.pool.stats().size).toBe(1);
+      expect(closed).toHaveLength(0);
+    } finally { vi.useRealTimers(); app.stop(); }
+  });
+});

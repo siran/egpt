@@ -4183,9 +4183,7 @@ export function createCommands({
     // kept warm, info about them, size from total"). pool.stats() already exposed
     // { size, max, keys }; this shows the roster instead of just the count.
     //
-    // `size/max` is the headline because it is the thing that is easy not to know: max
-    // defaults to 6 (src/warm-sessions.mjs) and the live config leaves it unset, so with
-    // ~100 conversations in the registry the pool LRU-evicts constantly. Per entry:
+    // `size/max` is the headline (just `size` when warm.max is unset: no cap). Per entry:
     // the warm key (it already encodes <being>:<engine>:<surface>:<slug>), the live
     // context size, and what that size is OUT OF — the compaction threshold the SPINE
     // applies (src/spine/compaction.mjs compactionRatio, not compact-being's own 0.25
@@ -4197,7 +4195,7 @@ export function createCommands({
     try {
       const s = warmStats();
       if (s && typeof s.size === 'number' && typeof s.max === 'number') {
-        lines.push(`warm: ${s.size}/${s.max}`);
+        lines.push(`warm: ${s.size}${Number.isFinite(s.max) ? `/${s.max}` : ''}`);
         const keys = Array.isArray(s.keys) ? s.keys : [];
         if (keys.length) {
           let targets = [];

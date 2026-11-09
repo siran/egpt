@@ -7,10 +7,8 @@ import { createWarmPool } from '../src/warm-sessions.mjs';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe('warmTtlByClass — the chatbox TTL', () => {
-  it('defaults to the conversation TTL (the boot defaults)', () => {
-    const t = warmTtlByClass({});
-    expect(t.chatbox).toBe(900_000);
-    expect(t).toMatchObject({ system: 43_200_000, resident: 43_200_000, conversation: 900_000, sibling: 43_200_000 });
+  it('no idle_ttl_by_class: no class TTL at all, chatbox included (every class takes idle_ttl_ms, off)', () => {
+    expect(warmTtlByClass({})).toEqual({ chatbox: undefined });
   });
 
   it('follows a configured conversation TTL, never the idle_ttl_ms fallback', () => {
@@ -52,6 +50,20 @@ describe('warmTtlByClass — durations', () => {
     expect(p.has('k')).toBe(true);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(p.has('k')).toBe(false);
+  });
+
+  it('a configured { conversation: "15m" } with no idle_ttl_ms: that class evicts at 15m, an unlisted one never', async () => {
+    vi.useFakeTimers();
+    const p = createWarmPool({
+      makeSession: () => ({ close() {}, turn: async () => ({ text: 'ok' }) }),
+      idleTtlByClass: warmTtlByClass({ warm: { idle_ttl_by_class: { conversation: '15m' } } }),
+    });
+    await p.run('conv', 'a', () => {}, { klass: 'conversation' });
+    await p.run('sib', 'a', () => {}, { klass: 'sibling' });
+    await vi.advanceTimersByTimeAsync(15 * 60_000 + 1_000);
+    expect(p.has('conv')).toBe(false);
+    await vi.advanceTimersByTimeAsync(7 * 24 * 3600_000);
+    expect(p.has('sib')).toBe(true);
   });
 
   it('parses "2h", keeps -1 and 0, and a chatbox follows the parsed conversation TTL', () => {

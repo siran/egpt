@@ -82,7 +82,7 @@ const full = (over = {}) => ({ sessionId: 'S1', engine: 'ccode', cwd: '/c', mode
 describe('warm pool — the reopen guard covers every spawn option', () => {
   it('a changed system prompt reopens that key only; the other key keeps its process', async () => {
     const { made, makeSession } = sessions();
-    const pool = createWarmPool({ makeSession });
+    const pool = createWarmPool({ makeSession, memory: () => ({ available: Infinity, psi: null }) });
     await pool.run('h:ccode:wa:x', 'a', () => {}, { brainOptions: full({ appendSystemPrompt: 'old' }) });
     await pool.run('e:ccode:wa:x', 'a', () => {}, { brainOptions: full() });
     await pool.run('h:ccode:wa:x', 'b', () => {}, { brainOptions: full({ appendSystemPrompt: 'new' }) });
@@ -200,6 +200,7 @@ async function bootWith({ modes = {}, edit = (c) => c } = {}) {
       return s;
     },
     probeEndpoint: async () => ({ ok: false, status: 0 }),
+    warmMemory: () => ({ available: Infinity, psi: null }),
     loadState: async () => convState,
     writeState: async (s) => { convState = s; },
     io, ingest: false, tickMs: 0,

@@ -21,7 +21,6 @@ export const RESTART_KEYS = [
   'transcription_service', 'transcription', 'transcriptor', 'voice_service', 'synthesizer',   // profiles resolved once, worker roles
   'default_time_zone',                                                    // resolved once for identity, transcript, spine, commands
   'warm.max', 'warm.idle_ttl_ms', 'warm.idle_ttl_by_class',               // the warm pool's own limits
-  'warm.max_by_class', 'warm.memory_floor_mb', 'warm.memory_pressure_psi',
   'loop_guard', ...Object.values(LEGACY_BLOCKS), 'turn_timeout_ms',      // both loop-guard halves (+ pre-0044 keys), the per-turn backstop
 ];
 

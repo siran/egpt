@@ -3524,7 +3524,7 @@ describe('sandboxOauthTokenOf — config value, else the secrets file', () => {
 });
 
 // The chatbox warm class (operator 2026-11-08): an http conversation runs as klass `chatbox`, so
-// warm.max_by_class can cap the chatbox limb without touching the node's other conversations.
+// memory eviction takes the chatbox limb's idle sessions before the node's other conversations.
 describe('brainpool — the chatbox warm class', () => {
   const httpEv = (sid) => ({ surface: 'http', chatId: `http:acme-${sid}`, chatName: `acme-${sid}`, line: `visitor@[acme-${sid}].http (14:05) #m1: hi`, body: 'hi' });
 
@@ -3543,11 +3543,13 @@ describe('brainpool — the chatbox warm class', () => {
     expect(seen).toEqual(['chatbox', 'conversation']);
   });
 
-  it('max_by_class { chatbox: 1 } caps the chatbox sessions and never evicts a conversation', async () => {
-    const pool = createWarmPool({ maxByClass: { chatbox: 1 }, makeSession: () => ({ close() {}, turn: async () => ({ text: 'ok', sessionId: 's' }) }) });
+  it('memory short at a spawn: the idle chatbox session goes, never the older conversation', async () => {
+    const MB = 2 ** 20, mem = { available: 4000 * MB };
+    const pool = createWarmPool({ memory: () => ({ available: mem.available, psi: null }), total: 8000 * MB, makeSession: () => ({ close() {}, turn: async () => ({ text: 'ok', sessionId: 's' }) }) });
     const { brain } = harness([], { poolOverride: pool });
     await brain.turn('e', ev);                       // the conversation: the oldest entry of all
     await brain.turn('e', httpEv('a1'));
+    mem.available = 100 * MB;                        // under the reserve (1200 MB)
     await brain.turn('e', httpEv('b2'));
     const keys = pool.stats().keys;
     expect(keys.map((k) => k.split(':')[2])).toEqual(['whatsapp', 'http']);

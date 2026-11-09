@@ -79,7 +79,7 @@ function brainOver(store, makeSession, logs = []) {
   const loadState = async () => store.st;
   const writeState = async (s) => { store.st = s; };
   return createBrainPool({
-    pool: createWarmPool({ makeSession }),
+    pool: createWarmPool({ makeSession, memory: () => ({ available: Infinity, psi: null }) }),
     getConfig: () => ({ agents: { ed: { conversation_defaults: { access_level: 'regular' } } } }),
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState, writeState,
