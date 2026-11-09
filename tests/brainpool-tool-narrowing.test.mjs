@@ -1,8 +1,9 @@
 // A type file's own top-level allowed_tools can only NARROW its access level's grant (2026-10-15,
 // edw-marketer: a boxed lead session with exactly Read/Grep/Glob/WebFetch/WebSearch). The
-// narrowed list reaches the CLI as --tools, so unlisted tools do not exist even under the
-// sandboxed bypass. A type that declares no list keeps the 2026-09-23 default (a boxed being gets
-// every tool). Real brains registry + real config/permissions/*.md; a fake warm pool.
+// narrowed list reaches the CLI as --tools, so unlisted tools do not exist. A boxed being with
+// such a list is enforced by the CLI (--permission-mode dontAsk + --allowedTools, no bypass, 2026-11-09);
+// a type that declares no list keeps the 2026-09-23 default (a boxed being gets every tool, under the
+// bypass). Real brains registry + real config/permissions/*.md; a fake warm pool.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,6 +22,8 @@ const TYPES = {
   wren: 'type: ccode\nmodel: opus\neffort: xhigh\nverbose_thinking: false\npersonality: wren\ncwd: C:/Users/user/wren-cwd\n',
   'edw-marketer': 'type: ccode\nmodel: sonnet\neffort: medium\npersonality: edw-marketer\nallowed_tools: [ Read, Grep, Glob, WebFetch, WebSearch ]\n',
   pi: 'type: pi\nmodel: local/gemma\npersonality: egpt\nallowed_tools: [read, grep, find, ls, edit, write, bash]\n',
+  // A web chatbox being: reads, and runs `dbq` (a SQL-only runner) and nothing else in Bash.
+  chatbox: 'type: ccode\nmodel: sonnet\neffort: medium\nallowed_tools: [ Read, Glob, Grep, "Bash(dbq:*)" ]\n',
 };
 const AGENTS = {
   egpt: { configuration: 'opus-default', default: true, conversation_defaults: { access_level: 'sandbox' } },
@@ -28,6 +31,7 @@ const AGENTS = {
   wren: { configuration: 'wren', conversation_defaults: { access_level: 'all', sandboxed: false, allowed_users: ['*'] } },
   'edw-marketer': { configuration: 'edw-marketer', conversation_defaults: { access_level: 'regular', sandboxed: true } },
   pi: { configuration: 'pi', conversation_defaults: { access_level: 'sandbox', sandboxed: true } },
+  chatbox: { configuration: 'chatbox', conversation_defaults: { access_level: 'sandbox' } },
 };
 const EV = { surface: 'whatsapp', chatId: '!lead:beeper.com', chatName: 'Lead', line: 'Bea@[Lead].wa (14:05) #m1: hola', body: 'hola' };
 
@@ -82,12 +86,12 @@ const SNAP = { egpt: BOXED('high'), ken: BOXED('xhigh'), wren: BOXED('xhigh') };
 const FIVE = ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch'];
 
 describe('a ccode type that declares allowed_tools narrows its level to that list, via --tools', () => {
-  it('edw-marketer, boxed (regular + sandboxed: true): exactly the 5 tools, as --tools, under the bypass', async () => {
+  it('edw-marketer, boxed (regular + sandboxed: true): exactly the 5 tools, as --tools, enforced by the CLI (dontAsk), no bypass', async () => {
     const { opts, argv } = await optionsFor('edw-marketer');
     expect(opts.sandboxed).toBe(true);
     expect(opts.allowedTools).toEqual(FIVE);
     expect(opts.tools).toEqual(FIVE);
-    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Grep,Glob,WebFetch,WebSearch', '--strict-mcp-config', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'dontAsk', '--tools', 'Read,Grep,Glob,WebFetch,WebSearch', '--strict-mcp-config', '--allowedTools', 'Read Grep Glob WebFetch WebSearch', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
   });
 
   it('edw-marketer at access_level sandbox narrows the same way (the level adds Bash/Agent; the type drops them)', async () => {
@@ -95,6 +99,36 @@ describe('a ccode type that declares allowed_tools narrows its level to that lis
     expect(opts.allowedTools).toEqual(FIVE);
     expect(argv.slice(argv.indexOf('--tools'), argv.indexOf('--tools') + 2)).toEqual(['--tools', 'Read,Grep,Glob,WebFetch,WebSearch']);
     expect(argv.join(' ')).not.toMatch(/Bash|Agent|Write|Edit/);
+    // ...and the sandbox level's own bypass flag does not reach a type that lists its tools.
+    expect(argv).not.toContain('--dangerously-skip-permissions');
+    expect(argv.slice(argv.indexOf('--permission-mode'), argv.indexOf('--permission-mode') + 2)).toEqual(['--permission-mode', 'dontAsk']);
+  });
+
+  // THE CHATBOX (2026-11-09): [Read, Glob, Grep, Bash(dbq:*)] on a boxed being must be a fence, not an inert
+  // rule over full Bash. `sandbox` is the default level and the only boxed one that grants Bash.
+  it('REGRESSION (chatbox): a boxed type listing `Bash(dbq:*)` gets dontAsk + the list, not the sandbox level\'s bypass', async () => {
+    const { opts, argv } = await optionsFor('chatbox');
+    expect(opts.sandboxed).toBe(true);
+    expect(opts.osConfined).toBe(true);
+    expect(opts.dangerouslySkipPermissions).toBe(false);
+    expect(opts.allowedTools).toEqual(['Read', 'Glob', 'Grep', 'Bash(dbq:*)']);
+    expect(opts.tools).toEqual(['Read', 'Glob', 'Grep', 'Bash']);
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'dontAsk', '--tools', 'Read,Glob,Grep,Bash', '--strict-mcp-config', '--allowedTools', 'Read Glob Grep Bash(dbq:*)', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
+  });
+
+  it('...the same with no access_level at all (unset = sandbox) and with an explicit `sandboxed: true` on regular, which has no Bash to scope', async () => {
+    const unset = await optionsFor('chatbox', { ...AGENTS, chatbox: { configuration: 'chatbox' } });
+    expect(unset.argv.slice(unset.argv.indexOf('--permission-mode'), unset.argv.indexOf('--permission-mode') + 2)).toEqual(['--permission-mode', 'dontAsk']);
+    expect(unset.argv).not.toContain('--dangerously-skip-permissions');
+    const regular = await optionsFor('chatbox', { ...AGENTS, chatbox: { configuration: 'chatbox', conversation_defaults: { access_level: 'regular', sandboxed: true } } });
+    expect(regular.opts.allowedTools).toEqual(['Read', 'Glob', 'Grep']);   // regular grants no Bash: the type cannot add it
+    expect(regular.argv).toContain('dontAsk');
+    expect(regular.argv).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('...but access_level all stays the unconfined tier: bypass, its list spelled verbatim', async () => {
+    const { argv } = await optionsFor('chatbox', { ...AGENTS, chatbox: { configuration: 'chatbox', conversation_defaults: { access_level: 'all', allowed_users: ['*'] } } });
+    expect(argv).toEqual(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--tools', 'Read,Glob,Grep,Bash', '--strict-mcp-config', '--allowedTools', 'Read Glob Grep Bash(dbq:*)', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}']);
   });
 
   it('it can only narrow: a tool the level does not grant stays out', async () => {

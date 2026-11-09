@@ -1565,17 +1565,35 @@ describe('brainpool.turn — accessLevel override (operator 2026-08-14, was /e a
     // wrong: `regular` does not mean "CLI-confined". On win32 resolveSandboxed rung 4 answers
     // true, so a regular being IS boxed, and a boxed being's boundary is its Windows account.
     // dangerously_skip_permissions stays FALSE on the def — the access level is unchanged and
-    // grants nothing extra; the flag pair comes from `osConfined` alone.
-    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    // grants nothing extra; the flag pair comes from `osConfined` alone. (A type that declares NO
+    // tool list: one that lists its own gets the CLI-enforced tier, the next test.)
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high' }) };
     const boxed = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'win32' });
     await boxed.brain.turn('e', ev);
     const opts = boxed.pool.calls[0].brainOptions;
     expect(opts.sandboxed).toBe(true);
     expect(opts.osConfined).toBe(true);
     expect(opts.dangerouslySkipPermissions).toBe(false);
+    expect(opts.tools).toBeUndefined();
     const args = buildClaudeArgs(opts);
     expect(args).toContain('--dangerously-skip-permissions');
     expect(argVals(args, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(argVals(args, '--add-dir')).toEqual([]);
+  });
+
+  it("a boxed type that LISTS its tools is CLI-enforced (2026-11-09): dontAsk + --tools + --allowedTools, no bypass — the box is still the OS boundary", async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read'] }) };
+    const boxed = harness([{ text: 'ok', sessionId: 's' }], { brains, seedAgents: { e: { access_level: 'regular' } }, loadPermission: loadPermissionLevel, platform: 'win32' });
+    await boxed.brain.turn('e', ev);
+    const opts = boxed.pool.calls[0].brainOptions;
+    expect(opts.sandboxed).toBe(true);
+    expect(opts.osConfined).toBe(true);
+    expect(opts.tools).toEqual(['Read']);
+    const args = buildClaudeArgs(opts);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--permission-mode')).toEqual(['dontAsk']);
+    expect(argVals(args, '--tools')).toEqual(['Read']);
+    expect(argVals(args, '--allowedTools')).toEqual(['Read']);
     expect(argVals(args, '--add-dir')).toEqual([]);
   });
 });

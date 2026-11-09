@@ -858,6 +858,15 @@ Real, current, and worth knowing before relying on any of this.
    `Read`. Keeping `--permission-mode default` was a second, weaker opinion on a
    question the kernel already answers.
 
+   **The one exception (2026-11-09): a boxed being whose type lists its own
+   `allowed_tools`.** There the list is the CLI's to enforce, so the argv is
+   `--permission-mode dontAsk` + `--tools <bases>` + `--allowedTools "<list>"` and
+   no `--dangerously-skip-permissions`: whatever the list does not allow is
+   denied, so a scoped `Bash(dbq:*)` allows `dbq ...` and nothing else in Bash,
+   where under the bypass it was an inert rule over full Bash. Every other flag
+   above is unchanged, and the box is still the OS boundary. A being with no list
+   keeps the bypass; `access_level: all` is unconfined as before.
+
    **It also closed the last operator path in a sandboxed being's argv.** The
    node-level `allowed_paths: C:/Users/user/src` grant reached `--add-dir` on every
    such turn; now nothing does.

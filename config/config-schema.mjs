@@ -2253,6 +2253,14 @@ export const CONFIG_SCHEMA = {
             --tools so unlisted tools do not exist, boxed or not (2026-10-15).
             A type with no list gets the level's whole list.
 
+            A BOXED being (sandbox, or sandboxed: true) whose type lists its
+            own tools is held to that list by the CLI (2026-11-09):
+            --permission-mode dontAsk + --allowedTools "<the list>", NO
+            bypass, so a scoped Bash(<bin>:*) allows that command and nothing
+            else in Bash. The box is still the OS boundary. A boxed being with
+            no list keeps the bypass (every tool, 2026-09-23); 'all' is
+            unconfined either way.
+
             All four are the SAME values /agents <handle>|all
             access_level <level> writes per-conversation - that validator and
             this enum are the same list, ACCESS_LEVELS in

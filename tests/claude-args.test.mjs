@@ -283,6 +283,85 @@ describe('the three permission tiers (2026-09-23)', () => {
   });
 });
 
+// ── A BOXED BEING WITH AN EXPLICIT TOOL LIST (2026-11-09). The rule: an explicit tool list on a
+//    boxed being is enforced by the CLI (dontAsk); the box is still the OS boundary. brainpool
+//    sends `tools` (the base names of the type's own list) only for a type that declares one, so
+//    `osConfined` + `tools` is the whole trigger. Without it the bypass pair made the list's
+//    scoped `Bash(dbq:*)` an inert rule over full Bash. ──
+describe('osConfined + an explicit tool list — CLI-enforced (dontAsk), no bypass', () => {
+  const list = ['Read', 'Glob', 'Grep', 'Bash(dbq:*)'];
+  const tools = ['Read', 'Glob', 'Grep', 'Bash'];
+  const boxed = { osConfined: true, allowedTools: list, tools };
+
+  it('emits --tools <bases>, --permission-mode dontAsk, --allowedTools "<list as given>", and NOT the bypass', () => {
+    const a = buildClaudeArgs(boxed);
+    expect(valsOf(a, '--tools')).toEqual(['Read,Glob,Grep,Bash']);
+    expect(valsOf(a, '--permission-mode')).toEqual(['dontAsk']);
+    expect(valsOf(a, '--allowedTools')).toEqual(['Read Glob Grep Bash(dbq:*)']);
+    expect(has(a, '--dangerously-skip-permissions')).toBe(false);
+    expect(a).not.toContain('bypassPermissions');
+  });
+
+  it('the chatbox argv, exactly (the other boxed flags stay: --strict-mcp-config, --settings)', () => {
+    expect(buildClaudeArgs({ ...boxed, model: 'sonnet', effort: 'medium' })).toEqual([
+      ...BASE_ARGS, '--permission-mode', 'dontAsk', '--tools', 'Read,Glob,Grep,Bash', '--strict-mcp-config',
+      '--allowedTools', 'Read Glob Grep Bash(dbq:*)', '--model', 'sonnet', '--effort', 'medium', '--settings', '{"cleanupPeriodDays":3650000}',
+    ]);
+  });
+
+  it('still the boxed tier otherwise: no roots, no --setting-sources, no deny rules, even if some are handed in', () => {
+    const a = buildClaudeArgs({ ...boxed, addDirs: ['/c/work'], readOnlyDirs: ['/c/ro'], confineToDirs: ['/c/conv'] });
+    expect(addDirs(a)).toEqual([]);
+    expect(has(a, '--setting-sources')).toBe(false);
+    expect(valsOf(a, '--permission-mode')).toEqual(['dontAsk']);   // never the confined tier's `default`
+    expect(JSON.parse(valsOf(a, '--settings')[0]).permissions).toBeUndefined();
+  });
+
+  it("'all' / '*' stay rejected: coerced to the explicit default list, still no bypass", () => {
+    for (const allowedTools of ['all', '*']) {
+      const a = buildClaudeArgs({ osConfined: true, tools, allowedTools });
+      expect(valsOf(a, '--allowedTools')).toEqual([DEFAULT_ALLOWED_TOOLS.join(' ')]);
+      expect(has(a, '--dangerously-skip-permissions')).toBe(false);
+    }
+  });
+
+  it('an empty narrowed list is no tools at all: --tools "" under dontAsk, no --allowedTools', () => {
+    const a = buildClaudeArgs({ osConfined: true, allowedTools: [], tools: [] });
+    expect(valsOf(a, '--tools')).toEqual(['']);
+    expect(valsOf(a, '--permission-mode')).toEqual(['dontAsk']);
+    expect(has(a, '--allowedTools')).toBe(false);
+  });
+
+  it('no explicit list (no `tools`) — UNCHANGED 2026-09-23 bypass, no --allowedTools', () => {
+    const a = buildClaudeArgs({ osConfined: true, allowedTools: list });
+    expect(has(a, '--dangerously-skip-permissions')).toBe(true);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(has(a, '--allowedTools')).toBe(false);
+    expect(has(a, '--tools')).toBe(false);
+  });
+
+  it('dangerouslySkipPermissions wins over it, and the pair is emitted once', () => {
+    const a = buildClaudeArgs({ ...boxed, dangerouslySkipPermissions: true });
+    expect(a.filter((x) => x === '--dangerously-skip-permissions')).toHaveLength(1);
+    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
+    expect(has(a, '--allowedTools')).toBe(false);   // osConfined + dangerouslySkipPermissions together: no list, exactly as before
+  });
+
+  it('a `tools` list WITHOUT the box changes nothing: dangerouslySkipPermissions, CLI-confined and plain keep their tier', () => {
+    const only = (o) => buildClaudeArgs({ allowedTools: list, tools, ...o });
+    const bypass = only({ dangerouslySkipPermissions: true });
+    expect(valsOf(bypass, '--permission-mode')).toEqual(['bypassPermissions']);
+    const confined = only({ confineToDirs: ['/c/conv'] });
+    expect(valsOf(confined, '--permission-mode')).toEqual(['default']);
+    expect(valsOf(confined, '--setting-sources')).toEqual(['']);
+    expect(valsOf(confined, '--allowedTools')).toEqual(['Bash(dbq:*)']);   // file tools withheld, as ever
+    const plain = only({});
+    expect(has(plain, '--permission-mode')).toBe(false);
+    expect(valsOf(plain, '--allowedTools')).toEqual(['Read Glob Grep Bash(dbq:*)']);
+    for (const a of [bypass, confined, plain]) expect(a).not.toContain('dontAsk');
+  });
+});
+
 describe('no MCP server (operator 2026-10-26: "off for all beings")', () => {
   it('every tier carries --strict-mcp-config, once — the claude.ai connectors never load', () => {
     for (const o of [{}, { allowedTools: ['Read'] }, { confineToDirs: ['/c/conv'], allowedTools: ['Read'] }, { dangerouslySkipPermissions: true }, { osConfined: true }, { strictMcpConfig: true }]) {
