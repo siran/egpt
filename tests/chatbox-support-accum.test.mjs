@@ -1,4 +1,4 @@
-// A chatbox's SUPPORT line is gated as mode accum (An #5962) while the visitor's lines keep the conversation's
+// A chatbox's SUPPORT line is gated as mode accum (owner 2026-11-09) while the visitor's lines keep the conversation's
 // mode (on): the support line is recorded and accumulated and wakes the being only when it addresses it, with
 // the same gate and prompt accum has everywhere. No mechanism of its own: the limb marks the event (lineMode),
 // identity.build carries it, gating.decide resolves the line's mode, the spine does what it does for accum.

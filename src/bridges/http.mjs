@@ -31,7 +31,7 @@ import { stripInvisible } from '../invisible.mjs';
 import { createBrowser, checkUser, LEVELS, RESERVED_USER, SUPPORT } from './http-ayde.mjs';
 
 export const HTTP_PREFIX = 'http:';
-export const SUPPORT_MODE = 'accum';   // the mode a support line is gated by (An #5962); the visitor's lines keep the conversation's
+export const SUPPORT_MODE = 'accum';   // the mode a support line is gated by (owner 2026-11-09); the visitor's lines keep the conversation's
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
 const CHAT_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;
 // The client a chatbox chat belongs to, or null.
