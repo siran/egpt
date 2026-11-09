@@ -1,0 +1,127 @@
+#!/usr/bin/python3 -I
+# dbq: runs one SQL statement against the conversation's PostgreSQL database and prints the result as
+# TSV. The only database tool of a chatbox being: its tool rule is Bash(dbq:*) and nothing else in Bash.
+# Not psql on purpose: psql's meta-commands (\!, \o, \copy, \i ...) reach the shell and the files, even
+# through -c, so a being holding psql holds a shell (operator 2026-11-09). dbq is SQL and nothing else:
+# no file output, no COPY handling, no shell, no logging, no SQL parsing. The grants of the database
+# are the real boundary; the read-only transaction and the 20 s statement_timeout are not.
+#
+#   dbq "<SQL>"            all arguments joined by spaces
+#   dbq < query.sql        the SQL on stdin when there are no arguments
+#
+# Credentials: ./.credentials/ of the current directory (the conversation folder), nowhere else: no
+# flag, no env override (inherited PG* variables are dropped). Per person, temporary, read-only:
+#   pg_service.conf   one libpq service section (host, port, dbname, user, sslmode=verify-full, ...)
+#   pgpass            the libpq password file line
+#   vence             expiry, unix epoch seconds ('login' names the role; dbq does not read it)
+# libpq reads the two files through PGSERVICEFILE and PGPASSFILE and connects with service=<section>,
+# so host, user, password and connection strings are never printed and never on a command line.
+#
+# Output: header line, rows as TSV (\t \n \r \\ escaped, NULL empty), at most 200 rows, then the
+# footer '(N rows)' or '(showing 200 of N rows)'; a statement without result set prints its status.
+# Exit: 0 done, 1 database error (its primary message only), 2 usage or credential problem.
+# psycopg2 sends a multi-statement string whole and keeps the result of its last statement only.
+import configparser
+import os
+import sys
+import time
+
+import psycopg2
+import psycopg2.extensions
+
+CRED = '.credentials'
+MAX_ROWS = 200
+STATEMENT_TIMEOUT_MS = 20000
+USAGE = 'usage: dbq "<SQL>"   (or the SQL on stdin)'
+
+
+class Fail(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
+def credentials():
+    """Point libpq at ./.credentials and return the service name; Fail(2) when it cannot be used."""
+    if not os.path.isdir(CRED):
+        raise Fail(2, f'{CRED}/ not found (run dbq in the conversation folder)')
+    for f in ('pg_service.conf', 'pgpass', 'vence'):
+        if not os.path.isfile(f'{CRED}/{f}'):
+            raise Fail(2, f'{CRED}/{f} not found')
+    try:
+        with open(f'{CRED}/vence') as f:
+            vence = int(f.read().strip())
+    except (OSError, ValueError):
+        raise Fail(2, f'{CRED}/vence cannot be read as a unix epoch in seconds')
+    if vence <= time.time():
+        raise Fail(2, 'credential expired; a new one is issued within a few minutes')
+    conf = configparser.RawConfigParser()
+    try:
+        conf.read(f'{CRED}/pg_service.conf')
+        one = len(conf.sections()) == 1
+    except configparser.Error:
+        one = False
+    if not one:
+        raise Fail(2, f'{CRED}/pg_service.conf must hold exactly one service section')
+    for k in [k for k in os.environ if k.startswith('PG')]:
+        del os.environ[k]
+    os.environ['PGSERVICEFILE'] = os.path.abspath(f'{CRED}/pg_service.conf')
+    os.environ['PGPASSFILE'] = os.path.abspath(f'{CRED}/pgpass')
+    return conf.sections()[0]
+
+
+def cell(v):
+    if v is None:
+        return ''
+    return str(v).replace('\\', '\\\\').replace('\t', '\\t').replace('\n', '\\n').replace('\r', '\\r')
+
+
+def render(cur):
+    """One result set (or the status of a statement without one) as TSV lines on stdout."""
+    if cur.description is None:
+        print(cur.statusmessage)
+        return
+    print('\t'.join(cell(c[0]) for c in cur.description))
+    for row in cur.fetchmany(MAX_ROWS):
+        print('\t'.join(cell(v) for v in row))
+    n = cur.rowcount
+    print(f'(showing {MAX_ROWS} of {n} rows)' if n > MAX_ROWS else f'({n} rows)')
+
+
+def run(service, sql):
+    try:
+        conn = psycopg2.connect(service=service)
+    except psycopg2.Error:  # libpq's text names the host
+        raise Fail(1, 'could not connect (credential refused, or the database is unreachable)')
+    try:
+        conn.set_session(readonly=True, autocommit=False)
+        # Values as the server prints them (t/f, JSON text, \x hex), not as Python objects.
+        ext = psycopg2.extensions
+        ext.register_type(ext.new_type(tuple(ext.string_types), 'RAW', lambda v, cur: v), conn)
+        cur = conn.cursor()
+        cur.execute(f'SET statement_timeout = {STATEMENT_TIMEOUT_MS}')
+        cur.execute(sql)
+        render(cur)
+    except psycopg2.Error as e:
+        raise Fail(1, e.diag.message_primary or str(e).strip().partition('\n')[0] or type(e).__name__)
+    finally:
+        if not conn.closed:
+            conn.rollback()
+        conn.close()
+
+
+def main(argv, stdin):
+    sql = ' '.join(argv) if argv else stdin.read()
+    if not sql.strip():
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        run(credentials(), sql)
+    except Fail as e:
+        print(f'dbq: {e}', file=sys.stderr)
+        return e.code
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:], sys.stdin))

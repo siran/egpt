@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgtk-3-0 libnss3 libxss1 libasound2 libgbm1 libxshmfence1 libdrm2 \
       libsecret-1-0 libnotify4 libatspi2.0-0 libx11-xcb1 libxtst6 xdg-utils \
       fonts-noto-core fonts-noto-color-emoji \
-      ffmpeg libgomp1 python3 python3-venv \
+      ffmpeg libgomp1 python3 python3-venv python3-psycopg2 \
   && rm -rf /var/lib/apt/lists/*
 
 # Google Chrome stable, at /usr/bin/google-chrome-stable (chrome-launcher.mjs CHROME_PATHS.linux).
@@ -83,6 +83,10 @@ RUN --mount=type=bind,source=docker/awscli.asc,target=/tmp/awscli.asc \
   && gpg --batch --status-fd 1 --verify awscli.zip.sig awscli.zip | grep -q "^\[GNUPG:\] VALIDSIG $AWSCLI_KEY_FPR " \
   && unzip -q awscli.zip && ./aws/install \
   && rm -rf awscli.zip awscli.zip.sig aws "$GNUPGHOME"
+
+# AWS RDS CA bundle, the sslrootcert of dbq's credential (mkdir, not curl --create-dirs: that makes the dir 0750).
+RUN mkdir -p /usr/local/share/ca-rds \
+  && curl -fsSL -o /usr/local/share/ca-rds/global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 COPY --from=whisper /src/whisper.cpp/build/bin/whisper-cli /src/whisper.cpp/build/bin/whisper-server /usr/local/bin/
 COPY --from=whisper /src/whisper.cpp/samples/jfk.wav /opt/whisper/samples/jfk.wav
