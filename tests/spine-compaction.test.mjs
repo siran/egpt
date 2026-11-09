@@ -558,7 +558,7 @@ describe('compaction: compact right after the handoff', () => {
 });
 
 // The chatbox warm class (operator 2026-11-08): a compaction that reopens a cold key opens it in
-// the class its turn ran under, so a chatbox session stays under warm.max_by_class.chatbox.
+// the class its turn ran under, so a chatbox session keeps its eviction tier.
 describe('compaction service: the warm class of the target', () => {
   it('a chatbox target runs its handoff and /compact as klass chatbox', async () => {
     const pool = fakePool(), sched = makeScheduler();

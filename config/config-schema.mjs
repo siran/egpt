@@ -3459,74 +3459,31 @@ export const CONFIG_SCHEMA = {
   `,
 
   warm: `
-    Warm-session pool for the resident brain processes (src/warm-sessions.mjs; E
-    stays resident so its context lives in memory instead of re-spawning +
-    --resume per message).
+    Warm-session pool (src/warm-sessions.mjs): a conversation's brain process stays
+    resident, its context in memory, instead of re-spawning + --resume per message.
 
-    KEYS:
-      max
-        DEFAULT: 6 — LRU cap on live sessions; the "keep a number — or, with a
-        high max, all — agents warm" knob. It bounds how many warm sessions live
-        at once, independent of the idle TTL.
-      idle_ttl_ms
-        DEFAULT: 1800000 — ms-of-idle before an unlisted class is evicted.
-      idle_ttl_by_class
-        Per-class idle TTL: a ms number or a duration ("15m", "2h"), in the TTL
-        DIALECT below. An unparseable value is logged and that class takes idle_ttl_ms.
-        DEFAULT: { system: 43200000, resident: 43200000, conversation: 900000,
-                   sibling: 43200000 }
-        chatbox (the http chatbox limb's conversations) takes the conversation TTL
-        unless it is listed itself.
-      max_by_class
-        DEFAULT: none — e.g. { chatbox: 4 }. A class at its cap evicts its OWN
-        least-recently-used idle session before opening another; never another
-        class's. max still applies on top.
-      memory_floor_mb
-        DEFAULT: null (off). Available memory (cgroup-aware) under this many MB:
-        opening a new session first evicts the least-recently-used idle one, and
-        the spine's tick evicts one more per tick until it recovers. The turn
-        always runs.
-      memory_pressure_psi
-        DEFAULT: null (off). Linux only: PSI memory "some avg10" (% of time stalled
-        on memory, /proc/pressure/memory) over this evicts one idle session per
-        tick. Catches swap pressure that available memory hides.
-      A busy session, one with background work running, or a kept one (KEEP,
-      below) is never evicted by any of these.
+    EVICTION IS MEMORY-BASED (operator 2026-11-08), built in, nothing to set:
+      reserve     max(15% of total memory (cgroup-aware), 500 MB). Opening a session
+                  with less available first evicts one idle session; the spine's tick
+                  evicts one more per tick while under it. The turn always runs.
+      PSI         Linux: memory "some avg10" > 10 also evicts one per tick.
+      order       chatbox first, then conversation / sibling, resident / system last;
+                  least recently used within each.
+      never       a busy session, one with background work running, a kept one.
 
-    TTL DIALECT (operator 2026-07-26 — the same one posts_back_delay_ms and
-    loop_guard.inbound.turns speak): -1 = never idle-evict (warm forever), 0 = always evict
-    (dropped the moment its turn ends, so every turn is a cold --resume), N =
-    evict after N ms idle. An ABSENT class falls through to idle_ttl_ms; absent
-    never means 0.
+    KEYS (all optional):
+      max                a backstop on live sessions, same victim order. DEFAULT: none
+      idle_ttl_ms        idle timer for a class not in idle_ttl_by_class. DEFAULT: -1 (off)
+      idle_ttl_by_class  { <class>: <ttl> } — chatbox, conversation, sibling, resident,
+                         system; chatbox takes conversation's unless listed. DEFAULT: none.
+                         An unparseable value is logged; that class takes idle_ttl_ms.
+      idle_ttl           per conversation (folder config.yaml, conversations.yaml entry,
+                         or here for all): beats the class TTL. DEFAULT: none
+      keep               per conversation: true = never evicted (memory, max or timer);
+                         a stop, a re-pin, a configuration reopen or a failure still ends
+                         it. Read live. At the node rung it would keep every conversation.
 
-    CONVERSATION DEFAULT = 15m (operator 2026-07-02: "keep any conversation as a
-    background agent 15m after the last message, configurable"): a conversation
-    goes cold 15 min after its last turn, then idle-evicts (the transcript +
-    --resume make the next turn correct, just colder). This SUPERSEDES the
-    earlier never-evict default.
-
-    EVERYTHING ELSE IDLES OUT AT 12h (operator 2026-09-20: "let them idle out,
-    12h"). system/resident/sibling used to default to -1 — never — which left
-    one live claude.exe per warm session (13 of them on kg) until the pool hit
-    max, or the spine restarted. Evicting is cheap: the thread id lives in the
-    conversation record, so the next turn resumes the same session. A node whose
-    config.yaml already spells these out is brought forward by migrations/0013.
-
-    PER-CONVERSATION OVERRIDE: a conversation folder's own config.yaml (the same
-    file that carries the transcription: / heartbeats: blocks) may set
-    warm: { idle_ttl: 1h } — a ms number or a "<qty><unit>" duration
-    (ms/s/m/h) — to override the class TTL for THAT conversation only;
-    idle_ttl: -1 there = keep this conversation always warm.
-    RESOLUTION: per-conversation override > class TTL.
-
-    KEEP (operator 2026-10-22: "that group should be kept always on"):
-    warm: { keep: true } on a conversation's conversations.yaml entry (or its
-    folder config.yaml) — its sessions are never idle-evicted and never LRU-evicted;
-    only a stop, a rethread/re-pin, a configuration reopen or a failure ends one.
-    A pool full of kept or busy sessions grows past max. Read live: an edit
-    applies at the next idle check / LRU pass, no turn and no restart needed.
-    idle_ttl: -1 alone still yields to max (LRU); keep does not. At the node
-    rung it would keep EVERY conversation — set it per conversation.
+    TTL: a ms number or a duration ("15m", "2h"); -1 = never, 0 = at turn end, N = N ms idle.
   `,
 
   advice_channel: `

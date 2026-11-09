@@ -163,9 +163,9 @@ untested id not in `contracts-gaps.json`.
    10.1 Every being runs on the local `claude` CLI (`ccode`);
    the in-process SDK is retired — do not reintroduce it.
 
-   10.2 A conversation runs as a resident background agent, warm ~15m after its
-   last message (`warm.idle_ttl_by_class`, per-conversation override in the conv
-   folder's `config.yaml`), then reaped; `--resume` restores context
+   10.2 A conversation runs as a resident background agent, warm until memory runs
+   short (built-in reserve; idle timers `warm.idle_ttl_by_class` / per-conversation
+   `warm.idle_ttl` are opt-in), then reaped; `--resume` restores context
    cold.
 
    10.3 A warm session grown past a ratio of the context window auto-compacts in

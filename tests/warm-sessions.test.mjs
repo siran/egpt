@@ -23,6 +23,7 @@ function fakeFactory() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const ROOMY = () => ({ available: Infinity, psi: null });   // memory that never asks for an eviction
 
 describe('warm-session pool', () => {
   it('reuses a warm session across turns (no respawn) and keeps context handle', async () => {
@@ -38,7 +39,7 @@ describe('warm-session pool', () => {
 
   it('opens distinct sessions per key', async () => {
     const { makeSession, made } = fakeFactory();
-    const pool = createWarmPool({ makeSession });
+    const pool = createWarmPool({ makeSession, memory: ROOMY });
     await pool.run('k1', 'x');
     await pool.run('k2', 'y');
     expect(made.length).toBe(2);
@@ -57,7 +58,7 @@ describe('warm-session pool', () => {
 
   it('LRU-evicts beyond maxWarm', async () => {
     const { makeSession, made } = fakeFactory();
-    const pool = createWarmPool({ makeSession, max: 2 });
+    const pool = createWarmPool({ makeSession, max: 2, memory: ROOMY });
     await pool.run('k1', 'a');
     await sleep(2);
     await pool.run('k2', 'b');
@@ -481,7 +482,7 @@ describe('warm-session pool', () => {
 
   it('per-run override speaks the same dialect (-1 never, 0 always)', async () => {
     const { makeSession } = fakeFactory();
-    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 }, memory: ROOMY });
     await pool.run('never', 'a', () => {}, { klass: 'conversation', idleTtlMs: -1 });
     await pool.run('always', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });
     expect(pool.has('always')).toBe(false);      // evicted at turn end
@@ -740,20 +741,59 @@ describe('warm-session pool — warm.keep', () => {
   });
 });
 
-// Memory-aware eviction (operator 2026-11-08): warm.memory_floor_mb, warm.memory_pressure_psi,
-// warm.max_by_class. warm.max stays the hard backstop; unset keys = count + TTL only.
+/// Memory-based eviction (operator 2026-11-08): always on, a built-in reserve of max(15% of total,
+// 500 MB) and PSI > 10. No count cap and no idle timer by default. Victims: chatbox first,
+// resident/system last, LRU within.
 const MB = 2 ** 20;
+const TOTAL = 8000 * MB;   // reserve 1200 MB
 const fakeMemory = (availableMb, psi = null) => {
-  const m = { available: availableMb * MB, psi, reads: 0 };
-  return { m, memory: () => { m.reads++; return { available: m.available, psi: m.psi }; } };
+  const m = { available: availableMb * MB, psi };
+  return { m, memory: () => ({ available: m.available, psi: m.psi }) };
 };
 
+describe('warm-session pool — no warm config', () => {
+  it('an idle session of any class is never idle-evicted', async () => {
+    vi.useFakeTimers();
+    try {
+      const { makeSession, made } = fakeFactory();
+      const pool = createWarmPool({ makeSession, memory: fakeMemory(4000).memory, total: TOTAL });
+      for (const klass of ['conversation', 'chatbox', 'sibling', 'resident', 'system']) await pool.run(klass, 'a', () => {}, { klass });
+      await vi.advanceTimersByTimeAsync(7 * 24 * 3600_000);
+      expect(pool.stats().size).toBe(5);
+      expect(made.some((s) => s.closed)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('20 sessions are not capped at 6', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, memory: fakeMemory(4000).memory, total: TOTAL });
+    for (let i = 0; i < 20; i++) await pool.run(`k${i}`, 'a');
+    expect(pool.stats().size).toBe(20);
+    expect(made.some((s) => s.closed)).toBe(false);
+  });
+
+  it('the log says size=N with no cap, and size=N/M only under a max', async () => {
+    for (const [max, shape] of [[undefined, /size=\d+$/], [2, /size=\d+\/2$/]]) {
+      const { makeSession } = fakeFactory();
+      const logs = [];
+      const pool = createWarmPool({ makeSession, max, memory: ROOMY, onLog: (l) => logs.push(l) });
+      await pool.run('k1', 'a');
+      pool.adopt('k2', { klass: 'conversation' });
+      pool.evict('k1');
+      const sized = logs.filter((l) => l.includes('size='));
+      expect(sized.map((l) => l.split(' ')[1])).toEqual(['opened', 'adopted', 'evicted']);
+      for (const l of sized) expect(l).toMatch(shape);
+    }
+  });
+});
+
 describe('warm-session pool — memory', () => {
-  it('a spawn under the memory floor LRU-evicts an idle session first, and says so', async () => {
+
+  it('a spawn under the reserve evicts an idle session first, and says so', async () => {
     const { makeSession, made } = fakeFactory();
     const { m, memory } = fakeMemory(2000);
     const logs = [];
-    const pool = createWarmPool({ makeSession, memoryFloorMb: 500, memory, onLog: (l) => logs.push(l) });
+    const pool = createWarmPool({ makeSession, memory, total: TOTAL, onLog: (l) => logs.push(l) });
     await pool.run('k1', 'a');
     await sleep(2);
     await pool.run('k2', 'b');
@@ -765,42 +805,56 @@ describe('warm-session pool — memory', () => {
     expect(pool.has('k1')).toBe(false);
     expect(made[0].closed).toBe(true);
     expect(pool.stats().keys).toEqual(['k2', 'k3']);
-    expect(logs.some((l) => /evicted k1 \(memory 300MB available < floor 500MB/.test(l))).toBe(true);
+    expect(logs.some((l) => /evicted k1 \(memory 300MB available < reserve 1200MB/.test(l))).toBe(true);
   });
 
-  it('under the floor with nothing evictable, the spawn still happens (never refuses a turn)', async () => {
+  it('the reserve is max(15% of total, 500 MB)', async () => {
+    for (const [totalMb, reserveMb] of [[8000, 1200], [2000, 500]]) {
+      const { makeSession } = fakeFactory();
+      const { m, memory } = fakeMemory(reserveMb + 1);
+      const pool = createWarmPool({ makeSession, memory, total: totalMb * MB });
+      await pool.run('k1', 'a');
+      await pool.run('k2', 'a');
+      pool.tick();
+      expect(pool.stats().size).toBe(2);
+      m.available = (reserveMb - 1) * MB;
+      pool.tick();
+      expect(pool.stats().size).toBe(1);
+    }
+  });
+
+  it('under the reserve with nothing evictable, the spawn still happens (never refuses a turn)', async () => {
     const { makeSession, made } = fakeFactory();
-    const { memory } = fakeMemory(100);
     const logs = [];
-    const pool = createWarmPool({ makeSession, memoryFloorMb: 500, memory, onLog: (l) => logs.push(l) });
+    const pool = createWarmPool({ makeSession, memory: fakeMemory(100).memory, total: TOTAL, onLog: (l) => logs.push(l) });
     const r = await pool.run('k1', 'a');
     expect(r.text).toBe('echo:a');
     expect(made.length).toBe(1);
     expect(logs.some((l) => /nothing idle to evict, opening k1 anyway/.test(l))).toBe(true);
   });
 
-  it('pressure on the tick evicts oldest-first, one per tick, and stops when memory recovers', async () => {
+  it('short on the tick evicts oldest-first, one per tick, and stops when memory recovers', async () => {
     const { makeSession } = fakeFactory();
     const { m, memory } = fakeMemory(2000);
-    const pool = createWarmPool({ makeSession, memoryFloorMb: 500, memory });
+    const pool = createWarmPool({ makeSession, memory, total: TOTAL });
     for (const k of ['k1', 'k2', 'k3']) { await pool.run(k, 'a'); await sleep(2); }
     pool.tick();
-    expect(pool.stats().keys).toEqual(['k1', 'k2', 'k3']);   // above the floor: nothing
+    expect(pool.stats().keys).toEqual(['k1', 'k2', 'k3']);   // above the reserve: nothing
     m.available = 400 * MB;
     pool.tick();
     expect(pool.stats().keys).toEqual(['k2', 'k3']);
     pool.tick();
     expect(pool.stats().keys).toEqual(['k3']);
-    m.available = 900 * MB;
+    m.available = 1500 * MB;
     pool.tick();
     expect(pool.stats().keys).toEqual(['k3']);
   });
 
-  it('PSI some avg10 over the threshold evicts on the tick; under it, nothing', async () => {
+  it('PSI some avg10 over 10 evicts on the tick, never at a spawn; under it, nothing', async () => {
     const { makeSession } = fakeFactory();
     const { m, memory } = fakeMemory(4000, 25);
     const logs = [];
-    const pool = createWarmPool({ makeSession, memoryPressurePsi: 10, memory, onLog: (l) => logs.push(l) });
+    const pool = createWarmPool({ makeSession, memory, total: TOTAL, onLog: (l) => logs.push(l) });
     for (const k of ['k1', 'k2']) { await pool.run(k, 'a'); await sleep(2); }
     expect(pool.stats().keys).toEqual(['k1', 'k2']);         // PSI alone never gates a spawn
     pool.tick();
@@ -811,37 +865,44 @@ describe('warm-session pool — memory', () => {
     expect(pool.stats().keys).toEqual(['k2']);
   });
 
-  it("a class over its max_by_class evicts its OWN LRU idle session, never another class's", async () => {
+  it('the victim order: chatbox first, then conversation / sibling, resident and system only when none else is left', async () => {
     const { makeSession } = fakeFactory();
-    const pool = createWarmPool({ makeSession, maxByClass: { chatbox: 2 } });
-    await pool.run('conv', 'a', () => {}, { klass: 'conversation' });   // the oldest of all
-    await sleep(2);
-    await pool.run('c1', 'a', () => {}, { klass: 'chatbox' });
-    await sleep(2);
-    await pool.run('c2', 'a', () => {}, { klass: 'chatbox' });
-    await sleep(2);
-    await pool.run('c3', 'a', () => {}, { klass: 'chatbox' });
-    expect(pool.stats().keys).toEqual(['conv', 'c2', 'c3']);
-    await pool.run('conv2', 'a', () => {}, { klass: 'conversation' });  // another class: no quota
-    expect(pool.stats().keys).toEqual(['conv', 'c2', 'c3', 'conv2']);
+    const { m, memory } = fakeMemory(4000);
+    const pool = createWarmPool({ makeSession, memory, total: TOTAL });
+    for (const [key, klass] of [['system', 'system'], ['resident', 'resident'], ['conv-old', 'conversation'], ['sib', 'sibling'], ['box-1', 'chatbox'], ['conv-new', 'conversation'], ['box-2', 'chatbox']]) {
+      await pool.run(key, 'a', () => {}, { klass });
+      await sleep(2);
+    }
+    m.available = 100 * MB;
+    const order = [];
+    for (let i = 0; i < 7; i++) {
+      const before = pool.stats().keys;
+      pool.tick();
+      order.push(before.find((k) => !pool.has(k)));
+    }
+    expect(order).toEqual(['box-1', 'box-2', 'conv-old', 'sib', 'conv-new', 'system', 'resident']);
   });
 
-  it("a class whose sessions are all held grows past its quota rather than take another class's", async () => {
-    const { makeSession, made } = fakeFactory();
-    const pool = createWarmPool({ makeSession, maxByClass: { chatbox: 1 } });
-    await pool.run('conv', 'a', () => {}, { klass: 'conversation' });
-    await pool.run('c1', 'a', () => {}, { klass: 'chatbox' });
-    made[1].background = 1;
-    await pool.run('c2', 'a', () => {}, { klass: 'chatbox' });
-    expect(pool.stats().keys).toEqual(['conv', 'c1', 'c2']);
+  it('a configured max picks its victim in the same order', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, max: 3, memory: fakeMemory(4000).memory, total: TOTAL });
+    for (const [key, klass] of [['res', 'resident'], ['conv', 'conversation'], ['box', 'chatbox']]) {
+      await pool.run(key, 'a', () => {}, { klass });
+      await sleep(2);
+    }
+    await pool.run('conv2', 'a', () => {}, { klass: 'conversation' });
+    expect(pool.stats().keys).toEqual(['res', 'conv', 'conv2']);
+    await sleep(2);
+    await pool.run('conv3', 'a', () => {}, { klass: 'conversation' });
+    expect(pool.stats().keys).toEqual(['res', 'conv2', 'conv3']);
   });
 
-  it('busy, background and warm.keep sessions survive the floor, the pressure tick and the class quota', async () => {
+  it('busy, background and warm.keep sessions survive the reserve and the pressure tick, whatever their class', async () => {
     const { makeSession, made } = fakeFactory();
-    const { memory } = fakeMemory(100, 50);                // under the floor AND over the PSI threshold
+    const { memory } = fakeMemory(100, 50);                // under the reserve AND over the PSI limit
     const kept = new Set(['kept']);
-    const pool = createWarmPool({ makeSession, memoryFloorMb: 500, memoryPressurePsi: 10, maxByClass: { chatbox: 1 }, memory, keepWarm: (k) => kept.has(k) });
-    const opts = { klass: 'chatbox' };
+    const pool = createWarmPool({ makeSession, memory, total: TOTAL, keepWarm: (k) => kept.has(k) });
+    const opts = { klass: 'chatbox' };                     // the first tier
     await pool.run('bg', 'a', () => {}, opts);
     made[0].background = 1;
     await pool.run('kept', 'a', () => {}, opts);
@@ -850,36 +911,14 @@ describe('warm-session pool — memory', () => {
     pool.run('busy', 'b', () => {}, opts).catch(() => {});
     await sleep(2);
     expect(pool.busy('busy')).toBe(true);
-    expect(pool.stats().keys).toEqual(['bg', 'kept', 'busy']);       // quota 1: nothing of its own to take
-    await pool.run('idle', 'a', () => {}, { klass: 'conversation' });
+    expect(pool.stats().keys).toEqual(['bg', 'kept', 'busy']);
+    await pool.run('idle', 'a', () => {}, { klass: 'system' });   // the last tier, and the only one that may go
     for (let i = 0; i < 5; i++) pool.tick();
-    expect(pool.stats().keys).toEqual(['bg', 'kept', 'busy']);       // only the idle one went
+    expect(pool.stats().keys).toEqual(['bg', 'kept', 'busy']);
     expect(made.slice(0, 3).map((s) => s.closed)).toEqual([false, false, false]);
-    await pool.run('new', 'a', () => {}, opts);                       // the floor at admission, too
+    await pool.run('new', 'a', () => {}, opts);                   // the reserve at admission, too
     expect(pool.stats().keys).toEqual(['bg', 'kept', 'busy', 'new']);
     expect(made.slice(0, 3).map((s) => s.closed)).toEqual([false, false, false]);
-  });
-
-  it('LOCK: with the memory keys unset, memory is never read and tick() changes nothing', async () => {
-    const { makeSession } = fakeFactory();
-    const { m, memory } = fakeMemory(1);
-    const pool = createWarmPool({ makeSession, max: 2, memory });
-    await pool.run('k1', 'a');
-    await sleep(2);
-    await pool.run('k2', 'b');
-    for (let i = 0; i < 3; i++) pool.tick();
-    expect(pool.stats().keys).toEqual(['k1', 'k2']);
-    await sleep(2);
-    await pool.run('k3', 'c');                                           // count LRU, as before
-    expect(pool.stats().keys).toEqual(['k2', 'k3']);
-    expect(m.reads).toBe(0);
-  });
-
-  it('memory_pressure_psi on a host with no PSI says so once', () => {
-    const { makeSession } = fakeFactory();
-    const logs = [];
-    createWarmPool({ makeSession, memoryPressurePsi: 10, memory: () => ({ available: 4000 * MB, psi: null }), onLog: (l) => logs.push(l) });
-    expect(logs.filter((l) => /no PSI/.test(l))).toHaveLength(1);
   });
 
   it("the spine's tick drives the pool's pressure check", () => {

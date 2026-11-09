@@ -1441,7 +1441,7 @@ export function createBrainPool({
       // same warm entry but OMITS idleTtlMs, so it keeps the ttl stamped here — no
       // need to thread the override through it.)
       const idleTtlMs = readWarmTtl(convDir);
-      const klass = scope.surface === 'http' ? 'chatbox' : 'conversation';   // the chatbox limb: its own warm class (warm.max_by_class)
+      const klass = scope.surface === 'http' ? 'chatbox' : 'conversation';   // the chatbox limb: its own warm class, evicted first
       const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass, idleTtlMs });
 
       let r, overflow = false, deadSession = false;

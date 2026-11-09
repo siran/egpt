@@ -97,12 +97,14 @@ limbs:
 #   # intro: "¡Hola!"               # the panel's first line; placeholder, send, end, ... (every UI string) override the Spanish defaults here too
 #   # label: "Marketer — website"   # its section's title in /ayde; default the title
 #   # max_chars: 4000
-#   # rate: { messages: 30, minutes: 10 }   # per session
+#   # rate: { messages: 30, minutes: 10, turns_per_identity_per_hour: 0 }   # per session; the last: one signed identity across its sessions, 0 = off
 #   # new_sessions: { count: 30, minutes: 60 }   # per visitor address
 #   # team_group: -1001234567890    # a Telegram forum group: a topic per session, the team replies there
 #   # team_name: "Equipo"           # the team's name in the widget
-#   # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}
-#   # identity: off                 # optional | required: a signed user (key: secrets/chatbox-mysite.key); its text: strings: { identity: "..." }
+#   # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}, any {<claim>}
+#   # identity: { mode: off, required: [abrin, username], key: [abrin, username] }   # mode off | optional | required: a signed user (secrets/chatbox-mysite.key); required: claims a token must carry; key: the claims that are the identity; its text: strings: { identity: "..." }
+#   # conversation_by: session      # identity: one conversation per signed identity, every session and tab (needs identity)
+#   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity)
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the
@@ -476,8 +478,11 @@ networks:
 # turn_timeout_ms: 0             # opt-in per-turn timeout (ms; > 0): the turn fails and its session is evicted. 0/absent = no limit (default)
 # auto_restart_on_config_change: false   # true = editing this file auto-triggers /restart (full drain+respawn) so the edit applies; keyed on content (no-op saves + mid-write/malformed files never restart). Default false.
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
-# warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # -1 = never evict, 0 = always
-# warm: { memory_floor_mb: 700, memory_pressure_psi: 10, max_by_class: { chatbox: 4 } }  # memory-aware eviction; unset = off
+# warm:                           # eviction is memory-based, built in: reserve max(15% of memory, 500 MB), Linux PSI > 10. All optional:
+#   max: 20                       # a backstop on live sessions; unset = no cap (default)
+#   idle_ttl: 15m                 # idle timer, every conversation; unset = off (default), -1 = never, 0 = at turn end
+#   idle_ttl_by_class: { chatbox: 15m }   # idle timer per class: chatbox, conversation, sibling, resident, system; unset = off (default)
+#   # keep: true                  # per conversation (its conversations.yaml entry or folder config.yaml): never evicted
 # compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
 # Graceful compaction (all OPTIONAL; unset = today's behavior - no handoff turn, re-feed with no
 # welcome). {agent} is replaced with the being's handle, {YYMMDD-HHMM} with the warn's local time

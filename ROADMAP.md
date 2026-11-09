@@ -128,9 +128,9 @@ All of the following is LANDED, test-locked, and (where marked) live-verified:
   (staleness check rides runDue — no reload heartbeat), alive beat =
   `echo beat > state/alive.txt`, liveness = file MTIME, pid in state/spine.pid
 - Daemon: mtime deadman, calm wedge backoff, singleton via spine.pid — live-verified
-- Warm: conversation = background agent for 15m after last message (default),
-  `warm.max` keeps N warm, per-conversation override `warm: { idle_ttl }` in the
-  conv folder's config.yaml (`-1` = always warm, `0` = never)
+- Warm: eviction is memory-based (built-in reserve max(15%, 500 MB) + Linux PSI; chatbox
+  sessions go first, resident/system last); no cap and no idle timer by default. Optional:
+  `warm.max` backstop, `idle_ttl` / `idle_ttl_by_class` timers (`-1` = never, `0` = at turn end), `keep`
 - Per-surface auth: whatsapp/telegram/signal each own {chat_id, allowed_users};
   empty = deny; isSender = owner's global pass
 - Siblings: @name routes to local beings, nested per-being thread persistence
