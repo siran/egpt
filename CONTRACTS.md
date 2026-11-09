@@ -101,6 +101,9 @@ untested id not in `contracts-gaps.json`.
    per-surface namespace (a WhatsApp jid authorizes nothing on Signal); empty
    `allowed_users` adds nobody. A surface's list joins the node's
    `conversation_defaults.allowed_users`; it does not replace it.
+   `allowed_users_inheritance: false` at a level (agent `conversation_defaults`,
+   a chat's per-being entry, a seed) makes that level's list final: the levels
+   above it are not joined in. The Operator always passes.
 
    7.2 The operator is a STABLE id, never a display name (a chat title is
    attacker-controllable); the account owner always passes.

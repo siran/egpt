@@ -228,6 +228,8 @@ agents:
     #                             # owners (the top-level conversation_defaults.allowed_users below) always may.
     #                             # A conversation's own list (conversations.yaml
     #                             # agents.<name>.allowed_users) JOINS this one, it does not replace it.
+    #   allowed_users_inheritance: true  # false = this list is FINAL: the node's lists are not joined in
+    #                             # (the Operator always passes); chats below still join onto it.
     #   access_level: regular     # access_level default (all|regular) - points at
     #                             # config/permissions/<level>.md. Overridable per-conversation
     #                             # (conversations.yaml agents.<name>.access_level, same replace-not-merge rule).

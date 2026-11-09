@@ -216,3 +216,97 @@ describe('configWarnings — a stranger agent needs a "*" somewhere that joins',
     expect(configWarnings(cfg({ conversation_defaults: { allowed_users: ['*'] } }))).toEqual([]);
   });
 });
+
+// allowed_users_inheritance (operator 2026-11-09): default true. `false` at a level makes that level's
+// allowed_users FINAL: the levels above it (node lists → agent conversation_defaults → chat → seed, top to
+// bottom) are not joined in. The Operator (isOwner) still always passes.
+describe('allowed_users_inheritance: false makes a level\'s list final', () => {
+  const FRIEND = 'only-friend';
+  // A world whose root names ROOT and the agent opens to '*', plus per-level extras.
+  function finalWorld({ agentCd = {}, chat = null, root = [ROOT], network = null } = {}) {
+    const config = {
+      conversation_defaults: { allowed_users: root },
+      ...(network ? { networks: { [SURFACE]: { allowed_users: network } } } : {}),
+      agents: { finch: { handles: ['finch'], conversation_defaults: { allowed_users: ['*'], ...agentCd } } },
+    };
+    const state = { contacts: { [SURFACE]: { [CHAT_ID]: { slug: 'c', agents: { finch: chat ?? {} } } } } };
+    const router = createRouter({ getAgents: () => config.agents, getConfig: () => config, loadState: async () => state });
+    return { config, state, router, may: (ev, extra = {}) => mayWake('finch', config.agents.finch, ev, { state, config, ...extra }) };
+  }
+
+  it('REPRODUCTION: a chat cannot be narrower than an agent default of [\'*\'] unless it is final', async () => {
+    const open = finalWorld({ chat: { allowed_users: [FRIEND] } });
+    expect(open.may(lineOf(STRANGER))).toBe(true);   // joined: '*' from the agent still opens it
+    const final = finalWorld({ chat: { allowed_users: [FRIEND], allowed_users_inheritance: false } });
+    expect(final.may(lineOf(STRANGER))).toBe(false);
+    expect((await final.router.resolve(lineOf(STRANGER))).targets).toEqual([]);
+    expect(final.may(lineOf(FRIEND))).toBe(true);
+  });
+
+  it('a non-final chat list (inheritance true or absent) joins the agent\'s', () => {
+    for (const flag of [{}, { allowed_users_inheritance: true }]) {
+      const w = finalWorld({ agentCd: { allowed_users: [AGENT] }, chat: { allowed_users: [CHAT], ...flag } });
+      for (const id of [ROOT, AGENT, CHAT]) expect(w.may(lineOf(id)), id).toBe(true);
+    }
+  });
+
+  it('a final chat list drops the agent list and a node-level '*', but keeps its own ids; node owners are the Operator and still pass', () => {
+    const w = finalWorld({ root: [ROOT, '*'], network: [NET], agentCd: { allowed_users: [AGENT] }, chat: { allowed_users: [CHAT], allowed_users_inheritance: false } });
+    expect(w.may(lineOf(CHAT))).toBe(true);
+    for (const id of [AGENT, STRANGER]) expect(w.may(lineOf(id)), id).toBe(false);
+    for (const id of [ROOT, NET]) expect(w.may(lineOf(id)), id).toBe(true);
+  });
+
+  it('the Operator passes a final list that does not name them (id on the root list, and the account-owner flag)', () => {
+    const w = finalWorld({ chat: { allowed_users: [FRIEND], allowed_users_inheritance: false } });
+    expect(w.may(lineOf(ROOT))).toBe(true);
+    expect(w.may(lineOf('whoever', '@finch hola', { isSender: true, authorized: true }))).toBe(true);
+  });
+
+  it('agent-level final drops the node lists (a node-level '*'); the chat below still joins onto the agent list', () => {
+    const w = finalWorld({ root: [ROOT, '*'], network: [NET], agentCd: { allowed_users: [AGENT], allowed_users_inheritance: false }, chat: { allowed_users: [CHAT] } });
+    for (const id of [AGENT, CHAT, ROOT, NET]) expect(w.may(lineOf(id)), id).toBe(true);   // ROOT, NET: the Operator
+    expect(w.may(lineOf(STRANGER))).toBe(false);
+    const open = finalWorld({ root: [ROOT, '*'], agentCd: { allowed_users: [AGENT] } });
+    expect(open.may(lineOf(STRANGER))).toBe(true);   // not final: the node's '*' joins
+  });
+
+  it('agent-level final with no chat list: only the agent list and the Operator; a node-level \'*\' is dropped', () => {
+    const w = finalWorld({ root: [ROOT, '*'], agentCd: { allowed_users: [AGENT], allowed_users_inheritance: false } });
+    expect(w.may(lineOf(AGENT))).toBe(true);
+    expect(w.may(lineOf(ROOT))).toBe(true);
+    expect(w.may(lineOf(STRANGER))).toBe(false);
+  });
+
+  it('a chat that is not final still joins onto a final agent list; a final chat overrides it', () => {
+    const base = { allowed_users: [AGENT], allowed_users_inheritance: false };
+    const joined = finalWorld({ agentCd: base, chat: { allowed_users: [CHAT] } });
+    expect(joined.may(lineOf(AGENT)) && joined.may(lineOf(CHAT))).toBe(true);
+    const final = finalWorld({ agentCd: base, chat: { allowed_users: [CHAT], allowed_users_inheritance: false } });
+    expect(final.may(lineOf(CHAT))).toBe(true);
+    expect(final.may(lineOf(AGENT))).toBe(false);
+  });
+
+  it('a final seed list drops the levels above it; a non-final one joins', () => {
+    const w = finalWorld({ agentCd: { allowed_users: [AGENT] } });
+    const seed = { allowed_users: [SEED], allowed_users_inheritance: false };
+    expect(w.may(lineOf(SEED), { seed })).toBe(true);
+    expect(w.may(lineOf(AGENT), { seed })).toBe(false);
+    expect(w.may(lineOf(AGENT), { seed: { allowed_users: [SEED] } })).toBe(true);
+  });
+
+  it('a final list with no \'*\' does not admit a being\'s line; a final [\'*\'] does', () => {
+    const closed = finalWorld({ chat: { allowed_users: [FRIEND], allowed_users_inheritance: false } });
+    expect(closed.may(echoOf('lark'))).toBe(false);
+    expect(closed.may(echoOf('lark', { senderId: FRIEND }))).toBe(false);
+    const star = finalWorld({ chat: { allowed_users: ['*'], allowed_users_inheritance: false } });
+    expect(star.may(echoOf('lark'))).toBe(true);
+  });
+
+  it('only a literal false is final: other values keep joining', () => {
+    for (const v of [null, 0, 'false', undefined]) {
+      const w = finalWorld({ chat: { allowed_users: [FRIEND], allowed_users_inheritance: v } });
+      expect(w.may(lineOf(STRANGER)), String(v)).toBe(true);
+    }
+  });
+});

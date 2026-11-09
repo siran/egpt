@@ -892,7 +892,9 @@ export function createBrainPool({
     }
     const box = resolveSandboxedRung({ accessLevel, conversationValue: convSandboxed, agentDefaultValue: cd.sandboxed ?? null, platform });
     const tierOf = (conv, agent) => (conv != null ? 'conversation' : agent != null ? 'agent' : 'default');
-    const joinedUsers = [cd.allowed_users, b?.allowedUsers].filter(Array.isArray);
+    // allowed_users_inheritance: false (operator 2026-11-09) makes a level's list final: what the card shows is what router.mayWake joins.
+    const convFinal = b?.allowedUsersInheritance === false, agentFinal = cd.allowed_users_inheritance === false;
+    const joinedUsers = (convFinal ? [b?.allowedUsers] : [cd.allowed_users, b?.allowedUsers]).filter(Array.isArray);
     return {
       scope,
       slug,
@@ -900,7 +902,7 @@ export function createBrainPool({
       sessionId: b?.threadId ?? null,
       sources: {
         accessLevel: tierOf(b?.accessLevel, cd.access_level),
-        allowedUsers: b?.allowedUsers != null && cd.allowed_users != null ? 'joined' : tierOf(b?.allowedUsers, cd.allowed_users),
+        allowedUsers: convFinal && b?.allowedUsers != null ? 'final' : b?.allowedUsers != null && cd.allowed_users != null ? (agentFinal ? 'joinedFinal' : 'joined') : agentFinal && cd.allowed_users != null ? 'agentFinal' : tierOf(b?.allowedUsers, cd.allowed_users),
         verboseThinking: tierOf(b0?.verboseThinking ?? b?.verboseThinking, cd.verbose_thinking),
         compaction: tierOf(b?.compaction, cd.compaction),
         outboxTo: tierOf(b?.outboxTo, cd.outbox_to),

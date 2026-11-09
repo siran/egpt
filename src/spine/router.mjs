@@ -102,13 +102,27 @@ export function isOwner(ev, config = {}) {
 
 // THE reachability test, for router.resolve, mesh's responder and /agents. The lists JOIN: the Operator
 // (isOwner) always passes, and whoever is on the node's lists, the agent's conversation_defaults or the
-// conversation's own may wake the being. A list holds ids or '*' only: '*' anywhere is anyone, [] adds
+// conversation's own may wake the being, unless a level is final (allowed_users_inheritance: false: its list
+// alone, plus the Operator). A list holds ids or '*' only: '*' anywhere is anyone, [] adds
 // nobody. A being's line is admitted by '*' alone. `seed`: the block a conversation with no entry yet will
 // be created with — its list is the conversation's.
 export function mayWake(being, agent, ev, { state = null, config = {}, surface = ev?.surface, chatId = ev?.chatId, seed = null } = {}) {
   let conv = null;
-  if (state) { try { conv = getBeing(state, surface, chatId, being)?.allowedUsers; } catch { conv = null; } }
-  const lists = [nodeListsOf(config, (ev?.origin ?? ev)?.surface), agent?.conversation_defaults?.allowed_users, conv, seed?.allowed_users].filter(Array.isArray).flat();
+  if (state) { try { conv = getBeing(state, surface, chatId, being); } catch { conv = null; } }
+  const cd = agent?.conversation_defaults;
+  // Top to bottom; a level with `allowed_users_inheritance: false` (operator 2026-11-09) is FINAL: its list
+  // stands without the levels above it. Walk from the bottom up and stop at the first final one.
+  const levels = [
+    { list: nodeListsOf(config, (ev?.origin ?? ev)?.surface) },
+    { list: cd?.allowed_users, final: cd?.allowed_users_inheritance === false },
+    { list: conv?.allowedUsers, final: conv?.allowedUsersInheritance === false },
+    { list: seed?.allowed_users, final: seed?.allowed_users_inheritance === false },
+  ];
+  const lists = [];
+  for (const { list, final } of levels.reverse()) {
+    if (Array.isArray(list)) lists.push(...list);
+    if (final) break;
+  }
   if (fromBeing(ev)) return lists.includes('*');
   return isOwner(ev, config) || allowedUsersPermits(lists, ev?.senderId);
 }

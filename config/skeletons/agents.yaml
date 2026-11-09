@@ -47,6 +47,8 @@ agents:
         #                               unrestricted reachability is the combination to catch).
         # allowed_users:                who else may WAKE this being, besides the node's owners.
         #                               `["*"]` is the explicit wildcard; [] adds nobody.
+        # allowed_users_inheritance:    true (default) | false. false makes THIS list final: the
+        #                               node's lists are not joined in (the Operator still passes).
         # sandboxed:                    OS-level process isolation. Defaults to TRUE when unset
         #                               at every tier.
         # verbose_thinking:             render the chain of thought. Has a THIRD tier below

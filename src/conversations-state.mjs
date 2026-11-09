@@ -1227,6 +1227,9 @@ export function getBeing(state, surface, jid, being) {
     // agents.<being>.conversation_defaults.allowed_users in config.yaml, never replaces them;
     // null = this conversation adds nobody.
     allowedUsers:       b?.allowed_users        ?? null,
+    // `false` makes allowedUsers FINAL (operator 2026-11-09): the agent's and the node's lists are not
+    // joined in. Raw here; router.mayWake owns what it means. null = joins (the default).
+    allowedUsersInheritance: b?.allowed_users_inheritance ?? null,
     // OS-level process isolation on top of access_level:'all' (operator 2026-08-20) — per-
     // conversation override, same shape/tier as accessLevel/allowedUsers above. null = no
     // override at this tier, fall to the global conversation_defaults tier (brainpool.mjs's

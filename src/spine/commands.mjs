@@ -1854,6 +1854,7 @@ export function createCommands({
       const fields = {};
       if (b?.accessLevel != null) fields.access_level = b.accessLevel;
       if (b?.allowedUsers != null) fields.allowed_users = b.allowedUsers;
+      if (b?.allowedUsersInheritance != null) fields.allowed_users_inheritance = b.allowedUsersInheritance;
       return [h, fields];
     });
     let next = state;

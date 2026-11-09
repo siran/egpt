@@ -210,6 +210,24 @@ describe('brainpool writes the card at the start of every turn', () => {
     expect(YAML.parse(cardOf(h.io)).egpt.allowed_users).toEqual(['agent-id']);
   });
 
+  it("allowed_users_inheritance: false shows '(final)' on the card: the conversation's list alone, or the agent's with the node's dropped", async () => {
+    const config = baseConfig();
+    config.agents.egpt.conversation_defaults.allowed_users = ['agent-id'];
+    const h = harness({ config });
+    await h.brain.turn('egpt', ev);   // creates the entry
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { allowed_users: ['chat-id'], allowed_users_inheritance: false }));
+    await h.brain.turn('egpt', ev);
+    expect(YAML.parse(cardOf(h.io)).egpt.allowed_users).toEqual(['chat-id']);
+    expect(cardOf(h.io)).toMatch(/allowed_users: \[ chat-id \]\s+# this conversation \(final\)/);
+    config.agents.egpt.conversation_defaults.allowed_users_inheritance = false;
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { allowed_users: ['chat-id'], allowed_users_inheritance: null }));
+    await h.brain.turn('egpt', ev);
+    expect(cardOf(h.io)).toMatch(/allowed_users: \[ agent-id, chat-id \]\s+# agent default \(config\.yaml\) \(final\) \+ this conversation/);
+    h.setState(patchBeing(h.getState(), ev.surface, ev.chatId, 'egpt', { allowed_users: null }));
+    await h.brain.turn('egpt', ev);
+    expect(cardOf(h.io)).toMatch(/allowed_users: \[ agent-id \]\s+# agent default \(config\.yaml\) \(final\)/);
+  });
+
   it('the file never holds a node-level key', async () => {
     const h = harness();
     await h.brain.turn('egpt', ev);

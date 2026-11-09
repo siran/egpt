@@ -2239,6 +2239,14 @@ export const CONFIG_SCHEMA = {
             controlled here and by access_level instead. An explicit id list is
             independent of ev.authorized/isSender (the per-NETWORK owner
             concept); only an unset list reads the node's owners.
+          allowed_users_inheritance
+            Boolean. DEFAULT: true (operator 2026-11-09). false makes this
+            level's allowed_users FINAL: the node's lists (top-level
+            conversation_defaults, networks.<surface>) are not joined in. The
+            Operator always passes. Levels, top to bottom: node lists, this
+            block, the conversation's entry, a new chat's seed; a lower level
+            that is not final still joins onto this one. A being's own line is
+            admitted by a "*" in the final list alone.
           access_level
             ENUM: regular | all | sandbox | reader. Points this agent at
             config/permissions/<level>.md (src/spine/permission-levels.mjs),
@@ -2405,7 +2413,8 @@ export const CONFIG_SCHEMA = {
 
         OVERRIDDEN PER CONVERSATION in conversations.yaml under the entry's
         agents: block - contacts.<surface>[<id>].agents.<name>.allowed_users /
-        .access_level / .sandboxed / .verbose_thinking / .allow_new_input - FLAT there (no conversation_defaults
+        .allowed_users_inheritance (false = that list is final: the agent's and the node's lists are not
+        joined in) / .access_level / .sandboxed / .verbose_thinking / .allow_new_input - FLAT there (no conversation_defaults
         wrapper: that block is already scoped to one being in one
         conversation, so there is no registry-field ambiguity to guard
         against). When set, the per-conversation value REPLACES this global

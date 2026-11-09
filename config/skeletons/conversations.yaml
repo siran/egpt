@@ -89,6 +89,10 @@ contacts:
           # (config.yaml conversation_defaults.allowed_users), who always may; ['*'] =
           # anyone, [] adds nobody.
           #allowed_users: []
+          # false makes the list above FINAL: this agent's and the node's lists are not
+          # joined in, so only these ids (and the Operator, who always may) wake it here.
+          # Default true.
+          #allowed_users_inheritance: false
 
           # the names that address this agent IN THIS CHAT (@name, a leading bare name,
           # /<name> commands, the bare-name readback). REPLACES config.yaml

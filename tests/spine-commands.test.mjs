@@ -421,6 +421,20 @@ describe('/agents reset <handle>|all — archive + registry wipe + reseed, one s
     expect(eAfter.threadId).toBeNull();
   });
 
+  it('a final allowed_users (allowed_users_inheritance: false) survives reset with its list — a reset must not widen a closed chat', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
+    state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {
+      agents: { e: { mode: 'on', threadId: 'thread-abc', allowed_users: ['999'], allowed_users_inheritance: false } },
+    });
+    const { cmds, getState } = harness({ state, io: { rename: async () => {}, mkdir: async () => {} } });
+    await cmds.run({ chatId: '1234@s.whatsapp.net', surface: 'whatsapp', body: '/agents reset e' });
+
+    const eAfter = getBeing(getState(), 'whatsapp', '1234@s.whatsapp.net', 'e');
+    expect(eAfter.allowedUsers).toEqual(['999']);
+    expect(eAfter.allowedUsersInheritance).toBe(false);
+    expect(eAfter.threadId).toBeNull();
+  });
+
   it('a being with NEITHER access_level nor allowed_users set is fully wiped by reset — no behavior change from before this fix', async () => {
     let state = ensureContact(emptyState(), 'whatsapp', '1234@s.whatsapp.net', { pushedName: 'diego', slugHint: 'diego' }).state;
     state = patchContact(state, 'whatsapp', '1234@s.whatsapp.net', {

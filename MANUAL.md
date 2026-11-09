@@ -36,6 +36,14 @@ minutes): the time left is edited into it each minute, then it reads
 ingest box's questions and answers below, the same
 `state/ingest-asks.json`.
 
+`allowed_users_inheritance` (default `true`; operator 2026-11-09) lets a level be narrower
+than the ones above. Levels, top to bottom: the node's lists, `agents.<name>.conversation_defaults`,
+the chat's entry in `conversations.yaml` (per being), a new chat's seed. Set `false` beside a
+level's `allowed_users` and that list is FINAL: the lists above it are not joined in, so a chat
+can be closed to `[ids]` under an agent whose default is `['*']`. The Operator still always
+passes. Lower levels that are not final still join onto it. A being's own line stays
+admitted by a `'*'` in the final list alone. `/agents` shows `(final)` beside such a list.
+
 A command names the being that runs it (since 2026-10-19): `/<handle> <command>`,
 e.g. `/e restart`, `/don agents`, `/e split viaje`. The node that hosts that being
 runs it; every other node records the line and does nothing. A bare `/restart`
