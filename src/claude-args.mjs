@@ -32,6 +32,18 @@
 //                                     OS box (access_level regular, or a non-win32
 //                                     node) takes the confineToDirs tier above,
 //                                     unchanged.
+//   osConfined + tools (a boxed    → NOT THE BYPASS PAIR (2026-11-09). A boxed being whose
+//     being whose TYPE lists          TYPE lists its own tools (brainpool sends `tools` only
+//     its own tools)                  for that: narrowedTools) gets
+//                                     --permission-mode dontAsk + --tools "<bases>" +
+//                                     --allowedTools "<the list as given>": a call the
+//                                     list does not allow is DENIED, so `Bash(dbq:*)` is a
+//                                     fence, not an inert rule under a bypass that gave
+//                                     the being full Bash. Every other flag the boxed tier
+//                                     emits stays. THE RULE: an explicit tool list on a boxed
+//                                     being is enforced by the CLI (dontAsk); the box is
+//                                     still the OS boundary. No list = the bypass above.
+//                                     dangerouslySkipPermissions still wins (never both).
 //   allowedTools 'all'|'*'          → REJECTED (operator 2026-07-03): coerced to
 //                                     DEFAULT_ALLOWED_TOOLS and routed through the
 //                                     list path — NO bypass tier, no bare Bash/Agent.
@@ -154,9 +166,18 @@ export function buildClaudeArgs(options = {}) {
   // ADDITION to whatever --allowedTools push happens below. Only ever set true by
   // brainpool.mjs's turn(), after its own structural gates have already run — see the
   // header comment. `osConfined` joins it here, and ONLY here: see the block above.
-  if (options.dangerouslySkipPermissions === true || osConfined) {
+  //
+  // ...EXCEPT a boxed being that carries an explicit tool list (`tools`, 2026-11-09): there the
+  // list is the CLI's to enforce, so it gets `dontAsk` (deny whatever --allowedTools below does
+  // not allow) instead of the bypass. The box stays the OS boundary; this is the tool boundary.
+  // `dangerouslySkipPermissions` still takes the bypass, so the pair is never doubled.
+  const bypass = options.dangerouslySkipPermissions === true || (osConfined && !Array.isArray(options.tools));
+  const scopedInBox = osConfined && !bypass;
+  if (bypass) {
     args.push('--dangerously-skip-permissions');
     args.push('--permission-mode', 'bypassPermissions');
+  } else if (scopedInBox) {
+    args.push('--permission-mode', 'dontAsk');
   }
   if (Array.isArray(options.tools)) args.push('--tools', options.tools.join(','));
   if (options.strictMcpConfig !== false) args.push('--strict-mcp-config');
@@ -191,7 +212,11 @@ export function buildClaudeArgs(options = {}) {
   // the REAL boundary — withholding it there would hand that being every tool with no box to
   // hold it. The unconfined (`dangerouslySkipPermissions`) tier is untouched too: its list is a
   // type file's own trusted grant and is still passed verbatim, bare Bash/Agent included.
-  if (options.allowedTools && !osConfined) {
+  //
+  // THE ONE BOXED EXCEPTION IS `scopedInBox` (above): a boxed being with an explicit list DOES
+  // spell it, because under dontAsk the list is the fence and not an inert rule. It takes the
+  // plain list branch below (no roots, no --setting-sources, no --permission-mode default).
+  if (options.allowedTools && (!osConfined || scopedInBox)) {
     // 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'"). It
     // never buys full/bypass access on its OWN — it is coerced to the explicit
     // default tool list and routed through the normal path. egpt never WRITES
@@ -205,7 +230,7 @@ export function buildClaudeArgs(options = {}) {
       ? DEFAULT_ALLOWED_TOOLS
       : options.allowedTools;
     const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
-    if (confined) {
+    if (confined && !osConfined) {
       // Sandbox: do NOT inherit ~/.claude bypass; engine enforces; file tools stay
       // path-confined to --add-dir (NOT pre-approved — an allow-list entry bypasses
       // the path check, exactly how Read once leaked); pre-approve only non-file

@@ -26,6 +26,10 @@ dangerously_skip_permissions: true
 # file grants everything and skips permissions — the box, not the flag list, is
 # what says no here.
 #
+# ONE EXCEPTION (2026-11-09): a type that lists its OWN allowed_tools does not take this
+# file's flag. Its list (narrowed by the one below) is enforced by the CLI, `--permission-mode
+# dontAsk` + `--allowedTools`, no bypass; the box is still the OS boundary. See claude-args.mjs.
+#
 # NO allowed_users REQUIREMENT: brainpool.mjs's structural gate refuses an 'all'
 # being with no allowed_users, because unconfined capability + reachable by
 # anyone is the dangerous pair. 'sandbox' is exempt (operator's ruling): the

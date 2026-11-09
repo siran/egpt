@@ -165,7 +165,11 @@ very next turn — no `/restart` needed.
 being at `config/permissions/sandbox.md`, which is `all.md`'s grant byte for
 byte, but the spine forces `sandboxed: true` for that level, so the being only
 ever runs inside the OS sandbox — the kernel holds the boundary instead of the
-CLI's own flags, and no config rung can unbox it.
+CLI's own flags, and no config rung can unbox it. A boxed being gets every tool
+under `bypassPermissions`, except one whose type lists its own `allowed_tools`:
+that list is enforced by the CLI (`--permission-mode dontAsk` +
+`--allowedTools`, no bypass), so `Bash(dbq:*)` allows `dbq ...` and nothing
+else in Bash. The box is still the OS boundary. `all` stays unconfined.
 
 `/agents <handle>|all access_level reader` is the fourth, for public chatbox
 beings: Read, Glob and Grep inside the being's own conversation folder and
@@ -387,7 +391,10 @@ default; commented blocks are optional overrides.
 Agent types are resolved across layers, most-specific winning: `src/brains`
 (built-in) < `config/agents` < a conversation's own `brains/`. A type's
 `allowed_tools` LIST confines its file tools to the conversation dir +
-`allowed_paths`; `allowed_tools: all` makes it trusted/unconfined. Point
+`allowed_paths`; `allowed_tools: all` makes it trusted/unconfined. On a boxed
+being (`sandbox`, or `sandboxed: true`) the list is not dropped: the CLI
+enforces it (`dontAsk`), narrowed by the level's grant (a `regular` level has
+no Bash for a `Bash(<bin>:*)` entry to scope). Point
 `agents.egpt.configuration` at whichever type conversations run on — every
 conversation resolves it FRESH every turn, so a repoint reaches all of them on
 their very next turn (there is no per-conversation freeze).
