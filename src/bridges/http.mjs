@@ -12,7 +12,11 @@
 //   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
 //   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
+//   POST <ayde.path>/say                 {client, key, text}: a support line into a live chatbox conversation (ayde users, team and up); the widget shows it as "Soporte · <user>"
 //   GET  <ayde.path>/logout              401 + a signed-out page whose script overwrites each cached login so the next visit is challenged
+// A signed visitor's chat gets a title and a subtitle from its identity's claims (chat_title, chat_subtitle: templates
+// like topic_title, {school} · {short_name}; default {abrin} · {short_name} · {username}, and {user_type}), handed to
+// beforeLine, which records them in the conversation's folder for /ayde's chat lists; unsigned: none (the list says "Visitor").
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -24,9 +28,10 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/pro
 import { join } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
-import { createBrowser, checkUser, LEVELS, RESERVED_USER } from './http-ayde.mjs';
+import { createBrowser, checkUser, LEVELS, RESERVED_USER, SUPPORT } from './http-ayde.mjs';
 
 export const HTTP_PREFIX = 'http:';
+export const SUPPORT_MODE = 'accum';   // the mode a support line is gated by (An #5962); the visitor's lines keep the conversation's
 export const isHttpChatId = (id) => String(id ?? '').startsWith(HTTP_PREFIX);
 const CHAT_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;
 // The client a chatbox chat belongs to, or null.
@@ -42,6 +47,7 @@ export const HTTP_STRINGS = Object.freeze({
   end: 'Terminar conversación', end_confirm: '¿Terminar esta conversación? El chat empezará de nuevo.', end_yes: 'Sí, terminar', cancel: 'Cancelar',
   ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
   earlier: '(conversación iniciada antes: {n} mensajes)',   // heads the recap a team topic gets when seated
+  support: 'Soporte',   // heads a human support line on the panel: "Soporte · <ayde user>"
   intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
   waiting: [],   // short phrases rotating in the loading bubble instead of ⏳; empty: ⏳
 });
@@ -110,14 +116,24 @@ const whoOf = (c, identity) => (identity ? createHash('sha256').update(JSON.stri
 export const DEFAULT_TOPIC_TITLE = '{title} · {sid}';
 export const TOPIC_TITLE_MAX = 128;
 const TITLE_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'title', 'sid'];
-export function renderTopicTitle(template, values = {}) {
-  const fill = (t) => t.replace(/\{(\w+)\}/g, (all, k) => (TITLE_KEYS.includes(k) || Object.hasOwn(values, k) ? field(values[k]) : all))
-    .replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim();
-  const out = (typeof template === 'string' && fill(template)) || fill(DEFAULT_TOPIC_TITLE);
-  if (out.length <= TOPIC_TITLE_MAX) return out;
+const fillTitle = (t, values, blank) => t.replace(/\{(\w+)\}/g, (all, k) => (blank || TITLE_KEYS.includes(k) || Object.hasOwn(values, k) ? field(values[k]) : all))
+  .replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim();
+const cutTitle = (out, max) => {
+  if (out.length <= max) return out;
   let cut = '';
-  for (const ch of out) { if (cut.length + ch.length > TOPIC_TITLE_MAX - 1) break; cut += ch; }
+  for (const ch of out) { if (cut.length + ch.length > max - 1) break; cut += ch; }
   return `${cut}…`;
+};
+export function renderTopicTitle(template, values = {}) {
+  const out = (typeof template === 'string' && fillTitle(template, values)) || fillTitle(DEFAULT_TOPIC_TITLE, values);
+  return cutTitle(out, TOPIC_TITLE_MAX);
+}
+// A signed chat's title or subtitle in /ayde's lists: the same template as a topic's, over the identity's claims
+// ({school} {short_name} …, any claim of the token); a missing claim is empty, and a separator it leaves
+// dangling goes. '' when nothing is left.
+export const DEFAULT_CHAT_TITLE = '{abrin} · {short_name} · {username}', DEFAULT_CHAT_SUBTITLE = '{user_type}';
+export function renderChatLabel(template, claims = {}) {
+  return cutTitle(fillTitle(String(template), claims, true).replace(/^[\s·|,-]+|[\s·|,-]+$/g, '').replace(/(?:\s*[·|])+(?=\s*[·|])/g, ''), TOPIC_TITLE_MAX);
 }
 
 // A client's identity mode: `identity: <mode>`, or the mode of `identity: { mode, required, key }` (default
@@ -155,6 +171,8 @@ function clientConfig(name, c = {}) {
     identity: identityModeOf(c.identity),
     required: [...new Set([...(Array.isArray(idc.required) ? idc.required.map(String) : IDENTITY_CLAIMS), ...key])],   // a key claim is required too
     key,
+    chatTitle: typeof c.chat_title === 'string' && c.chat_title.trim() ? c.chat_title : DEFAULT_CHAT_TITLE,
+    chatSubtitle: typeof c.chat_subtitle === 'string' && c.chat_subtitle.trim() ? c.chat_subtitle : DEFAULT_CHAT_SUBTITLE,
     byIdentity: c.conversation_by === 'identity',   // one conversation per signed identity, not per session
     identityTurns: posInt(c.rate?.turns_per_identity_per_hour, 0),   // 0: no per-identity budget
     init,
@@ -204,7 +222,7 @@ export async function startHttpBridge({
   addressWithoutAt = true,
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's
   stateDir = null,
-  beforeLine = null,      // ({ client, chatId, isNew, recap }), awaited before each line enters; recap() → the panel's lines so far as text, or null
+  beforeLine = null,      // ({ client, chatId, isNew, init, recap, identity, title, subtitle }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   identityKey = () => null,   // (client) → its HMAC key, or null
   ayde = null,                // { path, on, public_max_level, scope }: /ayde, the team's browser of aydeRoot
@@ -214,6 +232,7 @@ export async function startHttpBridge({
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
+  timeZone = null,        // the zone /ayde's clock and "today" are in (boot: default_time_zone), UTC when null
 } = {}) {
   const base = `/${String(path ?? '').replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
   const clients = new Map();
@@ -304,7 +323,7 @@ export async function startHttpBridge({
   for (const chat of chats.values()) for (const m of chat.log) tick = Math.max(tick, m.seq);
   const nextTick = () => (tick = Math.max(tick + 1, now()));
   const put = (res, chunk) => { if (!res.writableEnded) res.write(chunk); };
-  const view = (m) => ({ id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq });
+  const view = (m) => ({ id: m.id, from: m.from, text: m.text, done: m.done, seq: m.seq, ...(m.by ? { by: m.by } : {}) });
   // Each frame goes to every open stream of the conversation: each tab of each of its sessions.
   const changed = (chat, m) => {
     if (m.ended) return;   // cleared by an end: a reply still streaming stays out of the fresh panel
@@ -314,8 +333,8 @@ export async function startHttpBridge({
     for (const res of chat.subs) put(res, frame);
     saveLog(chat);
   };
-  const append = (chat, from, text, done) => {
-    const m = { id: null, from, text, done, seq: 0 };
+  const append = (chat, from, text, done, by = null) => {
+    const m = { id: null, from, text, done, seq: 0, ...(by ? { by } : {}) };
     changed(chat, m);
     chat.log.push(m);
     if (chat.log.length > LOG_MAX) chat.log.splice(0, chat.log.length - LOG_MAX);
@@ -360,9 +379,32 @@ export async function startHttpBridge({
     res.end(JSON.stringify(body));
   };
   const browser = aydeBase ? createBrowser({
-    root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir,
-    clients: [...clients.values()].map(({ name, label }) => ({ name, label })),
+    root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir, timeZone, say: (o) => supportLine(o),
+    clients: [...clients.values()].map(({ name, label, idleMs }) => ({ name, label, idleMs })),
   }) : null;
+  // A support person's line (/ayde POST say), on a live chatbox conversation: on the panel as `support` (the widget heads
+  // it with strings.support and who said it) and recorded like any line. Its own mode is SUPPORT_MODE (lineMode: the gate
+  // reads it instead of the conversation's): accum, so the line is recorded and accumulated and wakes the being only when
+  // it addresses it, read as the visitor's lines are (wake words, @handle); the visitor's own lines keep the conversation's
+  // mode. Not session activity (lastAt stays). null: no live session of that chat; {error, status}: refused. The text is never logged.
+  const supportLine = async ({ client, key, user, text }) => {
+    const c = clients.get(client), chat = chats.get(key);
+    if (!c || chat?.client !== client) return null;
+    if ([...text].length > c.maxChars) return { error: 'too long', status: 413, max: c.maxChars };
+    const by = field(user), chatId = chatIdOf(chat), name = `${client}-${key}`;
+    const m = append(chat, 'support', text, true, by);
+    const st = mentionStatus(text, wakeWords, { addressWithoutAt });
+    log(`incoming [${name}] support ${by}`);
+    deliver(text, {
+      chatId, chatName: name, chatType: 'private', network: 'http',
+      userId: chatId, senderName: `${SUPPORT}${by}`, firstName: by,
+      isSender: false, authorized: false, lineMode: SUPPORT_MODE,
+      atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
+      replyToBot: false, isReaction: false, isTranscriptFromVoice: false,
+      msgKey: m.id, msgTs: now(),
+    });
+    return view(m);
+  };
   const readBody = (req, limit) => new Promise((resolve, reject) => {
     let size = 0, over = false;
     const parts = [];
@@ -389,7 +431,7 @@ export async function startHttpBridge({
     const said = chat.log.filter((m) => m.done && m.text);
     if (!said.length) return null;
     const clip = (t) => ([...t].length > RECAP_CHARS ? `${[...t].slice(0, RECAP_CHARS).join('')}…` : t);
-    return [...(header ? [c.earlier.replaceAll('{n}', String(said.length))] : []), ...said.slice(-RECAP_LINES).map((m) => `${m.from === 'visitor' ? 'visitor' : c.being}: ${clip(m.text)}`)].join('\n');
+    return [...(header ? [c.earlier.replaceAll('{n}', String(said.length))] : []), ...said.slice(-RECAP_LINES).map((m) => `${m.from === 'visitor' ? 'visitor' : m.from === 'support' ? `support ${m.by}` : c.being}: ${clip(m.text)}`)].join('\n');
   };
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
@@ -454,7 +496,10 @@ export async function startHttpBridge({
     const isNew = !!(hit.isNew || s.chat.isNew);
     s.chat.isNew = false;
     const reply = (async () => {
-      try { await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
+      try {
+        const chat = idn.identity ? { title: renderChatLabel(c.chatTitle, idn.identity.claims), subtitle: renderChatLabel(c.chatSubtitle, idn.identity.claims) } : {};
+        await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity, ...chat });
+      }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
       const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
       const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
@@ -537,7 +582,8 @@ export async function startHttpBridge({
   async function aydeServe(req, res, url, sub) {
     const users = aydeUsers();
     if (!users || sub.length > 1) return json(res, 404, { error: 'not found' });
-    if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' }, { Allow: 'GET' });
+    const allow = sub[0] === 'say' ? 'POST' : 'GET';   // say: a support line, the one write
+    if (req.method !== allow) return json(res, 405, { error: 'method not allowed' }, { Allow: allow });
     if (!sub.length) { res.writeHead(308, { Location: `${aydeBase.split('/').at(-2)}/${url.search}` }); return res.end(); }
     const call = sub[0] || null;
     const basic = /^Basic\s+(\S*)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
@@ -578,7 +624,12 @@ export async function startHttpBridge({
       log(`ayde: ${field(who.user)} (${who.level}) refused from ${addr} — the ${who.level} level opens only from the internal network (public_max_level: ${aydeCap})`);
       return deny(403, AYDE_INTERNAL(who.level), {});
     }
-    return browser.serve(call, req, res, url, who, (level) => deny(401, AYDE_REFUSED(level), { 'WWW-Authenticate': `Basic realm="ayde ${level}", charset="UTF-8"` }, { level }));
+    let body = null;
+    if (who && call === 'say') {
+      const raw = await readBody(req, 16 * 1024);
+      try { body = raw == null ? null : JSON.parse(raw); } catch { body = null; }
+    }
+    return browser.serve(call, req, res, url, who, (level) => deny(401, AYDE_REFUSED(level), { 'WWW-Authenticate': `Basic realm="ayde ${level}", charset="UTF-8"` }, { level }), body);
   }
 
   // CORS: an Origin must be on the client's list; an empty list sends no CORS headers (same-origin

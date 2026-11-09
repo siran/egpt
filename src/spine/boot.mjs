@@ -2309,13 +2309,14 @@ export async function boot({
     // A new conversation's folder starts with its verified user (desktop/user.json, desktop/user.md: the
     // desk's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
     // The line never waits on Telegram; an init (the widget's page load) seats no team topic.
-    const beforeLine = async ({ client, chatId, isNew, init, recap, identity }) => {
+    const beforeLine = async ({ client, chatId, isNew, init, recap, identity, title, subtitle }) => {
       const c = clients[client] ?? {};
       if (isNew && identity) {
         const dir = slugDir('http', fixedSlugFor('http', chatId));
         await mkdir(join(dir, 'desktop'), { recursive: true });
         const { claims, ...fields } = identity;
-        await writeFile(join(dir, 'desktop', 'user.json'), `${JSON.stringify({ ...fields, verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
+        // title, subtitle: the chat's name in /ayde's lists (http.mjs chat_title, chat_subtitle)
+        await writeFile(join(dir, 'desktop', 'user.json'), `${JSON.stringify({ ...fields, ...(title ? { title } : {}), ...(subtitle ? { subtitle } : {}), verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
         const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `type ${identity.user_type}`, `school ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
         await writeFile(join(dir, 'desktop', 'user.md'), `Verified by the site: ${parts.filter(Boolean).join(', ')}.\n`, 'utf8');
         hlog(`${chatId}: its user is on the desk (desktop/user.json)`);
@@ -2341,7 +2342,7 @@ export async function boot({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients, trustProxy: block.trust_proxy === true, now,
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
-      ayde: block.ayde, aydeRoot: EGPT_HOME,
+      ayde: block.ayde, aydeRoot: EGPT_HOME, timeZone: transcriptTimeZone,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
       aydeRegistry: _loadState,
       beforeLine,

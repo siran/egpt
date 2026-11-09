@@ -433,7 +433,8 @@ describe('a signed visitor (identity)', () => {
     const dir = n.turns[0].cwd;
     const usuario = JSON.parse(await fs.readFile(join(dir, 'desktop', 'user.json'), 'utf8'));
     expect(usuario).toMatchObject({ abrin: 'IEV', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', user_id: '4711' });
-    expect(Object.keys(usuario)).toEqual(['abrin', 'user_type', 'short_name', 'username', 'user_id', 'verified_at']);
+    expect(Object.keys(usuario)).toEqual(['abrin', 'user_type', 'short_name', 'username', 'user_id', 'title', 'subtitle', 'verified_at']);
+    expect(usuario).toMatchObject({ title: 'IEV · Juan Pérez · jperez', subtitle: 'P' });
     const md = await fs.readFile(join(dir, 'desktop', 'user.md'), 'utf8');
     expect(md.trim().split('\n')).toHaveLength(1);
     expect(md).toBe('Verified by the site: Juan Pérez (jperez), type P, school IEV, id 4711.\n');

@@ -96,7 +96,10 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     let bv = null;
     if (state) { try { bv = getBeing(state, ev.surface, ev.chatId, being); } catch { bv = null; } }
     if (!bv) bv = seedOf?.(ev)?.agents?.[being] ?? null;   // no entry yet: the block its seed will write
-    const { mode } = resolveMode(bv, being, c);
+    let { mode } = resolveMode(bv, being, c);
+    // A line may bring its own mode (ev.lineMode: a chatbox's support line is accum while the visitor's lines stay as the
+    // conversation has them). The same modes and gates: it never opens what the conversation closes (off, mute).
+    if (ev.lineMode && isAutoMode(ev.lineMode) && mode !== 'off' && mode !== 'mute') mode = ev.lineMode;
     const paused = !!(c.dispatch?.auto_paused ?? c.whatsapp?.auto_e_paused);
     const allowed = replyAllowed(mode, mention ?? {});
     const addressed = replyAllowed('mention', mention ?? {});
