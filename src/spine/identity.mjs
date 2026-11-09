@@ -138,6 +138,8 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // The spine transcript-logs it (backfill) but NEVER dispatches it (operator
         // 2026-07-08: a waking node backfills, never re-answers stale traffic).
         backlog: !!f.backlog,
+        // The mode THIS line is gated by, when it is not its conversation's (the chatbox's support line: accum) — gating.decide.
+        lineMode: f.lineMode ?? null,
         authorized: !!f.authorized, isSender: !!f.isSender, isVoice: !!f.isTranscriptFromVoice,
         // A voice note is TWO lines (operator 2026-10-16): 'arrival' (recorded, prompts nobody) and
         // 'outcome' (its transcription or failure, answering the arrival). null = any other message.

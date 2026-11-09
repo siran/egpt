@@ -914,7 +914,8 @@ export const CONFIG_SCHEMA = {
                               "Support — Contoso app"); default the title, else the name
             strings           UI strings (Spanish defaults): open, close,
                               placeholder, send, error, too_long, too_many,
-                              end, end_confirm, end_yes, cancel, identity; intro (the panel's first
+                              end, end_confirm, end_yes, cancel, identity; support (heads a human
+                              support line: "Soporte · <ayde user>", default Soporte); intro (the panel's first
                               line, again after an end; default none); ended (the
                               line the team topic gets on an end); earlier (heads the
                               recap a late topic gets, {n} = the earlier lines)
@@ -950,6 +951,13 @@ export const CONFIG_SCHEMA = {
                               spaces collapse, an empty () or [] goes; nothing left:
                               the default. Cut at 128 (Telegram's limit) with "…".
                               Contoso: "{abrin} {user_type} {short_name} ({username})"
+            chat_title        a signed chat's name in /ayde's lists, a template as topic_title's over the
+                              identity's claims: {abrin} {short_name} {username} {user_type}, or any
+                              {<claim>} of the token (e.g. "{school} · {short_name}"). A claim with no value
+                              is empty and the separator it leaves goes. Default
+                              "{abrin} · {short_name} · {username}". Recorded as "title" in the
+                              conversation's usuario.json when it starts; unsigned: none ("Visitor")
+            chat_subtitle     the same for the line under the title, default "{user_type}"
             identity          off (default) | optional | required: the host page's
                               signed user (below). required: a call without one is
                               401 {error, message: strings.identity}, which the widget
@@ -1008,30 +1016,52 @@ export const CONFIG_SCHEMA = {
         json_encode needs UTF-8 strings (utf8_encode a Latin-1 name, else it returns false).
         A page left open past exp gets strings.identity on its next line: reload.
         AYDE (ayde.on; src/bridges/http-ayde.mjs). GET <ayde.path>/ (e.g.
-        https://contoso.example/ayde/; without the last slash: 308 to it): the Contoso team's read-only
-        browser of EGPT_HOME, by level. One English page: the user and level, and one list of the
-        scope's conversations (root's too): a section per chatbox client (its label, in
-        limbs.http.chatboxes' order, then clients'), then "Team groups (Telegram)", then "Other"; in each, Today and
-        Previous, newest first. A row is a person or a group: a signed session's usuario.json (name,
-        username, school, type); an anonymous one "Visitor" and its first line (its history,
-        state/http-messages/<sid>.json, else its transcript; one line, 80 characters, never
-        logged); a Telegram folder its name in conversations.yaml (not a fork's), else the folder's
-        without its -<datestamp>. Chat ids and folders only in the tooltip. One search box filters
-        every section by name, username, school, first line or title. Root also gets "Everything
-        else": the EGPT_HOME tree. A row opens its folder tree ("Up" climbs), paths above the
-        user's level greyed, a text file (first 256 KB) or a download. Dates in the browser's
-        locale and zone, never seconds. API: tree?scope=1 (below root also tree with no p) →
-        {sections: [{id, kind, label}], entries: [{path, chats, section, label, kind, title,
-        usuario, preview, last, …}]}.
-        Read-only for every level: any method but GET is 405. A future delete of core files
+        https://contoso.example/ayde/; without the last slash: 308 to it): the Contoso team's browser
+        of EGPT_HOME, by level. One English page with a side menu, only what the user's level
+        reaches (levelOf, on the same paths), hash routes (#/chatbox/<client>/<key> is stable, to share):
+          Home           the user, level and the node's clock (default_time_zone), a tile per chatbox
+                         (active chats, chats today, total, last line)
+          Chatboxes      one entry per chatbox (limbs.http.chatboxes' order, then clients'; its label).
+                         Three zones: its chats on the left (a row is a conversation: with
+                         conversation_by: identity one per user, whatever their tabs and devices), Active | Past tabs and a search box (a
+                         chat is active while its last line is within the client's session_days; each
+                         row: title, subtitle, user type, last update, message count, last line; the
+                         list refreshes every 20 s); the chat's room in the centre (transcript.md as
+                         a conversation: bubbles, times, day marks; links to the raw transcript and
+                         the folder); around it a panel: Card (usuario.json), Desktop, Files,
+                         Heartbeats, Outbox, Credentials (devs and above)
+          Conversations  the Telegram groups and the rest, the same three zones
+          Heartbeats     heartbeats/*.yaml of each scoped conversation: when it fires, what it runs, the
+                         day it last fired (state/heartbeats-daily.json; only those rows leave)
+          Scripts        scripts/*.x.md, read-only, and when each last ran (its .log)
+          Desktop        desktop/ of each conversation
+          Credentials    .credentials/ of each conversation, devs and above (names; a file opens through file)
+          Files          the folder browser: one list of the scope's conversations (root's too), a
+                         row opens its folder tree, a text file (first 256 KB) or a download
+        A chat's title and subtitle are the ones recorded in its usuario.json (chat_title, chat_subtitle);
+        else name, username; an anonymous one is "Visitor" and its first line. Chat ids and folders only
+        in the tooltip. Dates in the node's zone. API (GET, JSON): home, chatbox?c=<client>,
+        room?p=<conversation folder>, area?k=heartbeats|scripts|desktop|credentials|outbox[&p=<folder>],
+        tree?scope=1 (below root also tree with no p) → {sections: [{id, kind, label}], entries:
+        [{path, chats, section, label, kind, title, usuario, preview, last, …}]}, tree, file.
+        SUPPORT: POST <ayde.path>/say {client, key, text} (application/json, same origin; any ayde user
+        who reads that conversation) puts a human line into that chat's LIVE session: the visitor's
+        widget shows it headed "Soporte · <user>" (from: support, by: user). For the support line the
+        being behaves as in mode accum (the gate of mention, plus the lines recorded since its last turn
+        in the prompt): the line is recorded (sender support:<user>) and accumulated, and wakes the being
+        only if it addresses it (@handle, or the wake words as the visitor's lines are read); then the being
+        answers the visitor. The visitor's own lines keep the conversation's mode (on). No live session: 409. The access
+        log and the conversation's admin-access.log get "<user> (<level>) said in <folder>/", never the text.
+        Read-only for every level, but for say: any other method but GET is 405. A future delete of core files
         (config/, state/, secrets/) is root's only.
         The scope (ayde.scope): what team, devs and admin read, a list of chat ids, e.g.
           scope: ["tg:-1000000000101", "tg:-1000000000102", "tg:-1000000000103", "http:contoso-", "http:democlient-"]
         Each entry is one of:
           tg:<group>     the Telegram group and every topic in it (tg:<group>/<n>); a /split fork
                          lives in its parent's folder, so it comes with it
-          <prefix>-      every chat id starting with it: http:<client>- is each chatbox session of
-                         that client (conversations/http/<client>-<sid>/)
+          <prefix>-      every chat id starting with it: http:<client>- is each chatbox conversation of
+                         that client (conversations/http/<client>-<key>/: a session's, or with
+                         conversation_by: identity a signed user's, one for all their tabs and devices)
           <chat id>      that chat only (one topic tg:<group>/<n>, one session, a Beeper room id)
         Its folders are found by chat id in config/conversations.yaml (each matching contact's
         conversation_path), on each request: a renamed folder keeps its access, and no folder is in

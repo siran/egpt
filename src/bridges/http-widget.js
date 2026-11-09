@@ -100,21 +100,23 @@ function egptChat(C, base, identity) {
   };
 
   var role = function (m) { return m.from === 'visitor' ? 'user' : 'ai'; };
+  // A human support line (from /ayde) is headed with who said it: "Soporte · <user>".
+  var textOf = function (m) { return m.from === 'support' ? '**' + S.support + ' · ' + m.by + '**\n\n' + m.text : m.text; };
   // A frame: a new message is added, a known one edited or removed in place. The visitor's own lines
   // are already on screen (Deep Chat put them there), so while a POST is out their frames wait for its id.
   var show = function (m) {
     if (m.seq > since) since = m.seq;
     var k = at[m.id];
     if (k) {
-      if (!m.text || m.text === k.text) return;
-      k.text = m.text;
-      chat.updateMessage({ text: m.text }, k.i);
+      if (!m.text || textOf(m) === k.text) return;
+      k.text = textOf(m);
+      chat.updateMessage({ text: k.text }, k.i);
       return;
     }
     if (!m.text) return;
     if (m.from === 'visitor' && inflight) { held.push(m); return; }
-    chat.addMessage({ role: role(m), text: m.text });
-    at[m.id] = { i: chat.getMessages().length - 1, text: m.text };
+    chat.addMessage({ role: role(m), text: textOf(m) });
+    at[m.id] = { i: chat.getMessages().length - 1, text: textOf(m) };
   };
   var listen = function () {
     if (es) es.close();
@@ -163,8 +165,8 @@ function egptChat(C, base, identity) {
     var hist = [];
     messages.forEach(function (m) {
       if (!m.text) return;
-      at[m.id] = { i: hist.length, text: m.text };
-      hist.push({ role: role(m), text: m.text });
+      at[m.id] = { i: hist.length, text: textOf(m) };
+      hist.push({ role: role(m), text: textOf(m) });
     });
     chat = document.createElement('deep-chat');
     chat.history = hist;

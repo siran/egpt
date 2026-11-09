@@ -7,14 +7,21 @@
 //   tree?scope=1                    {user, level, path: '', scope: true, sections: [{id, kind, label}], entries: [{name, path, chats,
 //                                   section, label, kind, title, usuario, preview, last, …}]}: the scope's conversations, any level
 //   file?p=<path>[&download=1]      {path, size, text, truncated} | {path, size, binary} | the bytes
+//   home                            {user, level, zone, now, menu: [{id}], chatboxes: [{client, label, active, today, total, last}]}: the dashboard;
+//                                   the menu holds only what the user's level reaches (levelOf, on the same paths as the pages below)
+//   chatbox?c=<client>              {client, label, idleMs, now, chats: [{key, path, title, subtitle, userType, last, active, count, more, snippet, from}]}
+//                                   a chatbox's chats, newest first; active: its last line is within the client's idle window (session_days)
+//   room?p=<conversation folder>    {path, title, subtitle, section, messages: [{who, side, date, time, text}], partial}: its transcript.md as a conversation
+//   area?k=heartbeats|scripts|desktop|credentials   {kind, groups: [{title, path, rows: [{name, path, dir, size, mtime, info, ran}]}]}: that folder
+//                                   in each scoped conversation (heartbeats/*.yaml, scripts/*.x.md, desktop/, .credentials/); opening a row is tree/file
 //   logout[?n=]                     401 + SIGNED_OUT, no challenge (http.mjs, before the lockout); its script overwrites each cached login (Firefox) and reloads to drop them (Chrome)
 //   logout?realm=<level>            with the reserved logout user: 401 in that realm so the browser replaces the credential it cached there
 // Paths are relative to EGPT_HOME and resolve (realpath) inside it. levelOf, on the asked path and on the
 // real one, decides who reads it; above the user's level: refuse(level), a 401 in that level's realm.
 // The scope (limbs.http.ayde.scope): chat ids; their folders by conversations.yaml (registry()) are all that
 // team, devs and admin read, everything else is root's. In them a .secrets segment is root's, another dot
-// segment devs'. Each tree, view and download is a line in the log, and in the conversation's
-// admin-access.log when inside one.
+// segment devs'. Each tree, view, download and room is a line in the log, and in the conversation's
+// admin-access.log when inside one; each chatbox and area list is a line in the log.
 import { readFileSync, createReadStream, constants } from 'node:fs';
 import { readdir, readFile, realpath, stat, lstat, open } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
@@ -23,7 +30,9 @@ import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { getContact, slugDir } from '../conversations-state.mjs';
+import { parse as parseYaml } from 'yaml';
 import { stripFrontMatter } from '../transcript-meta.mjs';
+import { isDayBoundary } from '../dispatch-line.mjs';
 import { stripInvisible } from '../invisible.mjs';
 
 const PAGE = readFileSync(new URL('./http-ayde.html', import.meta.url), 'utf8');
@@ -97,14 +106,27 @@ const SIGNED_OUT = `<!doctype html>
 const TEXT_MAX = 256 * 1024;
 const LIST_MAX = 2000;
 const HEAD_MAX = 64 * 1024, HISTORY_MAX = 1024 * 1024, PREVIEW_MAX = 80;
-const SESSION_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;   // a chatbox session: client, sid
+const SESSION_RE = /^http:([a-z0-9][a-z0-9_-]*)-([0-9a-f]{16})$/;   // a chatbox conversation: client, key (a session's sid, or with conversation_by: identity the identity's)
 const VISITOR_RE = /^visitor@\[[^\]]*\]\.\S+\s+\(\d{1,2}:\d{2}\)(?:\s+#[^\s:]+)?: ?(.*)$/;
 const HEAD_RE = /^(?:\[\s*)?@?[^@\n]+@\[[^\]]*\]\.\S+\s+\(\d{1,2}:\d{2}\)/;
 const TELEGRAM_LABEL = 'Team groups (Telegram)', OTHER_LABEL = 'Other';
 export const AUDIT_FILE = 'admin-access.log';
 // The username the logout page sends to overwrite a cached login; never a real user (ayde-user.mjs refuses it).
 export const RESERVED_USER = 'logout';
-const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id'];
+const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id', 'title', 'subtitle'];
+const TRANSCRIPT_MAX = 1024 * 1024, TRANSCRIPT_CACHE = 200, ROOM_MAX = 500, BEAT_MAX = 32 * 1024;
+// A transcript line: <who>@[<chat>].<node> (HH:MM)[ #<id>]: <text>. A stage direction opens with "[", a day boundary is "[ 2026-09-01 ]".
+const ENTRY_RE = /^([^@\n]+)@\[[^\]]*\]\.\S+\s+\((\d{1,2}):(\d{2})\)(?:\s+#[^\s:]+)?: ?(.*)$/;
+// What each area page lists: the folder in a scoped conversation, and which of its entries.
+const AREAS = {
+  heartbeats: { sub: 'heartbeats', match: /\.ya?ml(\.pausado)?$/ },
+  scripts: { sub: 'scripts', match: /\.x\.md$/ },
+  desktop: { sub: 'desktop', match: null },
+  credentials: { sub: '.credentials', match: null },
+  outbox: { sub: 'outbox', match: null },
+};
+// A support line's speaker in the transcript is SUPPORT + the ayde user (http.mjs).
+export const SUPPORT = 'support:';
 const clean = (s) => String(s).replace(/[\u0000-\u001f\u007f]/g, '?');
 const oneLine = (s) => stripInvisible(String(s)).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 const clip = (s) => { const cs = [...oneLine(s)]; return cs.length > PREVIEW_MAX ? `${cs.slice(0, PREVIEW_MAX - 1).join('').trimEnd()}…` : cs.join(''); };
@@ -145,8 +167,10 @@ export async function checkUser(text, user, password) {
   return ok && got && timingSafeEqual(got, want) ? m[2] : null;
 }
 
-// clients: [{ name, label }], the chatboxes in order (http.mjs chatboxesOf); messagesDir: the chatbox's session histories (<sid>.json).
-export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null, clients = [], messagesDir = null }) {
+// clients: [{ name, label, idleMs }], the chatboxes in order (http.mjs chatboxesOf); timeZone: the zone of the dashboard's clock and "today"; say({ client, key, user, text }) → the line on the chat's live session (http.mjs), or null; messagesDir: the chatbox's session histories (<sid>.json).
+export function createBrowser({ root, json, log = () => {}, now = () => Date.now(), scope = null, registry = async () => null, clients = [], messagesDir = null, timeZone = null, say = null }) {
+  const zone = (() => { try { return new Intl.DateTimeFormat('en', { timeZone }).resolvedOptions().timeZone; } catch { return 'UTC'; } })();
+  const dayOf = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' });
   const ids = Array.isArray(scope) ? scope.filter((e) => typeof e === 'string' && e.trim()).map((e) => e.trim()) : [];
   if (!ids.length) log('ayde: limbs.http.ayde.scope is empty — below root, nobody sees a conversation');
   // The scope's folders, [{ parts, chats, title }] by path: the folder of each registry chat an entry covers.
@@ -247,7 +271,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
       if (session) {
         const usuario = await usuarioOf(dir);
         const said = usuario ? null : await firstSaid(parts, session[2], homes);
-        entries.push({ ...e, kind: 'chatbox', section: `chatbox:${session[1]}`, title: usuario?.short_name || usuario?.username || 'Visitor', usuario, preview: clip(said ?? '') || null });
+        entries.push({ ...e, kind: 'chatbox', section: `chatbox:${session[1]}`, key: session[2], title: usuario?.title || usuario?.short_name || usuario?.username || 'Visitor', usuario, preview: clip(said ?? '') || null });
       } else {
         const kind = chats.every((id) => id.startsWith('tg:')) ? 'telegram' : 'other';
         entries.push({ ...e, kind, section: kind, title, usuario: null, preview: null });
@@ -279,6 +303,181 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     return { entries, truncated: entries.length >= LIST_MAX };
   }
 
+  // ── the dashboard: home, a chatbox's chats, a room, the areas, a support line ──
+  // A transcript as a conversation: [{ who, date, time, text }], oldest first, and whether the file was longer
+  // than TRANSCRIPT_MAX (then it is its tail). A stage direction, a day boundary and a being's raw byte train
+  // ("(streaming) …") are not lines; a day boundary dates the lines after it.
+  function parseTranscript(text) {
+    const lines = [];
+    let cur = null, date = null;
+    for (const line of stripFrontMatter(text.replace(/\r\n/g, '\n')).split('\n')) {
+      if (isDayBoundary(line)) { date = line.replace(/[\[\]\s]/g, ''); cur = null; continue; }
+      const m = line.startsWith('[') ? null : ENTRY_RE.exec(line);
+      if (m) lines.push(cur = { who: m[1].trim(), date, time: `${m[2].padStart(2, '0')}:${m[3]}`, text: m[4] });
+      else if (line.startsWith('[')) cur = null;
+      else if (cur) cur.text += `\n${line}`;
+    }
+    return lines.filter((l) => !l.text.startsWith('(streaming)')).map((l) => ({ ...l, text: l.text.replace(/^\/reply\s+#\S+\s+/, '').trim() })).filter((l) => l.text);
+  }
+  const transcripts = new Map();   // real path → { stamp, lines, partial }: parsed again only when the file changed
+  // A conversation's transcript.md, parsed, when its path (links followed) is a regular file the level may read; else null.
+  async function transcriptOf(parts, homes, level) {
+    const hit = await resolve([...parts, 'transcript.md']);
+    if (!hit || rank(levelOf(hit.parts, homes)) > rank(level)) return null;
+    const st = await stat(hit.real).catch(() => null);
+    if (!st?.isFile()) return null;
+    const stamp = `${st.mtimeMs}:${st.size}`;
+    const hot = transcripts.get(hit.real);
+    if (hot?.stamp === stamp) return hot;
+    const fh = await open(hit.real, 'r');
+    let text;
+    try {
+      const n = Math.min(st.size, TRANSCRIPT_MAX);
+      const buf = Buffer.alloc(n);
+      text = buf.subarray(0, (await fh.read(buf, 0, n, st.size - n)).bytesRead).toString('utf8');
+    } finally { await fh.close(); }
+    const partial = st.size > TRANSCRIPT_MAX;
+    const got = { stamp, partial, lines: parseTranscript(partial ? text.slice(text.indexOf('\n') + 1) : text), hit };
+    transcripts.delete(hit.real);
+    transcripts.set(hit.real, got);
+    if (transcripts.size > TRANSCRIPT_CACHE) transcripts.delete(transcripts.keys().next().value);
+    return got;
+  }
+  const isVisitor = (who) => who === 'visitor';
+  const dayKey = (ms) => dayOf.format(ms);
+
+  // One chat of a chatbox, as its list shows it. Its last line is the newest of its transcript (what a team user reads).
+  async function chatRow(e, idleMs, homes) {
+    const t = await transcriptOf(e.path.split('/'), homes, 'team');
+    const last = t?.lines.at(-1);
+    const u = e.usuario;
+    return {
+      key: SESSION_RE.exec(e.chats.find((id) => SESSION_RE.test(id)))[2], path: e.path, title: e.title,
+      subtitle: u?.subtitle ?? u?.username ?? '', userType: u?.user_type ?? null,
+      last: e.last, active: now() - e.last < idleMs, count: t?.lines.length ?? 0, more: !!t?.partial,
+      snippet: last ? clip(last.text) : e.preview, from: last ? (isVisitor(last.who) ? 'visitor' : 'being') : null,
+    };
+  }
+  const chatboxRows = async (entries, section, idleMs, homes) => {
+    const rows = [];
+    for (const e of entries.filter((x) => x.section === section)) rows.push(await chatRow(e, idleMs, homes));
+    return rows.sort((a, b) => b.last - a.last);
+  };
+  // What a folder of a scoped conversation is for, by the pages: the path a page needs, and so the level. No scope: root's.
+  const needOf = (sub, homes) => (homes.length ? levelOf([...homes[0], sub], homes) : 'root');
+
+  async function home(who, folders, homes) {
+    const { sections, entries } = await conversations(folders);
+    const today = dayKey(now());
+    const chatboxes = [];
+    for (const s of sections.filter((x) => x.kind === 'chatbox')) {
+      const client = s.id.slice('chatbox:'.length);
+      const idleMs = clients.find((c) => c.name === client)?.idleMs ?? 0;
+      const mine = entries.filter((e) => e.section === s.id).sort((a, b) => b.last - a.last);
+      const newest = mine[0] && await chatRow(mine[0], idleMs, homes);
+      chatboxes.push({
+        client, label: s.label, total: mine.length, active: mine.filter((e) => now() - e.last < idleMs).length,
+        today: mine.filter((e) => dayKey(e.last) === today).length,
+        last: newest ? { at: newest.last, title: newest.title, text: newest.snippet, from: newest.from } : null,
+      });
+    }
+    // The pages by what each needs (the page words them): the folder's path decides, as for tree and file.
+    const needs = { chatboxes: 'team', conversations: 'team', heartbeats: needOf('heartbeats', homes), scripts: needOf('scripts', homes), desktop: needOf('desktop', homes), credentials: needOf('.credentials', homes), files: 'team' };
+    const menu = Object.entries(needs).filter(([, need]) => rank(need) <= rank(who.level)).map(([id]) => ({ id }));
+    return { user: who.user, level: who.level, zone, now: now(), menu, chatboxes };
+  }
+
+  // A heartbeat file as one line: when it fires, who or what it runs, the last day or instant it fired (the node's daily
+  // ledger, state/heartbeats-daily.json, by "<surface>/<slug>:<name>": only these rows of it leave).
+  function beatInfo(text, last, paused) {
+    let b;
+    try { b = parseYaml(text); } catch { return 'unreadable'; }
+    if (!b || typeof b !== 'object') return 'unreadable';
+    const when = b.daily ? `daily ${b.daily}${b.time_zone ? ` ${b.time_zone}` : ''}` : b.frequency ? `every ${b.frequency}` : b.when ? `once ${b.when}` : null;
+    const does = b.agent ? `agent ${b.agent}` : b.script_path ? 'script' : b.command ? 'command' : null;
+    return [when, does, last && `last fired ${last}`, paused && 'paused'].filter(Boolean).map((x) => oneLine(x)).join(' · ');
+  }
+  // The area folder of each scoped conversation (or of one: only), with its rows. A folder the level may not read is not listed.
+  async function area(kind, who, folders, homes, only) {
+    const titles = new Map((await conversations(folders)).entries.map((e) => [e.path, e.title]));
+    const { sub, match } = AREAS[kind];
+    const ledger = kind === 'heartbeats' ? JSON.parse(await readFile(join(root, 'state', 'heartbeats-daily.json'), 'utf8').catch(() => '{}')) : {};
+    const groups = [];
+    for (const f of folders) {
+      if (only && f.parts.join('/') !== only) continue;
+      const hit = await resolve([...f.parts, sub]);
+      if (!hit || rank(levelOf(hit.parts, homes)) > rank(who.level) || !(await stat(hit.real)).isDirectory()) continue;
+      const { entries } = await list(hit, who, homes);
+      const rows = [];
+      for (const e of entries.filter((x) => rank(x.level) <= rank(who.level) && (!match || match.test(x.name)))) {
+        const row = { name: e.name, path: [...hit.parts, e.name].join('/'), dir: e.dir, size: e.size, mtime: e.mtime, info: null, ran: null };
+        if (kind === 'scripts') row.ran = entries.find((x) => x.name === `${e.name}.log`)?.mtime ?? null;
+        if (kind === 'heartbeats' && !e.dir && !e.link && e.size <= BEAT_MAX) {
+          const base = e.name.replace(/\.ya?ml(\.pausado)?$/, '');
+          row.info = beatInfo(await readFile(join(hit.real, e.name), 'utf8').catch(() => ''), ledger[`${f.parts.slice(1).join('/')}:${base}`], e.name.endsWith('.pausado'));
+        }
+        rows.push(row);
+      }
+      if (rows.length) groups.push({ title: titles.get(f.parts.join('/')) ?? f.title, path: f.parts.join('/'), rows: rows.sort((a, b) => b.mtime - a.mtime) });
+    }
+    return { kind, groups: groups.sort((a, b) => Math.max(...b.rows.map((r) => r.mtime)) - Math.max(...a.rows.map((r) => r.mtime))) };
+  }
+
+  // The new calls. Each is a line in the log; a room is also a view of transcript.md, so also in the conversation's admin-access.log.
+  async function dashboard(call, q, res, who, folders, homes, denied) {
+    const said = (what) => log(`ayde: ${clean(`${who.user} (${who.level}) ${what}`)}`);
+    if (call === 'home') { said('opened the dashboard'); return json(res, 200, await home(who, folders, homes)); }
+    if (call === 'chatbox') {
+      const { sections, entries } = await conversations(folders);
+      const client = q.get('c') ?? '';
+      const s = sections.find((x) => x.id === `chatbox:${client}`);
+      if (!s) return json(res, 404, { error: 'not found' });
+      const idleMs = clients.find((c) => c.name === client)?.idleMs ?? 0;
+      said(`listed chatbox ${client}`);
+      return json(res, 200, { client, label: s.label, idleMs, now: now(), chats: await chatboxRows(entries, s.id, idleMs, homes) });
+    }
+    if (call === 'area') {
+      const kind = q.get('k');
+      if (!Object.hasOwn(AREAS, kind)) return json(res, 404, { error: 'not found' });
+      const need = needOf(AREAS[kind].sub, homes);
+      if (rank(need) > rank(who.level)) return denied(need, kind);
+      said(`listed ${kind}`);
+      return json(res, 200, await area(kind, who, folders, homes, q.has('p') ? partsOf(q.get('p'))?.join('/') : null));
+    }
+    // room: the conversation at <p>, its transcript.md at the user's level (never through a link out of the scope)
+    const parts = partsOf(q.get('p') ?? '');
+    const t = parts?.length && await transcriptOf(parts, homes, who.level);
+    if (!t) return json(res, 404, { error: 'not found' });
+    await audit(who, t.hit, 'viewed', false);
+    const [entry] = (await conversations(folders.filter((f) => f.parts.join('/') === parts.join('/')))).entries;
+    const messages = t.lines.slice(-ROOM_MAX).map((l) => ({
+      who: l.who, date: l.date, time: l.time, text: l.text,
+      side: entry?.kind === 'chatbox' && isVisitor(l.who) ? 'visitor' : l.who.startsWith(SUPPORT) ? 'support' : 'other',
+    }));
+    return json(res, 200, {
+      path: parts.join('/'), title: entry?.title ?? parts.at(-1), subtitle: entry?.usuario?.subtitle ?? entry?.usuario?.username ?? '',
+      kind: entry?.kind ?? null, section: entry?.section ?? null, usuario: entry?.usuario ?? null, chats: entry?.chats ?? [],
+      last: entry?.last ?? null, messages, partial: t.partial || t.lines.length > ROOM_MAX,
+    });
+  }
+  // A support person's line (POST say {client, key, text}): into the chat's live session, through the limb (say). Refused
+  // as a write is: the chat's folder must be one the user reads (scope, level), and a browser must have sent it itself.
+  async function support(req, res, body, who, folders, homes, denied) {
+    if (!say) return json(res, 404, { error: 'not found' });
+    if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? '')) || (req.headers['sec-fetch-site'] ?? 'same-origin') !== 'same-origin') return json(res, 403, { error: 'forbidden' });
+    const client = String(body?.client ?? ''), key = String(body?.key ?? ''), text = stripInvisible(String(body?.text ?? ''));
+    if (!/^[0-9a-f]{16}$/.test(key) || !text.trim()) return json(res, 400, { error: 'say who and what' });
+    const f = folders.find((x) => x.chats.includes(`http:${client}-${key}`));
+    const need = f ? levelOf(f.parts, homes) : 'root';
+    if (rank(need) > rank(who.level)) return denied(need, `http:${client}-${key}`);
+    const message = await say({ client, key, user: who.user, text });
+    if (message?.error) return json(res, message.status, { error: message.error, ...(message.max ? { max_chars: message.max } : {}) });
+    if (!message) return json(res, 409, { error: 'no live session' });
+    if (f) await audit(who, { base: await realpath(root), parts: f.parts }, 'said in', true);
+    else log(`ayde: ${clean(`${who.user} (${who.level}) said in http:${client}-${key}`)}`);
+    return json(res, 200, { ok: true, message });
+  }
+
   function html(res, status, text) {
     const nonce = randomBytes(16).toString('base64');
     res.writeHead(status, {
@@ -307,9 +506,9 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
 
   // who: { user, level } or null (no valid login: the team realm, whatever the path); refuse(level) answers
   // 401 in that level's realm.
-  async function serve(call, req, res, url, who, refuse) {
+  async function serve(call, req, res, url, who, refuse, body = null) {
     const q = url.searchParams;
-    const asked = (call === 'tree' || call === 'file') && q.has('p') ? partsOf(q.get('p')) : null;
+    const asked = (call === 'tree' || call === 'file' || call === 'room') && q.has('p') ? partsOf(q.get('p')) : null;
     const denied = (need, path) => {
       if (who) log(`ayde: ${clean(`${who.user} (${who.level}) refused ${path}`)} — needs ${need}`);
       return refuse(need);
@@ -320,6 +519,8 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     const homes = folders.map((f) => f.parts);
     const need = asked ? levelOf(asked, homes) : 'team';
     if (rank(need) > rank(who.level)) return denied(need, asked.join('/'));
+    if (call === 'say') return support(req, res, body, who, folders, homes, denied);
+    if (['home', 'chatbox', 'room', 'area'].includes(call)) return dashboard(call, q, res, who, folders, homes, denied);
     if (call !== 'tree' && call !== 'file') return json(res, 404, { error: 'not found' });
     if (call === 'tree' && !q.has('p') && (who.level !== 'root' || q.get('scope') === '1')) {
       log(`ayde: ${clean(`${who.user} (${who.level}) listed the scope`)}`);

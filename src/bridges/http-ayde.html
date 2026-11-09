@@ -6,16 +6,16 @@
 <meta name="referrer" content="no-referrer">
 <title>ayde</title>
 <style>
-  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #667085; --line: #e3e6ec; --accent: #1f6feb; --warn: #b42318; --pick: #eaf1fe; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #14171c; --card: #1c2027; --ink: #e6e8ec; --muted: #98a2b3; --line: #2c323c; --accent: #58a6ff; --warn: #f97066; --pick: #1d2a3d; } }
+
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #667085; --line: #e3e6ec; --accent: #1f6feb; --warn: #b42318; --pick: #eaf1fe; --ok: #067647; --sup: #fff6e5; --supline: #f0d9a6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171c; --card: #1c2027; --ink: #e6e8ec; --muted: #98a2b3; --line: #2c323c; --accent: #58a6ff; --warn: #f97066; --pick: #1d2a3d; --ok: #47cd89; --sup: #33290f; --supline: #5a4616; } }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
   header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; }
   header span { color: var(--muted); }
   header a { color: var(--accent); }
-  main { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(300px, 1.4fr); gap: 16px; padding: 16px; align-items: start; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
   h2 { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
   input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
@@ -43,60 +43,459 @@
   .row .size { margin-left: auto; color: var(--muted); white-space: nowrap; }
   .above { opacity: .45; }
   pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 60vh; overflow: auto; margin: 8px 0 0; }
+
+  a { color: var(--accent); }
+  header { padding: 8px 16px; }
+  header h1 a { color: inherit; text-decoration: none; }
+  .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; }
+  @media (max-width: 800px) { .shell { grid-template-columns: 1fr; } }
+  nav#menu { padding: 12px 8px; border-right: 1px solid var(--line); min-height: calc(100vh - 45px); position: sticky; top: 0; align-self: stretch; }
+  @media (max-width: 800px) { nav#menu { min-height: 0; position: static; border-right: 0; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px; } }
+  nav a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; }
+  nav a:hover { background: var(--card); }
+  nav a.on { background: var(--pick); font-weight: 600; }
+  nav a.sub { padding-left: 22px; font-size: 13px; }
+  nav .grp { margin: 10px 10px 2px; }
+  #view { min-width: 0; }
+  .page { padding: 16px; }
+  h2.page-h { font-size: 16px; margin: 0 0 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; color: var(--ink); text-decoration: none; display: block; }
+  a.tile:hover { border-color: var(--accent); }
+  .tile .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .tile .v { font-size: 20px; font-weight: 600; margin: 2px 0; overflow-wrap: anywhere; }
+  .tile .d { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tile.big .v { font-size: 17px; }
+  .stats { display: flex; gap: 14px; margin: 6px 0; }
+  .stats b { font-size: 20px; }
+  .ws { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) minmax(260px, 340px); height: calc(100vh - 45px); }
+  @media (max-width: 1100px) { .ws { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); } .ws > #side { grid-column: 1 / -1; } }
+  @media (max-width: 800px) { .ws { grid-template-columns: 1fr; height: auto; } }
+  .ws > section { min-height: 0; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  .ws > section:last-child { border-right: 0; }
+  .pane-h { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .scroll { overflow: auto; flex: 1; min-height: 0; padding: 6px; }
+  @media (max-width: 800px) { .scroll { max-height: 60vh; } }
+  .tabs { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .tabs button { padding: 4px 10px; }
+  .tabs button.on { background: var(--pick); border-color: var(--accent); }
+  a.item { color: inherit; text-decoration: none; }
+  .item .line { display: block; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .meta { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .pill { background: var(--pick); color: var(--ink); border-radius: 10px; padding: 0 7px; font-size: 12px; }
+  .live { color: var(--ok); }
+  .msgs { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+  .day { align-self: center; color: var(--muted); font-size: 12px; margin: 6px 0; }
+  .msg { max-width: 78%; padding: 7px 10px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); align-self: flex-start; }
+  .msg.visitor { align-self: flex-end; background: var(--pick); border-color: transparent; }
+  .msg.support { background: var(--sup); border-color: var(--supline); }
+  .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .msg .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .composer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); align-items: flex-end; }
+  .composer textarea { flex: 1; resize: vertical; min-height: 38px; max-height: 30vh; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+  .composer button { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .note { padding: 6px 12px; color: var(--muted); font-size: 12px; }
+  .prow { display: flex; gap: 8px; align-items: baseline; padding: 3px 4px; flex-wrap: wrap; }
+  .prow .info { flex-basis: 100%; color: var(--muted); font-size: 12px; padding-left: 4px; }
+  dl.card { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; padding: 6px; }
+  dl.card dt { color: var(--muted); }
+  dl.card dd { margin: 0; overflow-wrap: anywhere; }
+  .empty { padding: 20px 12px; color: var(--muted); text-align: center; }
+  .files { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(300px, 1.4fr); gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 800px) { .files { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<header><h1>ayde</h1><span id="who"></span><a href="logout">Log out</a><span>Read-only · every folder and file opened is logged</span></header>
+<header><h1><a href="#/">ayde</a></h1><span id="who"></span><span id="clock"></span><a href="logout">Log out</a><span>Every folder, file and room opened, and every support line sent, is logged</span></header>
 <p id="fail" class="warn" hidden></p>
-<main>
-  <section class="card" id="list">
-    <input id="q" type="search" placeholder="Search names, usernames, schools, messages, groups" autocomplete="off" spellcheck="false" aria-label="Search conversations">
-    <div id="sections"><p class="muted">Loading…</p></div>
-    <p id="none" class="muted" hidden>No conversation matches.</p>
-  </section>
-  <section class="card" id="pane">
-    <div class="bar"><button id="up" disabled>Up</button><div><h2 id="where">Pick a conversation</h2><div id="sub" class="small muted"></div></div></div>
-    <div id="tree"></div>
-    <div id="view"></div>
-  </section>
-</main>
+<div class="shell">
+<nav id="menu" aria-label="ayde"></nav>
+<main id="view"></main>
+</div>
+
+<template id="t-home">
+  <div class="page">
+    <div class="tiles">
+      <div class="tile"><div class="k">Signed in as</div><div class="v" id="h-user"></div><div class="d" id="h-level"></div></div>
+      <div class="tile"><div class="k">Node time</div><div class="v" id="h-time"></div><div class="d" id="h-day"></div></div>
+    </div>
+    <h2 class="page-h">Chatboxes</h2>
+    <div class="tiles" id="h-chatboxes"></div>
+    <h2 class="page-h">More</h2>
+    <div class="tiles" id="h-more"></div>
+  </div>
+</template>
+
+<template id="t-ws">
+  <div class="ws">
+    <section id="lst">
+      <div class="pane-h">
+        <h2 id="ws-title"></h2>
+        <input id="wq" type="search" placeholder="Search title, user, last message" autocomplete="off" spellcheck="false" aria-label="Search chats">
+        <div class="tabs" id="ws-tabs"><button id="tab-active" type="button">Active</button><button id="tab-past" type="button">Past</button></div>
+        <div class="small muted" id="ws-hint"></div>
+      </div>
+      <div class="scroll" id="rows"></div>
+    </section>
+    <section id="center">
+      <div class="pane-h" id="room-h"><h2 id="rt">Pick a chat</h2><div class="small muted" id="rs"></div></div>
+      <div class="scroll" id="room-s"><div class="msgs" id="msgs"></div></div>
+      <div class="note" id="room-n" hidden></div>
+      <form class="composer" id="composer" hidden><textarea id="say" rows="2" placeholder="Reply as support (the visitor sees it; the assistant answers only if you @mention it). Enter sends, Shift+Enter breaks the line." maxlength="4000" aria-label="Support message"></textarea><button type="submit" id="say-go">Send</button></form>
+    </section>
+    <section id="side">
+      <div class="pane-h"><div class="tabs" id="ptabs"></div></div>
+      <div class="scroll" id="pbody"><p class="muted">Pick a chat.</p></div>
+    </section>
+  </div>
+</template>
+
+<template id="t-area">
+  <div class="page"><h2 class="page-h" id="a-title"></h2><p class="muted small" id="a-sub"></p><div id="a-groups"></div></div>
+</template>
+
+<template id="t-files">
+  <div class="files">
+    <section class="card" id="list">
+      <input id="q" type="search" placeholder="Search names, usernames, schools, messages, groups" autocomplete="off" spellcheck="false" aria-label="Search conversations">
+      <div id="sections"><p class="muted">Loading…</p></div>
+      <p id="none" class="muted" hidden>No conversation matches.</p>
+    </section>
+    <section class="card" id="pane">
+      <div class="bar"><button id="up" disabled>Up</button><div><h2 id="where">Pick a conversation</h2><div id="sub" class="small muted"></div></div></div>
+      <div id="tree"></div>
+      <div id="view-file"></div>
+    </section>
+  </div>
+</template>
 <script>
 (() => {
   const LEVELS = ['team', 'devs', 'admin', 'root'];
   const $ = (id) => document.getElementById(id);
   const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
-  // Dates in the browser's locale and zone, never seconds: 09:54 · Yesterday 14:07 · Oct 26 · Oct 26, 2025.
-  const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
-  const monthDay = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
-  const fullDay = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  const exact = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-  const dayOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const isToday = (ms) => dayOf(new Date(ms)) === dayOf(new Date());
+  const link = (text, href, cls) => { const a = el('a', text, cls); a.href = href; return a; };
+  // Dates in the node's zone (home says which), the browser's locale, never seconds: 09:54 · Yesterday 14:07 · Oct 26 · Oct 26, 2025.
+  let zone, clock, monthDay, fullDay, exact, dayKey, skew = 0;
+  function setZone(z) {
+    zone = z;
+    clock = new Intl.DateTimeFormat(undefined, { timeZone: z, hour: '2-digit', minute: '2-digit' });
+    monthDay = new Intl.DateTimeFormat(undefined, { timeZone: z, month: 'short', day: 'numeric' });
+    fullDay = new Intl.DateTimeFormat(undefined, { timeZone: z, month: 'short', day: 'numeric', year: 'numeric' });
+    exact = new Intl.DateTimeFormat(undefined, { timeZone: z, dateStyle: 'medium', timeStyle: 'short' });
+    dayKey = new Intl.DateTimeFormat('en-CA', { timeZone: z, year: 'numeric', month: '2-digit', day: '2-digit' });
+  }
+  setZone(undefined);
+  const isToday = (ms) => dayKey.format(ms) === dayKey.format(Date.now() + skew);
   function when(ms) {
     if (ms == null) return '';
-    const d = new Date(ms), now = new Date();
-    if (isToday(ms)) return clock.format(d);
-    if (dayOf(d) === dayOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) return `Yesterday ${clock.format(d)}`;
-    return (d.getFullYear() === now.getFullYear() ? monthDay : fullDay).format(d);
+    if (isToday(ms)) return clock.format(ms);
+    if (dayKey.format(ms) === dayKey.format(Date.now() + skew - 86400000)) return `Yesterday ${clock.format(ms)}`;
+    return (new Date(ms).getFullYear() === new Date().getFullYear() ? monthDay : fullDay).format(ms);
   }
   const size = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
   const fail = (text) => { $('fail').textContent = text; $('fail').hidden = false; };
   const join = (dir, name) => (dir ? `${dir}/${name}` : name);
+  const hashOf = (...parts) => `#/${parts.filter((p) => p !== '').map((p) => String(p).split('/').map(encodeURIComponent).join('/')).join('/')}`;
+  let me = null;             // home: { user, level, zone, menu, chatboxes }
+  let timer = null;          // the open page's refresh
+  // A path above the user's level answers 401 in that level's realm: the browser asks for that login.
+  // 403: a login above public_max_level, from the internet.
+  async function request(sub, params, init) {
+    const r = await fetch(`${sub}?${new URLSearchParams(params)}`, { cache: 'no-store', ...init });
+    if (r.status === 401 || r.status === 403 || r.status === 429) { const b = await r.json().catch(() => ({})); fail(b.message || 'Not allowed.'); throw new Error(String(r.status)); }
+    if (!r.ok && !init) { fail(r.status === 404 ? 'Not found.' : `Error ${r.status}.`); throw new Error(String(r.status)); }
+    $('fail').hidden = true;
+    return r;
+  }
+  async function call(sub, params) {
+    const r = await request(sub, params);
+    return r.headers.get('content-type')?.includes('json') ? r.json() : r.blob();
+  }
+  const mount = (id) => { clearInterval(timer); timer = null; $('view').replaceChildren($(id).content.cloneNode(true)); };
+  const tick = () => {
+    if (!me) return;
+    const now = Date.now() + skew;
+    $('clock').textContent = `· ${clock.format(now)} ${zone}`;
+    if ($('h-time')) { $('h-time').textContent = clock.format(now); $('h-day').textContent = `${new Intl.DateTimeFormat(undefined, { timeZone: zone, dateStyle: 'full' }).format(now)} · ${zone}`; }
+  };
+
+  const LABEL = { chatboxes: 'Chatboxes', conversations: 'Conversations', heartbeats: 'Heartbeats', scripts: 'Scripts', desktop: 'Desktop', credentials: 'Credentials', files: 'Files' };
+  // ── the menu, by what the user's level reaches (the server decides: home.menu) ──
+  function drawMenu(route) {
+    const nav = $('menu');
+    nav.replaceChildren(link('Home', '#/', route[0] === '' ? 'on' : ''));
+    for (const m of me.menu) {
+      if (m.id === 'chatboxes') {
+        nav.append(el('div', 'Chatboxes', 'grp small muted'));
+        for (const c of me.chatboxes) nav.append(link(c.label, hashOf('chatbox', c.client), `sub${route[0] === 'chatbox' && route[1] === c.client ? ' on' : ''}`));
+        if (!me.chatboxes.length) nav.append(el('div', 'None installed', 'small muted sub'));
+      } else nav.append(link(LABEL[m.id], hashOf(m.id), route[0] === m.id || (m.id === 'files' && route[0] === 'file') ? 'on' : ''));
+    }
+  }
+
+  // ── home ──
+  const MORE = {
+    conversations: 'Team groups and topics (Telegram) and the rest', heartbeats: 'What fires on a schedule, and when it last did',
+    scripts: 'The *.x.md scripts of each conversation (read-only)', desktop: 'Each conversation\'s desktop/ folder',
+    credentials: 'Each conversation\'s .credentials/ (devs and above)', files: 'The folder browser: any file you may read',
+  };
+  function homeView() {
+    mount('t-home');
+    $('h-user').textContent = me.user;
+    $('h-level').textContent = `level ${me.level}`;
+    const box = $('h-chatboxes');
+    for (const c of me.chatboxes) {
+      const t = link(null, hashOf('chatbox', c.client), 'tile big');
+      t.append(el('div', 'Chatbox', 'k'), el('div', c.label, 'v'));
+      const s = el('div', null, 'stats');
+      for (const [n, label] of [[c.active, 'active'], [c.today, 'today'], [c.total, 'total']]) { const x = el('span'); x.append(el('b', String(n)), ` ${label}`); s.append(x); }
+      t.append(s, el('div', c.last ? `${when(c.last.at)} · ${c.last.title}${c.last.text ? `: ${c.last.text}` : ''}` : 'No chats yet', 'd'));
+      box.append(t);
+    }
+    if (!me.chatboxes.length) box.append(el('p', 'No chatbox is installed in your scope.', 'muted'));
+    for (const m of me.menu.filter((x) => x.id !== 'chatboxes')) {
+      const t = link(null, hashOf(m.id), 'tile');
+      t.append(el('div', LABEL[m.id], 'v'), el('div', MORE[m.id] ?? '', 'd'));
+      $('h-more').append(t);
+    }
+    tick();
+  }
+
+  // ── a workspace: the list of chats | the room | what surrounds it ──
+  // spec: { base: its hash, title, rows(): [{key, path, title, subtitle, userType, last, active, count, more, snippet}], tabs: Active/Past, say: a composer for active chats }
+  let ws = null;
+  const rowText = (r) => [r.title, r.subtitle, r.userType, r.snippet].filter(Boolean).join(' ').toLowerCase();
+  async function openWorkspace(spec, key) {
+    mount('t-ws');
+    ws = { spec, rows: [], q: '', tab: 'active', key, shown: null, first: true };
+    $('ws-title').textContent = spec.title;
+    $('ws-tabs').hidden = !spec.tabs;
+    $('wq').oninput = drawList;
+    for (const t of ['active', 'past']) $(`tab-${t}`).onclick = () => { ws.tab = t; drawList(); };
+    await refresh();
+    // The active list follows the node without a reload.
+    timer = setInterval(() => refresh().catch(() => {}), 20000);
+  }
+  async function refresh() {
+    ws.rows = await ws.spec.rows();
+    if (ws.first && ws.spec.tabs) { const r = ws.rows.find((x) => x.key === ws.key); if (r) ws.tab = r.active ? 'active' : 'past'; }
+    ws.first = false;
+    drawList();
+    await select(ws.key, true);
+  }
+  function drawList() {
+    const terms = $('wq').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = ws.rows.filter((r) => terms.every((t) => rowText(r).includes(t)));
+    const mine = ws.spec.tabs ? rows.filter((r) => r.active === (ws.tab === 'active')) : rows;
+    if (ws.spec.tabs) {
+      $('tab-active').textContent = `Active ${ws.rows.filter((r) => r.active).length}`;
+      $('tab-past').textContent = `Past ${ws.rows.filter((r) => !r.active).length}`;
+      $('tab-active').className = ws.tab === 'active' ? 'on' : '';
+      $('tab-past').className = ws.tab === 'past' ? 'on' : '';
+      $('ws-hint').textContent = ws.tab === 'active' ? `Chats whose last line is within ${ws.spec.idle}. Refreshes every 20 s.` : 'Older chats. The folder and transcript are kept.';
+    }
+    const box = $('rows');
+    box.replaceChildren();
+    for (const r of mine) {
+      const a = link(null, hashOf(...ws.spec.route, r.key), `item${r.key === ws.key ? ' on' : ''}`);
+      const top = el('span', null, 'top');
+      top.append(el('span', r.title, 'name'));
+      const t = el('span', when(r.last), 'time');
+      t.title = exact.format(r.last);
+      top.append(t);
+      a.append(top);
+      if (r.subtitle) a.append(el('span', r.subtitle, 'sub'));
+      if (r.snippet) a.append(el('span', `${r.from === 'visitor' ? '' : '↩ '}${r.snippet}`, 'line'));
+      const meta = el('span', null, 'meta');
+      if (r.userType) meta.append(el('span', r.userType, 'pill'));
+      if (r.count != null) meta.append(el('span', `${r.count}${r.more ? '+' : ''} messages`));
+      if (r.active && ws.spec.tabs) meta.append(el('span', '● live', 'live'));
+      if (meta.childElementCount) a.append(meta);
+      box.append(a);
+    }
+    if (!mine.length) box.append(el('p', terms.length ? 'No chat matches.' : ws.spec.tabs ? `No ${ws.tab} chats.` : 'Nothing here.', 'empty'));
+  }
+  // Another chat of the open workspace (a link): its tab opens with it.
+  async function pick(key) {
+    const r = ws.rows.find((x) => x.key === key);
+    if (r && ws.spec.tabs) ws.tab = r.active ? 'active' : 'past';
+    ws.key = key;
+    drawList();
+    await select(key);
+  }
+  // The chat opened: its room in the center, the rest of its folder around it.
+  async function select(key, again) {
+    ws.key = key;
+    for (const a of document.querySelectorAll('#rows .item')) a.classList.toggle('on', a.getAttribute('href') === hashOf(...ws.spec.route, key));
+    const row = ws.rows.find((r) => r.key === key);
+    if (!row) {
+      if (key) fail('That chat is not in this list.');
+      else { ws.shown = null; $('rt').textContent = 'Pick a chat'; $('rs').replaceChildren(); $('msgs').replaceChildren(); $('composer').hidden = true; $('room-n').hidden = true; }
+      return;
+    }
+    const room = await call('room', { p: row.path });
+    drawRoom(room, row, again && ws.shown === key);
+    if (ws.shown !== key) { ws.shown = key; panel(row, room); }
+    // On a narrow screen the room is below the list.
+    if (!again && matchMedia('(max-width: 800px)').matches) $('center').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function drawRoom(room, row, keep) {
+    $('rt').textContent = room.title;
+    const sub = $('rs');
+    sub.replaceChildren(room.subtitle ? `${room.subtitle} · ` : '', link('Transcript', hashOf('file', room.path, 'transcript.md')), ' · ', link('Folder', hashOf('files', room.path)));
+    const s = $('room-s'), stick = !keep || s.scrollHeight - s.scrollTop - s.clientHeight < 40;
+    const box = $('msgs');
+    box.replaceChildren();
+    if (room.partial) box.append(el('div', 'Earlier lines are in the transcript.', 'day'));
+    let day = null;
+    for (const m of room.messages) {
+      if (m.date && m.date !== day) { day = m.date; box.append(el('div', day, 'day')); }
+      const b = el('div', null, `msg ${m.side}`);
+      const name = m.side === 'visitor' ? room.title : m.who.startsWith('support:') ? `Support · ${m.who.slice(8)}` : m.who;
+      b.append(el('div', `${name} · ${m.time}`, 'who'), el('div', m.text, 'text'));
+      box.append(b);
+    }
+    if (!room.messages.length) box.append(el('p', 'No lines in this conversation yet.', 'empty'));
+    if (stick) s.scrollTop = s.scrollHeight;
+    // Staff speak into a chat that is live (its last line within the client's idle window).
+    const can = ws.spec.say && row.active;
+    $('composer').hidden = !can;
+    $('room-n').hidden = !ws.spec.say || can;
+    $('room-n').textContent = 'A past chat: its visitor has no session to hear a reply.';
+    if (can) $('composer').onsubmit = (ev) => { ev.preventDefault(); say(row); };
+    $('say').onkeydown = (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); say(row); } };
+  }
+  async function say(row) {
+    const text = $('say').value.trim();
+    if (!text) return;
+    $('say-go').disabled = true;
+    try {
+      const r = await request('say', {}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: ws.spec.client, key: row.key, text }) });
+      if (r.ok) { $('say').value = ''; $('room-n').hidden = true; setTimeout(() => select(row.key, true).catch(() => {}), 1200); }
+      else { const b = await r.json().catch(() => ({})); $('room-n').textContent = r.status === 409 ? 'That chat has no live session: the visitor cannot receive it.' : `Not sent (${b.error ?? r.status}).`; $('room-n').hidden = false; }
+    } finally { $('say-go').disabled = false; }
+  }
+
+  // The side panel: the card, then the conversation's folders; each tab loads when opened.
+  const PANEL = [['card', 'Card'], ['desktop', 'Desktop'], ['files', 'Files'], ['heartbeats', 'Heartbeats'], ['outbox', 'Outbox'], ['credentials', 'Credentials']];
+  let nav = [];   // the panel's back stack: a function per screen
+  function panel(row, room) {
+    const tabs = $('ptabs');
+    tabs.replaceChildren();
+    const show = (id) => {
+      for (const b of tabs.children) b.classList.toggle('on', b.dataset.id === id);
+      nav = [];
+      go(() => (id === 'card' ? cardView(row, room) : id === 'files' ? folderView(row.path, row.path) : areaView(id, row.path)));
+    };
+    for (const [id, label] of PANEL) {
+      if (id === 'credentials' && !me.menu.some((m) => m.id === 'credentials')) continue;
+      const b = el('button', label);
+      b.type = 'button';
+      b.dataset.id = id;
+      b.onclick = () => show(id);
+      tabs.append(b);
+    }
+    show('card');
+  }
+  const go = (render) => { nav.push(render); render().catch(() => {}); };
+  const back = () => { nav.pop(); nav.at(-1)().catch(() => {}); };
+  const pbox = () => { const box = $('pbody'); box.replaceChildren(); if (nav.length > 1) { const b = el('button', '← Back'); b.type = 'button'; b.onclick = back; box.append(b); } return box; };
+  async function cardView(row, room) {
+    const box = pbox();
+    const dl = el('dl', null, 'card');
+    const u = room.usuario ?? {};
+    const rows = [['Name', u.short_name], ['User', u.username], ['School', u.abrin], ['Type', u.user_type], ['User id', u.user_id], ['Last line', room.last && exact.format(room.last)],
+      ['Messages', row.count != null ? `${row.count}${row.more ? '+' : ''}` : null], ['Folder', room.path], ['Chat', room.chats.join(', ')]];
+    for (const [k, v] of rows) if (v) dl.append(el('dt', k), el('dd', String(v)));
+    box.append(dl);
+  }
+  function rowsView(box, rows, empty) {
+    if (!rows.length) box.append(el('p', empty, 'empty'));
+    for (const r of rows) {
+      const d = el('div', null, 'prow');
+      const b = el('button', r.dir ? `${r.name}/` : r.name, 'link');
+      b.type = 'button';
+      b.onclick = () => go(() => (r.dir ? folderView(r.path) : fileView(r.path)));
+      d.append(b, el('span', `${size(r.size)} ${when(r.mtime)}`.trim(), 'size'));
+      const info = [r.info, r.ran != null ? `last run ${when(r.ran)}` : null].filter(Boolean).join(' · ');
+      if (info) d.append(el('span', info, 'info'));
+      box.append(d);
+    }
+  }
+  async function areaView(kind, path) {
+    const b = await call('area', { k: kind, p: path });
+    const box = pbox();
+    rowsView(box, b.groups[0]?.rows ?? [], `No ${kind} in this conversation.`);
+  }
+  async function folderView(path) {
+    const b = await call('tree', { p: path });
+    const box = pbox();
+    rowsView(box, b.entries.map((e) => ({ ...e, path: join(b.path, e.name) })), 'Empty folder.');
+  }
+  async function fileView(path) {
+    const b = await call('file', { p: path });
+    const box = pbox();
+    box.append(el('h2', `${b.path.split('/').at(-1)} · ${size(b.size)}`));
+    const bar = el('div', null, 'bar');
+    const d = el('button', 'download', 'link');
+    d.type = 'button';
+    d.onclick = () => download(path).catch(() => {});
+    bar.append(link('Open in Files', hashOf('file', path)), d);
+    box.append(bar);
+    if (b.binary) box.append(el('p', 'Binary file: use “download”.', 'muted'));
+    else { box.append(el('pre', b.text)); if (b.truncated) box.append(el('p', `Showing the first ${size(b.text.length)}; download it to see all of it.`, 'muted')); }
+  }
+  async function download(path) {
+    const blob = await call('file', { p: path, download: '1' });
+    const a = el('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = path.split('/').pop();
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  // ── an area across the conversations: heartbeats, scripts, desktop, credentials ──
+  const AREA = { heartbeats: ['Heartbeats', 'heartbeats/*.yaml of each conversation: when it fires, what it runs, when it last did.'], scripts: ['Scripts', 'scripts/*.x.md of each conversation, read-only.'],
+    desktop: ['Desktop', 'The desktop/ folder of each conversation.'], credentials: ['Credentials', '.credentials/ of each conversation: devs and above. Opening a file is logged.'] };
+  async function areaPage(kind) {
+    const b = await call('area', { k: kind });
+    mount('t-area');
+    $('a-title').textContent = AREA[kind][0];
+    $('a-sub').textContent = AREA[kind][1];
+    const box = $('a-groups');
+    if (!b.groups.length) box.append(el('p', `No ${kind} yet.`, 'muted'));
+    for (const g of b.groups) {
+      const sec = el('div', null, 'sec');
+      const h = el('h2', null, 'sec-h');
+      h.append(link(g.title, hashOf('files', g.path)), el('span', String(g.rows.length), 'count'));
+      sec.append(h);
+      const shown = g.rows.slice(0, 12);
+      const draw = (rows) => {
+        for (const r of rows) {
+          const d = el('div', null, 'prow');
+          d.append(link(r.dir ? `${r.name}/` : r.name, hashOf(r.dir ? 'files' : 'file', r.path)), el('span', `${size(r.size)} ${when(r.mtime)}`.trim(), 'size'));
+          const info = [r.info, r.ran != null ? `last run ${when(r.ran)}` : null].filter(Boolean).join(' · ');
+          if (info) d.append(el('span', info, 'info'));
+          sec.append(d);
+        }
+      };
+      draw(shown);
+      if (g.rows.length > shown.length) {
+        const more = el('button', `${g.rows.length - shown.length} more…`, 'link');
+        more.type = 'button';
+        more.onclick = () => { more.remove(); draw(g.rows.slice(shown.length)); };
+        sec.append(more);
+      }
+      box.append(sec);
+    }
+  }
+
+  // ── Files: the folder browser, as it was ──
   let list = null;           // the scope listing: { level, sections, entries }
   let names = new Map();     // a conversation's folder → its name in the list
   let top = '';
-  // A path above the user's level answers 401 in that level's realm: the browser asks for that login.
-  // 403: a login above public_max_level, from the internet.
-  async function call(sub, params) {
-    const r = await fetch(`${sub}?${new URLSearchParams(params)}`, { cache: 'no-store' });
-    if (r.status === 401 || r.status === 403 || r.status === 429) { const b = await r.json().catch(() => ({})); fail(b.message || 'Not allowed.'); throw new Error(String(r.status)); }
-    if (!r.ok) { fail(r.status === 404 ? 'Not found.' : `Error ${r.status}.`); throw new Error(String(r.status)); }
-    $('fail').hidden = true;
-    return r.headers.get('content-type')?.includes('json') ? r.json() : r.blob();
-  }
-  const me = (b) => { $('who').textContent = `· ${b.user} (${b.level})`; };
-
-  // ── the list ──
   const nameOf = (e) => e.title || e.name;
   const subOf = (e) => {
     const u = e.usuario;
@@ -105,12 +504,6 @@
     return '';
   };
   const haystack = (e) => [nameOf(e), e.usuario?.short_name, e.usuario?.username, e.usuario?.abrin, e.preview].filter(Boolean).join(' ').toLowerCase();
-  async function load() {
-    list = await call('tree', { scope: '1' });
-    me(list);
-    names = new Map(list.entries.map((e) => [e.path, nameOf(e)]));
-    draw();
-  }
   function item(e, label, onpick) {
     const b = el('button', null, 'item');
     const head = el('span', null, 'top');
@@ -168,22 +561,18 @@
     for (const b of box.querySelectorAll('.item')) if (b.dataset.path === top && $('tree').childElementCount) b.classList.add('on');
     $('none').hidden = !terms.length || shown > 0;
   }
-
-  // ── the folder ──
   const homeOf = (path) => [...names.keys()].find((h) => path === h || path.startsWith(`${h}/`));
   async function open(path) {
     const b = await call('tree', { p: path });
-    me(b);
     top = b.path;
     const home = homeOf(b.path);
     $('where').textContent = home ? names.get(home) : b.path ? b.path.split('/').at(-1) : 'EGPT_HOME';
     $('sub').textContent = b.path;
     $('up').disabled = !b.path || (b.level !== 'root' && b.path === home);
-    $('view').replaceChildren();
+    $('view-file').replaceChildren();
     render(b, $('tree'), 0);
   }
   function render(b, box, depth) {
-    me(b);
     box.replaceChildren();
     if (!b.entries.length) box.append(el('p', 'Empty folder.', 'muted'));
     for (const e of b.entries) {
@@ -214,27 +603,72 @@
   }
   async function show(path) {
     const b = await call('file', { p: path });
-    const box = $('view');
+    const box = $('view-file');
     box.replaceChildren(el('h2', `${b.path} · ${size(b.size)}`));
     if (b.binary) box.append(el('p', 'Binary file: use “download”.', 'muted'));
     else {
       box.append(el('pre', b.text));
       if (b.truncated) box.append(el('p', `Showing the first ${size(b.text.length)}; download it to see all of it.`, 'muted'));
     }
+    box.scrollIntoView({ block: 'nearest' });
   }
-  async function download(path) {
-    const blob = await call('file', { p: path, download: '1' });
-    const a = el('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = path.split('/').pop();
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  const scopeList = async () => {
+    list = await call('tree', { scope: '1' });
+    names = new Map(list.entries.map((e) => [e.path, nameOf(e)]));
+  };
+  // path: a folder to open; file: a file to show (its folder opens)
+  async function filesPage(path, file) {
+    mount('t-files');
+    $('q').oninput = () => list && draw();
+    $('up').onclick = () => open(top.split('/').slice(0, -1).join('/')).catch(() => {});
+    await scopeList();
+    draw();
+    if (file) { await open(path.split('/').slice(0, -1).join('/')); await show(path); }
+    else if (path) await open(path);
   }
-  $('up').onclick = () => open(top.split('/').slice(0, -1).join('/')).catch(() => {});
-  $('q').oninput = () => list && draw();
-  load().catch(() => { $('sections').replaceChildren(); });
+
+  // ── Conversations: the Telegram groups and the rest, as a workspace too ──
+  const conversations = async () => {
+    await scopeList();
+    return list.entries.filter((e) => e.kind !== 'chatbox').map((e) => ({ key: e.path, path: e.path, title: nameOf(e), subtitle: e.kind === 'telegram' ? 'Telegram' : '', last: e.last, active: false, count: null, snippet: null }));
+  };
+  const days = (ms) => { const d = Math.round(ms / 86400000); return d >= 1 ? `${d} day${d === 1 ? '' : 's'}` : `${Math.round(ms / 3600000)} h`; };
+
+  // ── the router: #/ · #/chatbox/<client>[/<key>] · #/conversations[/<path>] · #/<area> · #/files[/<path>] · #/file/<path> ──
+  async function route() {
+    const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
+    const [a = '', b, ...rest] = parts;
+    drawMenu([a, b]);
+    try {
+      if (a === 'chatbox' && b) {
+        const base = `chatbox/${b}`;
+        if (ws?.spec.base === base) { await pick(rest[0] ?? null); return; }
+        const first = await call('chatbox', { c: b });
+        await openWorkspace({
+          base, route: ['chatbox', b], title: first.label, tabs: true, say: true, client: b, idle: days(first.idleMs),
+          rows: async () => (await call('chatbox', { c: b })).chats,
+        }, rest[0] ?? null);
+      } else if (a === 'conversations') {
+        const key = parts.slice(1).join('/') || null;
+        if (ws?.spec.base === 'conversations') { await pick(key); return; }
+        await openWorkspace({ base: 'conversations', route: ['conversations'], title: 'Conversations', tabs: false, say: false, rows: conversations }, key);
+      } else if (AREA[a]) { ws = null; await areaPage(a); }
+      else if (a === 'files') { ws = null; await filesPage(parts.slice(1).join('/'), false); }
+      else if (a === 'file') { ws = null; await filesPage(parts.slice(1).join('/'), true); }
+      else { ws = null; homeView(); }
+    } catch { /* call() said why */ }
+  }
+  // The conversations route keys by path, which has slashes: the room's links carry them as they are.
+  async function start() {
+    me = await call('home');
+    skew = me.now - Date.now();
+    setZone(me.zone);
+    $('who').textContent = `· ${me.user} (${me.level})`;
+    setInterval(tick, 15000);
+    window.addEventListener('hashchange', route);
+    await route();
+  }
+  start().catch(() => {});
 })();
 </script>
 </body>

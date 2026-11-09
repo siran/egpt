@@ -81,6 +81,7 @@ import { cleanForSpeech } from '../speech-clean.mjs';
  * @property {'text'|'reaction'|'edit'} kind   an utterance, or a stage-direction (reaction/edit: bracket-wrapped, references its own target in the body)
  * @property {{atEStart: boolean, atEAnywhere: boolean, replyToBot: boolean}} mention  mention status the bridge already computed — the gating service's input
  * @property {boolean} backlog  older than bridge start (a woken node's replay): transcript-logged as backfill, NEVER dispatched
+ * @property {string|null} lineMode  the mode THIS line is gated by when it is not its conversation's (a chatbox's support line: 'accum'); gating.decide reads it, null on every other inbound
  * @property {boolean} authorized  sender is an allowed_user on this surface — on a shared account every own-account send reads true, so this is NOT a provenance test
  * @property {boolean} isSender    arrived on OUR OWN account (the operator, a peer node, or our own echo)
  * @property {boolean} isVoice     the body is a voice-note transcription

@@ -6,6 +6,7 @@
 import { describe, it, expect, afterEach, beforeEach, beforeAll } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, utimes, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash, createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttpBridge } from '../src/bridges/http.mjs';
@@ -556,7 +557,7 @@ describe('limbs.http.ayde — the login', () => {
     expect(r.status).toBe(200);
     const html = await r.text();
     expect(html).toMatch(/lang="en"/);
-    expect(html).toContain('Read-only');
+    expect(html).toContain('<nav id="menu"');
     expect((await get('tree', {}, 'tina')).body).toMatchObject({ user: 'tina', level: 'team' });
     expect(lines.join('\n')).not.toMatch(/password-1|wrong-password/);
   });
@@ -764,19 +765,20 @@ describe('limbs.http.ayde — the page and audit', () => {
 
   it('the page: a Log out link to <ayde path>/logout beside the user', async () => {
     const { page } = await limb();
-    expect(await (await page('tina')).text()).toContain('<span id="who"></span><a href="logout">Log out</a>');
+    expect(await (await page('tina')).text()).toContain('<span id="who"></span><span id="clock"></span><a href="logout">Log out</a>');
   });
 
-  it('the page: one list with one search box, from tree?scope=1; no separate search panel; text only through textContent', async () => {
+  it('the page: the dashboard, a side menu, hash routes, the Files list from tree?scope=1; text only through textContent', async () => {
     const { page, get } = await limb();
     const html = await (await page('tina')).text();
+    expect(html).toContain("call('home')");
     expect(html).toContain("call('tree', { scope: '1' })");
-    expect(html.match(/<input /g)).toHaveLength(1);
-    expect(html).not.toMatch(/Website conversations|id="found"|call\('search'/);
-    expect(html).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+    for (const route of ["'chatbox'", "'conversations'", "'files'", "'file'"]) expect(html).toContain(route);
+    expect(html).toContain('<template id="t-ws">');
     expect(html).toContain("['Today', ");
     expect(html).toContain("['Previous', ");
-    expect(html).not.toMatch(/second: |toLocaleString\(\)/);
+    expect(html).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+    expect(html).not.toMatch(/\sstyle=|second: |toLocaleString\(\)/);
     expect((await get('search', { q: '' }, 'tina')).status).toBe(404);
   });
 
@@ -809,7 +811,7 @@ describe('limbs.http.ayde — the page and audit', () => {
     const { base, api } = await limb();
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
       expect((await fetch(base, { method, headers: { Authorization: basic('rob') } })).status, method).toBe(405);
-      for (const sub of ['search', 'tree', 'file']) expect((await api(sub, { p: 'state/alive.txt' }, 'rob', { method })).status, `${method} ${sub}`).toBe(405);
+      for (const sub of ['search', 'tree', 'file', 'home', 'chatbox', 'room', 'area']) expect((await api(sub, { p: 'state/alive.txt' }, 'rob', { method })).status, `${method} ${sub}`).toBe(405);
     }
     expect(await readFile(at('state', 'alive.txt'), 'utf8')).toBe('alive\n');
   });
@@ -827,5 +829,300 @@ describe('limbs.http.ayde — the page and audit', () => {
     expect(r.body).toMatchObject({ size: 300 * 1024, truncated: true });
     expect(r.body.text.length).toBe(256 * 1024);
     expect((await get('file', { p: `conversations/http/${A}/gavetas/foto.bin` }, 'tina')).body).toEqual({ path: `conversations/http/${A}/gavetas/foto.bin`, size: 6, binary: true });
+  });
+});
+
+// The dashboard: home, a chatbox's chats, a room, the areas. 2026-10-26 12:00Z is 08:00 in Caracas.
+describe('limbs.http.ayde — the dashboard', () => {
+  const NOW = Date.parse('2026-10-26T12:00:00Z');
+  const opts = (more = {}) => ({ now: () => NOW, timeZone: 'America/Caracas', clients: { acme: { being: 'ed', label: 'Acme — website', session_days: 2 } }, ...more });
+  const said = (who, hhmm, text) => `${who}@[x].http (${hhmm}) #1: ${text}`;
+  const transcript = (...blocks) => `---\nname: x\nsurface: http\n---\n\n${blocks.join('\n\n')}\n\n`;
+  const put = async (path, text, t) => {
+    await mkdir(join(at(path), '..'), { recursive: true });
+    await writeFile(at(path), text);
+    if (t) await utimes(at(path), new Date(t), new Date(t));
+  };
+  beforeEach(async () => {
+    // A: signed, a streaming train, a stage direction and a support line; C: signed, titled by the limb
+    await put(`conversations/http/${A}/transcript.md`, transcript(
+      '[ 2026-10-25 ]', said('visitor', '23:58', 'Hola, necesito\nayuda con mi nota'), said('ed', '23:58', '(streaming) Claro'), said('ed', '23:59', 'Claro, dime el curso.'),
+      '[ 2026-10-26 ]', '[ ed@[x].http (00:01): reacted 👍 to #1 ]', said('support:tina', '00:02', 'Soy Tina, del equipo.'), said('visitor', '08:30', '4to A'),
+    ), '2026-10-26T10:00:00Z');
+    await put(`conversations/http/${C}/usuario.json`, JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', title: 'CSJ · Juan Pérez', subtitle: 'Profesor' }));
+    await put(`conversations/http/${C}/transcript.md`, transcript(said('visitor', '10:00', 'Una pregunta'), said('ed', '10:01', 'Dime')), '2026-10-25T10:00:00Z');
+  });
+
+  it('home: user, level, zone and the clock; a menu of what the level reaches (credentials: devs and above; with no scope only what needs none); a tile per chatbox', async () => {
+    const { get } = await limb(opts());
+    const tina = (await get('home', {}, 'tina')).body;
+    expect(tina).toMatchObject({ user: 'tina', level: 'team', zone: 'America/Caracas', now: NOW });
+    expect(tina.menu.map((m) => m.id)).toEqual(['chatboxes', 'conversations', 'heartbeats', 'scripts', 'desktop', 'files']);
+    expect((await get('home', {}, 'dev')).body.menu.map((m) => m.id)).toEqual(['chatboxes', 'conversations', 'heartbeats', 'scripts', 'desktop', 'credentials', 'files']);
+    // 3 chats; A (2 h) and C (26 h) are inside the 2 days, B (6 days) is not; only A is today, in Caracas
+    expect(tina.chatboxes).toEqual([{ client: 'acme', label: 'Acme — website', total: 3, active: 2, today: 1,
+      last: { at: Date.parse('2026-10-26T10:00:00Z'), title: 'María López', text: '4to A', from: 'visitor' } }]);
+    const none = await limb(opts({ ayde: { on: true, scope: [] } }));
+    expect((await none.get('home', {}, 'tina')).body.menu.map((m) => m.id)).toEqual(['chatboxes', 'conversations', 'files']);
+    expect((await none.get('home', {}, 'rob')).body.menu.map((m) => m.id)).toContain('credentials');
+    expect((await none.get('home', {}, null)).status).toBe(401);
+  });
+
+  it('the zone: the one given, else UTC; "today" is a day in it', async () => {
+    const utc = await limb(opts({ timeZone: null }));
+    expect((await utc.get('home', {}, 'tina')).body).toMatchObject({ zone: 'UTC' });
+    expect((await utc.get('home', {}, 'tina')).body.chatboxes[0].today).toBe(1);
+    const late = await limb(opts({ now: () => Date.parse('2026-10-27T02:00:00Z') }));   // 22:00 the 26th in Caracas, the 27th in UTC
+    expect((await late.get('home', {}, 'tina')).body.chatboxes[0].today).toBe(1);
+    const later = await limb(opts({ now: () => Date.parse('2026-10-27T05:00:00Z'), timeZone: 'UTC' }));
+    expect((await later.get('home', {}, 'tina')).body.chatboxes[0].today).toBe(0);
+  });
+
+  it('chatbox: its chats newest first with title, subtitle, user type, last update, message count, last line; active = inside session_days', async () => {
+    const { get, lines } = await limb(opts());
+    const r = (await get('chatbox', { c: 'acme' }, 'tina')).body;
+    expect(r).toMatchObject({ client: 'acme', label: 'Acme — website', idleMs: 2 * 86400000, now: NOW });
+    expect(r.chats.map((c) => [c.key, c.active])).toEqual([[A.slice(5), true], [C.slice(5), true], [B.slice(5), false]]);
+    expect(r.chats[0]).toMatchObject({ path: `conversations/http/${A}`, title: 'María López', subtitle: 'mlopez', userType: 'R', last: Date.parse('2026-10-26T10:00:00Z'), count: 4, more: false, snippet: '4to A', from: 'visitor' });
+    expect(r.chats[1]).toMatchObject({ title: 'CSJ · Juan Pérez', subtitle: 'Profesor', userType: 'P', count: 2, snippet: 'Dime', from: 'being' });
+    expect(r.chats[2]).toMatchObject({ count: 0, snippet: null, from: null });
+    expect(lines).toContain('ayde: tina (team) listed chatbox acme');
+    expect((await get('chatbox', { c: 'nadie' }, 'tina')).status).toBe(404);
+    expect((await get('chatbox', { c: 'zeta' }, 'tina')).status).toBe(404);
+    expect((await get('chatbox', { c: 'acme' }, null)).status).toBe(401);
+  });
+
+  it('an anonymous chat is "Visitor"; a client with the default idle window (365 days) has every recent chat active', async () => {
+    await put(`conversations/http/${D}/transcript.md`, transcript(said('visitor', '10:00', 'hola')), '2026-10-24T10:00:00Z');
+    const { get } = await limb(opts({ clients: { acme: { being: 'ed' }, zeta: { being: 'ed' } }, ayde: { on: true, scope: ['http:acme-', 'http:zeta-'] } }));
+    const z = (await get('chatbox', { c: 'zeta' }, 'tina')).body.chats;
+    expect(z).toHaveLength(1);
+    expect(z[0]).toMatchObject({ title: 'Visitor', subtitle: '', userType: null, active: true, snippet: 'hola' });
+  });
+
+  it('room: the transcript as a conversation: day marks, times, sides; no streaming train or stage direction; a multi-line message; viewed in the admin-access.log', async () => {
+    const { get, lines } = await limb(opts());
+    const r = (await get('room', { p: `conversations/http/${A}` }, 'tina')).body;
+    expect(r).toMatchObject({ path: `conversations/http/${A}`, title: 'María López', subtitle: 'mlopez', kind: 'chatbox', section: 'chatbox:acme', partial: false });
+    expect(r.messages).toEqual([
+      { who: 'visitor', side: 'visitor', date: '2026-10-25', time: '23:58', text: 'Hola, necesito\nayuda con mi nota' },
+      { who: 'ed', side: 'other', date: '2026-10-25', time: '23:59', text: 'Claro, dime el curso.' },
+      { who: 'support:tina', side: 'support', date: '2026-10-26', time: '00:02', text: 'Soy Tina, del equipo.' },
+      { who: 'visitor', side: 'visitor', date: '2026-10-26', time: '08:30', text: '4to A' },
+    ]);
+    expect(lines).toContain(`ayde: tina (team) viewed conversations/http/${A}/transcript.md`);
+    expect(await readFile(at('conversations', 'http', A, 'admin-access.log'), 'utf8')).toMatch(new RegExp(`tina \\(team\\) viewed conversations/http/${A}/transcript\\.md$`, 'm'));
+    expect(JSON.stringify(lines)).not.toMatch(/Soy Tina|ayuda con mi nota/);
+  });
+
+  it('room: a Telegram group is a room too, nobody is a visitor; an unscoped one, a missing transcript or a path out are refused', async () => {
+    await put(`conversations/telegram/${G}/transcript.md`, transcript('An@[g].tg (09:00) #5: ¿listo?', 'ED@[g].tg (09:01): /reply #5 Sí, listo.'));
+    const { get } = await limb(opts());
+    const r = (await get('room', { p: `conversations/telegram/${G}` }, 'tina')).body;
+    expect(r).toMatchObject({ kind: 'telegram', title: 'Contoso' });
+    expect(r.messages.map((m) => [m.who, m.side, m.text])).toEqual([['An', 'other', '¿listo?'], ['ED', 'other', 'Sí, listo.']]);
+    expect((await get('room', { p: `conversations/http/${D}` }, 'tina')).realm).toBe(realm('root'));
+    expect((await get('room', { p: `conversations/http/${D}` }, 'rob')).status).toBe(200);
+    expect((await get('room', { p: `conversations/telegram/${T}` }, 'tina')).body.messages).toEqual([]);
+    for (const p of ['', '../x', 'conversations/http/nada', `conversations/http/${B}/gavetas`]) expect((await get('room', { p }, 'rob')).status, p).toBe(404);
+  });
+
+  it('room: a transcript that is a link out of the scope shows nothing, to team or devs', async () => {
+    await mkdir(at('conversations', 'http', B), { recursive: true });
+    await rm(at('conversations', 'http', B, 'transcript.md'), { force: true });
+    const linked = await symlink(at('conversations', 'http', D, 'transcript.md'), at('conversations', 'http', B, 'transcript.md'), 'file').then(() => true, () => false);
+    const { get } = await limb(opts());
+    if (linked) for (const user of ['tina', 'dev']) expect((await get('room', { p: `conversations/http/${B}` }, user)).status, user).toBe(404);
+  });
+
+  it('a long transcript is cut to its tail, and says so; the list counts it with "more"', async () => {
+    const many = Array.from({ length: 600 }, (_, i) => said('visitor', '10:00', `línea ${i}`));
+    await put(`conversations/http/${B}/transcript.md`, transcript(...many), '2026-10-26T11:00:00Z');
+    const { get } = await limb(opts());
+    const r = (await get('room', { p: `conversations/http/${B}` }, 'tina')).body;
+    expect(r.messages).toHaveLength(500);
+    expect(r.messages.at(-1).text).toBe('línea 599');
+    expect(r.partial).toBe(true);
+    expect((await get('chatbox', { c: 'acme' }, 'tina')).body.chats.find((c) => c.key === B.slice(5))).toMatchObject({ count: 600, snippet: 'línea 599' });
+  });
+
+  describe('the areas', () => {
+    beforeEach(async () => {
+      await put(`conversations/http/${A}/heartbeats/aviso.yaml`, 'daily: "07:45"\ntime_zone: America/Caracas\nagent: ed\nprompt: |\n  secret prompt text\n', '2026-10-20T00:00:00Z');
+      await put(`conversations/http/${A}/heartbeats/vieja.yaml.pausado`, 'frequency: 1h\ncommand: echo hi\n', '2026-10-19T00:00:00Z');
+      await put(`conversations/http/${A}/scripts/limpiar.x.md`, '1. hazlo\n', '2026-10-18T00:00:00Z');
+      await put(`conversations/http/${A}/scripts/limpiar.x.md.log`, 'ok\n', '2026-10-21T00:00:00Z');
+      await put(`conversations/http/${A}/scripts/notas.md`, 'not a script\n');
+      await put(`conversations/http/${A}/desktop/plan.md`, '# plan\n', '2026-10-22T00:00:00Z');
+      await put(`conversations/http/${A}/outbox/a.txt`, 'x');
+      await put(`conversations/http/${A}/.credentials/db.md`, 'user: dummy\n');
+      await put(`conversations/http/${B}/desktop/otro.md`, '# otro\n', '2026-10-10T00:00:00Z');
+      await put(`conversations/telegram/${T}/desktop/mesa.md`, '# mesa\n', '2026-10-15T00:00:00Z');
+      await put('state/heartbeats-daily.json', JSON.stringify({ [`http/${A}:aviso`]: '2026-10-26', [`http/${B}:aviso`]: '2026-01-01' }));
+    });
+
+    it('heartbeats: each file with when it fires, what it runs, when it last fired (the node\'s ledger for that conversation), paused; the prompt never leaves', async () => {
+      const { get, lines } = await limb(opts());
+      const r = (await get('area', { k: 'heartbeats' }, 'tina')).body;
+      expect(r.kind).toBe('heartbeats');
+      expect(r.groups.map((g) => g.path)).toEqual([`conversations/http/${A}`]);
+      expect(r.groups[0].rows.map((x) => [x.name, x.path, x.info])).toEqual([
+        ['aviso.yaml', `conversations/http/${A}/heartbeats/aviso.yaml`, 'daily 07:45 America/Caracas · agent ed · last fired 2026-10-26'],
+        ['vieja.yaml.pausado', `conversations/http/${A}/heartbeats/vieja.yaml.pausado`, 'every 1h · command · paused'],
+      ]);
+      expect(JSON.stringify(r)).not.toContain('secret prompt');
+      expect(lines).toContain('ayde: tina (team) listed heartbeats');
+    });
+
+    it('scripts: only *.x.md, with when its .log last changed; desktop and outbox: every entry; newest conversation first; p keeps one conversation', async () => {
+      const { get } = await limb(opts());
+      const sc = (await get('area', { k: 'scripts' }, 'tina')).body.groups[0].rows;
+      expect(sc.map((x) => [x.name, x.ran])).toEqual([['limpiar.x.md', Date.parse('2026-10-21T00:00:00Z')]]);
+      const dk = (await get('area', { k: 'desktop' }, 'tina')).body.groups;
+      expect(dk.map((g) => [g.path, g.rows.map((x) => x.name)])).toEqual([
+        [`conversations/http/${A}`, ['plan.md']], [`conversations/telegram/${T}`, ['mesa.md']], [`conversations/http/${B}`, ['otro.md']]]);
+      expect((await get('area', { k: 'desktop', p: `conversations/http/${B}` }, 'tina')).body.groups.map((g) => g.path)).toEqual([`conversations/http/${B}`]);
+      expect((await get('area', { k: 'outbox', p: `conversations/http/${A}` }, 'tina')).body.groups[0].rows.map((x) => x.name)).toEqual(['a.txt']);
+      expect((await get('area', { k: 'desktop', p: `conversations/http/${D}` }, 'tina')).body.groups).toEqual([]);
+    });
+
+    it('credentials: devs and above (a team user: 401 in the devs realm), listing names only; logged', async () => {
+      const { get, lines } = await limb(opts());
+      const t = await get('area', { k: 'credentials' }, 'tina');
+      expect(t.status).toBe(401);
+      expect(t.realm).toBe(realm('devs'));
+      expect(lines).toContain('ayde: tina (team) refused credentials — needs devs');
+      const d = (await get('area', { k: 'credentials' }, 'dev')).body;
+      expect(d.groups[0].rows.map((x) => x.name)).toEqual(['db.md']);
+      expect(JSON.stringify(d)).not.toContain('dummy');
+      expect(lines).toContain('ayde: dev (devs) listed credentials');
+    });
+
+    it('an unknown area is 404; nothing leaks from outside the scope or through a link', async () => {
+      await mkdir(at('conversations', 'http', C), { recursive: true });
+      const linked = await symlink(at('state'), at('conversations', 'http', C, 'desktop'), 'dir').then(() => true, () => false);
+      const { get } = await limb(opts());
+      expect((await get('area', { k: 'state' }, 'rob')).status).toBe(404);
+      expect((await get('area', {}, 'rob')).status).toBe(404);
+      const r = (await get('area', { k: 'desktop' }, 'tina')).body;
+      expect(JSON.stringify(r)).not.toContain('alive.txt');
+      if (linked) expect(r.groups.map((g) => g.path)).not.toContain(`conversations/http/${C}`);
+    });
+  });
+});
+
+// A support line, from /ayde into a live chatbox conversation: on the panel as `support`, gated as accum (the visitor's lines stay as the conversation has them).
+describe('limbs.http.ayde — a support line (POST say)', () => {
+  const sidOf = (token) => createHash('sha256').update(token).digest('hex').slice(0, 16);
+  // A live session of acme with its conversation in the registry and on disk; the visitor said "hola".
+  async function live1(more = {}) {
+    const got = [];
+    const l = await limb({ onIncoming: (text, from) => got.push({ text, from }), ...more });
+    const open = await (await fetch(`${l.root}/chat/acme/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'hola' }) })).json();
+    const key = sidOf(open.session), slug = `acme-${key}`;
+    await mkdir(at('conversations', 'http', slug), { recursive: true });
+    await writeFile(at('config', 'conversations.yaml'), registry().replace('  telegram:\n', `    "http:${slug}":\n      conversation_path: .egpt/conversations/http/${slug}\n  telegram:\n`));
+    const say = (body, user = 'tina', headers = {}) => fetch(`${l.base}say`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(user ? { Authorization: basic(user) } : {}), ...headers }, body: JSON.stringify(body) });
+    const panel = async () => (await (await fetch(`${l.root}/chat/acme/messages?session=${encodeURIComponent(open.session)}`)).json()).messages;
+    return { ...l, got, key, slug, say, panel, session: open.session };
+  }
+
+  it('team and up: the visitor\'s panel gets it as from "support" with the user; the line is delivered in mode accum (its own), the visitor\'s lines with no mode of their own', async () => {
+    const { say, panel, got, key, lines } = await live1();
+    const r = await say({ client: 'acme', key, text: 'Hola, soy Tina. ¿En qué te ayudo?' });
+    expect(r.status).toBe(200);
+    const b = await r.json();
+    expect(b).toMatchObject({ ok: true, message: { from: 'support', by: 'tina', text: 'Hola, soy Tina. ¿En qué te ayudo?', done: true } });
+    expect((await panel()).map((m) => [m.from, m.by, m.text])).toEqual([['visitor', undefined, 'hola'], ['support', 'tina', 'Hola, soy Tina. ¿En qué te ayudo?']]);
+    expect(got).toHaveLength(2);
+    expect(got[1].text).toBe('Hola, soy Tina. ¿En qué te ayudo?');
+    expect(got[1].from).toMatchObject({ chatId: `http:acme-${key}`, senderName: 'support:tina', network: 'http', lineMode: 'accum', authorized: false, isSender: false, replyToBot: false, atEStart: false, atEAnywhere: false });
+    expect(got[1].from.backlog).toBeUndefined();
+    expect(got[0].from.lineMode).toBeUndefined();
+    expect(got[0].from.replyToBot).toBe(true);   // the visitor addresses the being; the support line does not
+    expect(JSON.stringify(lines)).not.toContain('Hola, soy Tina');
+    // every level, not only team
+    for (const user of ['dev', 'ada', 'rob']) expect((await say({ client: 'acme', key, text: `de ${user}` }, user)).status, user).toBe(200);
+  });
+
+  it('accum for the support line: one that names the being (a wake word, at the start or inside) is addressed to it, the rest are not; the same reading as the visitor\'s lines', async () => {
+    const { say, key, got } = await live1({ wakeWords: ['@ed', 'ed'], addressWithoutAt: true });
+    for (const text of ['Ya lo vi, gracias.', '@ed dile que reinicie sesión', 'Hola @ed, ¿puedes revisar la boleta?', 'el editor falló']) await say({ client: 'acme', key, text });
+    expect(got.slice(1).map((g) => [g.from.atEStart, g.from.atEAnywhere, g.from.lineMode])).toEqual([
+      [false, false, 'accum'], [true, true, 'accum'], [false, true, 'accum'], [false, false, 'accum'],
+    ]);
+    expect(got.slice(1).every((g) => g.from.replyToBot === false && g.from.senderName === 'support:tina')).toBe(true);
+  });
+
+  it('conversation_by: identity — one conversation per user: both devices\' panels show the support line, say goes to that one chat key', async () => {
+    const KEY = 'dummy-test-key-not-a-secret';
+    const sign = (p) => { const b = Buffer.from(JSON.stringify(p)).toString('base64url'); return `${b}.${createHmac('sha256', KEY).update(b).digest('base64url')}`; };
+    const idn = (over = {}) => sign({ abrin: 'DEMO', username: 'ana', short_name: 'Ana', user_type: 'R', exp: Math.floor(Date.now() / 1000) + 3600, ...over });
+    const got = [];
+    const l = await limb({ onIncoming: (text, from) => got.push({ text, from }), clients: { acme: { being: 'ed', identity: 'required', conversation_by: 'identity' } }, identityKey: () => KEY });
+    const open = async (token, text) => (await (await fetch(`${l.root}/chat/acme/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, identity: token }) })).json()).session;
+    const laptop = await open(idn(), 'desde el portátil'), phone = await open(idn({ exp: Math.floor(Date.now() / 1000) + 7200 }), 'desde el móvil');
+    expect(phone).not.toBe(laptop);
+    const chatId = got[0].from.chatId, key = chatId.split('-').at(-1), slug = chatId.slice('http:'.length);
+    expect(got[1].from.chatId).toBe(chatId);
+    await mkdir(at('conversations', 'http', slug), { recursive: true });
+    await writeFile(at('config', 'conversations.yaml'), registry().replace('  telegram:\n', `    "${chatId}":\n      conversation_path: .egpt/conversations/http/${slug}\n  telegram:\n`));
+    const r = await fetch(`${l.base}say`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: basic('tina') }, body: JSON.stringify({ client: 'acme', key, text: 'Hola Ana, soy Tina.' }) });
+    expect(r.status).toBe(200);
+    expect(got).toHaveLength(3);
+    expect(got[2].from).toMatchObject({ chatId, senderName: 'support:tina', lineMode: 'accum' });
+    for (const session of [laptop, phone]) {
+      const m = (await (await fetch(`${l.root}/chat/acme/messages?session=${encodeURIComponent(session)}&identity=${encodeURIComponent(idn())}`)).json()).messages;
+      expect(m.map((x) => [x.from, x.text])).toEqual([['visitor', 'desde el portátil'], ['visitor', 'desde el móvil'], ['support', 'Hola Ana, soy Tina.']]);
+    }
+  });
+
+  it('logged: the access log and the conversation\'s admin-access.log, never the text', async () => {
+    const { say, key, slug, lines } = await live1();
+    await say({ client: 'acme', key, text: 'texto privado del soporte' });
+    expect(lines).toContain(`ayde: tina (team) said in conversations/http/${slug}/`);
+    expect(await readFile(at('conversations', 'http', slug, 'admin-access.log'), 'utf8')).toMatch(new RegExp(`tina \\(team\\) said in conversations/http/${slug}/$`, 'm'));
+    expect(JSON.stringify(lines)).not.toContain('texto privado');
+    expect(await readFile(at('conversations', 'http', slug, 'admin-access.log'), 'utf8')).not.toContain('texto privado');
+  });
+
+  it('several support lines keep their order on the panel', async () => {
+    const { say, key, panel } = await live1();
+    await say({ client: 'acme', key, text: 'uno' });
+    await say({ client: 'acme', key, text: 'dos' });
+    expect((await panel()).filter((m) => m.from === 'support').map((m) => m.text)).toEqual(['uno', 'dos']);
+  });
+
+  it('refused: no login 401; GET 405; not JSON or a cross-site request 403; a missing or malformed field 400; too long 413; no live session 409', async () => {
+    const { say, key, base, api, panel } = await live1();
+    expect((await say({ client: 'acme', key, text: 'x' }, null)).status).toBe(401);
+    expect((await api('say', { client: 'acme', key, text: 'x' }, 'tina')).status).toBe(405);
+    expect((await fetch(`${base}say`, { method: 'POST', headers: { Authorization: basic('tina'), 'Content-Type': 'text/plain' }, body: JSON.stringify({ client: 'acme', key, text: 'x' }) })).status).toBe(403);
+    expect((await say({ client: 'acme', key, text: 'x' }, 'tina', { 'Sec-Fetch-Site': 'cross-site' })).status).toBe(403);
+    expect((await say({ client: 'acme', key, text: '   ' })).status).toBe(400);
+    expect((await say({ client: 'acme', key: 'zz', text: 'x' })).status).toBe(400);
+    expect((await say({ client: 'acme', key, text: 'x'.repeat(4001) })).status).toBe(413);
+    expect((await fetch(`${base}say`, { method: 'POST', headers: { Authorization: basic('tina'), 'Content-Type': 'application/json' }, body: '{nope' })).status).toBe(400);
+    expect((await say({ client: 'acme', key: '0123456789abcdef', text: 'x' }, 'rob')).status).toBe(409);
+    expect((await panel()).map((m) => m.from)).toEqual(['visitor']);
+  });
+
+  it('a chat outside the user\'s reach: 401 in the root realm, nothing posted; root posts anywhere live', async () => {
+    const { say, key, panel } = await live1();
+    await writeFile(at('config', 'conversations.yaml'), registry());   // the chat is no longer in the scope's folders
+    const r = await say({ client: 'acme', key, text: 'x' });
+    expect(r.status).toBe(401);
+    expect(r.headers.get('www-authenticate')).toBe(realm('root'));
+    expect((await panel()).map((m) => m.from)).toEqual(['visitor']);
+    expect((await say({ client: 'acme', key, text: 'x' }, 'rob')).status).toBe(200);
+  });
+
+  it('a past chat (its session expired and was dropped) has no one to hear it: 409', async () => {
+    let t = Date.now();
+    const { say, key, root } = await live1({ now: () => t, stateDir: at('state'), clients: { acme: { being: 'ed', session_days: 1 } } });
+    t += 3 * 86400000;
+    // another visitor's line makes the limb drop the expired session
+    await fetch(`${root}/chat/acme/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'otro' }) });
+    expect((await say({ client: 'acme', key, text: 'x' })).status).toBe(409);
   });
 });

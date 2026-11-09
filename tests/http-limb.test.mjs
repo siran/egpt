@@ -497,6 +497,14 @@ describe('widget.js and routing', () => {
     expect(js).toContain('"client":"acme"');
   });
 
+  it('widget.js heads a human support line (from: support) with strings.support and who said it; the label is a client string', async () => {
+    const { url } = await limb({ acme: { being: 'ed', strings: { support: 'Ayuda' } } });
+    const js = await (await fetch(`${url()}widget.js`)).text();
+    expect(HTTP_STRINGS.support).toBe('Soporte');
+    expect(js).toContain('"support":"Ayuda"');
+    expect(js).toContain("m.from === 'support' ? '**' + S.support + ' · ' + m.by + '**");
+  });
+
   it('widget.js has the end button with its inline confirm, and ends through POST end then clears the panel', async () => {
     const { url } = await limb();
     const js = await (await fetch(`${url()}widget.js`)).text();

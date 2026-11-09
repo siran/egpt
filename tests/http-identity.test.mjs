@@ -7,7 +7,7 @@ import { createHmac, createHash } from 'node:crypto';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startHttpBridge, renderTopicTitle, verifyIdentity, HTTP_STRINGS } from '../src/bridges/http.mjs';
+import { startHttpBridge, renderTopicTitle, renderChatLabel, verifyIdentity, HTTP_STRINGS } from '../src/bridges/http.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const KEY = 'dummy-test-key-not-a-secret';
@@ -207,6 +207,45 @@ describe('clients.<c>.identity', () => {
     const { post, lines } = await limb('requried');
     expect((await post({ text: 'hola' })).status).toBe(401);
     expect(lines.some((l) => /acme.*identity 'requried'.*required/.test(l))).toBe(true);
+  });
+});
+
+describe('the chat\'s title and subtitle, for /ayde\'s lists', () => {
+  it('beforeLine gets a title and subtitle from the identity\'s claims: by default {abrin} · {short_name} · {username} and {user_type}; empty claims and their separators are left out', async () => {
+    const { post, hooks } = await limb();
+    await post({ text: 'hola', identity: tok(JP) });
+    await post({ text: 'hola', identity: tok({ abrin: 'CSJ', username: 'ana', short_name: '', user_type: '' }) });
+    expect(hooks[0]).toMatchObject({ title: 'IEV · Juan Pérez · jperez', subtitle: 'P' });
+    expect(hooks[1]).toMatchObject({ title: 'CSJ · ana', subtitle: '' });
+  });
+
+  it('chat_title and chat_subtitle are templates like topic_title: any claim of the token; unsigned: neither', async () => {
+    const { post, hooks } = await limb('optional', {}, { chat_title: '{school} · {short_name}', chat_subtitle: '{user_type} · {username}' });
+    await post({ text: 'hola', identity: tok(JP, { school: 'Colegio Demo' }) });
+    await post({ text: 'hola', identity: tok(ML) });   // no school claim: its separator goes with it
+    await post({ text: 'hola' });
+    expect(hooks[0]).toMatchObject({ title: 'Colegio Demo · Juan Pérez', subtitle: 'P · jperez' });
+    expect(hooks[1]).toMatchObject({ title: 'María López', subtitle: 'R · mlopez' });
+    expect(hooks[2].title).toBeUndefined();
+    expect(hooks[2].subtitle).toBeUndefined();
+  });
+
+  it('the template renderer: claims in the same words as a topic\'s; a missing one is empty, dangling separators go, cut at 128; a blank config falls back to the default', async () => {
+    expect(renderChatLabel('{school} · {short_name} · {username}', { short_name: 'Ana', username: 'ana1' })).toBe('Ana · ana1');
+    expect(renderChatLabel('{school} · {short_name} · {username}', { school: 'S', short_name: '', username: 'ana1' })).toBe('S · ana1');
+    expect(renderChatLabel('{short_name} ({school})', { short_name: 'Ana' })).toBe('Ana');
+    expect(renderChatLabel('{school}', {})).toBe('');
+    expect([...renderChatLabel('{short_name}', { short_name: 'x'.repeat(200) })].length).toBeLessThanOrEqual(80);
+    const { post, hooks } = await limb('optional', {}, { chat_title: '  ', chat_subtitle: ['user_type'] });
+    await post({ text: 'hola', identity: tok(JP) });
+    expect(hooks[0]).toMatchObject({ title: 'IEV · Juan Pérez · jperez', subtitle: 'P' });
+  });
+
+  it('under conversation_by: identity the title is built once, with the conversation, for every tab and device', async () => {
+    const { post, hooks } = await limb('optional', {}, { conversation_by: 'identity', chat_title: '{school} · {short_name}' });
+    await post({ text: 'uno', identity: tok(JP, { school: 'Colegio Demo' }) });
+    await post({ text: 'dos', identity: tok(JP, { school: 'Colegio Demo', exp: exp(2 * HOUR) }) });
+    expect(hooks.map((h) => [h.isNew, h.title])).toEqual([[true, 'Colegio Demo · Juan Pérez'], [false, 'Colegio Demo · Juan Pérez']]);
   });
 });
 
