@@ -448,24 +448,26 @@ describe('renderTopicTitle', () => {
 });
 
 // widget.js on a minimal fake page: just what the loader touches.
-function page({ identity = null, stored = {} } = {}) {
+function page({ identity = null, stored = {}, place = null, vars = {} } = {}) {
+  const styles = [];
   const storage = new Map(Object.entries(stored));
   const calls = [], sources = [], parts = new Map(), responses = [];
   let chat = null;
   const node = (extra = {}) => ({ hidden: false, textContent: '', setAttribute() {}, appendChild() {}, ...extra });
-  const root = node({ querySelector: (sel) => parts.get(sel) ?? (parts.set(sel, node({ hidden: ['.egc-panel', '.egc-ask', '.egc-err'].includes(sel) })), parts.get(sel)) });
+  const root = node({ querySelector: (sel) => parts.get(sel) ?? (parts.set(sel, node({ hidden: ['.egc-panel', '.egc-ask', '.egc-err', '.egc-user'].includes(sel) })), parts.get(sel)) });
   const document = {
-    currentScript: { src: 'https://x.test/chat/acme/widget.js', getAttribute: (n) => (n === 'data-identity' ? identity : null) },
-    body: node(), head: node(),
+    currentScript: { src: 'https://x.test/chat/acme/widget.js', getAttribute: (n) => (n === 'data-identity' ? identity : n === 'data-place' ? place : null) },
+    body: node(), head: node({ appendChild: (s) => styles.push(s.textContent) }),
     createElement: (tag) => {
       if (tag === 'div') return root;
+      if (tag === 'style') return node();
       if (tag !== 'deep-chat') return node();
       const msgs = [];
       return (chat = { addMessage: (m) => msgs.push(m), getMessages: () => msgs, updateMessage() {}, focusInput() {}, scrollToBottom() {}, clearMessages() {} });
     },
     addEventListener() {},
   };
-  const window = { customElements: { get: () => true }, EventSource: function (src) { sources.push(src); this.close = () => {}; } };
+  const window = { getComputedStyle: () => ({ getPropertyValue: (k) => vars[k] ?? '' }), customElements: { get: () => true }, EventSource: function (src) { sources.push(src); this.close = () => {}; } };
   const localStorage = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) };
   const fetch = async (href, init) => {
     calls.push({ href, init, body: init?.body ? JSON.parse(init.body) : null });
@@ -473,7 +475,7 @@ function page({ identity = null, stored = {} } = {}) {
     return { ok: r.status < 300, status: r.status, json: async () => r.json };
   };
   return {
-    storage, calls, sources, responses, chat: () => chat,
+    storage, calls, sources, responses, styles, part: (sel) => parts.get(sel), chat: () => chat,
     run: (js) => new Function('document', 'window', 'localStorage', 'fetch', 'EventSource', js)(document, window, localStorage, fetch, window.EventSource),
     open: () => parts.get('.egc-bubble').onclick(),
   };
@@ -566,5 +568,128 @@ describe('widget.js and the identity', () => {
     p.open();
     await flush();
     expect(p.calls[0].href).toBe('https://x.test/chat/acme/messages?session=tok-anon');
+  });
+});
+
+describe('places: where the host page is', () => {
+  const places = { espacio: { user_strip: true, css: '.egc{--egc-bg:#123}', ignored: 1 }, plain: {} };
+
+  it('a configured place prefixes the being\'s line only: same chatId with and without it, the visitor\'s log unprefixed', async () => {
+    const { post, got, read } = await limb('required', {}, { places });
+    const identity = tok();
+    const a = await post({ text: 'hola', identity, place: 'espacio' });
+    expect(got[0].text).toBe('(in espacio) hola');
+    const b = await post({ session: a.session, text: 'otra', identity });
+    expect(got[1].text).toBe('otra');
+    expect(got[1].from.chatId).toBe(got[0].from.chatId);
+    expect(got[1].from.chatName).toBe(got[0].from.chatName);
+    expect((await (await read(a.session, identity)).json()).messages.map((m) => m.text)).toEqual(['hola', 'otra']);
+    expect(b.status).toBe(200);
+  });
+
+  it('an unknown, malformed or non-string place is no place; an unknown one is logged, never an error', async () => {
+    const { post, got, lines } = await limb('required', {}, { places });
+    const identity = tok();
+    for (const place of ['nope', 'BAD NAME', 7, '__proto__', 'constructor']) {
+      expect((await post({ text: 'hola', identity, place })).status).toBe(200);
+      expect(got.at(-1).text).toBe('hola');
+    }
+    expect(lines.some((l) => l.includes("place 'nope'"))).toBe(true);
+    const none = await limb('required', {}, {});
+    await none.post({ text: 'hola', identity, place: 'espacio' });
+    expect(none.got[0].text).toBe('hola');
+  });
+
+  it('init with a place names it', async () => {
+    for (const init of [true, 'prime']) {
+      const { post, got } = await limb('required', {}, { init, places });
+      await post({ kind: 'init', identity: tok(), place: 'espacio' });
+      expect(got[0].text.startsWith('(opened the chatbox in espacio, signed in as {')).toBe(true);
+    }
+  });
+
+  it('clientConfig embeds user_strip and css only, caps css, and drops bad names', async () => {
+    const { url } = await limb('required', {}, { places: { ...places, 'Bad Name': { css: 'x' }, big: { css: 'a'.repeat(30000) } } });
+    const js = await (await fetch(`${url}widget.js`)).text();
+    expect(js).toContain('"places":{"espacio":{"user_strip":true,"css":".egc{--egc-bg:#123}"},"plain":{"user_strip":false,"css":""},"big":{"user_strip":false,"css":"' + 'a'.repeat(20000) + '"}}');
+    expect(js).not.toContain('Bad Name');
+  });
+
+  it('no places: the widget config is as before', async () => {
+    const { url } = await limb('required');
+    const js = await (await fetch(`${url}widget.js`)).text();
+    expect(js).not.toContain('"places"');
+    expect(js).toMatch(/\)\(\{"client":"acme","maxChars":4000,"strings":\{.*\},"deepChat":\{[^}]*\}\}\);\n$/s);
+  });
+
+  it('widget: data-place names a configured place: its css after the base, the strip with the user, the place sent with a line and init', async () => {
+    const { url } = await limb('required', {}, { init: true, places });
+    const js = await (await fetch(`${url}widget.js`)).text();
+    const identity = tok();
+    const p = page({ identity, place: 'espacio' });
+    p.run(js);
+    await flush();
+    expect(p.calls[0].body).toEqual({ kind: 'init', session: null, identity, place: 'espacio' });
+    p.open();
+    await flush();
+    expect(p.styles.at(-1)).toContain('.egc{--egc-bg:#123}');
+    expect(p.styles[0].indexOf('.egc{--egc-bg:#123}')).toBeGreaterThan(p.styles[0].indexOf(':where('));
+    expect(p.part('.egc-user').textContent).toBe('Juan Pérez');
+    expect(p.part('.egc-user').hidden).toBe(false);
+    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
+    p.chat().connect.handler(null, signals);
+    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
+    await flush();
+    expect(p.calls.at(-1).body).toMatchObject({ text: 'hola', place: 'espacio' });
+  });
+
+  it('widget: unknown place or none: no css, no strip, no place sent', async () => {
+    const { url } = await limb('required', {}, { places });
+    const js = await (await fetch(`${url}widget.js`)).text();
+    const p = page({ identity: tok(), place: 'nope' });
+    p.run(js);
+    p.open();
+    await flush();
+    expect(p.styles.join('')).not.toContain('--egc-bg:#123');
+    expect(p.part('.egc-user')).toBeUndefined();   // never unhidden
+    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
+    p.chat().connect.handler(null, signals);
+    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
+    await flush();
+    expect(p.calls.at(-1).body).not.toHaveProperty('place');
+  });
+
+  it('widget: the strip falls back to username, and is empty with no identity', async () => {
+    const { url } = await limb('optional', {}, { places });
+    const js = await (await fetch(`${url}widget.js`)).text();
+    const a = page({ identity: tok({ abrin: 'IEV', username: 'solo' }), place: 'espacio' });
+    a.run(js);
+    expect(a.part('.egc-user').textContent).toBe('solo');
+    const b = page({ place: 'espacio' });
+    b.run(js);
+    expect(b.part('.egc-user')).toBeUndefined();
+  });
+
+  it('widget: look is overridable (:where, --egc-*, color-scheme), minimize and end are inline SVG, Deep Chat reads the variables', async () => {
+    const { url } = await limb('required');
+    const js = await (await fetch(`${url}widget.js`)).text();
+    expect(js).toContain('color-scheme:light');
+    expect(js).toContain(':where(.egc-panel)');
+    expect(js).toContain('class="egc-x">\' + icon(');
+    const p = page({ identity: tok() });
+    p.run(js);
+    p.open();
+    await flush();
+    expect(p.chat().chatStyle.backgroundColor).toBe('#f6f8fa');
+    expect(p.chat().messageStyles.default.user.bubble).toMatchObject({ backgroundColor: '#1f6feb', color: '#fff' });
+    expect(p.chat().avatars).toBeUndefined();
+    const v = page({ identity: tok(), vars: { '--egc-bg': ' #D3DDE9 ', '--egc-user-bg': '#345D98', '--egc-avatar': 'url("https://x.test/a.png")' } });
+    v.run(js);
+    v.open();
+    await flush();
+    expect(v.chat().chatStyle.backgroundColor).toBe('#D3DDE9');
+    expect(v.chat().messageStyles.default.user.bubble.backgroundColor).toBe('#345D98');
+    expect(v.chat().avatars.ai.src).toBe('https://x.test/a.png');
+    expect(v.chat().avatars.user.styles.container.display).toBe('none');
   });
 });

@@ -922,6 +922,13 @@ export const CONFIG_SCHEMA = {
                               shown in turn every 2.5 s, looping, in the loading bubble
                               instead of ⏳; default none = ⏳), e.g.
                               waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]
+            places            where the host page is: { <name>: { user_strip: bool, css: "…" } }
+                              (name: lowercase letters, digits, - and _; css at most 20000
+                              characters; other keys ignored). The page names its place with
+                              data-place on the widget's script tag; a configured one is told
+                              to the being ("(in <name>) …"), its css joins the page after the
+                              widget's, and user_strip shows the signed user's name under the
+                              header. An unknown place is logged and ignored. Default none
             session_days      idle days before a session expires (its token then
                               starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)

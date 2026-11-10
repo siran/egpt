@@ -480,6 +480,39 @@ other answer would be posted whole.
 `waiting` takes at most
 12 phrases of 80 characters; they are escaped as text.
 
+### Places and look
+
+One chatbox, one conversation per signed user, in several kinds of page. The host
+page says where it is with `data-place` on the widget's script tag, and the block
+says what each place turns on:
+
+```yaml
+contoso_soporte:
+  places:
+    espacio: { user_strip: true, css: ".egc{--egc-user-bg:#345D98}" }   # css: at most 20000 characters
+```
+
+A place name is lowercase letters, digits, `-` and `_`; other keys are ignored. A
+configured place reaches the being as a prefix on that line, `(in espacio) …`
+(the init line: `(opened the chatbox in espacio, signed in as …)`); the
+visitor's panel and the conversation are the same in every place. An unknown or
+malformed `place` is logged and ignored. `user_strip: true` shows the signed
+user's `short_name` (else `username`) in a fixed strip under the header.
+
+The widget's own CSS yields to any page or place CSS (its selectors are in
+`:where()`). Deep Chat's bubbles read these custom properties from `.egc`, once,
+when the panel opens (unset = the default):
+
+```
+--egc-bg #f6f8fa             --egc-bubble-max-width 85%      --egc-bubble-padding (Deep Chat's)
+--egc-user-bg #1f6feb        --egc-user-fg #fff              --egc-user-radius (Deep Chat's)
+--egc-ai-bg #fff             --egc-ai-fg #111                --egc-ai-border 1px solid #d0d7de
+--egc-ai-radius (Deep Chat's) --egc-ai-shadow (none)          --egc-avatar url(...) (none)
+```
+
+`--egc-avatar` puts that image at the foot of each reply and hides the visitor's
+avatar. The widget is always in light mode (`color-scheme: light`).
+
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
 name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
 no block is logged and skipped. A change to a block takes a `/restart`, as any

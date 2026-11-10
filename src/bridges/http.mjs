@@ -127,6 +127,7 @@ export const identityModeOf = (v) => {
   return mode == null || mode === false ? 'off' : IDENTITY_MODES.includes(mode) ? mode : null;
 };
 const HOUR_MS = 3600_000;
+const PLACE_CSS_MAX = 20000;
 
 function clientConfig(name, c = {}) {
   const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
@@ -135,8 +136,13 @@ function clientConfig(name, c = {}) {
   const idc = isMap(c.identity) ? c.identity : {};
   const key = Array.isArray(idc.key) && idc.key.length ? idc.key.map(String) : IDENTITY_CLAIMS;
   const init = c.init === true || c.init === 'prime' ? c.init : false;   // prime: the init line wakes the being, true: record only
+  const places = {};   // where the host page is: { <name>: { user_strip, css } }; the widget gets them as they are
+  for (const [k, v] of Object.entries(isMap(c.places) ? c.places : {})) {
+    if (CLIENT_RE.test(k) && isMap(v)) places[k] = { user_strip: v.user_strip === true, css: typeof v.css === 'string' ? v.css.slice(0, PLACE_CSS_MAX) : '' };
+  }
   return {
     name,
+    places,
     label: String(c.label ?? '').trim() || String(c.title ?? '').trim() || name,   // its section in /ayde
     being: c.being ? String(c.being) : null,
     origins: Array.isArray(c.allowed_origins) ? c.allowed_origins.map(String) : [],
@@ -155,7 +161,7 @@ function clientConfig(name, c = {}) {
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
-    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT, ...(init ? { init } : {}) })});\n`,
+    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT, ...(init ? { init } : {}), ...(Object.keys(places).length ? { places } : {}) })});\n`,
   };
 }
 
@@ -400,6 +406,9 @@ export async function startHttpBridge({
     const text = init ? '' : stripInvisible(String(body?.text ?? ''));
     if (!init && !text.trim()) return json(res, 400, { error: 'empty message' }, cors);
     if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
+    // place: the page's own name for where it is; only a configured one counts, a stale page keeps chatting
+    const place = typeof body?.place === 'string' && Object.hasOwn(c.places, body.place) ? body.place : null;
+    if (body?.place != null && !place) log(`${c.name}: place '${String(body.place).slice(0, 40)}' is not configured — no place`);
     const idn = identityOf(c, body?.identity);
     if (idn.status) return refuse(c, res, idn, cors);
     if (init && !idn.identity) return refuse(c, res, { status: 401, error: 'identity required' }, cors);
@@ -450,7 +459,7 @@ export async function startHttpBridge({
       const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
       const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
       log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(init ? `(opened the chatbox, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}${c.init === 'prime' ? '; nothing to answer yet — answer … alone)' : ')'}` : text, {
+      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}${c.init === 'prime' ? '; nothing to answer yet — answer … alone)' : ')'}` : place ? `(in ${place}) ${text}` : text, {
         chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it

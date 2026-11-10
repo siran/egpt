@@ -2,11 +2,16 @@
 // panel holding Deep Chat (C.deepChat), wired to this limb. The server's log is the one source of
 // truth: on open the panel shows GET messages, then follows GET events; Deep Chat keeps no browser copy.
 // The host page's signed user, if any, is the script tag's data-identity; it goes with every call, and
-// each user's session token is stored apart.
-function egptChat(C, base, identity) {
+// each user's session token is stored apart. The page's place, if any, is data-place: a name C.places knows
+// (its css joins the page, its user_strip shows the signed user under the header); it goes with each line.
+// Every base selector sits in :where(), so any page or place css beats it; Deep Chat's colours and shapes
+// come from the --egc-* custom properties of .egc (read once, in build()), the CSS defaults being today's look.
+function egptChat(C, base, identity, place) {
   base = base || document.currentScript.src.replace(/widget\.js(?:[?#].*)?$/, '');
   if (identity === undefined) identity = document.currentScript.getAttribute('data-identity') || null;
-  if (!document.body) { document.addEventListener('DOMContentLoaded', function () { egptChat(C, base, identity); }); return; }
+  if (place === undefined) place = document.currentScript.getAttribute('data-place') || null;
+  place = place && C.places && Object.prototype.hasOwnProperty.call(C.places, place) ? place : undefined;
+  if (!document.body) { document.addEventListener('DOMContentLoaded', function () { egptChat(C, base, identity, place); }); return; }
   var S = C.strings;
   var who = '';
   try { var p = JSON.parse(decodeURIComponent(escape(atob(identity.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'))))); who = ':' + p.abrin + '/' + p.username; } catch (e) { /* none, or the server refuses it */ }
@@ -17,30 +22,36 @@ function egptChat(C, base, identity) {
   var store = function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
   try { token = localStorage.getItem(KEY); } catch (e) { token = null; }
 
-  var css = '.egc{position:fixed;right:16px;bottom:16px;z-index:2147483000;font:15px/1.4 system-ui,sans-serif}'
-    + '.egc-bubble{width:56px;height:56px;border-radius:50%;border:0;background:#1f6feb;color:#fff;font-size:26px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}'
-    + '.egc-panel{position:absolute;right:0;bottom:68px;width:360px;height:520px;max-height:calc(100vh - 100px);display:flex;flex-direction:column;background:#f6f8fa;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.25);overflow:hidden}'
-    + '.egc-panel[hidden]{display:none}'
-    + '.egc-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1f6feb;color:#fff;font-weight:600}'
-    + '.egc-head span{flex:1}'
-    + '.egc-x,.egc-end{background:none;border:0;color:#fff;font-size:22px;cursor:pointer}'
-    + '.egc-end{font-size:19px;margin-right:6px}'
-    + '.egc-ask{display:flex;align-items:center;gap:8px;padding:8px 14px;background:#fff8c5;font-size:13px}'
-    + '.egc-ask[hidden]{display:none}'
-    + '.egc-ask span{flex:1}'
-    + '.egc-ask button{border:1px solid #d0d7de;border-radius:6px;padding:4px 10px;background:#fff;cursor:pointer;font:inherit}'
-    + '.egc-ask .egc-yes{background:#b42318;border-color:#b42318;color:#fff}'
-    + '.egc-body{flex:1;min-height:0}'
-    + '.egc-err{padding:12px;color:#b42318;font-size:13px}'
-    + '@media (max-width:480px){.egc-panel{position:fixed;inset:0;width:auto;height:auto;max-height:none;border-radius:0}'
-    + '.egc-panel:not([hidden])~.egc-bubble{display:none}}';
+  var css = ':where(.egc){position:fixed;right:16px;bottom:16px;z-index:2147483000;font:15px/1.4 system-ui,sans-serif;color-scheme:light}'
+    + ':where(.egc-bubble){width:56px;height:56px;border-radius:50%;border:0;background:#1f6feb;color:#fff;font-size:26px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}'
+    + ':where(.egc-panel){position:absolute;right:0;bottom:68px;width:360px;height:520px;max-height:calc(100vh - 100px);display:flex;flex-direction:column;background:var(--egc-bg,#f6f8fa);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.25);overflow:hidden}'
+    + ':where(.egc-panel[hidden]){display:none}'
+    + ':where(.egc-head){display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1f6feb;color:#fff;font-weight:600}'
+    + ':where(.egc-head span){flex:1}'
+    + ':where(.egc-x,.egc-end){background:none;border:0;color:#fff;font-size:22px;cursor:pointer}'
+    + ':where(.egc-end){font-size:19px;margin-right:6px}'
+    + ':where(.egc-x svg,.egc-end svg){display:block}'
+    + ':where(.egc-user){padding:6px 14px;background:#fff;font-size:13px;border-bottom:1px solid #d0d7de}'
+    + ':where(.egc-user[hidden]){display:none}'
+    + ':where(.egc-ask){display:flex;align-items:center;gap:8px;padding:8px 14px;background:#fff8c5;font-size:13px}'
+    + ':where(.egc-ask[hidden]){display:none}'
+    + ':where(.egc-ask span){flex:1}'
+    + ':where(.egc-ask button){border:1px solid #d0d7de;border-radius:6px;padding:4px 10px;background:#fff;cursor:pointer;font:inherit}'
+    + ':where(.egc-ask .egc-yes){background:#b42318;border-color:#b42318;color:#fff}'
+    + ':where(.egc-body){flex:1;min-height:0}'
+    + ':where(.egc-err){padding:12px;color:#b42318;font-size:13px}'
+    + '@media (max-width:480px){:where(.egc-panel){position:fixed;inset:0;width:auto;height:auto;max-height:none;border-radius:0}'
+    + ':where(.egc-panel:not([hidden])~.egc-bubble){display:none}}'
+    + (place ? C.places[place].css : '');
   var style = document.createElement('style');
   style.textContent = css;
   document.head.appendChild(style);
 
+  var icon = function (d) { return '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>'; };
   var root = document.createElement('div');
   root.className = 'egc';
-  root.innerHTML = '<div class="egc-panel" role="dialog" hidden><div class="egc-head"><span></span><button type="button" class="egc-end">↺</button><button type="button" class="egc-x">×</button></div>'
+  root.innerHTML = '<div class="egc-panel" role="dialog" hidden><div class="egc-head"><span></span><button type="button" class="egc-end">' + icon('<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/>') + '</button><button type="button" class="egc-x">' + icon('<path d="M5 12h14"/>') + '</button></div>'
+    + '<div class="egc-user" hidden></div>'
     + '<div class="egc-ask" hidden><span></span><button type="button" class="egc-yes"></button><button type="button" class="egc-no"></button></div>'
     + '<div class="egc-err" hidden></div><div class="egc-body"></div></div>'
     + '<button type="button" class="egc-bubble">💬</button>';
@@ -52,7 +63,10 @@ function egptChat(C, base, identity) {
   q('.egc-ask span').textContent = S.end_confirm;
   q('.egc-yes').textContent = S.end_yes;
   q('.egc-no').textContent = S.cancel;
+  q('.egc-x').title = S.close;
   q('.egc-x').setAttribute('aria-label', S.close);
+  var shown = place && C.places[place].user_strip && p && (p.short_name || p.username);
+  if (shown) { q('.egc-user').textContent = shown; q('.egc-user').hidden = false; }
   q('.egc-bubble').setAttribute('aria-label', S.open);
   document.body.appendChild(root);
 
@@ -131,7 +145,7 @@ function egptChat(C, base, identity) {
   };
   // No answer or a 5xx: the same line again, with the same id (the server keeps one), after BACKOFF[n].
   var postLine = function (text, id, n) {
-    return fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text, id: id, identity: identity }) })
+    return fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: token, text: text, id: id, identity: identity, place: place }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); }, function () { return Promise.reject(0); })
       .catch(function (status) {
         if ((status && status < 500) || n >= BACKOFF.length) return Promise.reject(status);
@@ -197,12 +211,17 @@ function egptChat(C, base, identity) {
     chat.textInput = { characterLimit: C.maxChars, placeholder: { text: S.placeholder }, styles: { text: { fontSize: '16px' } } };
     chat.submitButtonStyles = { tooltip: { text: S.send } };
     // A fontFamily of our own also keeps Deep Chat from adding a Google Fonts link to the page.
-    chat.chatStyle = { display: 'block', width: '100%', height: '100%', border: 'none', backgroundColor: '#f6f8fa', fontFamily: 'system-ui, sans-serif', fontSize: '15px' };
+    var cs = window.getComputedStyle(root);
+    var v = function (n, d) { return cs.getPropertyValue('--egc-' + n).trim() || d; };
+    var avatar = (/^url\(\s*(['"]?)(.*?)\1\s*\)$/.exec(v('avatar', '')) || [])[2];
+    chat.chatStyle = { display: 'block', width: '100%', height: '100%', border: 'none', backgroundColor: v('bg', '#f6f8fa'), fontFamily: 'system-ui, sans-serif', fontSize: '15px' };
     chat.messageStyles = { default: {
-      shared: { bubble: { maxWidth: '85%' } },
-      user: { bubble: { backgroundColor: '#1f6feb', color: '#fff' } },
-      ai: { bubble: { backgroundColor: '#fff', color: '#111', border: '1px solid #d0d7de' } },
+      shared: { bubble: { maxWidth: v('bubble-max-width', '85%'), ...(v('bubble-padding', '') ? { padding: v('bubble-padding', '') } : {}) } },
+      user: { bubble: { backgroundColor: v('user-bg', '#1f6feb'), color: v('user-fg', '#fff'), ...(v('user-radius', '') ? { borderRadius: v('user-radius', '') } : {}) } },
+      ai: { bubble: { backgroundColor: v('ai-bg', '#fff'), color: v('ai-fg', '#111'), border: v('ai-border', '1px solid #d0d7de'), ...(v('ai-radius', '') ? { borderRadius: v('ai-radius', '') } : {}), ...(v('ai-shadow', '') ? { boxShadow: v('ai-shadow', '') } : {}) } },
     }, loading: { message: { html: waitingHtml() } } };
+    // --egc-avatar: url(...) puts that face at the foot of each ai message; the visitor has none then.
+    if (avatar) chat.avatars = { ai: { src: avatar, styles: { avatar: { width: '32px', height: '32px', borderRadius: '50%' }, container: { alignSelf: 'flex-end' } } }, user: { styles: { container: { display: 'none' } } } };
     body.appendChild(chat);
   };
 
@@ -241,7 +260,7 @@ function egptChat(C, base, identity) {
   q('.egc-x').onclick = function () { open(false); };
   // C.init: the page load says so, once (POST messages, kind init); the answer's session is this page's.
   if (C.init && identity) {
-    opening = fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'init', session: token, identity: identity }) })
+    opening = fetch(base + 'messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'init', session: token, identity: identity, place: place }) })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) { if (j && j.session !== token) { token = j.session; store(KEY, token); listen(); } }, function () { /* the next line says what failed */ })
       .then(function () { opening = null; });

@@ -516,7 +516,7 @@ describe('widget.js and routing', () => {
     expect(js).toContain("html: waitingHtml()");
     expect(js).toContain("if (!w.length) return '⏳';");
     expect(js).toContain('var BACKOFF = [1000, 3000, 9000]');
-    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id, identity: identity })');
+    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id, identity: identity, place: place })');
     expect(js).toContain('crypto.getRandomValues');
     expect(js).toMatch(/if \(\(status && status < 500\) \|\| n >= BACKOFF\.length\) return Promise\.reject\(status\)/);
   });
