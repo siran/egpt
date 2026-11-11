@@ -761,7 +761,12 @@ export function createRouter({ getAgents = () => ({}), getConfig = () => ({}), a
         // replyToBeing, as a text reply to that message would (operator 2026-10-18).
         // The handles are the ARRIVAL chat's (`org`): where the line was typed is whose names it uses.
         const here = agentsInChat(agents, state, org?.surface, org?.chatId);
-        for (const hit of addressed(ev?.kind === 'reaction' ? '' : addressingView(ev), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing: ev?.replyToBeing })) {
+        // reply_default (operator 2026-11-11): a quote-reply (or reaction) to THIS node's bot whose quoted post
+        // names no being (ev.replyToBeing null: unstamped) goes to the arrival conversation's `reply_default`
+        // being, when it is one of `here`. Another node's post and a human's never take it. Unset → unchanged.
+        const dflt = state ? getContact(state, org?.surface, org?.chatId)?.entry?.reply_default : null;
+        const replyToBeing = ev?.replyToBeing ?? (dflt && ev?.mention?.replyToBot && !fromOtherNode(cfg, { fromNode: ev?.replyToNode ?? null }) ? dflt : null);
+        for (const hit of addressed(ev?.kind === 'reaction' ? '' : addressingView(ev), here, { addressWithoutAt, isVoice: ev?.isVoice, withFallback: !!isPresent || !!isPeerAlive, replyToBeing })) {
           // allowed_users is read here, not in `admits`: a hit it alone turns away lands in `refused`
           // instead of `targets`. Not a fallback-token hit: that token may be another account's, and the
           // guards below (the only lookups) are for hits that survived everything else.
