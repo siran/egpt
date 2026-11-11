@@ -409,8 +409,8 @@ describe('init: the widget opened', () => {
     expect(hooks.at(-1)).toMatchObject({ isNew: false, init: false });
   });
 
-  it("init: prime delivers the same line as a wake (not backlog), addressed to the being, once per new session; a reload or another tab primes nothing; the turn budget is not charged and no hook seats a topic", async () => {
-    const { post, got, hooks, read } = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 1 } });
+  it("init: prime delivers the same line as a wake (not backlog), addressed to the being, once per new session; a reload or another tab primes nothing; the prime is charged to the turn budget and no hook seats a topic", async () => {
+    const { post, got, hooks, read } = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 2 } });
     const identity = tok({ ...JP, user_id: 4711 });
     const i = await post({ kind: 'init', identity });
     expect(i).toEqual({ status: 200, session: expect.any(String) });
@@ -422,7 +422,7 @@ describe('init: the widget opened', () => {
     expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
     expect((await post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);   // a reload / another tab
     expect(got).toHaveLength(1);
-    // the one turn of the hour is still the visitor's
+    // the prime took one of the two turns of the hour; one line is left
     expect((await post({ session: i.session, text: 'hola', identity })).status).toBe(200);
     expect(got[1]).toMatchObject({ text: 'hola', from: { backlog: false } });
     expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
@@ -430,9 +430,9 @@ describe('init: the widget opened', () => {
 
   describe('the prime is kept warm: every init, unless the conversation was warmed within 4 minutes', () => {
     const MIN = 60_000;
-    const rig = async (init, extra = {}) => {
+    const rig = async (init, extra = {}, cfg = {}) => {
       let t = Date.now();
-      const r = await limb('required', { now: () => t, ...extra }, { init });
+      const r = await limb('required', { now: () => t, ...extra }, { init, ...cfg });
       const identity = tok(JP, { exp: exp(86400) });
       return { ...r, identity, tick: (ms) => { t += ms; }, init: (session) => r.post({ kind: 'init', session, identity }) };
     };
@@ -481,6 +481,32 @@ describe('init: the widget opened', () => {
       const a = await post({ text: 'hola', identity });
       await end({ session: a.session, identity });
       expect(order).toEqual(['line', 'end', 'prime']);
+    });
+
+    it('a prime counts in rate.turns_per_identity_per_hour: primes plus lines in an hour never exceed N; an over-budget prime is skipped, no error', async () => {
+      const N = 3;
+      const { post, end, got, identity, tick, init, lines } = await rig('prime', {}, { rate: { turns_per_identity_per_hour: N } });
+      const a = await init();                                          // prime 1
+      tick(5 * MIN);
+      expect((await init(a.session)).status).toBe(200);                // prime 2
+      tick(5 * MIN);
+      expect((await post({ session: a.session, text: 'hola', identity })).status).toBe(200);   // line 3
+      expect((await post({ session: a.session, text: 'otra', identity })).status).toBe(429);
+      expect((await end({ session: a.session, identity })).status).toBe(200);   // its end-prime is over budget: skipped
+      tick(5 * MIN);
+      expect((await init(a.session)).status).toBe(200);                // skipped too
+      expect(got.map((g) => g.from.prime)).toEqual([true, true, false]);
+      expect(lines.filter((l) => /acme: a prime skipped — 3 already from one identity in 60 min/.test(l)).length).toBeGreaterThanOrEqual(1);
+      tick(60 * MIN);                                                  // the hour passes: primes count again
+      expect((await init(a.session)).status).toBe(200);
+      expect(got.map((g) => g.from.prime)).toEqual([true, true, false, true]);
+    });
+
+    it('no identity budget configured: primes are not limited', async () => {
+      const { got, tick, init } = await rig('prime');
+      const a = await init();
+      for (let i = 0; i < 20; i++) { tick(5 * MIN); await init(a.session); }
+      expect(got).toHaveLength(21);
     });
 
     it('init: true keeps today: a resumed init records nothing; no init: end() delivers nothing', async () => {

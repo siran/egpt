@@ -422,6 +422,8 @@ export async function startHttpBridge({
   const opened = new Map();   // `<client> <address>` → when it opened new sessions, within the window
   const turns = new Map();    // `<client> <who>` → its lines' times within the hour (rate.turns_per_identity_per_hour)
   const posted = new Map();   // `<client> <id>` → { at, reply }: a retried POST gets the first one's answer
+  // The identity's turns within the hour (pruned); a visitor's line and a prime each count.
+  const spentOf = (k, n) => (turns.get(k) ?? []).filter((t) => n - t < HOUR_MS);
   // Seconds until this session may post again (its window pruned), or 0.
   const rateWait = (c, s, n) => {
     s.posts = s.posts.filter((t) => n - t < c.rateMs);
@@ -437,8 +439,15 @@ export async function startHttpBridge({
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
   // The prime: a wake no person typed, so the being's process and prompt cache are warm before the first line.
+  // It counts in the identity's turn budget like a line; over it, it is skipped (a warm-up, not a user action: no error).
   const prime = async (c, s, idn, { place, isNew }) => {
-    s.chat.warmAt = now();
+    const who = whoOf(c, idn.identity), k = c.identityTurns && who ? `${c.name} ${who}` : null, t = now();
+    if (k) {
+      const spent = spentOf(k, t);
+      if (spent.length >= c.identityTurns) { log(`${c.name}: a prime skipped — ${c.identityTurns} already from one identity in 60 min`); return; }
+      turns.set(k, [...spent, t]);
+    }
+    s.chat.warmAt = t;
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
     try { await beforeLine?.({ client: c.name, chatId, isNew, init: true, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
     catch (e) { log(`${name}: before the line — ${e?.message ?? e}`); }
@@ -476,7 +485,7 @@ export async function startHttpBridge({
     if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
     const n = now();
     const budget = !init && c.identityTurns && who ? `${c.name} ${who}` : null;
-    const spent = budget ? (turns.get(budget) ?? []).filter((t) => n - t < HOUR_MS) : [];
+    const spent = budget ? spentOf(budget, n) : [];
     if (budget && spent.length >= c.identityTurns) {
       const wait = Math.ceil((spent[0] + HOUR_MS - n) / 1000);
       log(`${c.name}: a line refused — ${c.identityTurns} already from one identity in 60 min`);

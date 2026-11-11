@@ -475,8 +475,9 @@ process and prompt cache are warm before the person types the first line. Not
 when the conversation was primed or spoken to within the last 4 minutes (another
 tab); and the visitor's "end conversation" primes right after it, whatever the
 gap (its fresh thread is cold). With `init: true` a resumed session records
-nothing. A prime does not count against
-`rate.turns_per_identity_per_hour`. Nothing is shown on the panel and no team
+nothing. A prime counts in
+`rate.turns_per_identity_per_hour` like a line; over the budget it is skipped
+silently (logged, no error). Nothing is shown on the panel and no team
 topic is seated. The being should answer a prime with `…` alone (the silence
 word). A prime's turn is quiet in every mode, so its `…` is never shown; any
 other answer would be posted whole.

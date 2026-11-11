@@ -1009,8 +1009,8 @@ export const CONFIG_SCHEMA = {
                               read its folder before the person types: on every init, new
                               or resumed, unless the conversation was primed or spoken to
                               in the last 4 min; the visitor's end-conversation primes
-                              right after it, whatever the gap. Not on the panel, no team topic, not counted by
-                              rate.turns_per_identity_per_hour. The being answers it with
+                              right after it, whatever the gap. Not on the panel, no team topic; counted in
+                              rate.turns_per_identity_per_hour (over it, skipped silently). The being answers it with
                               "…" alone (the silence word). Its turn is quiet in every
                               mode, so that "…" is never shown.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
