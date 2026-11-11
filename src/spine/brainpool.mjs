@@ -1376,7 +1376,7 @@ export function createBrainPool({
         // being gets its chat's group browser (operator 2026-10-11); `boxed` decides whether its CDP
         // is filtered. Absent link (no boot wiring, every test that passes none) contributes nothing.
         // A 'reader' gets no browser.
-        ...(beingLink && !desk ? { beingLink: beingLink.forBeing({ being, surface: scope.surface, slug, boxed: sandboxed === true }) } : {}),
+        ...(beingLink && !desk ? { beingLink: beingLink.forBeing({ being, surface: scope.surface, slug, key, boxed: sandboxed === true }) } : {}),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

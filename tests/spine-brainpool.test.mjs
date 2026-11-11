@@ -3059,6 +3059,7 @@ describe('brainpool.turn — a boxed turn is handed the being link, bound to its
     expect(link.bound[0].boxed).toBe(true);
     // the slug of the SAME key the warm pool runs under — one address, never two
     expect(pool.calls[0].key).toBe(`e:ccode:whatsapp:${link.bound[0].slug}`);
+    expect(link.bound[0].key).toBe(pool.calls[0].key);   // say finds its turn by the warm key
   });
 
   it('sandboxed:false → a beingLink too, bound unboxed (operator 2026-10-11: every being gets its chat\'s group browser)', async () => {

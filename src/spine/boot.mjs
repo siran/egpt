@@ -2836,6 +2836,11 @@ export async function boot({
     // browser login → the SAME auto-login limb /login calls (requestLogin, defined below); read at
     // call time, like startBrowser above, since no being can dial before boot finishes.
     requestLogin: (site, o) => requestLogin(site, o),
+    // say → the spine's mid-turn post, the reply path's own sender; read at call time, the spine is built below.
+    // The turn is found by the session's own warm key, never by slug (a fork or scoped chat shares its folder's slug).
+    say: async (who, text) => (who.key
+      ? spine.sayNow({ being: who.being, inSession: (ev) => brain.warmKey(who.being, ev) === who.key, text })
+      : { ok: false, detail: "say needs a turn's own session" }),
     resolveConfig: configResolver.configFor,   // privileged_browser, per conversation
     nativeWebSocket: cfg.shell?.being_native_websocket !== false,
     onLog: (m) => log.line?.(`[being] ${m}`),
@@ -3978,7 +3983,7 @@ export async function boot({
       if (!defaultIsAlive(h.pid)) { log.line?.(`[cli-host] dropping held ${h.key} pid ${h.pid} — its process is gone`); cliHost.kill(h.hid); continue; }
       try {
         const a = await cliHost.adopt(h.hid);
-        const link = m.link && beingLink.forBeing({ being, surface, slug, boxed: m.opened.sandboxed === true });
+        const link = m.link && beingLink.forBeing({ being, surface, slug, key: h.key, boxed: m.opened.sandboxed === true });
         brain.adoptKey(h.key, m.conv);
         pool.adopt(h.key, { brainOptions: { ...m.opened, sessionId: a.sessionId ?? m.sessionId ?? null, adopt: a, ...(link ? { beingLink: { mint: () => link.mint(m.link) } } : {}) }, klass: m.klass, idleTtlMs: m.idleTtlMs, opened: m.opened });
         log.line?.(`[cli-host] adopted ${h.key} pid ${a.pid}${a.background?.length ? ` (${a.background.length} background task(s))` : ''}${a.orphan ? ' — a turn still running' : ''}`);

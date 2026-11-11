@@ -20,9 +20,14 @@
 // Loopback is not an authenticator (a pool account dials 127.0.0.1 as freely as anyone): an answer
 // no live credential produced is refused, and the limb says so in the log.
 //
-// ONE REQUEST, NO ARGUMENTS. The table below is the routing table AND the allowlist, the shape
+// BROWSER, AND SAY. The one request that touches the machine is the browser's, argument-free; the
+// other is `say`, a line posted to the chat the being's live turn answers, through the spine's own
+// reply path (the injected `say`, boot → spine.sayNow) — it carries the line's `text` and nothing
+// else, and it launches nothing.
+//
+// NO ARGUMENTS BEYOND THOSE. The table below is the routing table AND the allowlist, the shape
 // shell-port's MOUTH_ANSWER already uses: a pair not in it is refused, and a frame carrying ANY
-// field besides `ask` and `action` is refused before the table is even consulted — the being
+// field besides `ask`, `action` and the two named above is refused before the table is even consulted — the being
 // chooses nothing about what runs as the operator (src/shell/being.mjs header). There is no
 // access_level gate, deliberately: a being that can only ask the spine to start the browser the
 // spine configures is asking for nothing it could misuse, and every boxed being may.
@@ -37,7 +42,7 @@ import { homedir } from 'node:os';
 import { join, dirname, basename, relative, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { authMac, macMatches } from '../shell/auth.mjs';
-import { SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV, CDP_MODULE_ENV, NATIVE_WS_ENV } from '../shell/being.mjs';
+import { SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV, CDP_MODULE_ENV, NATIVE_WS_ENV, SAY_MAX_CHARS } from '../shell/being.mjs';
 import { chromeConversationOf } from './chrome-pool.mjs';
 import { readBrowserGroups, browserUploadsOn } from '../rooms-file.mjs';
 import { slugDir } from '../conversations-state.mjs';
@@ -143,10 +148,11 @@ const quoted = (v) => JSON.stringify(String(v ?? '').slice(0, 40));
  * @param {string} [opts.uploadStage]              where checked upload copies go; the being cannot write here
  * @param {string} [opts.clientPath]               the client script handed in ASK_SPINE_ENV (default askSpineClientPath()); being-cdp.mjs sits beside it
  * @param {boolean} [opts.nativeWebSocket]        config shell.being_native_websocket; false mints NATIVE_WS_ENV=0 (the client dials with ws)
+ * @param {(who: object, text: string) => Promise<object>} [opts.say] boot's hook into spine.sayNow: posts the line to the chat `who`'s live turn answers, through the reply path — resolves { ok, reason?, detail? }
  * @param {(m: string) => void} [opts.onLog]       the AUDIT line, one per request
  * @param {typeof nodeRandomBytes} [opts.randomBytes]
  */
-export function createBeingLink({ port, startBrowser, chromeClientFor = null, requestLogin = null, readGroups = readBrowserGroups, conversationOf = async (who) => chromeConversationOf({ slug: who.slug }, await readGroups()), resolveConfig = () => ({}), uploadsOn = browserUploadsOn, uploadStage = join(EGPT_HOME, 'state', 'uploads'), clientPath = askSpineClientPath(), nativeWebSocket = true, onLog = () => {}, randomBytes = nodeRandomBytes } = {}) {
+export function createBeingLink({ port, startBrowser, chromeClientFor = null, requestLogin = null, say = null, readGroups = readBrowserGroups, conversationOf = async (who) => chromeConversationOf({ slug: who.slug }, await readGroups()), resolveConfig = () => ({}), uploadsOn = browserUploadsOn, uploadStage = join(EGPT_HOME, 'state', 'uploads'), clientPath = askSpineClientPath(), nativeWebSocket = true, onLog = () => {}, randomBytes = nodeRandomBytes } = {}) {
   const live = new Map();       // secret -> { being, surface, slug, boxed }
   const tunnels = new Map();    // who -> its open CDP tunnels, closed when its secret is revoked
   const muxes = new WeakMap();  // a group's CDP channel -> its mux
@@ -203,12 +209,27 @@ export function createBeingLink({ port, startBrowser, chromeClientFor = null, re
         return { ok: token === 'logged-in', login: String(token), detail: String(token) };
       },
     },
+    // A LINE, NOW. Plain text, never parsed for actions: a leading "/" is REFUSED (safer than posting
+    // it — a being that meant a limb would believe it ran), so the line says what it says. Whether a
+    // turn is live, and how many says it has had, are the spine's to answer (spine.sayNow).
+    say: {
+      line: async (who, _sink, _tag, frame) => {
+        if (typeof say !== 'function') return { ok: false, reason: 'unknown', detail: 'say is not wired on this node' };
+        const text = String(frame?.text ?? '');
+        const refused = (detail) => ({ ok: false, reason: 'refused', detail });
+        if (!text.trim()) return refused('nothing to say — the text is empty');
+        if (text.length > SAY_MAX_CHARS) return refused(`too long — ${text.length} characters, the most one say may carry is ${SAY_MAX_CHARS}`);
+        if (text.trimStart().startsWith('/')) return refused('say is plain text — a leading / is refused; actions go in your reply');
+        const r = await say(who, text);
+        return r?.ok ? { ok: true, said: true, detail: r.detail ?? 'said' } : refused(r?.detail ?? r?.reason ?? 'not delivered');
+      },
+    },
   };
 
   // `secret`: re-registers one a live process already holds — a session the daemon kept across a
   // spine restart (src/cli-host.mjs), whose environment cannot change.
   function mint(who, secret = randomBytes(32).toString('hex')) {
-    const bound = { being: String(who?.being ?? ''), surface: String(who?.surface ?? ''), slug: String(who?.slug ?? ''), boxed: who?.boxed === true };
+    const bound = { being: String(who?.being ?? ''), surface: String(who?.surface ?? ''), slug: String(who?.slug ?? ''), boxed: who?.boxed === true, ...(who?.key ? { key: String(who.key) } : {}) };
     live.set(secret, bound);
     return {
       // NAME=VALUE entries for the launcher's ONE -SetEnv element (boxed) or the spawn env (unboxed).
@@ -226,6 +247,7 @@ export function createBeingLink({ port, startBrowser, chromeClientFor = null, re
   // What one request did, as the audit line says it and the being's client prints it.
   function outcomeOf(r) {
     if (r?.tunnel) return `tunnel — ${r.detail}`;
+    if (r?.said) return `said — ${r.detail}`;
     if (typeof r?.login === 'string') return r.login;   // the limb's outcome token (logged-in | needs-2fa | …)
     if (r?.ok) return r.launched ? `launched — ${r.detail ?? ''}` : `already running — ${r.detail ?? ''}`;
     return `${r?.reason ?? 'failed'} — ${r?.detail ?? ''}`;
@@ -260,11 +282,15 @@ export function createBeingLink({ port, startBrowser, chromeClientFor = null, re
         return refuse('bad-request', `the spine takes no arguments — it alone decides what runs; this request also carried: ${frame.extra.map((k) => quoted(k)).join(', ')}`, what);
       }
       const run = Object.hasOwn(ASKS, frame.ask) && Object.hasOwn(ASKS[frame.ask], frame.action) ? ASKS[frame.ask][frame.action] : null;
-      if (!run) return refuse('unknown', 'the spine serves browser start, browser cdp and browser login, nothing else', what);
+      if (!run) return refuse('unknown', 'the spine serves browser start, browser cdp, browser login and say, nothing else', what);
       // `site` is browser login's alone; carried on any other request it is an argument like any
       // other, and the spine decides what runs — so it is refused, never silently dropped.
       if (frame.site && !(frame.ask === 'browser' && frame.action === 'login')) {
         return refuse('bad-request', 'the spine takes no arguments for this request; it also carried: "site"', what);
+      }
+      // …and `text` is say's alone, for the same reason.
+      if (frame.text && frame.ask !== 'say') {
+        return refuse('bad-request', 'the spine takes no arguments for this request; it also carried: "text"', what);
       }
       let r;
       try { r = await run(who, sink, tag, frame); }

@@ -801,3 +801,86 @@ describe('ask-spine: browser login over a real in-process spine', () => {
     expect(dialled).toBe(0);
   });
 });
+
+// A BEING SAYS A LINE MID-TURN: `say <text>`. The text rides a frame field that is `say`'s alone, as
+// `site` is browser login's; the link refuses it elsewhere, and hands the line to the injected `say`.
+describe('say: the wire, the link and the client', () => {
+  const sayLink = (say, extra = {}) => createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), say, ...extra });
+  const askSay = (link, frame) => link.ask(E_IN_ACIM, parseAskFrame(JSON.stringify(frame)));
+
+  it('the frame round-trips its text for say; no text → byte-identical to before', () => {
+    expect(parseAskFrame(askFrame({ ask: 'say', action: 'line', text: 'hello there' }))).toEqual({ ask: 'say', action: 'line', text: 'hello there', extra: [] });
+    expect(askFrame({ ask: 'browser', action: 'start' })).toBe('{"ask":"browser","action":"start"}');
+  });
+
+  it('text on any other ask is refused, by name', async () => {
+    let said = 0, ran = 0;
+    const link = createBeingLink({ port: 1, startBrowser: async () => { ran++; return { ok: true }; }, say: async () => { said++; return { ok: true }; } });
+    for (const action of ['start', 'cdp', 'login']) {
+      const r = await link.ask(E_IN_ACIM, parseAskFrame(JSON.stringify({ ask: 'browser', action, text: 'x' })));
+      expect(r).toMatchObject({ ok: false, reason: 'bad-request' });
+      expect(r.detail).toContain('"text"');
+    }
+    expect(ran + said).toBe(0);
+  });
+
+  it('say hands the injected sender the being, its session and the text — only that', async () => {
+    const got = [];
+    const link = sayLink(async (who, text) => { got.push({ who, text }); return { ok: true }; });
+    const r = await askSay(link, { ask: 'say', action: 'line', text: 'publishing now' });
+    expect(r).toMatchObject({ ok: true });
+    expect(got).toEqual([{ who: E_IN_ACIM, text: 'publishing now' }]);
+  });
+
+  it('a refusal from the spine (no live turn, cap) comes back with its reason, exit-1 shaped', async () => {
+    const link = sayLink(async () => ({ ok: false, reason: 'refused', detail: 'no live turn' }));
+    expect(await askSay(link, { ask: 'say', action: 'line', text: 'x' })).toMatchObject({ ok: false, detail: 'no live turn' });
+  });
+
+  it('empty text, text over 4000 characters, a leading "/" and an unwired node are refused before any send', async () => {
+    let said = 0;
+    const link = sayLink(async () => { said++; return { ok: true }; });
+    expect(await askSay(link, { ask: 'say', action: 'line' })).toMatchObject({ ok: false, detail: expect.stringMatching(/empty/) });
+    expect(await askSay(link, { ask: 'say', action: 'line', text: '   ' })).toMatchObject({ ok: false });
+    expect(await askSay(link, { ask: 'say', action: 'line', text: 'a'.repeat(4001) })).toMatchObject({ ok: false, detail: expect.stringMatching(/4000/) });
+    expect(await askSay(link, { ask: 'say', action: 'line', text: '/reply #1 hi' })).toMatchObject({ ok: false, detail: expect.stringMatching(/plain text/) });
+    expect(await askSay(link, { ask: 'say', action: 'line', text: 'a'.repeat(4000) })).toMatchObject({ ok: true });
+    expect(said).toBe(1);
+    const bare = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }) });
+    expect(await askSay(bare, { ask: 'say', action: 'line', text: 'x' })).toMatchObject({ ok: false, reason: 'unknown' });
+  });
+
+  it('say carries no other field', async () => {
+    const link = sayLink(async () => ({ ok: true }));
+    expect(await askSay(link, { ask: 'say', action: 'line', text: 'x', chat: '!other' })).toMatchObject({ ok: false, reason: 'bad-request' });
+  });
+
+  it('ask-spine say over a real in-process spine: words joined, exit 0 / 1 with the spine\'s reason', async () => {
+    const seen = [];
+    const link = sayLink(async (_who, text) => { seen.push(text); return text === 'nope' ? { ok: false, reason: 'refused', detail: 'no live turn' } : { ok: true, detail: 'said' }; }, { port: 0 });
+    const port = createShellPort({ port: 0, token: SHELL_TOKEN, reapPort: () => 0, onBeing: link, onLog: () => {} });
+    const wss = port.start();
+    await new Promise((r) => wss.once('listening', r));
+    const m = link.forBeing(E_IN_ACIM).mint();
+    const env = Object.fromEntries(m.env.map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]));
+    env[SPINE_PORT_ENV] = String(wss.address().port);
+    expect(await askSpine({ argv: ['say', 'publishing', 'the', 'app'], env })).toMatchObject({ code: 0 });
+    expect(seen).toEqual(['publishing the app']);
+    expect(await askSpine({ argv: ['say', 'nope'], env })).toMatchObject({ code: 1, line: expect.stringContaining('no live turn') });
+    expect(await askSpine({ argv: ['say'], env })).toMatchObject({ code: 1, line: expect.stringContaining('usage') });
+    port.stop();
+  });
+
+  it('the warm key a session was minted with reaches say (boot refuses a who without one)', async () => {
+    const seen = [];
+    const link = sayLink(async (who) => { seen.push(who); return { ok: true }; });
+    const m = link.forBeing({ ...E_IN_ACIM, key: 'e:ccode:room:acim' }).mint();
+    const frame = { ask: 'say', action: 'line', text: 'x' };
+    const who = link.identify(authMac(m.secret, 'n'), 'n');
+    await link.ask(who, parseAskFrame(JSON.stringify(frame)));
+    expect(seen[0].key).toBe('e:ccode:room:acim');
+    expect(readFileSync(join(REPO, 'src', 'spine', 'boot.mjs'), 'utf8')).toMatch(/say: async \(who, text\) => \(who\.key\s*\n\s*\? spine\.sayNow\(\{ being: who\.being, inSession: \(ev\) => brain\.warmKey\(who\.being, ev\) === who\.key, text \}\)\s*\n\s*: \{ ok: false, detail: "say needs a turn's own session" \}\)/);
+    // A session adopted across a restart keeps its warm key, so it can still say.
+    expect(readFileSync(join(REPO, 'src', 'spine', 'boot.mjs'), 'utf8')).toMatch(/beingLink\.forBeing\(\{ being, surface, slug, key: h\.key, boxed/);
+  });
+});
