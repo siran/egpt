@@ -116,7 +116,6 @@ const gateAs = (t, fallback) => t?.being ?? t?.mesh?.being ?? fallback;
 
 // An ambient 'on' turn still running this long opens its ⏳ train (operator 2026-10-18).
 const AMBIENT_OPEN_MS = 10_000;
-export const MAX_SAYS_PER_TURN = 10;   // a being's mid-turn `say`s (sayNow)
 // A turn that never opens its ⏳ and posts its reply whole at finish: a quiet one, and every one with
 // the emoji train (dispatch.thinking_train, operator 2026-11-03).
 const whole = (d) => !!(d.quiet || d.emoji);
@@ -1551,7 +1550,7 @@ export function createSpine({
       // Set here, not in openAndRunReply: openAndRunReply runs at ARRIVAL, so a queued turn
       // would claim the live slot from the turn actually streaming.
       turns.setLive(turnKey, { senderId: ev.senderId ?? null, chatId: ev.chatId ?? null, out });
-      sayable.set(turnKey, { to, ev, d, says: 0 });
+      sayable.set(turnKey, { to, ev, d });
       out.activate?.();                                 // queued → live the moment its turn starts
       live = liveness.turnStarted({ out, being: to, ev, chat: d.replyChatId ?? ev.chatId, auto: d.mode === 'auto' });
       if (ambient && !whole(d)) opening = setTimeoutFn(() => out.begin?.(), AMBIENT_OPEN_MS);   // the train opens if the turn runs this long
@@ -1840,15 +1839,13 @@ export function createSpine({
   // reply goes to, through sender.post — the one placement for a line said whole (persona stamp, the
   // bridge's own sent-message registration) — and onto the record as the being's line. Not an inbound
   // event: it wakes nobody and the turn runs on. { ok } or { ok: false, reason, detail }.
-  const sayable = new Map();   // turnKey -> { to, ev, d, says } for each turn running right now
+  const sayable = new Map();   // turnKey -> { to, ev, d } for each turn running right now
   async function sayNow({ being, inSession, text }) {
     const mine = [...sayable.values()].filter((x) => x.to === being && inSession(x.ev));
     const no = (detail) => ({ ok: false, reason: 'refused', detail });
     if (!mine.length) return no('no live turn');
     if (mine.length > 1) return no('ambiguous — more than one live turn in this session');
     const t = mine[0];
-    if (t.says >= MAX_SAYS_PER_TURN) return no(`at most ${MAX_SAYS_PER_TURN} says in one turn`);
-    t.says++;
     const at = await replyChatOf(t.d, t.ev);
     if (!at) return no('its side group could not be made');
     const ok = await sender.post(at, text, { being, replyTo: at === t.ev.chatId ? (t.ev.msgId ?? null) : null });

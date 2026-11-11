@@ -832,7 +832,7 @@ describe('say: the wire, the link and the client', () => {
     expect(got).toEqual([{ who: E_IN_ACIM, text: 'publishing now' }]);
   });
 
-  it('a refusal from the spine (no live turn, cap) comes back with its reason, exit-1 shaped', async () => {
+  it('a refusal from the spine (no live turn) comes back with its reason, exit-1 shaped', async () => {
     const link = sayLink(async () => ({ ok: false, reason: 'refused', detail: 'no live turn' }));
     expect(await askSay(link, { ask: 'say', action: 'line', text: 'x' })).toMatchObject({ ok: false, detail: 'no live turn' });
   });

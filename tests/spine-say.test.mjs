@@ -3,7 +3,7 @@
 // sent-message registration) into the chat the live turn answers, and records it in the transcript
 // as the being's line. It is no incoming line: it wakes nobody and leaves the turn running.
 import { describe, it, expect } from 'vitest';
-import { createSpine, MAX_SAYS_PER_TURN } from '../src/spine/spine.mjs';
+import { createSpine } from '../src/spine/spine.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 
 const CHAT = 'chat-A@g.us';
@@ -106,14 +106,12 @@ describe('sayNow — a line said while the turn runs', () => {
     expect(await b.spine.sayNow({ being: 'egpt', inSession: () => true, text: 'x' })).toMatchObject({ ok: false, detail: expect.stringMatching(/ambiguous/) });
   });
 
-  it('allows MAX_SAYS_PER_TURN (10) and refuses the next', async () => {
-    expect(MAX_SAYS_PER_TURN).toBe(10);
+  it('no cap: a being says as many lines as it wants in one turn (operator 2026-11-11), each one posted', async () => {
     const b = build();
     b.bridge.emit(mention());
     await flush();
-    for (let i = 0; i < 10; i++) expect(await b.spine.sayNow({ ...WHO, text: `n${i}` })).toMatchObject({ ok: true });
-    expect(await b.spine.sayNow({ ...WHO, text: 'one more' })).toMatchObject({ ok: false, detail: expect.stringMatching(/10/) });
-    expect(b.sent).toHaveLength(10);
+    for (let i = 0; i < 25; i++) expect(await b.spine.sayNow({ ...WHO, text: `n${i}` })).toMatchObject({ ok: true });
+    expect(b.sent).toHaveLength(25);
   });
 
   it('a post the sender does not deliver is a refusal, not a recorded line', async () => {
