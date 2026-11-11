@@ -56,6 +56,10 @@ contacts:
       # (config-schema split); default config.yaml split.tunnel, else false
       #split: { tunnel: true }
 
+      # who takes a quote-reply to this node's bot when the quoted post names no being
+      # (config-schema reply_default); unset → such a reply addresses nobody
+      #reply_default: egpt
+
       # commands anyone here may run; replaces config.yaml public_commands, [] = none
       #public_commands: [join, split, send, end]
 
