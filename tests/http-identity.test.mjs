@@ -389,6 +389,74 @@ describe('init: the widget opened', () => {
     expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
   });
 
+  describe('the prime is kept warm: every init, unless the conversation was warmed within 4 minutes', () => {
+    const MIN = 60_000;
+    const rig = async (init, extra = {}) => {
+      let t = Date.now();
+      const r = await limb('required', { now: () => t, ...extra }, { init });
+      const identity = tok(JP, { exp: exp(86400) });
+      return { ...r, identity, tick: (ms) => { t += ms; }, init: (session) => r.post({ kind: 'init', session, identity }) };
+    };
+
+    it('a resumed init after the gap primes again (prime, not backlog); within the gap after a prime, after a visitor line, or from a second tab: none', async () => {
+      const { post, got, hooks, identity, tick, init } = await rig('prime');
+      const a = await init();
+      expect(got).toHaveLength(1);
+      tick(MIN);
+      await init(a.session);   // within the gap after a prime
+      expect(got).toHaveLength(1);
+      tick(5 * MIN);
+      await init(a.session);   // resumed, after the gap
+      expect(got).toHaveLength(2);
+      expect(got[1].from).toMatchObject({ prime: true, backlog: false });
+      expect(got[1].text).toBe(got[0].text);
+      expect(hooks[1]).toMatchObject({ isNew: false, init: true });
+      tick(5 * MIN);
+      await post({ session: a.session, text: 'hola', identity });
+      expect(got).toHaveLength(3);
+      tick(3 * MIN);
+      await init(a.session);   // within the gap after a visitor line
+      expect(got).toHaveLength(3);
+      tick(2 * MIN);
+      await Promise.all([init(a.session), init(a.session)]);   // two tabs back to back
+      expect(got).toHaveLength(4);
+    });
+
+    it('end() primes right after onEnd, even within the gap; nothing said: no prime', async () => {
+      const { post, end, got, identity, tick, init } = await rig('prime');
+      const a = await init();
+      expect((await end({ session: a.session, identity })).status).toBe(200);   // nothing said
+      expect(got).toHaveLength(1);
+      await post({ session: a.session, text: 'hola', identity });
+      expect(got).toHaveLength(2);
+      tick(MIN);
+      expect((await end({ session: a.session, identity })).status).toBe(200);
+      expect(got).toHaveLength(3);
+      expect(got[2].from).toMatchObject({ prime: true, backlog: false });
+      expect(got[2].text).toBe(got[0].text);
+    });
+
+    it('end() delivers the prime after onEnd has run', async () => {
+      const order = [];
+      const { post, end, identity } = await rig('prime', { onEnd: () => { order.push('end'); }, onIncoming: (x, f) => order.push(f.prime ? 'prime' : 'line') });
+      const a = await post({ text: 'hola', identity });
+      await end({ session: a.session, identity });
+      expect(order).toEqual(['line', 'end', 'prime']);
+    });
+
+    it('init: true keeps today: a resumed init records nothing; no init: end() delivers nothing', async () => {
+      const { got, tick, init } = await rig(true);
+      const a = await init();
+      tick(10 * MIN);
+      await init(a.session);
+      expect(got).toHaveLength(1);
+      const off = await rig(undefined);
+      const b = await off.post({ text: 'hola', identity: off.identity });
+      await off.end({ session: b.session, identity: off.identity });
+      expect(off.got).toHaveLength(1);
+    });
+  });
+
   it('init: prime reaches the widget as init (and true stays true)', async () => {
     for (const init of [true, 'prime']) {
       const { url } = await limb('required', {}, { init });

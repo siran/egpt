@@ -998,8 +998,10 @@ export const CONFIG_SCHEMA = {
                               reload or another tab (the same session) records nothing.
                               prime: the same line is delivered as a wake, addressed to the
                               being like a visitor line, so its process starts and it can
-                              read its folder before the person types (a new session only,
-                              once). Not on the panel, no team topic, not counted by
+                              read its folder before the person types: on every init, new
+                              or resumed, unless the conversation was primed or spoken to
+                              in the last 4 min; the visitor's end-conversation primes
+                              right after it, whatever the gap. Not on the panel, no team topic, not counted by
                               rate.turns_per_identity_per_hour. The being answers it with
                               "…" alone (the silence word). Its turn is quiet in every
                               mode, so that "…" is never shown.

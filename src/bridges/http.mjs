@@ -127,6 +127,7 @@ export const identityModeOf = (v) => {
   return mode == null || mode === false ? 'off' : IDENTITY_MODES.includes(mode) ? mode : null;
 };
 const HOUR_MS = 3600_000;
+const PRIME_GAP_MS = 4 * 60_000;   // a conversation warmed (primed or spoken to) this recently skips the prime: under the 5-minute prompt-cache lifetime
 const PLACE_CSS_MAX = 20000;
 
 function clientConfig(name, c = {}) {
@@ -393,6 +394,22 @@ export async function startHttpBridge({
   };
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
+  // The prime: a wake no person typed, so the being's process and prompt cache are warm before the first line.
+  const prime = async (c, s, idn, { place, isNew }) => {
+    s.chat.warmAt = now();
+    const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
+    try { await beforeLine?.({ client: c.name, chatId, isNew, init: true, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
+    catch (e) { log(`${name}: before the line — ${e?.message ?? e}`); }
+    log(`incoming [${name}] the visitor opened the chatbox`);
+    deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}; nothing to answer yet — answer … alone)`, {
+      chatId, chatName: name, chatType: 'private', network: 'http',
+      userId: chatId, senderName: 'visitor', firstName: 'visitor',
+      isSender: false, authorized: false,
+      backlog: false, prime: true, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+      msgKey: String(nextTick()), msgTs: now(),
+    });
+  };
+
   async function post(c, req, res, cors) {
     if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return json(res, 415, { error: 'send application/json' }, cors);
     const raw = await readBody(req, c.maxChars * 4 + 1024 + IDENTITY_MAX);
@@ -446,26 +463,28 @@ export async function startHttpBridge({
     }
     const { sid, s } = hit;
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
-    if (!init) s.posts.push(n);
+    if (!init) { s.posts.push(n); s.chat.warmAt = n; }
     if (budget) turns.set(budget, [...spent, n]);
     s.lastAt = n;
     persist();
-    if (init && !hit.started) return json(res, 200, { session: token }, cors);   // a reload or another tab: resumed, nothing recorded
+    // a reload or another tab: resumed, nothing recorded; init: prime wakes it again unless it is still warm
+    if (init && (c.init === 'prime' ? n - (s.chat.warmAt ?? -Infinity) < PRIME_GAP_MS : !hit.started)) return json(res, 200, { session: token }, cors);
     const isNew = !!(hit.isNew || s.chat.isNew);
     s.chat.isNew = false;
+    if (init && c.init === 'prime') { await prime(c, s, idn, { place, isNew }); return json(res, 200, { session: token }, cors); }
     const reply = (async () => {
       try { await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
       const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
       const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
       log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}${c.init === 'prime' ? '; nothing to answer yet — answer … alone)' : ')'}` : place ? `(in ${place}) ${text}` : text, {
+      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })})` : place ? `(in ${place}) ${text}` : text, {
         chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
         atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only (a prime's wakes it)
-        backlog: init && c.init !== 'prime', prime: init && c.init === 'prime', replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only
+        backlog: init, prime: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
         msgKey: m.id, msgTs: n,
       });
       return init ? { session: token } : { session: token, message: view(m) };
@@ -499,6 +518,7 @@ export async function startHttpBridge({
     s.chat.log = [];
     saveLog(s.chat);
     log(`${c.name}-${sid}: the visitor ended the conversation`);
+    if (c.init === 'prime' && idn.identity) await prime(c, s, idn, { place: null, isNew: false });   // a fresh thread is a cold one
     return json(res, 200, { ok: true }, cors);
   }
 
