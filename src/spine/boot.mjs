@@ -2306,19 +2306,19 @@ export async function boot({
         if (said) await sayOnce({ chatId: made.chatID, text: said, what: 'chatbox recap' });
       })().catch((e) => fail(e?.message ?? e)).finally(() => seating.delete(chatId)));
     };
-    // A new conversation's folder starts with its verified user (usuario.json, usuario.md: the
-    // drawer's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
+    // A new conversation's folder starts with its verified user (desktop/user.json, desktop/user.md: the
+    // desk's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
     // The line never waits on Telegram; an init (the widget's page load) seats no team topic.
     const beforeLine = async ({ client, chatId, isNew, init, recap, identity }) => {
       const c = clients[client] ?? {};
       if (isNew && identity) {
         const dir = slugDir('http', fixedSlugFor('http', chatId));
-        await mkdir(dir, { recursive: true });
+        await mkdir(join(dir, 'desktop'), { recursive: true });
         const { claims, ...fields } = identity;
-        await writeFile(join(dir, 'usuario.json'), `${JSON.stringify({ ...fields, verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
-        const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `tipo ${identity.user_type}`, `colegio ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
-        await writeFile(join(dir, 'usuario.md'), `Usuario verificado por el sitio: ${parts.filter(Boolean).join(', ')}.\n`, 'utf8');
-        hlog(`${chatId}: its user is on the desk (usuario.json)`);
+        await writeFile(join(dir, 'desktop', 'user.json'), `${JSON.stringify({ ...fields, verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
+        const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `type ${identity.user_type}`, `school ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
+        await writeFile(join(dir, 'desktop', 'user.md'), `Verified by the site: ${parts.filter(Boolean).join(', ')}.\n`, 'utf8');
+        hlog(`${chatId}: its user is on the desk (desktop/user.json)`);
       }
       if (isNew && c.seed) {
         const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));

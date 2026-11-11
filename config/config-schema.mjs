@@ -977,16 +977,16 @@ export const CONFIG_SCHEMA = {
                               from another identity starts a new session, folder and
                               topic, its token in the answer; a read or an end with
                               another identity is 404. A new signed conversation's folder
-                              gets usuario.json (the verified fields abrin, user_type,
+                              gets desktop/user.json (the verified fields abrin, user_type,
                               short_name, username, user_id + verified_at, never the
-                              token) and a one-line usuario.md, before the seed copy.
+                              token) and a one-line desktop/user.md, before the seed copy.
             conversation_by   session (default) | identity: identity puts every session of
                               one signed identity (its key) in ONE conversation, chat id
                               http:<client>-<16 hex of client + key>: one folder, thread,
                               topic and panel; each tab of each session gets every frame.
                               Unsigned visitors stay one per session. Switched on, a live
                               session keeps its token and its next line starts its
-                              identity's conversation as new (usuario.json, seed); the old
+                              identity's conversation as new (desktop/user.json, seed); the old
                               folders stay, their panels are not carried. Needs identity.
             init              false (default) | true | prime: the widget POSTs {kind: init} once
                               per page load. It needs a verified identity (else 401) and
@@ -1030,7 +1030,7 @@ export const CONFIG_SCHEMA = {
         browser of EGPT_HOME, by level. One English page: the user and level, and one list of the
         scope's conversations (root's too): a section per chatbox client (its label, in
         limbs.http.chatboxes' order, then clients'), then "Team groups (Telegram)", then "Other"; in each, Today and
-        Previous, newest first. A row is a person or a group: a signed session's usuario.json (name,
+        Previous, newest first. A row is a person or a group: a signed session's desktop/user.json (name,
         username, school, type); an anonymous one "Visitor" and its first line (its history,
         state/http-messages/<sid>.json, else its transcript; one line, 80 characters, never
         logged); a Telegram folder its name in conversations.yaml (not a fork's), else the folder's
