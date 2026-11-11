@@ -469,10 +469,13 @@ contoso_soporte:
   waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]   # loading bubble phrases (2.5 s each, looping) instead of ⏳
 ```
 
-`init: prime` delivers that opening line to the being as a normal wake when a
-new session opens, so its process is up and it can read its folder before the
-person types the first line. A reload or another tab of the same session does
-not prime again, and a prime does not count against
+`init: prime` delivers that opening line to the being as a normal wake on every
+init, a new session or a resumed one (a reload, a return the next day), so its
+process and prompt cache are warm before the person types the first line. Not
+when the conversation was primed or spoken to within the last 4 minutes (another
+tab); and the visitor's "end conversation" primes right after it, whatever the
+gap (its fresh thread is cold). With `init: true` a resumed session records
+nothing. A prime does not count against
 `rate.turns_per_identity_per_hour`. Nothing is shown on the panel and no team
 topic is seated. The being should answer a prime with `…` alone (the silence
 word). A prime's turn is quiet in every mode, so its `…` is never shown; any
