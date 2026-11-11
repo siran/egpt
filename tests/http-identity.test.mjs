@@ -596,7 +596,7 @@ function page({ identity = null, stored = {}, place = null, vars = {} } = {}) {
       if (tag === 'style') return node();
       if (tag !== 'deep-chat') return node();
       const msgs = [];
-      return (chat = { addMessage: (m) => msgs.push(m), getMessages: () => msgs, updateMessage() {}, focusInput() {}, scrollToBottom() {}, clearMessages() {} });
+      return (chat = { addMessage: (m) => msgs.push(m), getMessages: () => msgs, updateMessage() {}, focusInput() {}, scrollToBottom() {}, clearMessages() {}, style: { props: {}, setProperty(k, v) { this.props[k] = v; } } });
     },
     addEventListener() {},
   };
@@ -824,5 +824,61 @@ describe('places: where the host page is', () => {
     expect(v.chat().messageStyles.default.user.bubble.backgroundColor).toBe('#345D98');
     expect(v.chat().avatars.ai.src).toBe('https://x.test/a.png');
     expect(v.chat().avatars.user.styles.container.display).toBe('none');
+  });
+});
+
+describe('widget.js: waiting_cold', () => {
+  const W = ['Un momento…', 'Ya casi'], COLD = ['Corriendo a tu encuentro…', 'Escucho atento, vengo corriendo…', 'Despertando, estirándome…'];
+  const opened = async (strings, stored = {}) => {
+    const { url } = await limb('required', {}, { strings });
+    const p = page({ identity: tok(), stored });
+    p.run(await (await fetch(`${url}widget.js`)).text());
+    p.open();
+    await flush();
+    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
+    p.chat().connect.handler(null, signals);
+    return { p, signals };
+  };
+
+  it('both sets sit in the bubble, the cold one hidden by default, each switched by a custom property (no re-render)', async () => {
+    const { p } = await opened({ waiting: W, waiting_cold: COLD });
+    const html = p.chat().messageStyles.loading.message.html;
+    expect(html).toContain('<span style="display:var(--egc-tibio,inline-grid)">');
+    expect(html).toContain('<span style="display:var(--egc-frio,none)">');
+    expect(html).toContain('@keyframes egc-w{');
+    expect(html).toContain('@keyframes egc-wf{');
+    expect(html).toContain('animation:egc-wf 7500ms linear 5000ms infinite');
+    for (const t of [...W, ...COLD]) expect(html).toContain(t);
+    expect(html.indexOf('Un momento…')).toBeLessThan(html.indexOf('--egc-frio'));
+    expect(html.indexOf('Corriendo a tu encuentro…')).toBeGreaterThan(html.indexOf('--egc-frio'));
+  });
+
+  it('a line with no session, or after 4 minutes of quiet, starts cold; the server\'s cold then decides', async () => {
+    const { p, signals } = await opened({ waiting: W, waiting_cold: COLD });
+    const props = p.chat().style.props;
+    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '1', seq: 1, text: 'hola' }, cold: false } });
+    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
+    expect(props).toEqual({ '--egc-frio': 'inline-grid', '--egc-tibio': 'none' });   // no session yet: guessed cold
+    await flush();
+    expect(props).toEqual({ '--egc-frio': 'none', '--egc-tibio': 'inline-grid' });   // the server: warm
+    expect(Number(p.storage.get('egpt-chat:acme:IEV/jperez:at'))).toBeGreaterThan(0);
+    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '2', seq: 2, text: 'otra' }, cold: true } });
+    signals.newUserMessage.listener({ messages: [{ text: 'otra' }] });
+    expect(props['--egc-frio']).toBe('none');   // a line just sent: guessed warm
+    await flush();
+    expect(props['--egc-frio']).toBe('inline-grid');   // the server knows better
+    p.storage.set('egpt-chat:acme:IEV/jperez:at', String(Date.now() - 5 * 60_000));
+    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '3', seq: 3, text: 'tarde' } } });
+    p.chat().style.setProperty('--egc-frio', 'none');
+    signals.newUserMessage.listener({ messages: [{ text: 'tarde' }] });
+    expect(props['--egc-frio']).toBe('inline-grid');   // 5 minutes quiet: guessed cold, and no cold in the answer keeps the guess
+  });
+
+  it('no waiting_cold: the bubble is today\'s and nothing is switched', async () => {
+    const { p, signals } = await opened({ waiting: W });
+    expect(p.chat().messageStyles.loading.message.html).not.toContain('--egc-frio');
+    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
+    await flush();
+    expect(p.chat().style.props).toEqual({});
   });
 });

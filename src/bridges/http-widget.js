@@ -160,9 +160,14 @@ function egptChat(C, base, identity, place) {
     var i = chat.getMessages().length - 1;
     var id = newId();
     var go = function () { return postLine(text, id, 0); };
+    var last = 0;
+    try { last = Number(localStorage.getItem(KEY + ':at')) || 0; } catch (e) { /* private mode */ }
+    cold(!token || !(Date.now() - last < COLD_MS));   // a guess until the server answers (j.cold)
+    store(KEY + ':at', String(Date.now()));
     inflight++;
     var done = (opening ? opening.then(go) : go())
       .then(function (j) {
+        if (typeof j.cold === 'boolean') cold(j.cold);
         at[j.message.id] = { i: i, text: j.message.text };
         if (j.message.seq > since) since = j.message.seq;
         var renewed = j.session !== token;
@@ -177,15 +182,34 @@ function egptChat(C, base, identity, place) {
   // The loading bubble: ⏳, or S.waiting's phrases stacked in one cell and faded in turn by CSS alone (WAIT_MS each,
   // looping; no timer to clean up). The phrases are config, so they are escaped as text. The keyframes sit in the
   // html because Deep Chat's shadow root does not see the page's stylesheet.
+  // S.waiting_cold, if any, is a second set for a line to a cold conversation: both sets sit in the bubble and
+  // the --egc-frio / --egc-tibio custom properties on the deep-chat element (they inherit into its shadow root)
+  // show one, so switching never re-renders Deep Chat (see cold()).
   var WAIT_MS = 2500;
-  var waitingHtml = function () {
-    var w = Array.isArray(S.waiting) ? S.waiting.filter(function (x) { return typeof x === 'string' && x; }) : [];
-    if (!w.length) return '⏳';
-    var esc = function (t) { return t.replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); };
+  var COLD_MS = 4 * 60000;   // the server's PRIME_GAP_MS: a session quiet this long is guessed cold until the POST says
+  var phrasesOf = function (v) { return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string' && x; }) : []; };
+  var esc = function (t) { return t.replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); };
+  var rotation = function (w, k) {   // k: the keyframes' name, one per set (each set has its own count)
     var n = w.length, on = (100 / n).toFixed(3);
-    if (n === 1) return esc(w[0]);
-    return '<style>@keyframes egc-w{0%,' + on + '%{opacity:1}' + (+on + 0.001) + '%,100%{opacity:0}}</style><span style="display:inline-grid">'
-      + w.map(function (t, i) { return '<span style="grid-area:1/1;opacity:0;animation:egc-w ' + (n * WAIT_MS) + 'ms linear ' + (i * WAIT_MS) + 'ms infinite">' + esc(t) + '</span>'; }).join('') + '</span>';
+    return '<style>@keyframes ' + k + '{0%,' + on + '%{opacity:1}' + (+on + 0.001) + '%,100%{opacity:0}}</style>'
+      + w.map(function (t, i) { return '<span style="grid-area:1/1;opacity:0;animation:' + k + ' ' + (n * WAIT_MS) + 'ms linear ' + (i * WAIT_MS) + 'ms infinite">' + esc(t) + '</span>'; }).join('');
+  };
+  var waitingHtml = function () {
+    var w = phrasesOf(S.waiting), c = phrasesOf(S.waiting_cold);
+    if (!c.length) {
+      if (!w.length) return '⏳';
+      if (w.length === 1) return esc(w[0]);
+      return rotation(w, 'egc-w').replace('</style>', '</style><span style="display:inline-grid">') + '</span>';
+    }
+    var set = function (v, k) { return v.length > 1 ? rotation(v, k) : '<span>' + (v.length ? esc(v[0]) : '⏳') + '</span>'; };
+    return '<span style="display:var(--egc-tibio,inline-grid)">' + set(w, 'egc-w') + '</span>'
+      + '<span style="display:var(--egc-frio,none)">' + set(c, 'egc-wf') + '</span>';
+  };
+  // The bubble's set: cold or warm. Only with S.waiting_cold; the deep-chat element's own style, no re-render.
+  var cold = function (on) {
+    if (!chat || !chat.style || !phrasesOf(S.waiting_cold).length) return;
+    chat.style.setProperty('--egc-frio', on ? 'inline-grid' : 'none');
+    chat.style.setProperty('--egc-tibio', on ? 'none' : 'inline-grid');
   };
   // Every property is set before the element renders: a later set re-renders Deep Chat from scratch.
   var build = function (messages) {
@@ -249,6 +273,7 @@ function egptChat(C, base, identity, place) {
       .then(function (r) {
         if (r.status === 404) { token = null; store(KEY, null); listen(); }
         else if (!r.ok) return Promise.reject(r.status);
+        store(KEY + ':at', null);   // a fresh thread starts cold
         at = {};
         err.hidden = true;
         chat.clearMessages();

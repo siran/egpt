@@ -3,7 +3,8 @@
 // the port adapter (beeper-port.mjs), as telegram.mjs is, so replies leave through the one sender path.
 // Inside the spine a chat id is `http:<client>-<sid>`; sid is a hash of the session token, so the
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
-//   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message}; a repeated id (a retry) gets the first answer;
+//   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message, cold}; a repeated id (a retry) gets the first answer;
+//                                        cold: the conversation was not warmed (a line or a prime) in PRIME_GAP_MS, so the being starts cold;
 //                                        {kind: init, session?, identity} → {session} (init: the widget's page load; init: true records
 //                                        one line, init: prime also wakes the being so it is warm before the first line)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
@@ -50,6 +51,7 @@ export const HTTP_STRINGS = Object.freeze({
   support: 'Soporte',   // heads a human support line on the panel: "Soporte · <ayde user>"
   intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
   waiting: [],   // short phrases rotating in the loading bubble instead of ⏳; empty: ⏳
+  waiting_cold: [],   // the same, for a line to a cold conversation (the being not warmed in PRIME_GAP_MS); empty: waiting
 });
 const LOG_MAX = 200;                           // messages a session keeps for replay
 const RECAP_LINES = 5, RECAP_CHARS = 300;
@@ -148,7 +150,9 @@ const PLACE_CSS_MAX = 20000;
 
 function clientConfig(name, c = {}) {
   const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
-  strings.waiting = (Array.isArray(strings.waiting) ? strings.waiting : []).filter((w) => typeof w === 'string' && w.trim()).slice(0, 12).map((w) => w.trim().slice(0, 80));
+  const phrases = (v) => (Array.isArray(v) ? v : []).filter((w) => typeof w === 'string' && w.trim()).slice(0, 12).map((w) => w.trim().slice(0, 80));
+  strings.waiting = phrases(strings.waiting);
+  strings.waiting_cold = phrases(strings.waiting_cold);
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
   const idc = isMap(c.identity) ? c.identity : {};
   const key = Array.isArray(idc.key) && idc.key.length ? idc.key.map(String) : IDENTITY_CLAIMS;
@@ -514,6 +518,7 @@ export async function startHttpBridge({
     }
     const { sid, s } = hit;
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
+    const cold = !(n - (s.chat.warmAt ?? -Infinity) < PRIME_GAP_MS);   // read before this line warms it: the widget's waiting_cold
     if (!init) { s.posts.push(n); s.chat.warmAt = n; }
     if (budget) turns.set(budget, [...spent, n]);
     s.lastAt = n;
@@ -541,7 +546,7 @@ export async function startHttpBridge({
         backlog: init, prime: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
         msgKey: m.id, msgTs: n,
       });
-      return init ? { session: token } : { session: token, message: view(m) };
+      return init ? { session: token } : { session: token, message: view(m), cold };
     })();
     if (key) { posted.set(key, { at: n, reply }); reply.catch(() => posted.delete(key)); }
     return json(res, 200, await reply, cors);
@@ -570,6 +575,7 @@ export async function startHttpBridge({
     catch (e) { log(`end ${c.name}-${sid}: ${e?.message ?? e}`); return json(res, 500, { error: 'could not end the conversation' }, cors); }
     for (const m of s.chat.log) m.ended = true;
     s.chat.log = [];
+    s.chat.warmAt = undefined;   // a fresh thread is a cold one (a prime below warms it again)
     saveLog(s.chat);
     log(`${c.name}-${sid}: the visitor ended the conversation`);
     if (c.init === 'prime' && idn.identity) await prime(c, s, idn, { place: null, isNew: false });   // a fresh thread is a cold one

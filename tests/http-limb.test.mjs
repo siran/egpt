@@ -4,7 +4,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS, DEEP_CHAT } from '../src/bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS, DEEP_CHAT, chatboxesOf } from '../src/bridges/http.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const live = [];
@@ -533,5 +533,35 @@ describe('widget.js and routing', () => {
     const { port, post } = await limb();
     expect((await post({ text: 'hola' }, {}, 'other')).status).toBe(404);
     expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
+  });
+});
+
+describe('cold: a line to a conversation not warmed in the last 4 minutes', () => {
+  it('the POST answer says cold: a new conversation is, a line right after is not, 4 minutes of quiet make it cold again, and so does an end', async () => {
+    const MIN = 60_000;
+    let t = Date.UTC(2026, 10, 11, 23, 0);
+    const { post, url } = await limb(undefined, { now: () => t });
+    const a = await (await post({ text: 'hola' })).json();
+    expect(a.cold).toBe(true);
+    expect((await (await post({ session: a.session, text: 'y otra' })).json()).cold).toBe(false);
+    t += 3 * MIN;
+    expect((await (await post({ session: a.session, text: 'sigo' })).json()).cold).toBe(false);
+    t += 4 * MIN + 1;
+    expect((await (await post({ session: a.session, text: 'volví' })).json()).cold).toBe(true);
+    t += MIN;
+    const ended = await fetch(`${url()}end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: a.session }) });
+    expect(ended.status).toBe(200);
+    expect((await (await post({ session: a.session, text: 'de nuevo' })).json()).cold).toBe(true);
+  });
+
+  it('waiting_cold is cleaned like waiting (strings only, trimmed, at most 12 of 80 characters) and reaches the widget; flat in a chatbox block too', async () => {
+    const long = 'x'.repeat(100);
+    const { url } = await limb({ acme: { being: 'ed', strings: { waiting_cold: [' Despertando… ', 7, '', long, ...Array(20).fill('z')] } } });
+    const js = await (await fetch(`${url()}widget.js`)).text();
+    expect(js).toContain(`"waiting_cold":["Despertando…","${'x'.repeat(80)}","z","z","z","z","z","z","z","z","z","z"]`);
+    const { url: plain } = await limb();
+    expect(await (await fetch(`${plain()}widget.js`)).text()).toContain('"waiting_cold":[]');
+    const boxes = chatboxesOf({ limbs: { http: { chatboxes: ['soporte'] } }, soporte: { being: 'ed', waiting_cold: ['Corriendo a tu encuentro…'] } });
+    expect(boxes.soporte.strings.waiting_cold).toEqual(['Corriendo a tu encuentro…']);
   });
 });
