@@ -193,3 +193,50 @@ describe('a heartbeat turn fails on the engine\'s flag, never on its text', () =
     expect(t.sentTo(PRIMES_ROOM).some((s) => s.text.includes('Listo.'))).toBe(false);
   });
 });
+
+// A heartbeat turn's mid-turn text (operator 2026-11-11): each completed segment before a tool use is
+// said as it is written, into the same chat as the final reply (the admin chat when silent), through
+// the same one-shot placement. A '…' segment is not said; the final is not said twice.
+describe('a heartbeat turn says its mid-turn text as it is written', () => {
+  const mid = (final, after = null) => (opts) => ({
+    sessionId: opts.sessionId ?? 'sess-1',
+    async turn(_msg, onPartial) {
+      onPartial?.('Voy a mirar X.');
+      onPartial?.('Voy a mirar X.', { tool: true });
+      onPartial?.('Voy a mirar X.', { tool: true });   // a second tool use, no new text: said once
+      await new Promise((r) => setImmediate(r));
+      if (after) throw new Error(after);
+      onPartial?.(`Voy a mirar X.\n${final}`);
+      return { text: final, sessionId: 'sess-1' };
+    },
+    close() {},
+  });
+  it('REPRODUCE: "A", a tool use, "B" — A is said before B, each once', async () => {
+    const t = await bootWith(config(), mid('Listo, B.'));
+    await t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'check', name: `${NS}:check` });
+    const said = t.sentTo(PRIMES_ROOM).map((s) => s.text);
+    expect(said.filter((x) => x.includes('Voy a mirar X.'))).toHaveLength(1);
+    expect(said.filter((x) => x.includes('Listo, B.'))).toHaveLength(1);
+    expect(said.findIndex((x) => x.includes('Voy a mirar X.'))).toBeLessThan(said.findIndex((x) => x.includes('Listo, B.')));
+  });
+
+  it('a silent beat says A to eGPT Admin, nothing to its own chat', async () => {
+    const t = await bootWith(config({ admin_channel: 'eGPT Admin' }), mid('Listo, B.'));
+    await t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'check', name: `${NS}:check`, silent: true });
+    expect(t.sentTo(ADMIN_ROOM).map((s) => s.text).join('\n')).toMatch(/Voy a mirar X\.[\s\S]*Listo, B\./);
+    expect(t.sentTo(PRIMES_ROOM)).toHaveLength(0);
+  });
+
+  it('a "…" segment is not said, and a "…" final still says nothing', async () => {
+    const session = (opts) => ({ sessionId: opts.sessionId ?? 'sess-1', async turn(_m, onPartial) { onPartial?.('…'); onPartial?.('…', { tool: true }); return { text: '…', sessionId: 'sess-1' }; }, close() {} });
+    const t = await bootWith(config(), session);
+    await t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'check', name: `${NS}:check` });
+    expect(t.sentTo(PRIMES_ROOM)).toHaveLength(0);
+  });
+
+  it('a failure after A was said still throws (the beat reports FAILED); A stays said', async () => {
+    const t = await bootWith(config(), mid('unused', 'boom'));
+    await expect(t.app.dispatchHeartbeatTurn({ being: 'egpt', ns: NS, prompt: 'check', name: `${NS}:check` })).rejects.toThrow(/boom/);
+    expect(t.sentTo(PRIMES_ROOM).map((s) => s.text).join('\n')).toContain('Voy a mirar X.');
+  });
+});

@@ -119,8 +119,8 @@ const AMBIENT_OPEN_MS = 10_000;
 // A turn that never opens its ⏳ and posts its reply whole at finish: a quiet one, and every one with
 // the emoji train (dispatch.thinking_train, operator 2026-11-03).
 const whole = (d) => !!(d.quiet || d.emoji);
-// …except an emoji turn's first tool use or first text opens it, as an ambient bubble turn's does (operator 2026-11-04).
-// Not a bot's line or a tunnel: those post nothing until the end.
+// …except an emoji turn's first tool use opens it, as an ambient bubble turn's does (operator 2026-11-04). A bot's line or a
+// tunnel is not opened by a bare tool use. Any turn's first real text opens it, under the final reply's gate (operator 2026-11-11).
 const opensOnTool = (d) => !!d.emoji && !d.tunnel && (!d.quiet || !!d.unaddressed);
 // Text that is still only a polite silence, or the start of one ('.', '..'), opens nothing: a silence stays unseen.
 const silentSoFar = (t) => isSilenceReply(t) || isSilenceReply(`${String(t ?? '').trim()}...`);
@@ -1678,8 +1678,8 @@ export function createSpine({
         const raw = typeof partial === 'string' ? partial : (partial?.text ?? '');
         transcript.logStream?.(ev, streamed, raw, { being: to });
         streamed = raw;
-        // A bot's line, a tunnel, a silence so far: recorded, not shown — the reply posts whole at finish.
-        if (whole(d) && !working) return opensOnTool(d) && !silentSoFar(prose(raw)) ? open(partial) : undefined;
+        // A silence so far: recorded, not shown. Any other text opens the bubble, a bot's line and a tunnel too.
+        if (whole(d) && !working) return silentSoFar(prose(raw)) ? undefined : open(partial);
         return show(partial);
       };
       for (const m of marks) m.started();              // 🤔: the line goes to the model now

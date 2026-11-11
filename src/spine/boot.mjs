@@ -3663,18 +3663,31 @@ export async function boot({
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     const ev = await services.identity.spineEvent(target.surface, target.chatId);
     // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being or one that would run unboxed
-    const res = await brain.turn(being, { ...ev, line: prompt, body: prompt, beingWritten, cause: 'heartbeat' });
+    const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
+    // The reply's one delivery, for the final and for text written before a tool use (operator 2026-11-11).
+    const say = async (text) => {
+      if (!silent) return heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
+      const chatId = await silentBeatAdminChat(ns);
+      if (!chatId) return;   // fail-closed: not posted, never the own chat
+      if (!(await sayOnce({ being, chatId, text, opts: tag, tag, what: 'turn' }))) throw new Error('not delivered to eGPT Admin');
+    };
+    // Text the model wrote before a tool use is said at once (the partial is the whole train so far). `told`: how much of it has been said.
+    let told = 0, said = Promise.resolve(), notSaid = null;
+    const onPartial = (partial, use) => {
+      const train = typeof partial === 'string' ? partial : (partial?.text ?? '');
+      if (!use?.tool || train.length <= told) return;
+      const segment = train.slice(told).trim();
+      told = train.length;
+      if (!segment || isSilenceReply(segment)) return;
+      said = said.then(() => say(segment)).catch((e) => { notSaid ??= e; log.line?.(`[heartbeat] ${ns}: mid-turn text not delivered — ${e?.message ?? e}`); });
+    };
+    const res = await brain.turn(being, { ...ev, line: prompt, body: prompt, beingWritten, cause: 'heartbeat' }, onPartial);
+    await said;
+    if (notSaid) throw notSaid;
     const text = String(res?.text ?? '').trim();
     if (isBrainFailureResult(res)) throw new Error(`the turn failed: ${text.slice(0, 200)}`);
     if (isSilenceReply(text)) return res;
-    const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
-    if (silent) {
-      const chatId = await silentBeatAdminChat(ns);
-      if (!chatId) return res;   // fail-closed: reply not posted, never the own chat
-      if (!(await sayOnce({ being, chatId, text, opts: tag, tag, what: 'turn' }))) throw new Error('not delivered to eGPT Admin');
-      return res;
-    }
-    await heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
+    await say(text);
     return res;
   };
 

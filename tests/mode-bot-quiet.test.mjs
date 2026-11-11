@@ -82,11 +82,11 @@ describe('bot_quiet (default on): a bot-triggered turn opens no ⏳ train', () =
     });
   }
 
-  it('REPRODUCE: on mode, a real reply after a tool use and streamed text is posted ONCE, whole — no ⏳, no live frames', async () => {
+  it('REPRODUCE: on mode, a real reply after a tool use and streamed text shows as it is written (2026-11-11), no ⏳ placeholder, one message', async () => {
     const b = build({ work: speaks([TOOL, 'Son', 'Son las 3', TOOL], 'Son las 3 allá.') });
     await b.bridge.emit(msg('qué hora es allá?', BEING));
     expect(b.brain.calls[0].open).toEqual([]);
-    expect(b.bridge.streams.map((s) => [s.init, s.frames, s.finals])).toEqual([['Son las 3 allá.', [], ['Son las 3 allá.']]]);
+    expect(b.bridge.streams.map((s) => [s.init, s.frames, s.finals])).toEqual([['Son ⏳', ['Son las 3 ⏳'], ['Son las 3 allá.']]]);
     expect(b.bridge.streams[0].opts).toMatchObject({ replyTo: expect.stringMatching(/^m\d+$/), bodyEmoji: '🐶' });
     expect(b.bridge.sent).toEqual([]);
   });
@@ -114,11 +114,11 @@ describe('bot_quiet (default on): a bot-triggered turn opens no ⏳ train', () =
       expect(b.replies()).toEqual([expect.objectContaining({ text: '…', surfaced: false })]);
     });
 
-    it(`REPRODUCE: ${mode} mode, a bot's '@e …' real reply is posted once, whole`, async () => {
+    it(`REPRODUCE: ${mode} mode, a bot's '@e …' real reply is shown as it is written, one message`, async () => {
       const b = build({ mode, work: speaks(['Hola'], 'Hola, D.') });
       await b.bridge.emit(msg('@e hola', SIGNED));
       expect(b.brain.calls[0].open).toEqual([]);
-      expect(b.bridge.streams.map((s) => [s.init, s.frames, s.finals])).toEqual([['Hola, D.', [], ['Hola, D.']]]);
+      expect(b.bridge.streams.map((s) => [s.init, s.frames, s.finals])).toEqual([['Hola ⏳', [], ['Hola, D.']]]);
     });
   }
 

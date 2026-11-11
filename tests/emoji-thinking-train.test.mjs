@@ -342,14 +342,15 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
     expect(b.posts()).toEqual([['!g', 'Mirando. Listo.']]);
   });
 
-  it("REPRODUCE (lock): a bot's line and a tunnelled turn that use a tool still post nothing until the end", async () => {
-    const tool = async (onPartial) => { onPartial('Mirando.'); onPartial('Mirando.', { tool: true }); onPartial('Mirando. Hecho'); return { text: 'Mirando. Hecho.' }; };
+  it("REPRODUCE (lock): a bot's line and a tunnelled turn: a bare tool use opens nothing; their first text does (2026-11-11)", async () => {
+    const atTool = [];   // streams open when each turn has used a tool and written nothing
+    const tool = async (onPartial) => { onPartial('', { tool: true }); await flush(); atTool.push(b.bridge.streams.length); onPartial('Mirando. Hecho'); return { text: 'Mirando. Hecho.' }; };
     const b = build({ mode: 'on', work: tool });
     await b.bridge.emit(msg('@e qué hora es allá?', BEING));
     await b.bridge.emit(msg('@e qué calor', { chatId: '!t' }));
     await flush();
     expect(b.brain.calls).toHaveLength(2);
-    expect(b.bubbles()).toEqual([]);
+    expect(atTool).toEqual([0, 1]);   // the 2nd turn sees only the 1st's stream: its own opens on text
     expect(b.posts()).toEqual([['!g', 'Mirando. Hecho.'], ['!split', 'Mirando. Hecho.']]);
     expect(b.reactions()).toEqual([]);
   });

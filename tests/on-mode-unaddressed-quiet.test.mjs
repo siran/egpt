@@ -94,11 +94,11 @@ describe('on mode, a human line not addressed to the being — quiet', () => {
     });
   }
 
-  it('REPRODUCE: a real reply after a tool use and streamed text is posted once, whole — no ⏳ first, no live frames', async () => {
+  it('REPRODUCE: a real reply after a tool use and streamed text shows as it is written (2026-11-11) — no ⏳ first, one message', async () => {
     const b = build({ work: speaks([TOOL, 'Hace', 'Hace calor', TOOL], 'Hace calor, sí.') });
     await b.bridge.emit(msg('qué calor hace hoy'));
     expect(b.brain.calls[0].open).toEqual([]);
-    expect(b.eStreams()).toEqual([['Hace calor, sí.', [], ['Hace calor, sí.']]]);
+    expect(b.eStreams()).toEqual([['Hace ⏳', ['Hace calor ⏳'], ['Hace calor, sí.']]]);
     expect(b.bridge.streams[0].opts).toMatchObject({ replyTo: expect.stringMatching(/^m\d+$/) });
     expect(b.bridge.sent).toEqual([]);
   });

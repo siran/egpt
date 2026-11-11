@@ -775,12 +775,12 @@ describe('every mode replies in the side group; a turn that stays silent makes n
     }
   });
 
-  it('on, a human, not addressed, it speaks: the group is made at its end, the reply posted there whole, nothing in the origin', async () => {
+  it('on, a human, not addressed, it speaks: the group is made at its first text, the reply shown there, nothing in the origin', async () => {
     const h = harness({ state: seedState({ entry: AUTOMATIC }) });
     const b = buildSpine(h, { reply: 'Hola a todos', partials: ['…', 'Hola', 'Hola a todos'] });
     await say(b.spine, 'hola a todos');
     expect(h.calls.create.map((c) => [c.via, c.participantIDs])).toEqual([['primary', [RODZ_USER_ID, LOLA, PEPE]]]);
-    expect(b.bridge.streams.map((s) => [s.chat, s.init, s.frames, s.finals])).toEqual([[SIDE, 'Hola a todos', [], ['Hola a todos']]]);
+    expect(b.bridge.streams.map((s) => [s.chat, s.init, s.frames, s.finals])).toEqual([[SIDE, 'Hola ⏳', ['Hola a todos ⏳'], ['Hola a todos']]]);
     expect(b.bridge.sent).toEqual([]);
   });
 
