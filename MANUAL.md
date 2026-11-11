@@ -59,6 +59,12 @@ key in config.yaml (default `[split, send, end]`), or the chat's own
 conversations.yaml entry, which replaces it (`[]` = none). A listed `agents`
 opens only the bare list; its verbs stay authorized-only.
 
+A chat's `conversations.yaml` entry may set `reply_default: <being>`: the being that takes a
+quote-reply (or reaction) to this node's bot when the quoted post carries no being's stamp (a
+system line, a post made outside the spine, an old message). A stamped post still goes to its
+being; a reply to a human or another node's post never takes it. Only if that being is in the
+chat. Unset = such a reply addresses nobody.
+
 `/join` is retired (2026-10-25): `/<handle> join` answers with `/<handle> split`,
 which makes a fork (same agents and files, its own thread; the main chat can read
 its transcript). The fork lives in the chat's own folder, logs to its own

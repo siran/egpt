@@ -1089,6 +1089,53 @@ describe('router.resolve — a quote-reply to a being\'s own post addresses that
   });
 });
 
+// reply_default (operator 2026-11-11): a quote-reply to THIS node's bot whose quoted post names no being
+// (no stamp) goes to the conversation's `reply_default` being, if it is in the arrival chat.
+describe('router.resolve — reply_default: the being taking an unstamped reply to the bot', () => {
+  const agents = {
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },
+    ken: { configuration: 'sonnet-high', handles: ['ken'], name: 'Ken' },
+  };
+  const stateWith = (entry) => ({ contacts: { telegram: { '-100': { slug: 'g', ...entry } } } });
+  const router = (entry, reg = agents) => createRouter({ getAgents: () => reg, getConfig: () => ({ node_name: 'n1' }), loadState: async () => stateWith(entry) });
+  const reply = (over = {}) => ({
+    body: 'y esto?', surface: 'telegram', chatId: '-100', senderId: 'op', authorized: true,
+    replyToBeing: null, replyToNode: 'n1',
+    mention: { atEStart: false, atEAnywhere: false, replyToBot: true }, ...over,
+  });
+  const beings = (r) => r.targets.map((t) => t.being);
+  const mine = { reply_default: 'ken', agents: { ken: { mode: 'mention' }, egpt: { mode: 'mention' } } };
+
+  it('an unstamped reply to the bot addresses the reply_default being, as a reply (mention mode admits it)', async () => {
+    const r = await router(mine).resolve(reply());
+    expect(beings(r)).toEqual(['ken']);
+    expect(r.mention.replyToBot).toBe(true);
+    expect(replyAllowed('mention', r.mention)).toBe(true);
+  });
+
+  it('a reaction to an unstamped bot post takes the same default', async () => {
+    expect(beings(await router(mine).resolve(reply({ kind: 'reaction', body: '👍' })))).toEqual(['ken']);
+  });
+
+  it('reply_default naming a being not in the chat addresses nobody', async () => {
+    expect(beings(await router({ ...mine, reply_default: 'zed' }).resolve(reply()))).toEqual([]);
+  });
+
+  it('a stamped reply goes to the stamped being, never the default', async () => {
+    expect(beings(await router(mine).resolve(reply({ replyToBeing: 'egpt' })))).toEqual(['egpt']);
+  });
+
+  it('a reply to a human message, or to another node\'s post, does not take the default', async () => {
+    const human = reply({ mention: { atEStart: false, atEAnywhere: false, replyToBot: false }, replyToNode: null });
+    expect(beings(await router(mine).resolve(human))).toEqual([]);
+    expect(beings(await router(mine).resolve(reply({ replyToNode: 'other' })))).toEqual([]);
+  });
+
+  it('LOCK: no reply_default → an unstamped reply to the bot addresses nobody, as before', async () => {
+    expect(beings(await router({ agents: mine.agents }).resolve(reply()))).toEqual([]);
+  });
+});
+
 // NO DEFAULT AGENT (operator 2026-10-22/23): every local being on/auto in this chat takes the line
 // after the named hits, each being once; nobody → no target; `receives` false only when all are off.
 describe('router.resolve — beings taken by their on/auto mode (operator 2026-10-22/23)', () => {

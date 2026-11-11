@@ -631,6 +631,24 @@ export const CONFIG_SCHEMA = {
     the chat reopens it on its conversations.yaml settings. By the chat's own
     id: an alias side group is closed by its own id. Heartbeats are not gated.
   `,
+  reply_default: `
+    Who takes a quote-reply to this node's bot when the quoted post names no
+    being (operator 2026-11-11). PER CONVERSATION ONLY, on the chat's own
+    conversations.yaml entry, as a being key. DEFAULT: unset (such a reply
+    addresses nobody, as before). A reply to a post that carries a being's stamp
+    still goes to that being.
+
+      contacts:
+        telegram:
+          "-100123": { reply_default: egpt }
+
+    Applies to a quote-reply and to a reaction on an unstamped post this node's
+    bot sent (a system line, a post made outside the spine, an old message), and
+    only when that being is one of the chat's beings. A reply to a human or to
+    another node's post never takes it. It is a reply hit like any other
+    (src/spine/router.mjs): a mention-mode chat admits it without a handle, and
+    allowed_users and the surface pin still apply.
+  `,
   whatsapp: `
     Beeper-transport bridge config — network-agnostic; the "whatsapp" name is
     legacy. A nested object; the bridge starts when this block is present (and
