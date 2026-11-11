@@ -941,6 +941,11 @@ export const CONFIG_SCHEMA = {
                               shown in turn every 2.5 s, looping, in the loading bubble
                               instead of ⏳; default none = ⏳), e.g.
                               waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]
+                              waiting_cold (the same shape: the set shown instead when the line
+                              goes to a cold conversation, one not warmed by a line or a prime in
+                              the last 4 minutes; the POST's answer says cold: true|false, the
+                              widget guesses from its own last line until then; default none = waiting), e.g.
+                              waiting_cold: ["Corriendo a tu encuentro…", "Despertando, estirándome…"]
             places            where the host page is: { <name>: { user_strip: bool, css: "…" } }
                               (name: lowercase letters, digits, - and _; css at most 20000
                               characters; other keys ignored). The page names its place with

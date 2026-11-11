@@ -95,6 +95,8 @@ limbs:
 #   # allowed_origins: []           # CORS; empty = same-origin only
 #   # title: "Chat"
 #   # intro: "¡Hola!"               # the panel's first line; placeholder, send, end, ... (every UI string) override the Spanish defaults here too
+#   # waiting: ["Un momento…", "Ya casi…"]   # phrases in the loading bubble instead of ⏳ (at most 12 of 80 characters)
+#   # waiting_cold: ["Corriendo a tu encuentro…", "Despertando, estirándome…"]   # shown instead when the conversation is cold (no line or prime in 4 min)
 #   # label: "Marketer — website"   # its section's title in /ayde; default the title
 #   # max_chars: 4000
 #   # rate: { messages: 30, minutes: 10, turns_per_identity_per_hour: 0 }   # per session; the last: one signed identity across its sessions, 0 = off
