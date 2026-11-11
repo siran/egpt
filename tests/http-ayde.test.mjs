@@ -87,9 +87,12 @@ beforeEach(async () => {
   await put('state/alive.txt', 'alive\n');
   await put('secrets/telegram-main.token', `${TELEGRAM}\n`);
   await put('chrome/profiles/brain/Default/Cookies', 'sqlite');
-  const conv = async (id, usuario, files, t) => {
+  const conv = async (id, card, files, t) => {
     const dir = `conversations/http/${id}`;
-    if (usuario) await put(`${dir}/desktop/user.json`, JSON.stringify(usuario));
+    if (card) {
+      await put(`${dir}/desktop/user.json`, JSON.stringify(card));
+      await utimes(at(dir, 'desktop', 'user.json'), new Date(t), new Date(t));
+    }
     for (const [f, text] of Object.entries(files)) await put(`${dir}/${f}`, text);
     await put(`${dir}/transcript.md`, `transcript of ${id}\n`);
     await utimes(at(dir, 'transcript.md'), new Date(t), new Date(t));
@@ -400,8 +403,8 @@ describe('limbs.http.ayde — the conversation list', () => {
     await writeFile(at('conversations', 'http', C, 'desktop', 'user.json'), JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez', verified_at: '2026-10-25T10:00:00Z', token: 'never' }));
     const { get } = await limb();
     const rows = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e]));
-    expect(rows[A]).toMatchObject({ kind: 'chatbox', title: 'María López', usuario: { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, preview: null });
-    expect(rows[C]).toMatchObject({ title: 'jperez', usuario: { abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez' }, preview: null });
+    expect(rows[A]).toMatchObject({ kind: 'chatbox', title: 'María López', card: { abrin: 'IEV', user_type: 'R', short_name: 'María López', username: 'mlopez' }, preview: null });
+    expect(rows[C]).toMatchObject({ title: 'jperez', card: { abrin: 'CSJ', user_type: 'P', short_name: '', username: 'jperez' }, preview: null });
     expect(JSON.stringify(rows[C])).not.toMatch(/never|verified_at/);
   });
 
@@ -416,9 +419,9 @@ describe('limbs.http.ayde — the conversation list', () => {
     await history({ '00000000000000d4': 'zeta' }, { '00000000000000d4': [being('¡Hola!', 1), visitor('  desde el\nhistorial  ', 2), visitor('después', 3)] });
     const { get, lines } = await limb({ clients: { acme: { being: 'ed' }, zeta: { being: 'ed' } }, stateDir: at('state'), ayde: { on: true, scope: ['http:acme-', 'http:zeta-'] } });
     const rows = Object.fromEntries((await get('tree', {}, 'tina')).body.entries.map((e) => [e.name, e]));
-    expect(rows[E]).toMatchObject({ kind: 'chatbox', section: 'chatbox:acme', title: 'Visitor', usuario: null, preview: 'Hola <img src=x onerror=alert(1)> quiero información sobre la plataforma para m…' });
+    expect(rows[E]).toMatchObject({ kind: 'chatbox', section: 'chatbox:acme', title: 'Visitor', card: null, preview: 'Hola <img src=x onerror=alert(1)> quiero información sobre la plataforma para m…' });
     expect([...rows[E].preview]).toHaveLength(80);
-    expect(rows[D]).toMatchObject({ title: 'Visitor', usuario: null, preview: 'desde el historial' });
+    expect(rows[D]).toMatchObject({ title: 'Visitor', card: null, preview: 'desde el historial' });
     expect(lines.join('\n')).not.toMatch(/plataforma|historial|del transcript/);
     await writeFile(at('conversations', 'http', E, 'transcript.md'), transcript(E, said('ed', E, '09:53', 1, '¡Hola!')));
     expect((await get('tree', {}, 'tina')).body.entries.find((e) => e.name === E).preview).toBeNull();
@@ -849,7 +852,7 @@ describe('limbs.http.ayde — the dashboard', () => {
       '[ 2026-10-25 ]', said('visitor', '23:58', 'Hola, necesito\nayuda con mi nota'), said('ed', '23:58', '(streaming) Claro'), said('ed', '23:59', 'Claro, dime el curso.'),
       '[ 2026-10-26 ]', '[ ed@[x].http (00:01): reacted 👍 to #1 ]', said('support:tina', '00:02', 'Soy Tina, del equipo.'), said('visitor', '08:30', '4to A'),
     ), '2026-10-26T10:00:00Z');
-    await put(`conversations/http/${C}/usuario.json`, JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', title: 'CSJ · Juan Pérez', subtitle: 'Profesor' }));
+    await put(`conversations/http/${C}/desktop/user.json`, JSON.stringify({ abrin: 'CSJ', user_type: 'P', short_name: 'Juan Pérez', username: 'jperez', title: 'CSJ · Juan Pérez', subtitle: 'Profesor' }));
     await put(`conversations/http/${C}/transcript.md`, transcript(said('visitor', '10:00', 'Una pregunta'), said('ed', '10:01', 'Dime')), '2026-10-25T10:00:00Z');
   });
 
@@ -980,7 +983,8 @@ describe('limbs.http.ayde — the dashboard', () => {
       expect(sc.map((x) => [x.name, x.ran])).toEqual([['limpiar.x.md', Date.parse('2026-10-21T00:00:00Z')]]);
       const dk = (await get('area', { k: 'desktop' }, 'tina')).body.groups;
       expect(dk.map((g) => [g.path, g.rows.map((x) => x.name)])).toEqual([
-        [`conversations/http/${A}`, ['plan.md']], [`conversations/telegram/${T}`, ['mesa.md']], [`conversations/http/${B}`, ['otro.md']]]);
+        [`conversations/http/${C}`, ['user.json']], [`conversations/http/${A}`, ['user.json', 'plan.md']],
+        [`conversations/http/${B}`, ['user.json', 'otro.md']], [`conversations/telegram/${T}`, ['mesa.md']]]);
       expect((await get('area', { k: 'desktop', p: `conversations/http/${B}` }, 'tina')).body.groups.map((g) => g.path)).toEqual([`conversations/http/${B}`]);
       expect((await get('area', { k: 'outbox', p: `conversations/http/${A}` }, 'tina')).body.groups[0].rows.map((x) => x.name)).toEqual(['a.txt']);
       expect((await get('area', { k: 'desktop', p: `conversations/http/${D}` }, 'tina')).body.groups).toEqual([]);

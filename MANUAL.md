@@ -521,7 +521,8 @@ change under `limbs` does.
 ### `/ayde` — the Contoso team's browser (staff access)
 
 With `limbs.http.ayde: { on: true }`, the chatbox limb also serves a read-only
-browser of the node's `EGPT_HOME` to the Contoso team, at:
+browser of the node's `EGPT_HOME` to the Contoso team (read-only, but for the
+support line below), at:
 
 ```text
 https://contoso.example/ayde/
@@ -537,20 +538,44 @@ each level reads everything the lower ones read:
 | `admin` | the same as `devs`; the two differ only in `public_max_level` |
 | `root` | everything under `EGPT_HOME`, as it is: every conversation, `config/`, `state/`, `secrets/`, `chrome/` and conversations' `.secrets/` |
 
-The page is one list of the scope's conversations, in sections:
+The page is a dashboard with a side menu, showing only what the user's level
+reaches; routes are hash routes (`#/chatbox/<client>/<key>` is stable, to share):
 
-- one per chatbox, titled by its `label` (e.g. `label: "Marketer — website"` in its
-  block), else its `title`, in config order (`limbs.http.chatboxes` first, then `clients:`);
-- **Team groups (Telegram)**: the scope's groups and topics, by their name;
-- **Other**: any other chat in the scope.
+- **Home**: the user, level, the node's clock (`default_time_zone`) and a tile
+  per chatbox (active chats, chats today, total, last line).
+- **Chatboxes**: one entry per chatbox, titled by its `label` (e.g.
+  `label: "Marketer — website"`), in config order (`limbs.http.chatboxes` first,
+  then `clients:`). Its chats are on the left, Active | Past tabs and a search
+  box (a chat is active while its last line is within the client's
+  `session_days`). A row is a conversation: title, subtitle, user type, last
+  update, message count, last line; with `conversation_by: identity`, one per
+  user. The chat's room is in the centre (`transcript.md` as a conversation).
+  Around it a panel: Card (`desktop/user.json`), Desktop, Files, Heartbeats,
+  Outbox, Credentials (devs and above).
+- **Conversations**: the Telegram groups and the rest, the same three zones.
+- **Heartbeats**, **Scripts**, **Desktop**, **Credentials** (devs and above),
+  **Files**: those of each conversation in the scope. Files is the folder
+  browser; root also gets **Everything else**: the whole `EGPT_HOME` tree.
 
-Inside each section, rows sit under **Today** and **Previous**, newest first. A
-signed visitor shows as name, username, school and user type; an anonymous one as
-**Visitor** with the first line they wrote. Chat ids and folder names are in the
-tooltip. The search box above filters every section by name, username, school,
-first line or group. Click a row to open its folder. Root also gets **Everything
-else**: the whole `EGPT_HOME` tree. Nobody below root can list `conversations/`
-itself. The scope is `limbs.http.ayde.scope`, a list of chat ids:
+A chat's title and subtitle are the ones recorded in its `desktop/user.json`
+when it starts; they come from the chatbox block's `chat_title` and
+`chat_subtitle`, templates over the identity's claims as `topic_title` is
+(`{abrin} {short_name} {username} {user_type}`, or any `{<claim>}` of the token;
+defaults `"{abrin} · {short_name} · {username}"` and `"{user_type}"`). Else the
+row shows name and username; an anonymous chat is **Visitor** and its first
+line. Chat ids and folder names are in the tooltip. Nobody below root can list
+`conversations/` itself.
+
+**Support line.** Any ayde user who reads a conversation can say a line into its
+live chatbox session (`POST <ayde.path>/say`, `{client, key, text}`; the room has
+a box for it). The visitor's widget shows it headed `Soporte · <user>`; the
+heading is the chatbox block's `strings.support` (default `Soporte`). The line
+is recorded as `support:<user>`; the being treats it as in mode `accum` (it
+wakes only if the line addresses it, and then answers the visitor); the
+visitor's own lines keep the conversation's mode. With no live session, 409.
+The text never reaches the access log.
+
+The scope is `limbs.http.ayde.scope`, a list of chat ids:
 
 ```yaml
 limbs:
@@ -577,7 +602,7 @@ A path above your level, or outside the scope, answers 401 in that level's
 realm (`ayde devs`, `ayde root`), so the browser asks for a higher login. The
 page shows such paths greyed. Each folder, file and download opened is logged,
 and inside a conversation also appended to its `admin-access.log`. Nobody can
-change or delete anything; a future delete of core files (`config/`, `state/`,
+change or delete anything (`/say` only adds a chat line); a future delete of core files (`config/`, `state/`,
 `secrets/`) will be root's only.
 
 **Log out** (beside your name; `/ayde/logout`) answers 401 with no challenge and

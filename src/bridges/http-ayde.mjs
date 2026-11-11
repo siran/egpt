@@ -5,7 +5,7 @@
 //   tree[?p=<path>]                 {user, level, path, entries: [{name, dir, size, mtime, level, link?}], truncated}; one folder
 //   tree (no p)                     root: EGPT_HOME; below root the scope's conversations, as tree?scope=1
 //   tree?scope=1                    {user, level, path: '', scope: true, sections: [{id, kind, label}], entries: [{name, path, chats,
-//                                   section, label, kind, title, usuario, preview, last, …}]}: the scope's conversations, any level
+//                                   section, label, kind, title, card, preview, last, …}]}: the scope's conversations, any level
 //   file?p=<path>[&download=1]      {path, size, text, truncated} | {path, size, binary} | the bytes
 //   home                            {user, level, zone, now, menu: [{id}], chatboxes: [{client, label, active, today, total, last}]}: the dashboard;
 //                                   the menu holds only what the user's level reaches (levelOf, on the same paths as the pages below)
@@ -113,7 +113,7 @@ const TELEGRAM_LABEL = 'Team groups (Telegram)', OTHER_LABEL = 'Other';
 export const AUDIT_FILE = 'admin-access.log';
 // The username the logout page sends to overwrite a cached login; never a real user (ayde-user.mjs refuses it).
 export const RESERVED_USER = 'logout';
-const USUARIO_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id', 'title', 'subtitle'];
+const CARD_KEYS = ['abrin', 'user_type', 'short_name', 'username', 'user_id', 'title', 'subtitle'];
 const TRANSCRIPT_MAX = 1024 * 1024, TRANSCRIPT_CACHE = 200, ROOM_MAX = 500, BEAT_MAX = 32 * 1024;
 // A transcript line: <who>@[<chat>].<node> (HH:MM)[ #<id>]: <text>. A stage direction opens with "[", a day boundary is "[ 2026-09-01 ]".
 const ENTRY_RE = /^([^@\n]+)@\[[^\]]*\]\.\S+\s+\((\d{1,2}):(\d{2})\)(?:\s+#[^\s:]+)?: ?(.*)$/;
@@ -217,12 +217,12 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
     try { await fh.writeFile(`${new Date(now()).toISOString()} ${line}\n`, 'utf8'); } finally { await fh.close(); }
   }
 
-  const usuarioOf = async (dir) => {
+  const cardOf = async (dir) => {
     const p = join(dir, 'desktop', 'user.json');
     try {
       if (!(await lstat(p)).isFile()) return null;
       const u = JSON.parse(await readFile(p, 'utf8'));
-      return Object.fromEntries(USUARIO_KEYS.filter((k) => u?.[k] != null).map((k) => [k, String(u[k])]));
+      return Object.fromEntries(CARD_KEYS.filter((k) => u?.[k] != null).map((k) => [k, String(u[k])]));
     } catch { return null; }
   };
   // The last line said: transcript.md's time, else the folder's.
@@ -269,12 +269,12 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
       const e = { name: parts.at(-1), path: parts.join('/'), chats, dir: true, size: null, mtime: st.mtimeMs, level: 'team', last: await lastOf(dir) };
       const session = chats.map((id) => SESSION_RE.exec(id)).find(Boolean);
       if (session) {
-        const usuario = await usuarioOf(dir);
-        const said = usuario ? null : await firstSaid(parts, session[2], homes);
-        entries.push({ ...e, kind: 'chatbox', section: `chatbox:${session[1]}`, key: session[2], title: usuario?.title || usuario?.short_name || usuario?.username || 'Visitor', usuario, preview: clip(said ?? '') || null });
+        const card = await cardOf(dir);
+        const said = card ? null : await firstSaid(parts, session[2], homes);
+        entries.push({ ...e, kind: 'chatbox', section: `chatbox:${session[1]}`, key: session[2], title: card?.title || card?.short_name || card?.username || 'Visitor', card, preview: clip(said ?? '') || null });
       } else {
         const kind = chats.every((id) => id.startsWith('tg:')) ? 'telegram' : 'other';
-        entries.push({ ...e, kind, section: kind, title, usuario: null, preview: null });
+        entries.push({ ...e, kind, section: kind, title, card: null, preview: null });
       }
     }
     // A client is in the scope when an entry covers any of its session ids, even before its first session.
@@ -350,7 +350,7 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
   async function chatRow(e, idleMs, homes) {
     const t = await transcriptOf(e.path.split('/'), homes, 'team');
     const last = t?.lines.at(-1);
-    const u = e.usuario;
+    const u = e.card;
     return {
       key: SESSION_RE.exec(e.chats.find((id) => SESSION_RE.test(id)))[2], path: e.path, title: e.title,
       subtitle: u?.subtitle ?? u?.username ?? '', userType: u?.user_type ?? null,
@@ -455,8 +455,8 @@ export function createBrowser({ root, json, log = () => {}, now = () => Date.now
       side: entry?.kind === 'chatbox' && isVisitor(l.who) ? 'visitor' : l.who.startsWith(SUPPORT) ? 'support' : 'other',
     }));
     return json(res, 200, {
-      path: parts.join('/'), title: entry?.title ?? parts.at(-1), subtitle: entry?.usuario?.subtitle ?? entry?.usuario?.username ?? '',
-      kind: entry?.kind ?? null, section: entry?.section ?? null, usuario: entry?.usuario ?? null, chats: entry?.chats ?? [],
+      path: parts.join('/'), title: entry?.title ?? parts.at(-1), subtitle: entry?.card?.subtitle ?? entry?.card?.username ?? '',
+      kind: entry?.kind ?? null, section: entry?.section ?? null, card: entry?.card ?? null, chats: entry?.chats ?? [],
       last: entry?.last ?? null, messages, partial: t.partial || t.lines.length > ROOM_MAX,
     });
   }

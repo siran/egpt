@@ -967,7 +967,7 @@ export const CONFIG_SCHEMA = {
                               {<claim>} of the token (e.g. "{school} · {short_name}"). A claim with no value
                               is empty and the separator it leaves goes. Default
                               "{abrin} · {short_name} · {username}". Recorded as "title" in the
-                              conversation's usuario.json when it starts; unsigned: none ("Visitor")
+                              conversation's desktop/user.json when it starts; unsigned: none ("Visitor")
             chat_subtitle     the same for the line under the title, default "{user_type}"
             identity          off (default) | optional | required: the host page's
                               signed user (below). required: a call without one is
@@ -1061,7 +1061,7 @@ export const CONFIG_SCHEMA = {
         in the tooltip. Dates in the node's zone. API (GET, JSON): home, chatbox?c=<client>,
         room?p=<conversation folder>, area?k=heartbeats|scripts|desktop|credentials|outbox[&p=<folder>],
         tree?scope=1 (below root also tree with no p) → {sections: [{id, kind, label}], entries:
-        [{path, chats, section, label, kind, title, usuario, preview, last, …}]}, tree, file.
+        [{path, chats, section, label, kind, title, card, preview, last, …}]}, tree, file.
         SUPPORT: POST <ayde.path>/say {client, key, text} (application/json, same origin; any ayde user
         who reads that conversation) puts a human line into that chat's LIVE session: the visitor's
         widget shows it headed "Soporte · <user>" (from: support, by: user). For the support line the

@@ -403,7 +403,7 @@
   async function cardView(row, room) {
     const box = pbox();
     const dl = el('dl', null, 'card');
-    const u = room.usuario ?? {};
+    const u = room.card ?? {};
     const rows = [['Name', u.short_name], ['User', u.username], ['School', u.abrin], ['Type', u.user_type], ['User id', u.user_id], ['Last line', room.last && exact.format(room.last)],
       ['Messages', row.count != null ? `${row.count}${row.more ? '+' : ''}` : null], ['Folder', room.path], ['Chat', room.chats.join(', ')]];
     for (const [k, v] of rows) if (v) dl.append(el('dt', k), el('dd', String(v)));
@@ -498,12 +498,12 @@
   let top = '';
   const nameOf = (e) => e.title || e.name;
   const subOf = (e) => {
-    const u = e.usuario;
+    const u = e.card;
     if (u) return [u.username, u.abrin, u.user_type && `type ${u.user_type}`].filter(Boolean).join(' · ');
     if (e.kind === 'chatbox') return e.preview ? `“${e.preview}”` : 'No message yet';
     return '';
   };
-  const haystack = (e) => [nameOf(e), e.usuario?.short_name, e.usuario?.username, e.usuario?.abrin, e.preview].filter(Boolean).join(' ').toLowerCase();
+  const haystack = (e) => [nameOf(e), e.card?.short_name, e.card?.username, e.card?.abrin, e.preview].filter(Boolean).join(' ').toLowerCase();
   function item(e, label, onpick) {
     const b = el('button', null, 'item');
     const head = el('span', null, 'top');
@@ -511,7 +511,7 @@
     if (e?.last != null) { const t = el('span', when(e.last), 'time'); t.title = exact.format(new Date(e.last)); head.append(t); }
     b.append(head);
     const sub = e ? subOf(e) : '';
-    if (sub) b.append(el('span', sub, e.usuario ? 'sub' : 'sub said'));
+    if (sub) b.append(el('span', sub, e.card ? 'sub' : 'sub said'));
     if (e) b.title = [e.path, ...e.chats].join('\n');
     b.dataset.path = e?.path ?? '';
     b.onclick = () => {

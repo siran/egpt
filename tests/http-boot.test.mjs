@@ -323,7 +323,7 @@ describe('limbs.http.ayde through boot', () => {
       expect((await fetch(`${ayde}tree`, ana).then((r) => r.json())).entries.map((e) => [e.path, e.chats])).toEqual([[`conversations/http/${id}`, [`http:${id}`]]]);
       const top = await fetch(`${ayde}tree`, ana).then((r) => r.json());
       expect(top.sections).toEqual([{ id: 'chatbox:contoso', kind: 'chatbox', label: 'Contoso' }]);
-      expect(top.entries[0]).toMatchObject({ section: 'chatbox:contoso', title: 'mlopez', usuario: { abrin: 'IEV', username: 'mlopez' }, preview: null });
+      expect(top.entries[0]).toMatchObject({ section: 'chatbox:contoso', title: 'mlopez', card: { abrin: 'IEV', username: 'mlopez' }, preview: null });
       expect((await fetch(`${ayde}tree?p=conversations/http/${other}`, ana)).headers.get('www-authenticate')).toBe('Basic realm="ayde root", charset="UTF-8"');
       expect((await fetch(`${ayde}tree?p=`, ana)).headers.get('www-authenticate')).toBe('Basic realm="ayde root", charset="UTF-8"');
       expect((await fetch(`${ayde}tree?p=secrets`, basic('rob', 'clave-de-rob-1')).then((r) => r.json())).entries.map((e) => e.name)).toContain('ayde.users');
@@ -356,7 +356,7 @@ describe('limbs.http.ayde through boot', () => {
       await fs.mkdir(convDir(slug), { recursive: true });   // the test's io keeps the folder in memory
       const saved = join(_HOME, 'state', 'http-messages', `${slug.split('-').at(-1)}.json`);
       await vi.waitFor(async () => expect(JSON.parse(await fs.readFile(saved, 'utf8')).some((m) => m.from === 'being' && m.done && /respuesta a/.test(m.text))).toBe(true), { timeout: 5000 });
-      expect((await list()).entries).toEqual([expect.objectContaining({ name: slug, section: 'chatbox:contoso', title: 'Visitor', usuario: null, preview: 'hola, quiero una demo' })]);
+      expect((await list()).entries).toEqual([expect.objectContaining({ name: slug, section: 'chatbox:contoso', title: 'Visitor', card: null, preview: 'hola, quiero una demo' })]);
       await fs.writeFile(join(convDir(slug), 'transcript.md'), io.files.get(join(convDir(slug), 'transcript.md')));
       await fs.rm(saved);
       expect((await list()).entries[0].preview).toBe('hola, quiero una demo');

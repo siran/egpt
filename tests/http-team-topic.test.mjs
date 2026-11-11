@@ -438,8 +438,6 @@ describe('a signed visitor (identity)', () => {
     const md = await fs.readFile(join(dir, 'desktop', 'user.md'), 'utf8');
     expect(md.trim().split('\n')).toHaveLength(1);
     expect(md).toBe('Verified by the site: Juan Pérez (jperez), type P, school IEV, id 4711.\n');
-    expect(existsSync(join(dir, 'usuario.json'))).toBe(false);
-    expect(existsSync(join(dir, 'usuario.md'))).toBe(false);
     for (const text of [JSON.stringify(usuario), md]) expect(text).not.toContain(identity.split('.')[1]);
     n.app.stop();
   });
