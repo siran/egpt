@@ -1,10 +1,10 @@
 // http-limb.test.mjs — the chatbox limb (src/bridges/http.mjs) on a real loopback server: sessions,
-// the JSON and SSE reads, CORS, max_chars, the rate limit, widget.js.
+// the JSON and SSE reads, CORS, max_chars, the rate limit, info and the UI's files.
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS, DEEP_CHAT, chatboxesOf } from '../src/bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, HTTP_STRINGS, chatboxesOf } from '../src/bridges/http.mjs';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
 
 const live = [];
@@ -471,62 +471,78 @@ describe('POST end: the visitor ends the conversation', () => {
   });
 });
 
-describe('widget.js and routing', () => {
-  it('widget.js is served as JavaScript with the client\'s title and Spanish strings', async () => {
-    const { url } = await limb({ acme: { being: 'ed', title: 'Contoso', strings: { send: 'Mandar' } } });
-    const r = await fetch(`${url()}widget.js`);
+describe('the chatbox UI: info and its files (a plugin; the limb knows only the files)', () => {
+  const uiDirs = async () => {
+    const root = await mkdtemp(join(tmpdir(), 'egpt-ui-'));
+    live.push(() => rm(root, { recursive: true, force: true }));
+    const plugin = join(root, 'plugin'), skin = join(root, 'skin');
+    await mkdir(plugin); await mkdir(skin);
+    await writeFile(join(plugin, 'widget.js'), 'window.plugin = 1;\n');
+    await writeFile(join(plugin, 'skin.css'), '/* plugin */');
+    await writeFile(join(skin, 'skin.css'), '.egc{--egc-bg:#123}');
+    await writeFile(join(skin, 'skin.json'), '{"strings":{"intro":"Hola"}}');
+    await writeFile(join(skin, 'face.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    await writeFile(join(skin, 'page.html'), '<p>no</p>');
+    await writeFile(join(skin, '.hidden.css'), 'x');
+    await writeFile(join(root, 'outside.css'), 'secret');
+    await symlink(join(root, 'outside.css'), join(skin, 'out.css'));
+    return { root, plugin, skin };
+  };
+
+  it('info: the client, its title (default the client), max_chars and init — what the UI reads from the limb', async () => {
+    const { url } = await limb({ acme: { being: 'ed', title: 'Contoso', max_chars: 900, init: 'prime', identity: 'optional' }, plain: { being: 'ed' } });
+    const r = await fetch(`${url()}info`);
     expect(r.status).toBe(200);
-    expect(r.headers.get('content-type')).toMatch(/javascript/);
-    const js = await r.text();
-    expect(js).toContain('"title":"Contoso"');
-    expect(js).toContain('"send":"Mandar"');
-    expect(js).toContain(JSON.stringify(HTTP_STRINGS.placeholder));
-    expect(() => new Function(js)).not.toThrow();
+    expect(await r.json()).toEqual({ client: 'acme', title: 'Contoso', max_chars: 900, init: 'prime', places: [] });
+    expect(await (await fetch(`${url('plain')}info`)).json()).toEqual({ client: 'plain', title: 'plain', max_chars: 4000, init: false, places: [] });
+    expect((await fetch(`${url()}info`, { method: 'POST' })).status).toBe(405);
   });
 
-  it('widget.js is a Deep Chat loader: the pinned bundle with its integrity, wired to messages and events', async () => {
-    const { url } = await limb();
-    const js = await (await fetch(`${url()}widget.js`)).text();
-    expect(DEEP_CHAT.url).toMatch(/^https:\/\/cdn\.jsdelivr\.net\/npm\/deep-chat@\d+\.\d+\.\d+\/dist\/deepChat\.bundle\.js$/);
-    expect(DEEP_CHAT.integrity).toMatch(/^sha384-[A-Za-z0-9+/]{64}$/);
-    expect(js).toContain(JSON.stringify(DEEP_CHAT));
-    expect(js).toContain("createElement('deep-chat')");
-    expect(js).toContain("base + 'messages?session='");
-    expect(js).toContain("base + 'events?session='");
-    expect(js).toContain("fetch(base + 'messages', { method: 'POST'");
-    expect(js).toContain('"client":"acme"');
+  it('a UI file comes from the last ui: folder that has it, typed, nosniff; an svg sandboxed', async () => {
+    const { plugin, skin } = await uiDirs();
+    const { url } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    const w = await fetch(`${url()}widget.js`);
+    expect(w.status).toBe(200);
+    expect(w.headers.get('content-type')).toMatch(/^text\/javascript/);
+    expect(w.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await w.text()).toBe('window.plugin = 1;\n');
+    expect(await (await fetch(`${url()}skin.css`)).text()).toBe('.egc{--egc-bg:#123}');   // the skin's, over the plugin's
+    expect((await fetch(`${url()}skin.json`)).headers.get('content-type')).toMatch(/^application\/json/);
+    const svg = await fetch(`${url()}face.svg`);
+    expect(svg.headers.get('content-type')).toBe('image/svg+xml');
+    expect(svg.headers.get('content-security-policy')).toMatch(/sandbox/);
+    expect((await fetch(`${url()}widget.js`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405);
   });
 
-  it('widget.js heads a human support line (from: support) with strings.support and who said it; the label is a client string', async () => {
-    const { url } = await limb({ acme: { being: 'ed', strings: { support: 'Ayuda' } } });
-    const js = await (await fetch(`${url()}widget.js`)).text();
-    expect(HTTP_STRINGS.support).toBe('Soporte');
-    expect(js).toContain('"support":"Ayuda"');
-    expect(js).toContain("m.from === 'support' ? '**' + S.support + ' · ' + m.by + '**");
+  it('only flat names with a UI extension, inside a ui: folder: no other type, no dotfile, no subpath, no link out', async () => {
+    const { plugin, skin } = await uiDirs();
+    const { url, port } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    for (const name of ['page.html', '.hidden.css', 'out.css', 'missing.js', 'nope']) expect((await fetch(`${url()}${name}`)).status, name).toBe(404);
+    for (const path of ['skin/skin.css', '..%2Foutside.css', '%2E%2E/outside.css']) expect((await fetch(`${url()}${path}`)).status, path).toBe(404);
+    expect((await fetch(`http://127.0.0.1:${port}/chat/acme/../outside.css`)).status).toBe(404);
   });
 
-  it('widget.js has the end button with its inline confirm, and ends through POST end then clears the panel', async () => {
-    const { url } = await limb();
-    const js = await (await fetch(`${url()}widget.js`)).text();
-    expect(js).toContain('class="egc-end"');
-    expect(js).toContain('class="egc-ask"');
-    expect(js).not.toContain('confirm(');
-    expect(js).toContain("fetch(base + 'end', { method: 'POST'");
-    expect(js).toContain('JSON.stringify({ session: token, identity: identity })');
-    expect(js).toContain('chat.clearMessages()');
-    expect(js).toContain(`"end":${JSON.stringify(HTTP_STRINGS.end)}`);
+  it('a relative ui: folder is under home; limbs.http.ui is the default of a chatbox with none', async () => {
+    const { root } = await uiDirs();
+    const boxes = chatboxesOf({ limbs: { http: { ui: 'plugin', chatboxes: ['a', 'b'] } }, a: { being: 'ed' }, b: { being: 'ed', ui: ['plugin', 'skin'] } });
+    expect(boxes.a.ui).toBe('plugin');
+    expect(boxes.b.ui).toEqual(['plugin', 'skin']);
+    const { url } = await limb(boxes, { home: root });
+    expect(await (await fetch(`${url('a')}skin.css`)).text()).toBe('/* plugin */');
+    expect(await (await fetch(`${url('b')}skin.css`)).text()).toBe('.egc{--egc-bg:#123}');
   });
 
-  it('widget.js shows ⏳ (Deep Chat\'s loading bubble) while a line is out, and retries a POST that got no answer or a 5xx, with the same id', async () => {
-    const { url } = await limb();
-    const js = await (await fetch(`${url()}widget.js`)).text();
-    expect(js).toContain('chat.displayLoadingBubble = true');
-    expect(js).toContain("html: waitingHtml()");
-    expect(js).toContain("if (!w.length) return '⏳';");
-    expect(js).toContain('var BACKOFF = [1000, 3000, 9000]');
-    expect(js).toContain('JSON.stringify({ session: token, text: text, id: id, identity: identity, place: place })');
-    expect(js).toContain('crypto.getRandomValues');
-    expect(js).toMatch(/if \(\(status && status < 500\) \|\| n >= BACKOFF\.length\) return Promise\.reject\(status\)/);
+  it('no ui: no files (the API still answers), logged; the panel\'s texts and places\' looks given to the limb are named as moved, never served', async () => {
+    const { url, lines, post } = await limb({ acme: { being: 'ed', intro: 'Hola', strings: { waiting: ['Un momento'], send: 'Mandar' }, places: { espacio: { css: 'x', user_strip: true } } } });
+    expect((await fetch(`${url()}widget.js`)).status).toBe(404);
+    expect((await post({ text: 'hola' })).status).toBe(200);
+    expect(lines).toContain('acme: no ui: folder — its page gets no widget (the API answers)');
+    expect(lines).toContain('acme: send, intro, waiting, places css / user_strip — the chatbox UI\'s now (its skin, in a ui: folder); ignored here');
+    expect(JSON.stringify(await (await fetch(`${url()}info`)).json())).not.toMatch(/Hola|Mandar|Un momento/);
+  });
+
+  it('the limb keeps its own texts: the 401 message and the two to the team topic', () => {
+    expect(Object.keys(HTTP_STRINGS)).toEqual(['identity', 'ended', 'earlier']);
   });
 
   it('an unknown client or path is 404', async () => {
@@ -552,16 +568,5 @@ describe('cold: a line to a conversation not warmed in the last 4 minutes', () =
     const ended = await fetch(`${url()}end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: a.session }) });
     expect(ended.status).toBe(200);
     expect((await (await post({ session: a.session, text: 'de nuevo' })).json()).cold).toBe(true);
-  });
-
-  it('waiting_cold is cleaned like waiting (strings only, trimmed, at most 12 of 80 characters) and reaches the widget; flat in a chatbox block too', async () => {
-    const long = 'x'.repeat(100);
-    const { url } = await limb({ acme: { being: 'ed', strings: { waiting_cold: [' Despertando… ', 7, '', long, ...Array(20).fill('z')] } } });
-    const js = await (await fetch(`${url()}widget.js`)).text();
-    expect(js).toContain(`"waiting_cold":["Despertando…","${'x'.repeat(80)}","z","z","z","z","z","z","z","z","z","z"]`);
-    const { url: plain } = await limb();
-    expect(await (await fetch(`${plain()}widget.js`)).text()).toContain('"waiting_cold":[]');
-    const boxes = chatboxesOf({ limbs: { http: { chatboxes: ['soporte'] } }, soporte: { being: 'ed', waiting_cold: ['Corriendo a tu encuentro…'] } });
-    expect(boxes.soporte.strings.waiting_cold).toEqual(['Corriendo a tu encuentro…']);
   });
 });
