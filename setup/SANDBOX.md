@@ -456,6 +456,18 @@ Note that Windows evaluates **Deny before Allow**, so "deny the drive, allow one
 folder" cannot work — the deny wins on the allowed child too. If a deny is ever
 needed, it must name the specific subtree.
 
+### Links
+
+A grant never goes through a link. `Grant-SandboxPoolAce` throws, naming the
+link, and runs no icacls when the path or any folder above it up to the profile
+is a junction or symlink; icacls grant and revoke also pass `/L`. A hardlink
+shares its target's security descriptor, so one planted inside a writable
+folder puts that folder's `(OI)(CI)(M)` on a file elsewhere. Creating one
+needs write-attributes on the source, so the risk is low; after a Modify grant
+the launcher logs every file there with link count > 1 (`WARNING hardlink`)
+and still grants, because a being's own hardlinks are legitimate. The scan stops
+at 6 levels and 5000 files.
+
 ## Checking it
 
 All read-only.
