@@ -409,6 +409,17 @@ describe('init: the widget opened', () => {
     expect(hooks.at(-1)).toMatchObject({ isNew: false, init: false });
   });
 
+  it('structured claims (an array of accounts): kept apart as identity.data, sanitized, and read by the being on the init line', async () => {
+    const cuentas = [{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }, { abrin: 'IEV', usuario: ' jperezr\u0000 ', tipo: 'R', n: 3, x: { y: { z: { w: 'muy hondo' } } } }];
+    const r = verifyIdentity(tok({ ...JP, cuentas }), KEY);
+    expect(r.identity.claims).not.toHaveProperty('cuentas');
+    expect(r.identity.data.cuentas).toEqual([{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }, { abrin: 'IEV', usuario: 'jperezr', tipo: 'R', n: 3, x: { y: {} } }]);
+    expect(verifyIdentity(tok(JP), KEY).identity).not.toHaveProperty('data');
+    const { post, got } = await limb('required', {}, { init: true });
+    await post({ kind: 'init', identity: tok({ ...JP, cuentas: cuentas.slice(0, 1) }) });
+    expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","cuentas":[{"abrin":"IEV","usuario":"jperez","tipo":"P"}]})');
+  });
+
   it("init: prime delivers the same line as a wake (not backlog), addressed to the being, once per new session; a reload or another tab primes nothing; the prime is charged to the turn budget and no hook seats a topic", async () => {
     const { post, got, hooks, read } = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 2 } });
     const identity = tok({ ...JP, user_id: 4711 });

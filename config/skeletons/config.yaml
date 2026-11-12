@@ -92,6 +92,7 @@ limbs:
 #   # url: mysite                   # its id: /chat/mysite/widget.js, chat ids http:mysite-<sid>; default the block's name
 #   being: e                        # the agent that answers; any visitor wakes it in its own session
 #   # seed: desks/mysite            # copied once into each new session's folder (relative: under EGPT_HOME)
+#   # card_claims: [cuentas]          # signed claims also kept on the card (desktop/user.json), refreshed when they change
 #   # allowed_origins: []           # CORS; empty = same-origin only
 #   # title: "Chat"
 #   # intro: "¡Hola!"               # the panel's first line; placeholder, send, end, ... (every UI string) override the Spanish defaults here too

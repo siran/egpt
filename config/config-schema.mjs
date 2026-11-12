@@ -1011,6 +1011,11 @@ export const CONFIG_SCHEMA = {
                               gets desktop/user.json (the verified fields abrin, user_type,
                               short_name, username, user_id + verified_at, never the
                               token) and a one-line desktop/user.md, before the seed copy.
+            card_claims       [<claim>, …] (default none): claims of the token also kept on
+                              the card (desktop/user.json, one line each in user.md), e.g.
+                              [cuentas] for every account of the person, signed by the site.
+                              The card is rewritten when a verified line or init brings
+                              other values for them, not only for a new conversation.
             conversation_by   session (default) | identity: identity puts every session of
                               one signed identity (its key) in ONE conversation, chat id
                               http:<client>-<16 hex of client + key>: one folder, thread,
