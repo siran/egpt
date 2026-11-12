@@ -232,6 +232,8 @@ pending after every deploy, and each node records what it has applied in
 `state/migrations-applied.json`. `do`'s Beeper services and both nodes' session 1
 task carried legacy names until then. A change to either node that is not a
 migration is how the two drift apart again.
+Migrations are for peer nodes only (`peer_nodes` in `config.yaml` naming a node other than
+itself); `setup/migrate.mjs` does nothing on an independent node.
 
 What still differs, measured, and why it is not being changed:
 

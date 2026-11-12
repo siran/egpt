@@ -15,6 +15,9 @@
 //       A dry run exits 0 unless a plan refuses.
 //
 // THE RULES, each one decided with the operator:
+//   - Migrations are PEER-NODE maintenance, not core eGPT (operator 2026-11-12). The runner does
+//     nothing - no plan, no ledger, no backup, exit 0 - unless config.yaml's `peer_nodes` lists a
+//     node other than this one's `node_name`. An independent node (no peer_nodes) never runs them.
 //   - Migrations live in migrations/, one file per migration, NNNN-<slug>.mjs, and are never
 //     moved or renamed after they ship.
 //   - WHICH migrations a node has applied is NODE state, never git: the ledger is
@@ -53,6 +56,7 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
+import * as YAML from 'yaml';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = dirname(HERE);
@@ -93,6 +97,26 @@ export function listMigrations(dir) {
     seen.set(n, f);
   }
   return files.map((f) => ({ id: f.slice(0, -4), file: join(dir, f) }));
+}
+
+// THE PEER GATE (operator 2026-11-12: "migrations are not core-egpt"). Migrations keep PEER nodes
+// from drifting apart; an independent node never runs them. A node is a peer node when the
+// config key `peer_nodes` (node identities sharing THIS Beeper account, incl. self) lists at least
+// one name other than its own `node_name`, lowercased as boot.mjs reads these lists. Read with the
+// same `yaml` package and path the migrations use: config-io's path is fixed at import to the
+// process's EGPT_HOME, and this runner takes --egpt-home. A missing config.yaml is a node with no
+// peers; one that does not parse throws - this cannot tell what the node is, so it does not guess.
+export function peerGate(egptHome) {
+  const file = join(egptHome, 'config', 'config.yaml');
+  let cfg = {};
+  if (existsSync(file)) {
+    try { cfg = YAML.parse(readFileSync(file, 'utf8')) ?? {}; } catch (e) {
+      throw new Error(`${file} does not parse (${e.message}) - cannot tell whether this is a peer node, so nothing was run`);
+    }
+  }
+  const self = String(cfg.node_name ?? '').toLowerCase();
+  const peers = (Array.isArray(cfg.peer_nodes) ? cfg.peer_nodes : []).map((p) => String(p).toLowerCase());
+  return { nodeName: cfg.node_name ?? '(unnamed)', isPeerNode: peers.some((p) => p !== self) };
 }
 
 // ── the Windows seams. Kept here so every migration shares one way of talking to PowerShell ──
@@ -161,6 +185,17 @@ export async function runMigrations({
   const results = [];
   const say = (line = '') => log(line);
   let exitCode = 0;
+
+  // Before anything is planned, read or written: not a peer node -> not our business.
+  let gate;
+  try { gate = peerGate(egptHome); } catch (e) {
+    say(`migrations: FAILED before any migration ran: ${e.message}`);
+    return { results, exitCode: 1 };
+  }
+  if (!gate.isPeerNode) {
+    say(`migrations: ${gate.nodeName} has no peer nodes - migrations are for peer nodes only; nothing run`);
+    return { results, exitCode: 0 };
+  }
 
   say(`migrations: ${dir}`);
   say(`  profile  ${egptHome}`);

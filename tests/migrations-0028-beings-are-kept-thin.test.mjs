@@ -18,6 +18,8 @@ const LOWER = [
   '        ratio: 0.50',
 ];
 const configOf = (meta, nodeRatio) => crlf([
+  'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    handles: [ e, egpt ]',

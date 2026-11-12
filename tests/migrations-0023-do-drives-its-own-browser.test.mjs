@@ -122,6 +122,7 @@ const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mo
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  # the WORKER, do\'s persona. Since 0020 it answers to `rodz` as well - a HANDLE, not an id.',
   '  don:',
@@ -214,6 +215,7 @@ const DO_CONV_AT = DO_CONV_LINES.indexOf('      home_dir: /c/Users/user', DO_CON
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

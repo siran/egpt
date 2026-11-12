@@ -19,6 +19,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const KG = [
   '# config.yaml',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    handles: [e, egpt]   # the persona',

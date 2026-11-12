@@ -7,7 +7,7 @@ import { plan } from '../migrations/0045-the-super-trigger-is-one-phrase.mjs';
 import { runMigrations, listMigrations, MIGRATIONS_DIR } from '../setup/migrate.mjs';
 
 const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
-const PRE_0045 = crlf(['node_name: kg', 'super_chats:', '  enabled: true', '  triggers: [ "SI chat", "abre SI" ]   # whole-message', '  suffix: -super']);
+const PRE_0045 = crlf(['node_name: kg', 'peer_nodes: [kg, do]', 'super_chats:', '  enabled: true', '  triggers: [ "SI chat", "abre SI" ]   # whole-message', '  suffix: -super']);
 
 let root, egptHome;
 const cfgPath = () => join(egptHome, 'config', 'config.yaml');

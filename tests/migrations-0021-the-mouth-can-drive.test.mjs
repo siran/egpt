@@ -47,6 +47,7 @@ const DRIVES = '# who may drive this being';
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  # E, the persona. SANDBOXED - not this node\'s meta engineer, however its own list reads.',
   '  egpt:',
@@ -94,6 +95,7 @@ const KG_AFTER = KG.replace(`${OPERATOR} ${DRIVES}`, `${DRIVEN} ${DRIVES}`);
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  # the WORKER, do\'s persona. Since 0020 it answers to `rodz` as well - a HANDLE, not an id.',
   '  don:',

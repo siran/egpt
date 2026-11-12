@@ -23,6 +23,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -54,6 +55,7 @@ const LEVEL_LINE_NO = DO_LINES.lastIndexOf('      access_level: regular') + 1;
 const KG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

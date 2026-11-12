@@ -13,6 +13,7 @@ const lf = (lines) => lines.map((l) => `${l}\n`).join('');
 // kg and do as they are after 0045 (2026-10-18).
 const LIVE = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'super_chats:',
   '  enabled: false',
   '  suffix: "-super"       # side-room title = <chat title> + suffix',
@@ -24,6 +25,7 @@ const LIVE = [
 ];
 const LIVE_AFTER = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'super_chats:',
   '  suffix: "-super"       # side-room title = <chat title> + suffix',
   '  mode: "on"             # reply mode inside the side-room',
@@ -32,7 +34,7 @@ const LIVE_AFTER = [
   'compaction:',
   '  enabled: true',
 ];
-const block = (...lines) => ['node_name: kg', 'super_chats:', ...lines.map((l) => `  ${l}`), '  mode: "on"', 'compaction:', '  enabled: true'];
+const block = (...lines) => ['node_name: kg', 'peer_nodes: [kg, do]', 'super_chats:', ...lines.map((l) => `  ${l}`), '  mode: "on"', 'compaction:', '  enabled: true'];
 
 let root, egptHome;
 const cfgPath = () => join(egptHome, 'config', 'config.yaml');

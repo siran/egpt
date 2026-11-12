@@ -24,6 +24,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const DO_BEFORE = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  don:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -88,6 +89,7 @@ const IDENTITY = `# I am Dron\r\n\r\n${'I am the meta engineer on do. '.repeat(1
 const KG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

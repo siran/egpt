@@ -25,6 +25,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG_HEAD = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -74,6 +75,7 @@ const KG_WITH = crlf([...KG_HEAD, ...BLOCK, ...KG_TAIL]);
 
 const DO = [
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: haiku-low',

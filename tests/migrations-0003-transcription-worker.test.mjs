@@ -45,6 +45,8 @@ const KG = [
   'radio_service:',
   '  examplefm:',
   '    enabled: true',
+  'node_name: kg',
+  'peer_nodes: [kg, do]',
   '',
 ].join('\r\n');
 
@@ -77,6 +79,8 @@ transcription_service:
       # base (142MB), NOT large-v3 (2.9GB): hand-applied operator 2026-09-15.
       model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-base.bin
       language: auto   # auto-detect (operator 2026-09-02).
+node_name: do
+peer_nodes: [kg, do]
 `;
 
 function home(config) {

@@ -42,7 +42,7 @@ function home({ card = CARD } = {}) {
   const h = join(mkdtempSync(join(tmpdir(), 'egpt-0017-')), '.egpt');
   mkdirSync(join(h, 'config', 'skeletons', 'room'), { recursive: true });
   mkdirSync(join(h, 'config', 'agents', 'identities'), { recursive: true });
-  writeFileSync(join(h, 'config', 'config.yaml'), crlf(['# config.yaml (fixture)', 'node_name: kg']));
+  writeFileSync(join(h, 'config', 'config.yaml'), crlf(['# config.yaml (fixture)', 'node_name: kg', 'peer_nodes: [kg, do]']));
   if (card !== null) writeFileSync(cardPath(h), card);
   return h;
 }

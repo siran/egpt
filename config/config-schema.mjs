@@ -1394,6 +1394,7 @@ export const CONFIG_SCHEMA = {
     to ONE Beeper room member, so this completes the HRW candidate set the 👂
     echo rotation will use (a LATER phase consumes it; for now it is parsed +
     exposed only, NO behavior). Omit for a solo node.
+    It also decides whether setup/migrate.mjs runs: only a node listing a peer other than itself runs migrations.
 
     (Until 2026-10-19 /status <name> and /chrome <name> addressed a NODE by these names; a command
     now names its being instead — "/e status" — so they are ordinary conversation fragments there.)

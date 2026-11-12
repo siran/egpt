@@ -13,6 +13,7 @@ import { runMigrations, listMigrations, MIGRATIONS_DIR } from '../setup/migrate.
 const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'user_name: An',
   'agents:',
   '  egpt:',
@@ -65,7 +66,7 @@ describe('0034 — the repos are a global read path', () => {
 
   it('plans the inserted lines, and says the provisioner is still to run', async () => {
     const p = await plan(ctx());
-    expect(p.changes[0]).toMatch(/config\.yaml:7-15 {2}insert `global_read_paths:` with `repos: C:\/Users\/user\/src\/siran` at the root$/);
+    expect(p.changes[0]).toMatch(/config\.yaml:8-16 {2}insert `global_read_paths:` with `repos: C:\/Users\/user\/src\/siran` at the root$/);
     expect(p.changes).toContain('  + global_read_paths:');
     expect(p.changes).toContain(`  +   - repos: ${SIRAN}`);
     expect(p.changes.some((c) => /provision-sandbox-account\.cmd/.test(c))).toBe(true);

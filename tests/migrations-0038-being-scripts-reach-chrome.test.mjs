@@ -45,6 +45,8 @@ function home(files = FILES) {
     mkdirSync(dirname(join(h, rel)), { recursive: true });
     writeFileSync(join(h, rel), text);
   }
+  mkdirSync(join(h, 'config'), { recursive: true });
+  writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: kg\npeer_nodes: [kg, do]\n');
   return h;
 }
 const read = (h, rel) => readFileSync(join(h, rel), 'utf8');

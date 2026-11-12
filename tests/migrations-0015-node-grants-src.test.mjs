@@ -25,6 +25,7 @@ const slash = (p) => String(p).replace(/\\/g, '/');
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'user_name: "John"',
   'agents:',
   '  egpt:',
@@ -58,6 +59,7 @@ const KG = crlf(KG_LINES);
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'user_name: "John"',
 ];
 const DO = crlf(DO_LINES);
@@ -146,7 +148,7 @@ describe('0015 on a node that already has a node-level allowed_paths', () => {
   it('the one path goes INTO the existing block, and what was there is untouched', async () => {
     const h = home({ config: WITH_BLOCK });
     const p = await plan(ctxFor(h));
-    expect(p.changes[0]).toBe(`${cfgPath(h)}:7-8  insert ${srcOf(h)} into the node's existing \`allowed_paths:\` (2 lines):`);
+    expect(p.changes[0]).toBe(`${cfgPath(h)}:8-9  insert ${srcOf(h)} into the node's existing \`allowed_paths:\` (2 lines):`);
     await p.apply();
     const out = readFileSync(cfgPath(h), 'utf8');
     expect(out).toBe(WITH_BLOCK + crlf([`  ${srcOf(h)}:`, '    allowed_tools: [ Read, Glob, Grep ]']));

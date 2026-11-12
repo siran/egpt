@@ -183,6 +183,11 @@ ssh -p 2222 user@dolly "rm -f ~/bin/egpt/.git/index.lock && git -C ~/bin/egpt re
 
 ### Migrations
 
+Migrations are peer-node maintenance, not core eGPT: they keep nodes that share one
+Beeper account (kg and do) from drifting apart. The runner does nothing on a node whose
+`config.yaml` has no `peer_nodes` naming a node other than itself (an independent node such
+as EDW): it prints one line and exits 0, with no ledger and no backup.
+
 A structural change to a node — a service or task name, a config shape — ships as
 `migrations/NNNN-<slug>.mjs` and is never hand-applied. After a deploy lands,
 `upgrade.ps1` runs `setup/migrate.mjs` from prod against the profile it deployed.

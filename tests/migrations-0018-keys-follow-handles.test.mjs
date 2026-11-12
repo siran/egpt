@@ -40,6 +40,7 @@ const lineOf = (lines, needle, nth = 1) => {
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  # THE PERSONA, keyed `egpt` because do was built by copying kg\'s config and renaming only the',
   '  # handles. The operator calls it don.',
@@ -190,6 +191,7 @@ const ROOM_ENTRIES = ['directives', 'files', 'identity.d', 'media', 'scripts', '
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

@@ -41,12 +41,20 @@ export async function plan(ctx) {
 `;
 }
 
-function setup(specs) {
+// The node's config.yaml. A fixture that expects the chain to RUN is a peer node: kg, sharing a
+// Beeper account with do. (The runner does nothing on a node with no other peer.)
+const PEER_CONFIG = 'node_name: kg\npeer_nodes: [kg, do]\n';
+
+function setup(specs, { config = PEER_CONFIG } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'egpt-migrate-'));
   const dir = join(root, 'migrations');
   const egptHome = join(root, 'home');
   mkdirSync(dir);
   mkdirSync(egptHome);
+  if (config !== null) {
+    mkdirSync(join(egptHome, 'config'));
+    writeFileSync(join(egptHome, 'config', 'config.yaml'), config);
+  }
   for (const [id, spec] of Object.entries(specs)) writeFileSync(join(dir, `${id}.mjs`), migrationSource(id, spec));
   const lines = [];
   const run = (opts = {}) => runMigrations({ dir, egptHome, elevated: false, platform: 'win32', log: (l) => lines.push(l), now: () => new Date('2026-09-16T10:00:00Z'), ...opts });
@@ -55,6 +63,54 @@ function setup(specs) {
 }
 
 beforeEach(() => { globalThis.__mig = { calls: [], applied: new Set() }; });
+
+describe('peer nodes only (operator 2026-11-12: migrations are not core eGPT)', () => {
+  const pending = { '0001-one': { elevated: false } };
+  const solo = [
+    ['no peer_nodes key', 'node_name: EDW\n'],
+    ['no config.yaml at all', null],
+    ['peer_nodes names only itself', 'node_name: edw\npeer_nodes: [edw]\n'],
+    ['peer_nodes: [self] in another case', 'node_name: kg\npeer_nodes: [KG]\n'],
+    ['peer_nodes empty', 'node_name: kg\npeer_nodes: []\n'],
+  ];
+  for (const [name, config] of solo) {
+    for (const dryRun of [false, true]) {
+      it(`${name}${dryRun ? ' (dry run)' : ''}: exits 0, one line, no ledger, no backup, nothing planned`, async () => {
+        const t = setup(pending, { config });
+        const { exitCode, results } = await t.run({ dryRun });
+        expect(exitCode).toBe(0);
+        expect(results).toEqual([]);
+        expect(t.lines).toHaveLength(1);
+        expect(t.output()).toMatch(/^migrations: .* has no peer nodes - migrations are for peer nodes only; nothing run$/);
+        expect(globalThis.__mig.calls).toEqual([]);
+        expect(t.ledger()).toBeNull();
+        expect(existsSync(join(t.egptHome, 'state'))).toBe(false);
+      });
+    }
+  }
+
+  it('a config.yaml that does not parse is refused, not guessed at', async () => {
+    const t = setup(pending, { config: 'node_name: [unclosed\n' });
+    const { exitCode } = await t.run();
+    expect(exitCode).toBe(1);
+    expect(globalThis.__mig.calls).toEqual([]);
+    expect(t.ledger()).toBeNull();
+  });
+
+  it('peer_nodes [kg, do] on kg: the chain runs as before', async () => {
+    const t = setup(pending);
+    const { exitCode } = await t.run();
+    expect(exitCode).toBe(0);
+    expect(Object.keys(t.ledger())).toEqual(['0001-one']);
+    expect(t.output()).toContain('0001-one  APPLIED - recorded');
+  });
+
+  it('peers are compared case-insensitively: node_name DO with peer_nodes [KG, Do] is a peer node', async () => {
+    const t = setup(pending, { config: 'node_name: DO\npeer_nodes: [KG, Do]\n' });
+    await t.run();
+    expect(Object.keys(t.ledger())).toEqual(['0001-one']);
+  });
+});
 
 describe('pending detection', () => {
   it('skips what the ledger already records - its plan() is never even asked', async () => {

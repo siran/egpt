@@ -148,6 +148,8 @@ describe('0048 through the runner', () => {
   it('a node that has run everything up to 0047: applied and recorded', async () => {
     const h = join(mkdtempSync(join(tmpdir(), 'egpt-0048-')), '.egpt');
     mkdirSync(join(h, 'state'), { recursive: true });
+    mkdirSync(join(h, 'config'), { recursive: true });
+    writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: zz\npeer_nodes: [zz, kg]\n');   // a peer node: the runner is for those only
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0048');
     writeFileSync(join(h, 'state', 'migrations-applied.json'), JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-10-18T00:00:00Z' }]))));
     const sched = fakeScheduler(LIVE('kg'));
