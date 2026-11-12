@@ -479,21 +479,101 @@ function Grant-SandboxPoolAce {
   if (-not (Test-Path -LiteralPath $Path)) {
     throw "sandbox-logon-launcher: cannot grant $Grant to $Principal -- path does not exist: $Path"
   }
+  # NEVER THROUGH A LINK. A being that owns a folder can plant a junction or
+  # symlink in it; an ACE written through that lands on whatever it points at.
+  # The path itself and every folder above it up to the profile (the same walk
+  # as the traverse chain) must be real directories or files. Fail loud, write
+  # nothing; callers already catch a throw per path.
+  foreach ($p in @($Path) + @(Get-SandboxTraverseChain -Path $Path)) {
+    if (Test-SandboxReparsePoint -Path $p) {
+      throw "sandbox-logon-launcher: refused to grant $Grant to $Principal on $Path -- '$p' is a reparse point (junction or symlink); a grant must never go through a link"
+    }
+  }
   $spec = (Get-SandboxPoolGrantShape -Path $Path -Grant $Grant).Spec
   if (Test-SandboxPoolAcePresent -Path $Path -Grant $Grant -Sid $Sid) {
     Log "already granted $Grant $spec to $Principal on $Path  - nothing written"
+    Write-SandboxHardlinkReport -Path $Path -Grant $Grant
     return 'already granted'
   }
   # No 2>&1: PS 5.1 turns a redirected native stderr into NativeCommandError
   # records, which under the provisioner's $ErrorActionPreference='Stop' throws
   # something unrelated to what went wrong. icacls's own reason goes to the
   # console; the exit code is what this branches on.
-  $out = & icacls.exe $Path '/grant' "*$($Sid.Value):$spec"
+  # /L: act on a symbolic link itself, never its target (the check above only
+  # covers what is there now; /L covers a link swapped in after it).
+  $out = & icacls.exe $Path '/grant' "*$($Sid.Value):$spec" '/L'
   if ($LASTEXITCODE -ne 0) {
     throw "sandbox-logon-launcher: icacls could not grant $Grant $spec to $Principal on $Path  - exit $LASTEXITCODE ($($out -join ' '))"
   }
   Log "granted $Grant $spec to $Principal on $Path"
+  Write-SandboxHardlinkReport -Path $Path -Grant $Grant
   return 'granted'
+}
+
+# FILES IN A WRITABLE FOLDER THAT HAVE MORE THAN ONE NAME. A hardlink to an
+# outside file shares that file's security descriptor, so the folder's
+# inherited (OI)(CI)(M) ACE lands on the outside file. Creating one needs
+# FILE_WRITE_ATTRIBUTES on the source, so the risk is low; this only finds them.
+# BOUNDED, because the leaf can be a big tree: at most $MaxFiles files looked at
+# and $MaxDepth levels down; anything past either is not examined. Reparse-point
+# folders are not entered. Returns { Path; Links } per hit.
+function Find-SandboxHardlinks {
+  param([Parameter(Mandatory = $true)][string]$Path, [int]$MaxDepth = 6, [int]$MaxFiles = 5000)
+  if (-not ('SandboxLinkCount' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class SandboxLinkCount {
+  [StructLayout(LayoutKind.Sequential)]
+  struct FILETIME { public uint Lo; public uint Hi; }
+  [StructLayout(LayoutKind.Sequential)]
+  struct BY_HANDLE_FILE_INFORMATION {
+    public uint Attributes; public FILETIME Created, Accessed, Written;
+    public uint VolumeSerial, SizeHigh, SizeLow, NumberOfLinks, IndexHigh, IndexLow;
+  }
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetFileInformationByHandle(SafeFileHandle h, out BY_HANDLE_FILE_INFORMATION i);
+  // 0 when the file cannot be opened. Attribute-only access, share all, no follow.
+  public static uint Of(string path) {
+    using (SafeFileHandle h = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero)) {
+      if (h.IsInvalid) return 0;
+      BY_HANDLE_FILE_INFORMATION i;
+      return GetFileInformationByHandle(h, out i) ? i.NumberOfLinks : 0;
+    }
+  }
+}
+'@
+  }
+  $seen = 0
+  $queue = New-Object System.Collections.Generic.Queue[object]
+  $queue.Enqueue(@{ Dir = $Path; Depth = 0 })
+  while ($queue.Count -gt 0) {
+    $cur = $queue.Dequeue()
+    foreach ($e in @(Get-ChildItem -LiteralPath $cur.Dir -Force -ErrorAction SilentlyContinue)) {
+      if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+      if ($e.PSIsContainer) {
+        if ($cur.Depth -lt $MaxDepth) { $queue.Enqueue(@{ Dir = $e.FullName; Depth = $cur.Depth + 1 }) }
+        continue
+      }
+      if ($seen -ge $MaxFiles) { return }
+      $seen++
+      $n = [SandboxLinkCount]::Of($e.FullName)
+      if ($n -gt 1) { [pscustomobject]@{ Path = $e.FullName; Links = [int]$n } }
+    }
+  }
+}
+
+# Warn, never refuse: a being's own hardlinks inside its folder are legitimate,
+# and the grant is already made. Only a writable leaf (Modify) matters.
+function Write-SandboxHardlinkReport {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Grant)
+  if ($Grant -ne 'Modify') { return }
+  foreach ($h in @(Find-SandboxHardlinks -Path $Path)) {
+    Log "WARNING hardlink in writable folder $Path : '$($h.Path)' has $($h.Links) links - it shares its security descriptor with the other name(s), so they carry this folder's grant"
+  }
 }
 
 # IS THIS PATH ALREADY READABLE BY THE WHOLE POOL? (operator 2026-09-20: "~/src
@@ -1404,11 +1484,17 @@ function Get-SandboxVolumeSerial {
 # resolve reads as 'unknown', which is 'failed', which KEEPS THE LOCK FOR EVER.
 # Recording nothing leaves such a path on the revoke-by-name path it has always
 # been on, which is the honest answer rather than a permanent retry.
+# Is this path itself a junction or symlink? Throws when it cannot be read.
+function Test-SandboxReparsePoint {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
 function Get-SandboxPathFileId {
   param([Parameter(Mandatory = $true)][string]$Path)
   try {
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $null }
+    if (Test-SandboxReparsePoint -Path $Path) { return $null }
     if ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path)) -notmatch '^[A-Za-z]:\\$') { return $null }
     # No 2>&1, for the reason Grant-SandboxPoolAce and Revoke-SandboxPathAces
     # both carry: PS 5.1 turns a redirected native stderr into NativeCommandError
@@ -1876,7 +1962,7 @@ function Revoke-SandboxPathAces {
     # something unrelated to what went wrong (the same note Grant-SandboxPoolAce
     # carries). Capturing stdout also keeps icacls's chatter off the launcher's
     # stdout, which is the inner process's stream-json pipe.
-    $icaclsArgs = @($target, '/remove:g') + @($targets | ForEach-Object { "*$($sids[$_].Value)" }) + @('/C')
+    $icaclsArgs = @($target, '/remove:g') + @($targets | ForEach-Object { "*$($sids[$_].Value)" }) + @('/C', '/L')
     $out = & icacls.exe @icaclsArgs
     $code = $LASTEXITCODE
     $after = @((Get-Acl -LiteralPath $target -ErrorAction Stop).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })

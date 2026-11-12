@@ -2786,7 +2786,7 @@ Describe 'Protect-SandboxSecretFile (the .env carve-out, on a real throwaway fil
     $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
     Protect-SandboxSecretFile -Path $file -AccountNames @('BUILTIN\Guests') | Out-Null
     $script:IcaclsSpy.Count | Should Be 1
-    (@($script:IcaclsSpy[0]) -join ' ') | Should Be "$file /remove:g *$($script:SecGuests.Value) /C"
+    (@($script:IcaclsSpy[0]) -join ' ') | Should Be "$file /remove:g *$($script:SecGuests.Value) /C /L"
   }
 }
 
@@ -3380,5 +3380,131 @@ Describe 'the traverse chain follows the declared paths (Get-/Grant-SandboxTrave
     (Test-GuestsTraverse $p) | Should Be $true
     (@($chain | Where-Object { $_.Status -eq 'granted' }).Count) | Should Be 4
     (Get-ProvisionStatement 'Grant-PoolOn -Targets \(\[ordered\]@\{ ''the operator home'' = \$env:USERPROFILE \}\) -Grant ''Traverse''') | Should Match 'homeTally'
+  }
+}
+
+# LINK TRICKS (2026-11-12). icacls without /L follows a link on some builds, and
+# a being that can plant a junction in a folder it owns must not be able to make
+# the launcher write a grant onto what the junction points at. Real links are
+# made, but only under $LedgerTempRoot (%TEMP%); the icacls spy keeps every
+# write off them.
+Describe 'Grant-SandboxPoolAce never goes through a link' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  function New-TestJunction([string]$Link, [string]$Target) {
+    & cmd.exe /c mklink /J "$Link" "$Target" | Out-Null
+  }
+
+  It 'REPRODUCE-FIRST: the icacls grant carries /L, so it acts on a link itself and never its target' {
+    $d = New-LedgerTempDir
+    (Grant-SandboxPoolAce -Path $d -Grant 'Modify') | Should Be 'granted'
+    $script:IcaclsSpy.Count | Should Be 1
+    (@($script:IcaclsSpy[0]) -contains '/L') | Should Be $true
+  }
+
+  It 'REPRODUCE-FIRST: the revoke carries /L too' {
+    $d = New-LedgerTempDir
+    $script:IcaclsSpy = $null
+    Grant-SandboxPoolAce -Path $d -Grant 'Modify' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    Revoke-SandboxPathAces -Path $d -AccountNames @($script:MeName) | Out-Null
+    $script:IcaclsSpy.Count | Should Be 1
+    (@($script:IcaclsSpy[0]) -contains '/L') | Should Be $true
+  }
+
+  It 'REPRODUCE-FIRST: a junction as the leaf is refused, with the path in the reason, and icacls never runs' {
+    $target = New-LedgerTempDir
+    $link = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    New-TestJunction $link $target
+    $msg = ''
+    try { Grant-SandboxPoolAce -Path $link -Grant 'Modify' | Out-Null } catch { $msg = $_.Exception.Message }
+    $msg | Should Match 'reparse point'
+    $msg.Contains($link) | Should Be $true
+    $script:IcaclsSpy.Count | Should Be 0
+    (Get-TestExplicitAceCount $target) | Should Be 0
+  }
+
+  It 'REPRODUCE-FIRST: a junction ABOVE the leaf is refused too, naming the junction' {
+    $target = New-LedgerTempDir
+    $leaf = Join-Path $target 'inside'
+    New-Item -ItemType Directory -Path $leaf | Out-Null
+    $link = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N'))
+    New-TestJunction $link $target
+    $viaLink = Join-Path $link 'inside'
+    $msg = ''
+    try { Grant-SandboxPoolAce -Path $viaLink -Grant 'Modify' | Out-Null } catch { $msg = $_.Exception.Message }
+    $msg | Should Match 'reparse point'
+    $msg.Contains($link) | Should Be $true
+    $script:IcaclsSpy.Count | Should Be 0
+  }
+
+  It 'a normal folder is still granted' {
+    $d = New-LedgerTempDir
+    (Grant-SandboxPoolAce -Path $d -Grant 'Modify') | Should Be 'granted'
+    $script:IcaclsSpy.Count | Should Be 1
+  }
+}
+
+Describe 'Find-SandboxHardlinks and the Modify grant report a hardlink inside a writable leaf' {
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = $script:MeName
+  }
+
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
+  }
+
+  It 'finds a file with more than one link, and only that one' {
+    $d = New-LedgerTempDir
+    $outside = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N') + '.txt')
+    Set-Content -LiteralPath $outside -Value 'x'
+    Set-Content -LiteralPath (Join-Path $d 'plain.txt') -Value 'y'
+    New-Item -ItemType Directory -Path (Join-Path $d 'sub') | Out-Null
+    & cmd.exe /c mklink /H (Join-Path $d 'sub\linked.txt') $outside | Out-Null
+    $found = @(Find-SandboxHardlinks -Path $d)
+    $found.Count | Should Be 1
+    $found[0].Path | Should Be (Join-Path $d 'sub\linked.txt')
+    $found[0].Links | Should Be 2
+  }
+
+  It 'finds nothing in a folder of single-link files' {
+    $d = New-LedgerTempDir
+    Set-Content -LiteralPath (Join-Path $d 'a.txt') -Value 'a'
+    @(Find-SandboxHardlinks -Path $d).Count | Should Be 0
+  }
+
+  It 'stops at the file cap instead of walking on' {
+    $d = New-LedgerTempDir
+    foreach ($i in 1..5) { Set-Content -LiteralPath (Join-Path $d "f$i.txt") -Value 'a' }
+    $outside = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N') + '.txt')
+    Set-Content -LiteralPath $outside -Value 'x'
+    & cmd.exe /c mklink /H (Join-Path $d 'zz-linked.txt') $outside | Out-Null
+    @(Find-SandboxHardlinks -Path $d -MaxFiles 3).Count | Should Be 0
+  }
+
+  It 'the Modify grant logs it loudly and still grants (warn, not refuse)' {
+    $d = New-LedgerTempDir
+    $outside = Join-Path $script:LedgerTempRoot ([guid]::NewGuid().ToString('N') + '.txt')
+    Set-Content -LiteralPath $outside -Value 'x'
+    & cmd.exe /c mklink /H (Join-Path $d 'linked.txt') $outside | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+    $sw = New-Object System.IO.StringWriter
+    $oldErr = [Console]::Error
+    [Console]::SetError($sw)
+    try { $r = Grant-SandboxPoolAce -Path $d -Grant 'Modify' } finally { [Console]::SetError($oldErr) }
+    $r | Should Be 'granted'
+    $sw.ToString() | Should Match 'hardlink'
+    $sw.ToString().Contains((Join-Path $d 'linked.txt')) | Should Be $true
   }
 }
