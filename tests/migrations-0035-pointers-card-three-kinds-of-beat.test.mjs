@@ -55,6 +55,8 @@ function home({ card = CARD } = {}) {
   const h = join(mkdtempSync(join(tmpdir(), 'egpt-0035-')), '.egpt');
   mkdirSync(join(h, 'config', 'skeletons', 'room'), { recursive: true });
   if (card !== null) writeFileSync(cardPath(h), card);
+  mkdirSync(join(h, 'config'), { recursive: true });
+  writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: kg\npeer_nodes: [kg, do]\n');
   return h;
 }
 const cardPath = (h) => join(h, 'config', 'skeletons', 'room', '30-pointers.md');

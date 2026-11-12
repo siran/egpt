@@ -10,6 +10,7 @@ import { runMigrations, listMigrations, MIGRATIONS_DIR } from '../setup/migrate.
 const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'user_name: An',
   'agents:',
   '  egpt:',

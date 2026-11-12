@@ -163,6 +163,7 @@ const KG_FOOT = [
 const KG_LINES = (h) => [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   ...KG_DECLARED,
   ...KG_REGULAR,
@@ -178,6 +179,7 @@ const KG = (h) => crlf(KG_LINES(h));
 const KG_AFTER_LINES = () => [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   ...KG_DECLARED,
   '  codex:',
@@ -220,6 +222,7 @@ const KG_AFTER = crlf(KG_AFTER_LINES());
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  don:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -455,10 +458,10 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
     const p = await plan(ctxFor(h));
     expect(p.satisfied).toBe(false);
     expect(p.changes).toEqual([
-      `${cfgPath(h)}:10-10  \`agents.don.conversation_defaults.access_level\`: regular -> sandbox, which FORCES the OS box on (resolveSandboxed rung 1) - this being is not one of [ codex, llama ], so it keeps taking turns and its \`sandboxed:\` line is dead config`,
+      `${cfgPath(h)}:11-11  \`agents.don.conversation_defaults.access_level\`: regular -> sandbox, which FORCES the OS box on (resolveSandboxed rung 1) - this being is not one of [ codex, llama ], so it keeps taking turns and its \`sandboxed:\` line is dead config`,
       '  -       access_level: regular',
       '  +       access_level: sandbox',
-      `${cfgPath(h)}:11-11  remove the now-dead \`sandboxed: false\` at agents.don.conversation_defaults - under \`sandbox\` it is unreachable, and src/spine/boot.mjs makes it FATAL rather than let it read like an override`,
+      `${cfgPath(h)}:12-12  remove the now-dead \`sandboxed: false\` at agents.don.conversation_defaults - under \`sandbox\` it is unreachable, and src/spine/boot.mjs makes it FATAL rather than let it read like an override`,
       '  -       sandboxed: false # no sandbox pool provisioned on dolly yet',
       `${cfgPath(h)} states no \`allowed_paths:\` at all, so there is no blanket grant here to retire`,
       `agents.dren in ${cfgPath(h)} already states \`access_level: "all"\`, which is a tier its operator chose - left exactly as it is`,
@@ -510,6 +513,7 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
   it('a flow `conversation_defaults:` cannot take the pair, so NEITHER line is written', async () => {
     const flow = crlf([
       'node_name: do',
+      'peer_nodes: [kg, do]',
       'agents:',
       '  don:',
       '    handles: [ d, don ]',
@@ -532,6 +536,7 @@ describe('0025 on do - the level and the line beside it, corrected together', ()
   it('a `regular` being that both answers `codex` and states a `sandboxed:` is switched off, not boxed', async () => {
     const both = crlf([
       'node_name: kg',
+      'peer_nodes: [kg, do]',
       'agents:',
       '  codex:',
       '    handles: [ codex ]',
@@ -587,6 +592,7 @@ describe('0025: each part is independently satisfiable', () => {
   it('A alone - the grant goes and no being is touched', async () => {
     const only = (h) => crlf([
       'node_name: kg',
+      'peer_nodes: [kg, do]',
       'agents:',
       ...KG_DECLARED,
       ...GRANT_LINES(h),
@@ -595,13 +601,14 @@ describe('0025: each part is independently satisfiable', () => {
     const p = await plan(ctxFor(h));
     expect(p.changes.filter((l) => l.includes(`${cfgPath(h)}:`)).length).toBe(1);
     await p.apply();
-    expect(read(h)).toBe(crlf(['node_name: kg', 'agents:', ...KG_DECLARED]));
+    expect(read(h)).toBe(crlf(['node_name: kg', 'peer_nodes: [kg, do]', 'agents:', ...KG_DECLARED]));
   });
 
   // The grant is one of SEVERAL: only its entry goes, and the map it lived in stays.
   it('A with a neighbour - only the one entry goes, and the map stays', async () => {
     const two = (h) => crlf([
       'node_name: kg',
+      'peer_nodes: [kg, do]',
       'agents:',
       ...KG_DECLARED,
       ...GRANT_LINES(h),
@@ -614,6 +621,7 @@ describe('0025: each part is independently satisfiable', () => {
     await p.apply();
     expect(read(h)).toBe(crlf([
       'node_name: kg',
+      'peer_nodes: [kg, do]',
       'agents:',
       ...KG_DECLARED,
       ...GRANT_LINES(h).slice(0, 5),       // the comment block and `allowed_paths:` stay

@@ -11,6 +11,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   '',
   'warm:',
   '  idle_ttl_by_class: # -1 = never idle-evict',

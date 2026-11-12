@@ -17,6 +17,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG_CONFIG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default',
@@ -61,7 +62,7 @@ const CONVERSATIONS = crlf([
   '          threadId: 0a1b-fixture',
 ]);
 
-const DO_CONFIG = 'node_name: do\nagents:\n  egpt:\n    configuration: haiku-low\n    handles: [ d, don ]\n    default: true\n';
+const DO_CONFIG = 'node_name: do\npeer_nodes: [kg, do]\nagents:\n  egpt:\n    configuration: haiku-low\n    handles: [ d, don ]\n    default: true\n';
 
 function home({ config = KG_CONFIG, rooms, conversations, files = {} } = {}) {
   const h = mkdtempSync(join(tmpdir(), 'egpt-0010-'));

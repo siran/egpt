@@ -58,6 +58,7 @@ const DRIVEN = '[ "15550100001", "10000000000012", "@anaprueba:beeper.com", "@mo
 const KG_CONFIG = crlf([
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

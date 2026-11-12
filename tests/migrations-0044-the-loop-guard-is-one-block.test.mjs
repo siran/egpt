@@ -34,10 +34,13 @@ const REVE = [
   '# THE FOLDERS EVERY SANDBOXED BEING MAY READ',
   'global_read_paths:',
   '  - repos: C:\\Users\\user\\src\\siran',
+  'node_name: kg',
+  'peer_nodes: [kg, do]',
 ];
 // Both old keys, lasso: first, flow + block, comments above and inside.
 const BOTH = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   '# the outbound ceiling',
   'lasso:',
   '  messages: 30   # raised for the room',
@@ -93,6 +96,7 @@ describe('0044 — guard: / lasso: → one loop_guard: block', () => {
     expect(restAfter).toEqual(restBefore);
     expect(read()).toBe(crlf([
       'node_name: kg',
+      'peer_nodes: [kg, do]',
       'loop_guard:',
       '  # the outbound ceiling',
       '  outbound:',

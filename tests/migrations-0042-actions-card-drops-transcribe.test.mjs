@@ -44,6 +44,8 @@ function home(files = { card: lf(BY_0041) }) {
   if (files.conv != null) put(CONV, files.conv);
   if (files.room != null) put(ROOM, files.room);
   if (files.agent != null) put(AGENT, files.agent);
+  mkdirSync(join(h, 'config'), { recursive: true });
+  writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: kg\npeer_nodes: [kg, do]\n');
   return h;
 }
 const read = (h, parts) => readFileSync(join(h, ...parts), 'utf8');

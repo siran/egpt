@@ -26,6 +26,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG_BEFORE = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -84,6 +85,7 @@ const IDENTITY = `# I am Rodz\r\n\r\n${'I am the voice the operator hears on the
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  don:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -227,14 +229,14 @@ describe('0020: each half is independently satisfiable, and the node that has ne
   });
 
   it('a node with BOTH: one write, both edits, and the re-plan is satisfied', async () => {
-    const both = crlf([...KG_BEFORE.slice(0, 5), '    handles: [ e, don ]', ...KG_BEFORE.slice(6), ...RODZ, ...KG_AFTER]);
+    const both = crlf([...KG_BEFORE.slice(0, 6), '    handles: [ e, don ]', ...KG_BEFORE.slice(7), ...RODZ, ...KG_AFTER]);
     const h = home({ config: both });
     const p = await plan(ctxFor(h));
     expect(p.changes.some((c) => c.includes('remove agents.rodz'))).toBe(true);
     expect(p.changes.some((c) => c === '  +     handles: [ e, don, rodz ]')).toBe(true);
     await p.apply();
     const out = readFileSync(cfgPath(h), 'utf8');
-    expect(out).toBe(crlf([...KG_BEFORE.slice(0, 5), '    handles: [ e, don, rodz ]', ...KG_BEFORE.slice(6), ...KG_AFTER]));
+    expect(out).toBe(crlf([...KG_BEFORE.slice(0, 6), '    handles: [ e, don, rodz ]', ...KG_BEFORE.slice(7), ...KG_AFTER]));
     expect(readdirSync(join(h, 'config')).filter((f) => f.startsWith('config.yaml.bak-'))).toHaveLength(1);
     expect((await plan(ctxFor(h))).satisfied).toBe(true);
   });

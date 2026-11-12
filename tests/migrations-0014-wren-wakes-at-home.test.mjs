@@ -26,6 +26,7 @@ const slash = (p) => String(p).replace(/\\/g, '/');
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',
@@ -54,6 +55,7 @@ const KG = crlf(KG_LINES);
 const DO = crlf([
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

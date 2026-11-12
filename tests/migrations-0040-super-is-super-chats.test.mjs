@@ -11,6 +11,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 // A node still on the old `super:` key, with a FULL block so the rename's value-preservation is tested.
 const KG = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'user_name: An',
   'super:',
   '  enabled: true',

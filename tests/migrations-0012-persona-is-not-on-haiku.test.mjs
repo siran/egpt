@@ -21,6 +21,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const DO_LINES = [
   '# config.yaml - do (fixture)',
   'node_name: do',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: haiku-low # config/agents/haiku-low.yaml (SHIPPED; haiku-default is reve-only)',
@@ -39,7 +40,7 @@ const DO_LINES = [
   '    configuration: relay # config/agents/relay.yaml',
   '    relay_channel: ekg.kg',
 ];
-const DO_LINE_NO = 5;
+const DO_LINE_NO = 6;
 const AFTER_LINE = '    configuration: sonnet-high # config/agents/sonnet-high.yaml (0012, operator 2026-09-17: "as in KG, sonnet high")';
 const DO = crlf(DO_LINES);
 const DO_AFTER = crlf(DO_LINES.map((l, i) => (i === DO_LINE_NO - 1 ? AFTER_LINE : l)));
@@ -47,6 +48,7 @@ const DO_AFTER = crlf(DO_LINES.map((l, i) => (i === DO_LINE_NO - 1 ? AFTER_LINE 
 const KG_LINES = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default # config/agents/sonnet-default.yaml',

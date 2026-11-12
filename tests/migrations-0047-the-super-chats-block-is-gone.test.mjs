@@ -12,6 +12,7 @@ const lf = (lines) => lines.map((l) => `${l}\n`).join('');
 // kg and do after 0046 (2026-10-18).
 const LIVE = [
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   '# SI side channel',
   'super_chats:',
   '  suffix: "-super"       # side-room title = <chat title> + suffix',
@@ -22,7 +23,7 @@ const LIVE = [
   'compaction:',
   '  enabled: true',
 ];
-const LIVE_AFTER = ['node_name: kg', '', 'compaction:', '  enabled: true'];
+const LIVE_AFTER = ['node_name: kg', 'peer_nodes: [kg, do]', '', 'compaction:', '  enabled: true'];
 
 let root, egptHome;
 const cfgPath = () => join(egptHome, 'config', 'config.yaml');
@@ -53,9 +54,9 @@ describe('0047 — the global super_chats block is gone', () => {
   });
 
   it('no super_chats block: satisfied, untouched, no backup', async () => {
-    write(lf(['node_name: kg', 'compaction:', '  enabled: true']));
+    write(lf(['node_name: kg', 'peer_nodes: [kg, do]', 'compaction:', '  enabled: true']));
     expect((await plan(ctx())).satisfied).toBe(true);
-    expect(read()).toBe(lf(['node_name: kg', 'compaction:', '  enabled: true']));
+    expect(read()).toBe(lf(['node_name: kg', 'peer_nodes: [kg, do]', 'compaction:', '  enabled: true']));
     expect(vaults()).toEqual([]);
   });
 

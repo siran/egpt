@@ -9,7 +9,7 @@
 // under the service key must come back identical or the migration refuses naming it.
 // The SCM is a fake: the probe returns the fixture and the label script is applied to it.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, cpSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, cpSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plan, probeScript, labelScript, profileListOf, displayNameFor, descriptionFor } from '../migrations/0004-daemon-service-carries-installer-label.mjs';
@@ -252,7 +252,8 @@ describe('0004 PowerShell scripts', () => {
 });
 
 describe('0004 through the runner', () => {
-  const home = () => { const h = join(mkdtempSync(join(tmpdir(), 'egpt-0004-')), '.egpt'); mkdirSync(h); return h; };
+  // A peer node: the runner is for those only.
+  const home = () => { const h = join(mkdtempSync(join(tmpdir(), 'egpt-0004-')), '.egpt'); mkdirSync(join(h, 'config'), { recursive: true }); writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: zz\npeer_nodes: [zz, kg]\n'); return h; };
   const dir = () => {
     const d = mkdtempSync(join(tmpdir(), 'egpt-0004-dir-'));
     // The copy imports nothing relative, so it loads from a temp dir as it would from the repo.

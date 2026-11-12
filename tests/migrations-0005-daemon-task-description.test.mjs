@@ -263,7 +263,7 @@ describe('0005 through the runner', () => {
   it('dry run on do: prints the added line, registers nothing, records nothing', async () => {
     const h = join(mkdtempSync(join(tmpdir(), 'egpt-0005-')), '.egpt');
     mkdirSync(join(h, 'config'), { recursive: true });
-    writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: zz\n');
+    writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: zz\npeer_nodes: [zz, kg]\n');
     const sched = fakeScheduler(LIVE('do'));
     // The migrations before 0005 are told "nothing of yours here", as tests/migrations-0003-* does.
     const ps = (s) => (s.startsWith('# egpt-0005') ? sched.ps(s) : JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }));

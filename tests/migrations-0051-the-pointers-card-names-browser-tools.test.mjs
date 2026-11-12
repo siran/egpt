@@ -31,6 +31,8 @@ function home(card = BEFORE.join('\n')) {
   const h = join(mkdtempSync(join(tmpdir(), 'egpt-0051-')), '.egpt');
   mkdirSync(join(h, 'config', 'skeletons', 'room'), { recursive: true });
   if (card !== null) writeFileSync(join(h, REL), card);
+  mkdirSync(join(h, 'config'), { recursive: true });
+  writeFileSync(join(h, 'config', 'config.yaml'), 'node_name: kg\npeer_nodes: [kg, do]\n');
   return h;
 }
 const read = (h) => readFileSync(join(h, REL), 'utf8');

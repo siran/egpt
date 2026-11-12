@@ -39,6 +39,8 @@ const KG = [
   '      command: C:\\Users\\user\\bin\\whisper.cpp\\whisper-cli.exe',
   '      model_path: C:\\Users\\user\\bin\\whisper.cpp\\models\\ggml-large-v3.bin',
   '      language: auto',
+  'node_name: kg',
+  'peer_nodes: [kg, do]',
   '',
 ].join('\r\n');
 
@@ -66,6 +68,8 @@ const DO = [
   '      token: FIXTURE-TOKEN',
   '    cli:',
   '      type: whisper-cli',
+  'node_name: do',
+  'peer_nodes: [kg, do]',
   '',
 ].join('\n');
 

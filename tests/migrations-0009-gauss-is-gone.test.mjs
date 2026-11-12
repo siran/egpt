@@ -17,6 +17,7 @@ const crlf = (lines) => lines.map((l) => `${l}\r\n`).join('');
 const KG_BEFORE = [
   '# config.yaml - kg (fixture)',
   'node_name: kg',
+  'peer_nodes: [kg, do]',
   'agents:',
   '  egpt:',
   '    configuration: sonnet-default',
@@ -56,7 +57,7 @@ const KG = crlf([...KG_BEFORE, ...GAUSS, ...KG_AFTER]);
 const KG_WITHOUT = crlf([...KG_BEFORE, ...KG_AFTER]);
 const IDENTITY = `# I am Gauss\r\n\r\n${'I look up where the prime of the day turns up in the world. '.repeat(8)}\r\n`;
 
-const DO = `node_name: do\nagents:\n  egpt:\n    configuration: haiku-low\n    handles: [ d, don ]\n    default: true\n`;
+const DO = `node_name: do\npeer_nodes: [kg, do]\nagents:\n  egpt:\n    configuration: haiku-low\n    handles: [ d, don ]\n    default: true\n`;
 
 // The heartbeat the operator runs in Reencuentro CRC - as E, which is NOT a reference to gauss.
 const CONVERSATIONS = crlf([

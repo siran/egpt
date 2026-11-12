@@ -9,7 +9,7 @@
 // LEGACY is an unmigrated node whose names carry the role: both renamed, role read from the name.
 // Nothing here touches the SCM: the PowerShell seams are injected.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plan } from '../migrations/0001-beeper-services-carry-role.mjs';
@@ -119,6 +119,8 @@ describe('0001 on an unmigrated node - the role is read from the name, no CDP po
       psFile: (file, args) => { calls.psFile.push(args); if (calls.psFile.length === 2) state.current = { map: MAP, services: [svc('egpt-beeper-primary', LEGACY.services[0].appParameters), svc('egpt-beeper-secondary', LEGACY.services[1].appParameters)] }; },
     });
     const home = mkdtempSync(join(tmpdir(), 'egpt-0001-'));
+    mkdirSync(join(home, 'config'));
+    writeFileSync(join(home, 'config', 'config.yaml'), 'node_name: zz\npeer_nodes: [zz, kg]\n');   // a peer node: the runner is for those only
     const dir = mkdtempSync(join(tmpdir(), 'egpt-0001-dir-'));
     cpSync(join(import.meta.dirname, '..', 'migrations', '0001-beeper-services-carry-role.mjs'), join(dir, '0001-beeper-services-carry-role.mjs'));
     // The copy imports nothing relative, so it loads from a temp dir as it would from the repo.
