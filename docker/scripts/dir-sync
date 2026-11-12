@@ -1,0 +1,60 @@
+#!/bin/bash
+# dir-sync — watches the folders listed in config.yaml `dir_sync.folders` and, once a
+# folder has been quiet for `quiet_seconds` after a change, runs that folder's `command`.
+# Optionally a second, slower watcher (`dir_sync.fallback_timer`) re-runs every command every
+# N minutes, for changes inotify cannot see (e.g. edits made remotely, on Google Drive).
+#
+# Config: $EGPT_CONFIG, else $EGPT_HOME/config/config.yaml, else ~/.egpt/config/config.yaml.
+# Needs: bash, inotifywait (inotify-tools), python3 with PyYAML. See config-schema.mjs `dir_sync`.
+#
+# Running on a container's HOST: set dir_sync.exec (e.g. "docker exec -u egpt ctr bash -c") so
+# commands run inside, and dir_sync.path_map {from, to} so the container paths in `path` are
+# watched where they live on the host.
+set -u
+CFG="${EGPT_CONFIG:-${EGPT_HOME:-$HOME/.egpt}/config/config.yaml}"
+
+read_cfg() { python3 - "$CFG" <<'PY'
+import sys, yaml
+d = (yaml.safe_load(open(sys.argv[1])) or {}).get('dir_sync') or {}
+t = d.get('fallback_timer') or {}
+m = d.get('path_map') or {}
+def one(s): return str(s).replace('\n', ' ').replace('|', ' ')
+print('|'.join([str(int(bool(d.get('enabled', False)))), str(int(bool(t.get('enabled', False)))),
+                str(t.get('minutes', 30)), one(d.get('exec', '')), one(m.get('from', '')), one(m.get('to', ''))]))
+for f in d.get('folders') or []:
+    print('|'.join([one(f['name']), one(f['path']), one(f['command']), str(f.get('quiet_seconds', 15))]))
+PY
+}
+
+OUT=$(read_cfg) || { echo "dir-sync: cannot read $CFG" >&2; exit 1; }
+IFS='|' read -r ENABLED TIMER MIN EXEC PFROM PTO <<<"$(head -1 <<<"$OUT")"
+mapfile -t LINES < <(tail -n +2 <<<"$OUT")
+[ "$ENABLED" = 1 ] || { echo "dir_sync.enabled is false: nothing to do"; exec sleep infinity; }
+
+hostpath() { if [ -n "$PFROM" ] && [[ "$1" == "$PFROM"* ]]; then echo "$PTO${1#"$PFROM"}"; else echo "$1"; fi; }
+run() { # run <name> <command>
+  if [ -n "$EXEC" ]; then $EXEC "$2"; else bash -c "$2"; fi || echo "$(date '+%F %T') [$1] error rc=$?"
+}
+watch_one() {
+  local n="$1" d; d=$(hostpath "$2"); local cmd="$3" q="$4"
+  [ -d "$d" ] || { echo "[$n] folder not found: $d"; return; }
+  echo "watching [$n] $d"
+  while true; do
+    read -r _ || break
+    while read -r -t "$q" _; do :; done
+    echo "$(date '+%F %T') [$n] change -> $cmd"; run "$n" "$cmd"
+  done < <(inotifywait -m -r -q -e close_write,create,delete,moved_to,moved_from \
+           --exclude '(\.conflict[0-9]*$|\.tmp$|~$|\.partial$|\.DS_Store$)' --format '%w%f' "$d")
+}
+
+trap 'kill 0' EXIT
+for l in "${LINES[@]}"; do IFS='|' read -r n d c q <<<"$l"; watch_one "$n" "$d" "$c" "$q" & done
+if [ "$TIMER" = 1 ]; then
+  echo "fallback timer every $MIN min"
+  ( while sleep "$((MIN * 60))"; do
+      for l in "${LINES[@]}"; do IFS='|' read -r n d c q <<<"$l"; echo "$(date '+%F %T') [$n] timer -> $c"; run "$n" "$c"; done
+    done ) &
+else
+  echo "fallback timer off (dir_sync.fallback_timer.enabled is false)"
+fi
+wait

@@ -452,6 +452,15 @@ networks:
 # Piper itself is NOT config: set the RADIO_PIPER env var to the piper install root on
 # this machine (must contain venv\Scripts\python.exe, or venv/bin/python off Windows, and voices\*.onnx).
 
+# --- Folder watcher (docker/scripts/dir-sync) -----------------------------
+# Runs a command when a folder changes (after quiet_seconds without changes) and, with
+# fallback_timer, every N minutes regardless. One entry per folder (one per direction for pairs).
+# dir_sync:
+#   enabled: true
+#   fallback_timer: { enabled: true, minutes: 30 }
+#   folders:
+#     - { name: drive, path: /home/me/Drive, command: /home/me/drive-sync.sh, quiet_seconds: 15 }
+
 # --- Transcript echo: who posts the ear ("listened") transcript --------------
 # The echo posts a voice note's transcript back into the chat. Among the echo-capable
 # eGPT nodes present in a room, HRW picks exactly ONE to post each note (rotates per

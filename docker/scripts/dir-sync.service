@@ -1,0 +1,13 @@
+# systemd unit for dir-sync (copy to /etc/systemd/system/). Reads config.yaml `dir_sync`.
+[Unit]
+Description=egpt: dir-sync (config.yaml dir_sync)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/dir-sync
+Environment=EGPT_CONFIG=/srv/egpt/egpt-home/config/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

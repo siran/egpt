@@ -1676,6 +1676,30 @@ export const CONFIG_SCHEMA = {
     1-element list). Prefer networks: when present.
   `,
 
+  dir_sync: `
+    Folder watcher (docker/scripts/dir-sync): runs a command when a folder
+    changes, and optionally again on a slow timer. Replaces the old dir-sync.conf.
+      DEFAULT: absent / enabled false — the script does nothing.
+
+    SHAPE
+      dir_sync:
+        enabled: true
+        fallback_timer:        # 2nd, slower watcher: runs EVERY folder's command each N min
+          enabled: true        #   (catches changes inotify cannot see, e.g. made on Google Drive)
+          minutes: 30
+        exec: ""               # optional prefix that runs a command inside a container, e.g.
+                               #   "docker exec -u egpt ctr bash -c"; empty = run locally
+        path_map: { from: /home/ubuntu, to: /srv/egpt/ubuntu-home }   # optional: watch, on the
+                               #   host, the place where a container path really lives
+        folders:
+          - name: drive          # label in the log
+            path: /abs/folder    # watched recursively
+            command: /abs/sync.sh
+            quiet_seconds: 15    # DEFAULT 15 — wait this long without changes before running
+
+    Read by the script itself, not the spine. Restart it after editing.
+  `,
+
   echo: `
     Does THIS node post the 👂 transcript echo — operator
     2026-07-09.
