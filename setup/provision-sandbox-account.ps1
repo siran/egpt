@@ -139,7 +139,7 @@ try {
   Stop-Step $step
 
   # THE ANCESTOR CHAIN, TRAVERSE ONLY (operator 2026-09-13, "nothing should be
-  # hand-applied, everything structural"). These five were applied BY HAND on
+  # hand-applied, everything structural"). The first five were applied BY HAND on
   # both nodes and existed in no script, so a rebuild from this file produced a
   # node where two live features silently did not work.
   #
@@ -149,13 +149,7 @@ try {
   # what it deliberately withholds (list-directory: a being reaches the folder it
   # was granted BY NAME and still cannot enumerate the operator's home or the
   # names of other conversations), and why it is not inherited.
-  $ancestors = [ordered]@{
-    'the operator home'   = $env:USERPROFILE
-    'the eGPT state dir'  = Join-Path $env:USERPROFILE '.egpt'
-    'the conversations'   = Join-Path $env:USERPROFILE '.egpt\conversations'
-    'the whatsapp chats'  = Join-Path $env:USERPROFILE '.egpt\conversations\whatsapp'
-    'the operator source' = Join-Path $env:USERPROFILE 'src'
-  }
+  $ancestors = Get-SandboxAncestorDirs
   $step = Start-Step "traverse-only grants on the $($ancestors.Count) ancestor directories above the conversation folders" `
     'A node provisioned before 2026-09-27 has these WITHOUT S, and this run rewrites each such one once. A DACL write on a container re-propagates inheritance over its whole subtree, so ~ (the whole profile) and ~\src can take minutes. Not hung. A converged node writes nothing and says "already granted".'
   Stop-Step $step (Grant-PoolOn -Targets $ancestors -Grant 'Traverse')

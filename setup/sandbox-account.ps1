@@ -965,6 +965,31 @@ function Protect-SandboxSecretFile {
   }
 }
 
+# THE TRAVERSE-ONLY ANCESTORS above every conversation folder, label -> path, for
+# provision-sandbox-account.ps1. Every surface folder under .egpt\conversations
+# is ENUMERATED (not listed), so a new surface cannot silently break Claude
+# Code's Read/Edit/Write: its per-component lstat fails without S on every
+# ancestor. archive folders are skipped. Absent paths are kept; Grant-PoolOn
+# skips them. -ProfileDir exists for tests.
+function Get-SandboxAncestorDirs {
+  param([string]$ProfileDir = $env:USERPROFILE)
+  $egpt = Join-Path $ProfileDir '.egpt'
+  $conv = Join-Path $egpt 'conversations'
+  $dirs = [ordered]@{
+    'the operator home'   = $ProfileDir
+    'the eGPT state dir'  = $egpt
+    'the conversations'   = $conv
+    'the rooms'           = Join-Path $egpt 'rooms'
+    'the operator source' = Join-Path $ProfileDir 'src'
+  }
+  if (Test-Path -LiteralPath $conv) {
+    foreach ($d in @(Get-ChildItem -LiteralPath $conv -Directory | Where-Object { $_.Name -notin @('archive', '_archive') } | Sort-Object Name)) {
+      $dirs["the $($d.Name) conversations"] = $d.FullName
+    }
+  }
+  return $dirs
+}
+
 # THE FOLDERS THE CARVE AND THE STANDING READ GRANT ARE FOR: this node's
 # config.yaml global_read_paths (operator 2026-09-28: "please frame this in
 # config.yaml as global_read_paths list"), for provision-sandbox-account.ps1.

@@ -3252,3 +3252,44 @@ Describe 'the pin lifecycle (Test-SandboxPinAllows, Sync-SandboxPin, Remove-Sand
     (Remove-SandboxPin -Key 'egpt:whatsapp:nobody' -PinsDir $d.Pins -LocksDir $d.Locks).Status | Should Be 'absent'
   }
 }
+
+# THE ANCESTOR SET (2026-11-12): kg's room being (~\.egpt\rooms\acim) and any
+# non-whatsapp surface lacked a Traverse ACE, so Claude Code's file tools
+# refused every path under them. Throwaway profile dir, no live ACL.
+Describe 'Get-SandboxAncestorDirs' {
+  function New-FakeProfile([string[]]$Make) {
+    $p = New-LedgerTempDir
+    foreach ($m in $Make) { New-Item -ItemType Directory -Force -Path (Join-Path $p $m) | Out-Null }
+    return $p
+  }
+
+  It 'holds home, .egpt, conversations, rooms and src, plus every surface folder' {
+    $p = New-FakeProfile @('.egpt\conversations\whatsapp', '.egpt\conversations\telegram', '.egpt\conversations\matrix', '.egpt\conversations\shell', '.egpt\rooms', 'src')
+    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
+    foreach ($rel in @('', '.egpt', '.egpt\conversations', '.egpt\rooms', 'src', '.egpt\conversations\whatsapp', '.egpt\conversations\telegram', '.egpt\conversations\matrix', '.egpt\conversations\shell')) {
+      ($v -contains (Join-Path $p $rel).TrimEnd('\')) | Should Be $true
+    }
+  }
+
+  It 'picks up a surface folder nobody listed, and leaves archive folders out' {
+    $p = New-FakeProfile @('.egpt\conversations\whatsapp', '.egpt\conversations\signal', '.egpt\conversations\archive', '.egpt\conversations\_archive')
+    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
+    ($v -contains (Join-Path $p '.egpt\conversations\signal')) | Should Be $true
+    ($v -contains (Join-Path $p '.egpt\conversations\archive')) | Should Be $false
+    ($v -contains (Join-Path $p '.egpt\conversations\_archive')) | Should Be $false
+  }
+
+  It 'does not invent surfaces a node does not have' {
+    $p = New-FakeProfile @('.egpt\conversations\whatsapp')
+    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
+    ($v -contains (Join-Path $p '.egpt\conversations\telegram')) | Should Be $false
+  }
+
+  It 'does not throw on a profile with no .egpt, and the absent entries are skipped by Grant-PoolOn' {
+    $p = New-FakeProfile @()
+    { Get-SandboxAncestorDirs -ProfileDir $p } | Should Not Throw
+    $stmt = Get-ProvisionStatement 'Grant-PoolOn -Targets \$ancestors -Grant ''Traverse'''
+    $stmt | Should Match 'Grant-PoolOn'
+    (Get-ProvisionStatement '\$ancestors = Get-SandboxAncestorDirs') | Should Match 'Get-SandboxAncestorDirs'
+  }
+}
