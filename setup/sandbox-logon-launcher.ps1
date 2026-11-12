@@ -34,7 +34,9 @@
 #      any were passed: Modify for a -SharePath entry, ReadAndExecute for a
 #      -SharePathReadOnly one, because a path a being declared read-only must be
 #      read-only to the KERNEL and not only to Claude Code's own deny rules.
-#      Still never broader: each is one named path.
+#      Still never broader: each is one named path. The folders ABOVE them, up
+#      to the operator profile, get the pool group's traverse-only ACE (d3):
+#      walk through, never list or read.
 #      THE DACL IS THEN READ BACK (see Assert-SandboxPathReachable): icacls
 #      can exit 0 and write no ACE at all, and a grant nobody read back is a
 #      promise, not a fact. A TargetFolder the leased SID cannot reach ends the
@@ -2134,6 +2136,15 @@ try {
         Log "WARNING: could not grant $shareGrant to $leasedLabel on shared path $sp  - $($_.Exception.Message) (continuing: the other share paths and the launch are unaffected)"
       }
     }
+  }
+
+  # ---- (d3) TRAVERSE ON EVERY FOLDER ABOVE THIS TURN'S LEAVES, up to the
+  # operator profile, for the pool group (Grant-SandboxTraverseChain). The
+  # leaves are what the being's config declares, so a new conversation or
+  # allowed_path needs no re-provisioning. Converged: Get-Acl only. Not fatal:
+  # without it Claude Code's file tools refuse the path, the shell does not.
+  foreach ($rec in @(Grant-SandboxTraverseChain -Paths (@($TargetFolder) + @($SharePathList) + @($SharePathReadOnlyList) + @($PinSharePathList) + @($PinSharePathReadOnlyList)))) {
+    if ($rec.Status -eq 'failed') { Log "WARNING: could not grant Traverse to $SandboxPoolGroup on $($rec.Path)  - $($rec.Message) (Claude Code's file tools will refuse paths under it)" }
   }
 
   # ---- (e) give this turn its own desktop and the window-station access to

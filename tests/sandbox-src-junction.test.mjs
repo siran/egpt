@@ -231,9 +231,12 @@ describe('the OTHER half: a standing read grant on the junction target', () => {
     // must not have is an icacls INVOCATION of its own.)
     expect(p).not.toMatch(/&\s*icacls/);
     // ~\src keeps its TRAVERSE ace (walk through, do not list) — that is what still lets the
-    // pool reach the checkout by name without enumerating what else is in there.
-    expect(p).toMatch(/\$ancestors = Get-SandboxAncestorDirs/);
-    expect(accountLib()).toMatch(/'the operator source' = Join-Path \$ProfileDir 'src'/);
+    // pool reach the checkout by name without enumerating what else is in there. Since
+    // 2026-11-12 it is a folder above the checkout, so the chain over the provisioner's own
+    // standing leaves grants it.
+    expect(p).toMatch(/\$traverseLeaves = @\(Join-Path \$env:USERPROFILE 'src\\egpt'\)/);
+    expect(p).toMatch(/Grant-SandboxTraverseChain -Paths \$traverseLeaves/);
+    expect(accountLib()).not.toMatch(/function Get-SandboxAncestorDirs/);
     // ...AND THE RETIREMENT HAS TO PUT IT BACK (2026-09-23, second pass). `/remove:g` takes off
     // EVERY explicit ACE for the named principal on that object — it cannot remove one of two —
     // so the revoke above also removed the traverse ACE the ancestor step had just granted,

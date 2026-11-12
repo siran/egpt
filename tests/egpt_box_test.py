@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 loader = importlib.machinery.SourceFileLoader('egpt_box', os.path.join(HERE, '..', 'docker', 'egpt-box'))
@@ -105,6 +106,40 @@ class Registry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             with self.assertRaisesRegex(box.Refused, 'does not exist'):
                 box.box_uid_for('/x/a', home)
+
+
+class NoMounts:
+    def mount(self, *args):
+        return 0
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'the box is Linux-only')
+class View(unittest.TestCase):
+    def test_every_folder_above_a_granted_one_is_searchable_by_the_box_whatever_the_umask(self):
+        # The Windows traverse gap (kg 2026-11-12) has no Linux twin: the box never walks the real
+        # 0700 home, only the folders build_view makes above each granted one. Those must be searchable.
+        granted = os.path.realpath(HERE)
+        fd = os.open(granted, os.O_PATH | os.O_CLOEXEC)
+        user = box.box_user(box.UID_BASE)
+        plan = {'binds': [(granted, fd, False)], 'uid': box.UID_BASE, 'user': user, 'home': f'/home/{user}',
+                'invoker': os.getuid(), 'invoker_name': 'egpt', 'invoker_home': HOME, 'links': []}
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(root + '/etc')
+            for f in ('passwd', 'group'):
+                open(f'{root}/etc/{f}', 'w').close()
+            old = os.umask(0o077)
+            try:
+                with mock.patch.object(box.os, 'chown'), mock.patch.object(box.os, 'lchown'):
+                    box.build_view(NoMounts(), root, plan)
+            finally:
+                os.umask(old)
+                os.close(fd)
+            d = os.path.dirname(root + granted)
+            while d != root:
+                self.assertEqual(os.stat(d).st_mode & 0o005, 0o005, d)
+                d = os.path.dirname(d)
+            self.assertEqual(os.stat(root + '/home').st_mode & 0o005, 0o005)
+            self.assertEqual(os.stat(root + '/run/egpt-box/passwd').st_mode & 0o004, 0o004)
 
 
 if __name__ == '__main__':

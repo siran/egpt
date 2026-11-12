@@ -112,9 +112,11 @@ does:
    `C:\ProgramData\egpt`.
 2. `Ensure-SandboxPoolGroup` — creates `egpt-sandbox-pool` and puts all of them
    in it. One group means one grant instead of sixteen.
-3. `Grant-SandboxPoolAce -Grant 'Traverse'` on the **ancestor chain** — `~`,
-   `~\.egpt`, `~\.egpt\conversations`, `~\.egpt\conversations\whatsapp` and
-   `~\src`, each skipped if absent. Traverse only. See *The ACL model*.
+3. Traverse on `~` and, through `Grant-SandboxTraverseChain`, on every folder
+   above `~\src\egpt` and each `global_read_paths` folder. The folders above a
+   conversation folder or share path are the **launcher's**, per turn (its
+   step d3), from the paths the config declares. Traverse only, check-first.
+   See *The ACL model*.
 4. **The `.env` carve-out** under each `global_read_paths` folder (operator
    2026-09-28: the operator's repositories go to every boxed being as `repos`,
    read-only — *"EXCEPT secrets"* — then *"please frame this in config.yaml as
@@ -204,11 +206,9 @@ Access is therefore **opt-in and narrow**, and the whole list is:
 
 | Path | Grant | Why |
 |---|---|---|
-| `~` | Pool group, **traverse only** — `(RC,S,X,RA)`, not inherited | the ancestor chain above a conversation folder; see below |
-| `~\.egpt` | Pool group, traverse only | same chain |
-| `~\.egpt\conversations` | Pool group, traverse only | same chain |
-| `~\.egpt\conversations\whatsapp` | Pool group, traverse only | same chain |
-| `~\src` | Pool group, traverse only | same chain; skipped where absent |
+| `~` | Pool group, **traverse only** — `(RC,S,X,RA)`, not inherited | the end of every traverse chain; see below |
+| each folder between `~` and a granted path (`~\.egpt`, `~\.egpt\rooms`, `~\.egpt-jsonl`, a surface folder, the parent of an `allowed_paths` entry, …) | Pool group, traverse only | the chain above it, granted by the launcher on the turn that first needs it, check-first; standing, never revoked. Nothing outside `~`. Skipped where the group can already read the folder. |
+| `~\src` | Pool group, traverse only | the chain above `~\src\egpt`, granted by the provisioner; skipped where absent |
 | `~\src\egpt` | Pool group, **ReadAndExecute**, inherited | the editable eGPT checkout, read-only, **standing**. Every pool profile carries a `src` directory junction pointing here (planted by the launcher's scrub pass, from `Get-SandboxProfileJunctionStatement`), and a junction is only a name: what may be done through it is decided by the DACL of the target. Permanent, not per-turn — it cannot be per-turn, because a DACL write on this tree re-propagates inheritance through `node_modules` (the parent `~\src` measured 307 s for one pass). **It used to be `~\src`, all of it**, and that was retired on 2026-09-23 (operator: *"dismiss mounting ~/src always, that was a faux-pas"*, and *"in the same way that the conversation directory is mounted in the sandbox account, the src/egpt can also be mounted as src/"*). The provisioner **removes** that old grant as its own step — narrowing the junction while leaving the wide inherited ACE would have been cosmetic. `my-code` went with it: it pointed at the very target `src` now points at. |
 | each `global_read_paths` folder in config.yaml (kg: `~\src\siran`) | Pool group, **ReadAndExecute**, inherited | folders every boxed being may read, read-only, **standing** — operator 2026-09-28: *"sandboxed beings should have access to my 'C:\Users\user\src\siran', we can call it repos/"*, then *"please frame this in config.yaml as global_read_paths list"*. A list of `- <mount name>: <path>`; kg's is `- repos: C:/Users/user/src/siran`, the operator's repositories (migration 0034 writes it where that folder exists; do has none). Every pool profile carries a junction of that name pointing here, planted only once this grant is on it. Standing for `~\src\egpt`'s reason, with the same cost stated: all sixteen accounts can read all of it, at all times — **except its `.env` files** (next row). kg's is 68,320 items on reve, so a first run pays one inheritance pass over them. Skipped where absent. Taking an entry out of config.yaml stops the mount, not the grant: that is `icacls <path> /remove:g egpt-sandbox-pool` by hand. |
 | each `.env` / `.env.*` under a `global_read_paths` folder | **no pool ACE**, DACL protected | the ruling's one exception, *"EXCEPT secrets"*. Inheritance off with every inherited ACE copied to an explicit one (so the operator, SYSTEM, Administrators keep exactly what they had), then the pool group and each `egpt-sbx-NN` removed — the accounts too, because `/inheritance:d` would otherwise freeze a lease share's inherited ACE into a permanent one on the file. Two on reve when this was written: `preferredframe\.env` and `writing\.env`. **A broad read is refused, not carved:** a `.env` that `Everyone`, `Authenticated Users` or `BUILTIN\Users` can read is readable by every pool account whatever the pool's own ACEs say, and `/inheritance:d` would freeze that broad ACE onto the file for good — so such a file is reported `failed`, by SID, with **nothing written**, and the provisioner stops before granting the tree. On reve that is `writing\.env`: 174 directories under `~\src\siran\writing` carry an explicit `Everyone:(OI)(CI)(M)` (read 2026-09-28), which is not the sandbox's ACE to remove — and which would also make `repos/writing` **writable** by every boxed being. **Limits:** a `.env` **created later** inherits the pool's read until the provisioner runs again; a `.env` **moved in** from elsewhere on the same volume keeps its old DACL until then; names only (`.envrc`, key files, a token in `.git\config` are not touched); other token groups (`INTERACTIVE`, `LOCAL`) are not checked. A being whose `allowed_paths` names a `.env` *explicitly* still gets its per-lease ACE for its turns: that is the operator's own share. |

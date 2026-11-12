@@ -23,8 +23,10 @@
 # icacls-not-Set-Acl reason.
 #
 # WHAT IS GRANTED TO WHOM  - the model, which is not what changed:
-#   traverse-only (RC,S,X,RA), NOT inheritable, to the pool GROUP on each ancestor
-#     directory above the conversation folders. The S is load-bearing (measured
+#   traverse-only (RC,S,X,RA), NOT inheritable, to the pool GROUP on ~ and each
+#     folder above ~\src\egpt and the global_read_paths folders; the folders
+#     above each conversation folder and share path are the launcher's, per
+#     turn (Grant-SandboxTraverseChain, both). The S is load-bearing (measured
 #     on do 2026-09-27): the grant was (X,RA,RC) until then, and a boxed
 #     `node ~\src\egpt\src\tools\ask-spine.mjs` died EPERM on `lstat
 #     C:\Users\user\src` - Node realpaths every component, opening a directory to
@@ -149,10 +151,23 @@ try {
   # what it deliberately withholds (list-directory: a being reaches the folder it
   # was granted BY NAME and still cannot enumerate the operator's home or the
   # names of other conversations), and why it is not inherited.
-  $ancestors = Get-SandboxAncestorDirs
-  $step = Start-Step "traverse-only grants on the $($ancestors.Count) ancestor directories above the conversation folders" `
+  #
+  # SINCE 2026-11-12 THE LAUNCHER GRANTS THE CHAIN ABOVE EACH OF ITS OWN LEAVES,
+  # per turn, from the paths the being's config declares (Grant-SandboxTraverseChain).
+  # This step keeps what no turn grants: the folders above this script's own
+  # standing leaves (the src junction's checkout, each global_read_paths folder),
+  # and ~ itself - the end of every chain and the one write that re-propagates
+  # over the whole profile, so it is paid here, never on a turn.
+  $traverseLeaves = @(Join-Path $env:USERPROFILE 'src\egpt') + @($readPaths.mounts | ForEach-Object { $_.path })
+  $step = Start-Step "traverse-only grants on ~ and on every folder above ~\src\egpt and the $(@($readPaths.mounts).Count) global_read_paths folder(s)" `
     'A node provisioned before 2026-09-27 has these WITHOUT S, and this run rewrites each such one once. A DACL write on a container re-propagates inheritance over its whole subtree, so ~ (the whole profile) and ~\src can take minutes. Not hung. A converged node writes nothing and says "already granted".'
-  Stop-Step $step (Grant-PoolOn -Targets $ancestors -Grant 'Traverse')
+  $homeTally = Grant-PoolOn -Targets ([ordered]@{ 'the operator home' = $env:USERPROFILE }) -Grant 'Traverse'
+  $chain = @(Grant-SandboxTraverseChain -Paths $traverseLeaves)
+  foreach ($rec in $chain) { Write-Host "         $($rec.Path): $($rec.Status)$(if ($rec.Message) { "  - $($rec.Message)" })" }
+  if (@($chain | Where-Object { $_.Status -eq 'failed' }).Count -gt 0) {
+    throw "traverse could not be granted on every folder above the standing read grants  - see the line(s) above"
+  }
+  Stop-Step $step "~: $homeTally; above the read grants: $(@($chain | Where-Object { $_.Status -eq 'granted' }).Count) written, $(@($chain | Where-Object { $_.Status -ne 'granted' }).Count) already walkable"
 
   # ---- THE .env CARVE-OUT, BEFORE THE GRANT IT IS THE EXCEPTION TO (operator
   # ruling 2026-09-28: sandboxed beings get the operator's ~\src\siran as `repos`,
@@ -433,7 +448,7 @@ try {
   $aceCount = @($reclaimed | ForEach-Object { $_.Aces } | Where-Object { $_.Status -eq 'revoked' }).Count
   Stop-Step $step "$(@($reclaimed | Where-Object { $_.Status -eq 'reclaimed' }).Count) lock(s) released, $aceCount leaked ACE(s) revoked, $heldCount lease(s) left alone because a turn still holds them"
 
-  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on the ancestor chain above the conversation folders (including {4}, walk-through and NOT read), ReadAndExecute on the CLI tool dirs and on {5} (the standing read-only view every pool profile's src junction points at), on each of the {7} global_read_paths folder(s) that exists (every .env in it carved out), and Modify on pi's config dir. Credential dir {6} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $repoDir, $CredDir, @($readPaths.mounts).Count)
+  Write-Host ("OK: sandbox pool ready in {0:n1}s  - created {1}, already existed {2}. Group '{3}' holds traverse-only on ~ and the folders above its standing read grants (including {4}, walk-through and NOT read; the launcher grants the chain above each conversation folder per turn), ReadAndExecute on the CLI tool dirs and on {5} (the standing read-only view every pool profile's src junction points at), on each of the {7} global_read_paths folder(s) that exists (every .env in it carved out), and Modify on pi's config dir. Credential dir {6} hardened (no BUILTIN\Users access)." -f $runWatch.Elapsed.TotalSeconds, $pool.Created, $pool.Existed, $SandboxPoolGroup, $srcDir, $repoDir, $CredDir, @($readPaths.mounts).Count)
 } catch {
   Write-Host ("FAILED after {0:n1}s at step {1}/{2}: {3}" -f $runWatch.Elapsed.TotalSeconds, $script:StepIndex, $StepCount, $_.Exception.Message)
   exit 1

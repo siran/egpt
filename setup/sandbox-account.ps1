@@ -528,7 +528,8 @@ function Grant-SandboxPoolAce {
 function Test-SandboxPoolReadCovered {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][System.Security.Principal.SecurityIdentifier]$LeasedSid
+    # Optional: Grant-SandboxTraverseChain asks for the group alone.
+    [System.Security.Principal.SecurityIdentifier]$LeasedSid
   )
   try {
     $groupSid = (New-Object System.Security.Principal.NTAccount($SandboxPoolGroup)).Translate([System.Security.Principal.SecurityIdentifier])
@@ -538,7 +539,7 @@ function Test-SandboxPoolReadCovered {
     $rules = @((Get-Acl -LiteralPath $Path -ErrorAction Stop).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
     foreach ($rule in $rules) {
       if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
-      if ($rule.IdentityReference.Value -eq $groupSid.Value -or $rule.IdentityReference.Value -eq $LeasedSid.Value) { return $false }
+      if ($rule.IdentityReference.Value -eq $groupSid.Value -or ($LeasedSid -and $rule.IdentityReference.Value -eq $LeasedSid.Value)) { return $false }
     }
     $readAndExecute = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
     foreach ($rule in $rules) {
@@ -965,29 +966,63 @@ function Protect-SandboxSecretFile {
   }
 }
 
-# THE TRAVERSE-ONLY ANCESTORS above every conversation folder, label -> path, for
-# provision-sandbox-account.ps1. Every surface folder under .egpt\conversations
-# is ENUMERATED (not listed), so a new surface cannot silently break Claude
-# Code's Read/Edit/Write: its per-component lstat fails without S on every
-# ancestor. archive folders are skipped. Absent paths are kept; Grant-PoolOn
-# skips them. -ProfileDir exists for tests.
-function Get-SandboxAncestorDirs {
-  param([string]$ProfileDir = $env:USERPROFILE)
-  $egpt = Join-Path $ProfileDir '.egpt'
-  $conv = Join-Path $egpt 'conversations'
-  $dirs = [ordered]@{
-    'the operator home'   = $ProfileDir
-    'the eGPT state dir'  = $egpt
-    'the conversations'   = $conv
-    'the rooms'           = Join-Path $egpt 'rooms'
-    'the operator source' = Join-Path $ProfileDir 'src'
+# THE TRAVERSE CHAIN OF ONE GRANTED PATH: every folder from its parent up to and
+# including the operator profile, nearest first (operator 2026-11-12: the folders
+# a being sees are the ones its config declares, and the sandbox permissions
+# follow from them). NOTHING OUTSIDE THE PROFILE: C:\Users and other drives
+# already let BUILTIN\Users (every pool account) walk them, and a DACL write on
+# a drive root re-propagates over the volume, if the unelevated launcher may
+# write it at all.
+function Get-SandboxTraverseChain {
+  param([Parameter(Mandatory = $true)][string]$Path, [string]$ProfileDir = $env:USERPROFILE)
+  $root = [System.IO.Path]::GetFullPath($ProfileDir).TrimEnd('\')
+  $dir = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+  if (-not $dir.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase)) { return }
+  while ($dir.Length -gt $root.Length) {
+    $dir = [System.IO.Path]::GetDirectoryName($dir)
+    $dir
   }
-  if (Test-Path -LiteralPath $conv) {
-    foreach ($d in @(Get-ChildItem -LiteralPath $conv -Directory | Where-Object { $_.Name -notin @('archive', '_archive') } | Sort-Object Name)) {
-      $dirs["the $($d.Name) conversations"] = $d.FullName
+}
+
+# TRAVERSE FOR THE POOL GROUP ON EVERY ANCESTOR OF THESE LEAVES, standing, never
+# revoked. Claude Code's Read/Edit/Write lstat each component and refuse a path
+# with an ancestor the box cannot open (kg 2026-11-12: room/acim under an
+# ungranted .egpt\rooms); the shell never asks. The launcher passes the leaves it
+# grants each turn, the provisioner its standing ones.
+# CHECK-FIRST: an ancestor already carrying the traverse ACE, or a group read
+# grant explicit or inherited (~\src\egpt and below), is only read. A write is
+# one icacls pass that re-propagates over the folder's subtree even though
+# Traverse is not inheritable (~0.1 ms per item, measured 2026-11-12), once.
+# A leaf inside another leaf adds nothing: the outer one's (OI)(CI) ACE covers it.
+# Never throws. One record per ancestor: { Path; Status = already granted |
+# covered | granted | failed; Message }.
+function Grant-SandboxTraverseChain {
+  param([string[]]$Paths, [string]$ProfileDir = $env:USERPROFILE)
+  $leaves = New-Object System.Collections.Generic.List[string]
+  foreach ($p in @($Paths)) {
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    try {
+      if (Test-Path -LiteralPath $p.Trim()) { $leaves.Add([System.IO.Path]::GetFullPath($p.Trim()).TrimEnd('\')) }
+    } catch { }
+  }
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+  $groupSid = $null
+  foreach ($leaf in $leaves) {
+    if (@($leaves | Where-Object { $leaf.StartsWith("$_\", [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { continue }
+    foreach ($dir in @(Get-SandboxTraverseChain -Path $leaf -ProfileDir $ProfileDir)) {
+      if (-not $seen.Add($dir)) { continue }
+      $rec = [pscustomobject]@{ Path = $dir; Status = 'failed'; Message = '' }
+      try {
+        if (-not $groupSid) { $groupSid = Get-SandboxPoolGroupSid }
+        if (Test-SandboxPoolAcePresent -Path $dir -Grant 'Traverse' -Sid $groupSid) { $rec.Status = 'already granted' }
+        elseif (Test-SandboxPoolReadCovered -Path $dir) { $rec.Status = 'covered' }
+        else { $rec.Status = Grant-SandboxPoolAce -Path $dir -Grant 'Traverse' -Sid $groupSid -Principal $SandboxPoolGroup }
+      } catch {
+        $rec.Message = $_.Exception.Message
+      }
+      $rec
     }
   }
-  return $dirs
 }
 
 # THE FOLDERS THE CARVE AND THE STANDING READ GRANT ARE FOR: this node's

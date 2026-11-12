@@ -3253,43 +3253,132 @@ Describe 'the pin lifecycle (Test-SandboxPinAllows, Sync-SandboxPin, Remove-Sand
   }
 }
 
-# THE ANCESTOR SET (2026-11-12): kg's room being (~\.egpt\rooms\acim) and any
-# non-whatsapp surface lacked a Traverse ACE, so Claude Code's file tools
-# refused every path under them. Throwaway profile dir, no live ACL.
-Describe 'Get-SandboxAncestorDirs' {
+# THE TRAVERSE CHAIN FOLLOWS THE DECLARED PATHS (2026-11-12). kg's room being
+# (~\.egpt\rooms\acim) and every non-whatsapp surface had no Traverse ACE on a
+# folder above them, so Claude Code's file tools refused every path under them.
+# The chain now comes from the leaves each turn grants. BUILTIN\Guests stands in
+# for the pool group: nothing under $env:TEMP inherits an Allow for it, so every
+# ACE seen here was written here. Throwaway profile dirs, no live ACL.
+Describe 'the traverse chain follows the declared paths (Get-/Grant-SandboxTraverseChain)' {
+  $guests = (New-Object System.Security.Principal.NTAccount('BUILTIN\Guests')).Translate([System.Security.Principal.SecurityIdentifier])
   function New-FakeProfile([string[]]$Make) {
     $p = New-LedgerTempDir
     foreach ($m in $Make) { New-Item -ItemType Directory -Force -Path (Join-Path $p $m) | Out-Null }
     return $p
   }
-
-  It 'holds home, .egpt, conversations, rooms and src, plus every surface folder' {
-    $p = New-FakeProfile @('.egpt\conversations\whatsapp', '.egpt\conversations\telegram', '.egpt\conversations\matrix', '.egpt\conversations\shell', '.egpt\rooms', 'src')
-    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
-    foreach ($rel in @('', '.egpt', '.egpt\conversations', '.egpt\rooms', 'src', '.egpt\conversations\whatsapp', '.egpt\conversations\telegram', '.egpt\conversations\matrix', '.egpt\conversations\shell')) {
-      ($v -contains (Join-Path $p $rel).TrimEnd('\')) | Should Be $true
+  function Test-GuestsTraverse([string]$Path) {
+    return (@((Get-Acl -LiteralPath $Path).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
+          $_.IdentityReference.Value -eq $guests.Value -and [int]$_.FileSystemRights -eq $script:TraverseRights -and $_.InheritanceFlags.ToString() -eq 'None'
+        }).Count -eq 1)
+  }
+  # The launcher's own step (d3), extracted and run with the fake profile as ~.
+  function Invoke-LauncherTraverseStep([string]$ProfileDir) {
+    function Log([string]$msg) { }
+    $saved = $env:USERPROFILE
+    try {
+      $env:USERPROFILE = $ProfileDir
+      Invoke-Expression (Get-LauncherStatementBlock '^\s*foreach \(\$rec in @\(Grant-SandboxTraverseChain ')
+    } finally {
+      $env:USERPROFILE = $saved
     }
   }
 
-  It 'picks up a surface folder nobody listed, and leaves archive folders out' {
-    $p = New-FakeProfile @('.egpt\conversations\whatsapp', '.egpt\conversations\signal', '.egpt\conversations\archive', '.egpt\conversations\_archive')
-    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
-    ($v -contains (Join-Path $p '.egpt\conversations\signal')) | Should Be $true
-    ($v -contains (Join-Path $p '.egpt\conversations\archive')) | Should Be $false
-    ($v -contains (Join-Path $p '.egpt\conversations\_archive')) | Should Be $false
+  BeforeEach {
+    $script:TraverseSavedGroup = $SandboxPoolGroup
+    $script:SandboxPoolGroup = 'BUILTIN\Guests'
   }
 
-  It 'does not invent surfaces a node does not have' {
-    $p = New-FakeProfile @('.egpt\conversations\whatsapp')
-    $v = @((Get-SandboxAncestorDirs -ProfileDir $p).Values)
-    ($v -contains (Join-Path $p '.egpt\conversations\telegram')) | Should Be $false
+  AfterEach {
+    $script:SandboxPoolGroup = $script:TraverseSavedGroup
+    $script:IcaclsSpy = $null
   }
 
-  It 'does not throw on a profile with no .egpt, and the absent entries are skipped by Grant-PoolOn' {
+  It 'REPRODUCE (kg 2026-11-12): one turn walks every folder above its room and its allowed_paths, up to ~ and no further' {
+    $p = New-FakeProfile @('.egpt\rooms\acim', '.egpt-jsonl\t1', 'notes\shared')
+    $TargetFolder = Join-Path $p '.egpt\rooms\acim'
+    $SharePathList = @(Join-Path $p '.egpt-jsonl\t1')
+    $SharePathReadOnlyList = @((Join-Path $p 'notes\shared') -replace '\\', '/')
+    $PinSharePathList = @()
+    $PinSharePathReadOnlyList = @()
+
+    Invoke-LauncherTraverseStep $p
+
+    foreach ($rel in @('.egpt\rooms', '.egpt', '.egpt-jsonl', 'notes')) {
+      (Test-GuestsTraverse (Join-Path $p $rel)) | Should Be $true
+    }
+    (Test-GuestsTraverse $p) | Should Be $true
+    foreach ($leaf in @('.egpt\rooms\acim', '.egpt-jsonl\t1', 'notes\shared')) {
+      (Test-GuestsTraverse (Join-Path $p $leaf)) | Should Be $false
+    }
+    (Test-GuestsTraverse (Split-Path -Parent $p)) | Should Be $false
+  }
+
+  It 'converged, a turn only reads: the second one writes nothing' {
+    $p = New-FakeProfile @('.egpt\conversations\telegram\si-contoso')
+    $TargetFolder = Join-Path $p '.egpt\conversations\telegram\si-contoso'
+    $SharePathList = @(); $SharePathReadOnlyList = @(); $PinSharePathList = @(); $PinSharePathReadOnlyList = @()
+    Invoke-LauncherTraverseStep $p
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    Invoke-LauncherTraverseStep $p
+
+    $script:IcaclsSpy.Count | Should Be 0
+    $recs = @(Grant-SandboxTraverseChain -Paths @($TargetFolder) -ProfileDir $p)
+    $recs.Count | Should Be 4
+    (@($recs | Where-Object { $_.Status -ne 'already granted' }).Count) | Should Be 0
+  }
+
+  It 'a folder the group can already read (~\src\egpt, explicit or inherited) is covered, not written' {
+    $p = New-FakeProfile @('src\egpt\docs\notes')
+    Grant-SandboxPoolAce -Path (Join-Path $p 'src\egpt') -Grant 'Read' | Out-Null
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Grant-SandboxTraverseChain -Paths @(Join-Path $p 'src\egpt\docs\notes') -ProfileDir $p)
+
+    (@($recs | ForEach-Object { "$(Split-Path -Leaf $_.Path)=$($_.Status)" }) -join ',') | Should Be "docs=covered,egpt=covered,src=granted,$(Split-Path -Leaf $p)=granted"
+    (@($script:IcaclsSpy | ForEach-Object { $_[0] }) -join ',') | Should Be "$(Join-Path $p 'src'),$p"
+  }
+
+  It 'a leaf inside another leaf adds nothing - the outer grant covers the way down' {
+    $p = New-FakeProfile @('.egpt\conversations\whatsapp\x\desktop\sub')
+    $script:IcaclsSpy = New-Object System.Collections.Generic.List[object]
+
+    $recs = @(Grant-SandboxTraverseChain -Paths @((Join-Path $p '.egpt\conversations\whatsapp\x\desktop\sub'), (Join-Path $p '.egpt\conversations\whatsapp\x')) -ProfileDir $p)
+
+    (@($recs | ForEach-Object { $_.Path }) -join ',') | Should Be ((@('.egpt\conversations\whatsapp', '.egpt\conversations', '.egpt') | ForEach-Object { Join-Path $p $_ }) + @($p) -join ',')
+  }
+
+  It 'the chain stops at the profile, and is empty outside it' {
     $p = New-FakeProfile @()
-    { Get-SandboxAncestorDirs -ProfileDir $p } | Should Not Throw
-    $stmt = Get-ProvisionStatement 'Grant-PoolOn -Targets \$ancestors -Grant ''Traverse'''
-    $stmt | Should Match 'Grant-PoolOn'
-    (Get-ProvisionStatement '\$ancestors = Get-SandboxAncestorDirs') | Should Match 'Get-SandboxAncestorDirs'
+    (@(Get-SandboxTraverseChain -Path "$p/.egpt/rooms/acim/" -ProfileDir $p) -join ',') | Should Be ((@('.egpt\rooms', '.egpt') | ForEach-Object { Join-Path $p $_ }) + @($p) -join ',')
+    @(Get-SandboxTraverseChain -Path $p -ProfileDir $p).Count | Should Be 0
+    @(Get-SandboxTraverseChain -Path "$p-other\x" -ProfileDir $p).Count | Should Be 0
+    @(Get-SandboxTraverseChain -Path 'D:\shares\team' -ProfileDir $p).Count | Should Be 0
+  }
+
+  It 'missing and blank leaves are skipped, and a failure is a record, never a throw' {
+    $p = New-FakeProfile @('a\b')
+    @(Grant-SandboxTraverseChain -Paths @('', $null, (Join-Path $p 'no-such\x')) -ProfileDir $p).Count | Should Be 0
+    $script:SandboxPoolGroup = 'egpt-no-such-group-zzz'
+    $recs = @(Grant-SandboxTraverseChain -Paths @(Join-Path $p 'a\b') -ProfileDir $p)
+    (@($recs | Where-Object { $_.Status -eq 'failed' -and $_.Message }).Count) | Should Be 2
+  }
+
+  It 'the provisioner walks the chain above its own standing leaves, plus ~ - no guessed folder list' {
+    (Get-Command Get-SandboxAncestorDirs -ErrorAction SilentlyContinue) | Should BeNullOrEmpty
+    $p = New-FakeProfile @('src\egpt', 'Documents\shared\notes')
+    $readPaths = [pscustomobject]@{ mounts = @([pscustomobject]@{ name = 'notes'; path = (Join-Path $p 'Documents\shared\notes') -replace '\\', '/' }) }
+    $saved = $env:USERPROFILE
+    try {
+      $env:USERPROFILE = $p
+      Invoke-Expression (Get-ProvisionStatement '^\s*\$traverseLeaves = ')
+      Invoke-Expression (Get-ProvisionStatement '^\s*\$chain = @\(Grant-SandboxTraverseChain -Paths \$traverseLeaves\)')
+    } finally {
+      $env:USERPROFILE = $saved
+    }
+    foreach ($rel in @('src', 'Documents\shared', 'Documents')) { (Test-GuestsTraverse (Join-Path $p $rel)) | Should Be $true }
+    (Test-GuestsTraverse $p) | Should Be $true
+    (@($chain | Where-Object { $_.Status -eq 'granted' }).Count) | Should Be 4
+    (Get-ProvisionStatement 'Grant-PoolOn -Targets \(\[ordered\]@\{ ''the operator home'' = \$env:USERPROFILE \}\) -Grant ''Traverse''') | Should Match 'homeTally'
   }
 }

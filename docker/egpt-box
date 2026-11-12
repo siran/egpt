@@ -309,6 +309,9 @@ def enter_namespaces(lib):
 
 
 def build_view(lib, root, plan):
+    # The box uid walks only folders made here, never the real 0700 home; sudo passes on the
+    # spine's umask, so pin one the box can search through.
+    os.umask(0o022)
     mount(lib, None, '/', None, MS_REC | MS_PRIVATE)
     mount(lib, 'tmpfs', root, 'tmpfs', MS_NOSUID, 'size=256m,mode=0755')
     for d in SYSTEM_RO:

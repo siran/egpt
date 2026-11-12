@@ -338,6 +338,22 @@ Describe 'the launcher wiring (the statements the launcher really runs)' {
     $src = Get-Content -LiteralPath $script:LauncherScript -Raw
     (@([regex]::Matches($src, '(?m)^\s*Grant-SandboxPoolAce ')).Count) | Should Be 2
     ($src -match "(?m)^\s*Grant-SandboxPoolAce .*'Everyone'") | Should Be $false
+    # The one exception, above the leaves: traverse-only, for the pool group.
+    (@([regex]::Matches($src, 'Grant-SandboxTraverseChain ')).Count) | Should Be 1
+    $lib = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'sandbox-account.ps1') -Raw
+    $chainFn = $lib.Substring($lib.IndexOf('function Grant-SandboxTraverseChain'))
+    $chainFn = ($chainFn -split '(?m)^\}')[0]
+    (@([regex]::Matches($chainFn, 'Grant-SandboxPoolAce .*-Grant ''Traverse''')).Count) | Should Be 1
+    ($chainFn -match "-Grant '(Read|Modify)'") | Should Be $false
+  }
+
+  It 'step (d3) takes every leaf this turn grants, after the leaf grants and before the launch' {
+    $stmt = Get-LauncherStatement 'Grant-SandboxTraverseChain -Paths'
+    foreach ($leaf in @('TargetFolder', 'SharePathList', 'SharePathReadOnlyList', 'PinSharePathList', 'PinSharePathReadOnlyList')) {
+      $stmt | Should Match "@\(\`$$leaf\)"
+    }
+    (Get-LauncherLineIndex 'Grant-SandboxTraverseChain -Paths') | Should BeGreaterThan (Get-LauncherLineIndex 'Grant-SandboxPoolAce -Path \$sp ')
+    (Get-LauncherLineIndex 'Grant-SandboxTraverseChain -Paths') | Should BeLessThan (Get-LauncherLineIndex $script:LaunchPattern)
   }
 }
 
