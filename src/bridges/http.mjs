@@ -12,7 +12,7 @@
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/info            {client, title, max_chars, init, places}: what the chatbox's UI reads from the limb
 //   GET  <path>/<client>/<file>          a file of the chatbox's UI (widget.js, skin.json, skin.css, an image): the last of its
-//                                        `ui:` folders that has it. The UI is a plugin (github.com/siran/egpt-chatboxes: the widget,
+//                                        `ui:` folders that has it. The UI is a plugin (github.com/siran/chatboxes-egpt: the widget,
 //                                        its skins and phrases) with a skin folder over it; the limb knows none of it, only the files.
 //   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)

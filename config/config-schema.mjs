@@ -904,7 +904,7 @@ export const CONFIG_SCHEMA = {
                               being: asesor
                               seed: seeds/contoso
                               title: "🐶 Agente Contoso SI"
-                              ui: [ plugins/egpt-chatboxes, plugins/contoso-skin ]
+                              ui: [ plugins/chatboxes-egpt, plugins/contoso-skin ]
                               team_name: Equipo Contoso
                               team_group: -1000000000102
                               label: Marketer — website
@@ -940,11 +940,11 @@ export const CONFIG_SCHEMA = {
                               <path>/<client>/<file>: a flat name ending .js .css .json .svg
                               .png .jpg .jpeg .webp .gif .woff2, at most 2 MB, from the LAST
                               folder that has it; a link out of its folder is not served. The
-                              UI is github.com/siran/egpt-chatboxes (widget.js: the bubble and
+                              UI is github.com/siran/chatboxes-egpt (widget.js: the bubble and
                               panel on Deep Chat; the panel's texts, waiting phrases, colours,
                               face and places' looks in a skin folder: skin.json, skin.css),
                               cloned on the node, the node's own skin folder after it:
-                              ui: [plugins/egpt-chatboxes, plugins/contoso-skin]. The limb knows
+                              ui: [plugins/chatboxes-egpt, plugins/contoso-skin]. The limb knows
                               none of it. None: no files (logged); the API still answers
             label             its section's title in /ayde (e.g. "Marketer — website",
                               "Support — Contoso app"); default the title, else the name

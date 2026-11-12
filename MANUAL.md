@@ -447,7 +447,7 @@ contoso_marketer:
   being: asesor
   seed: seeds/contoso
   title: "🐶 Agente Contoso SI"
-  ui: [ plugins/egpt-chatboxes, plugins/contoso-skin ]   # the chatbox's UI: the plugin, the node's skin over it
+  ui: [ plugins/chatboxes-egpt, plugins/contoso-skin ]   # the chatbox's UI: the plugin, the node's skin over it
   team_name: Equipo Contoso
   team_group: -1000000000102
   label: Marketer — website
@@ -468,7 +468,7 @@ live: its widget's address, its chat ids and its conversation folders all use it
 
 **The UI is a plugin, not core.** The bubble and the panel, their texts, the
 waiting phrases, colours, face and each place's look are
-[egpt-chatboxes](https://github.com/siran/egpt-chatboxes) (the widget, on Deep
+[chatboxes-egpt](https://github.com/siran/chatboxes-egpt) (the widget, on Deep
 Chat) with a skin folder over it (`skin.json`, `skin.css`, images; the format is
 in the plugin's README). Clone the plugin on the node, then list it and the
 node's skin after it in the chatbox's `ui:` (or in `limbs.http.ui`, for every

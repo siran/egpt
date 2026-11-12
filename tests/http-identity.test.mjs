@@ -1,6 +1,6 @@
 // http-identity.test.mjs — a signed visitor identity on the chatbox limb (clients.<c>.identity): the
 // host page signs {abrin, user_type, short_name, username, exp} with the client's key, the limb verifies
-// it, binds the session to that user, and renders the team topic's title from it. The UI (the egpt-chatboxes widget) reads it
+// it, binds the session to that user, and renders the team topic's title from it. The UI (the chatboxes-egpt widget) reads it
 // from data-identity and sends it on every call.
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHmac, createHash } from 'node:crypto';
