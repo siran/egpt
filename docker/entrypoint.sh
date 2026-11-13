@@ -14,6 +14,9 @@ keep_running() {  # name, command...
 REPO=$HOME/src/egpt
 REPO_URL=${EGPT_REPO_URL:-https://github.com/siran/egpt.git}
 
+# Dotfiles kept on the volume ($EGPT_HOME/home/.gitconfig, ...) are linked into $HOME, so they outlive the image.
+for f in "$EGPT_HOME"/home/.[!.]*; do if [ -e "$f" ]; then ln -sfn "$f" "$HOME/${f##*/}"; fi; done
+
 # Virtual screen + a minimal window manager so Beeper's windows behave.
 rm -f /tmp/.X99-lock
 # -nolisten local: no abstract socket, which a boxed being (docker/egpt-box) could still reach.
