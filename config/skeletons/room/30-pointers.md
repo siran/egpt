@@ -16,6 +16,8 @@
                     browser     browser: true + agent: + prompt:
                     pure AI     agent: + prompt:
                     any beat may add silent: true — posts to eGPT Admin, not this chat
+                    any beat in a Telegram group may add topic: <n> — says its output in
+                    that topic (message_thread_id) of this group; not with silent
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 

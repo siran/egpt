@@ -666,6 +666,13 @@ room's own `config.yaml`.
   until 2026-08-22; an entry still carrying it is invalid, skipped + logged.)
   With `agent: <handle>`, a `script_path:` or a one-line `prompt:` runs as that
   being's turn, and its reply is posted into the chat (empty or "…" posts nothing).
+- **Where it posts** — a beat posts into its conversation's main chat (a Telegram
+  group's General). `silent: true` posts to eGPT Admin instead. `topic: <n>` (a
+  Telegram conversation's beat; `n` = the topic's `message_thread_id`, a positive
+  integer) posts into that topic of the SAME group: the firing announcement, a
+  `post:` line, an agent beat's reply, each recorded in the topic's transcript.
+  A bad `topic:`, one outside a Telegram conversation, or `topic:` with
+  `silent: true` is invalid, skipped + logged.
 
 The spine materializes the resolved set to `~/.egpt/heartbeats.readonly.yaml` —
 at the profile root, beside `config.readonly.yaml` and

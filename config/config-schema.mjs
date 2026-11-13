@@ -235,6 +235,15 @@ export const CONFIG_SCHEMA = {
         own chat. Default false. admin_channel unset/unresolvable → nothing is
         posted (fail-closed) and a warning logs; it never falls back to the own
         chat. A non-boolean skips the entry.
+      topic
+        <n> (a positive integer: the Telegram message_thread_id of a topic) →
+        the beat's output goes to that topic of its OWN conversation's chat,
+        not the main chat (General): the firing announcement, a command post:'s
+        text, an agent beat's reply (mid-turn text too), each recorded in the
+        topic's transcript like any reply there. It never names a chat id. Only
+        in a Telegram conversation's beat; not a positive integer, no Telegram
+        conversation, or topic together with silent: true → the entry is
+        skipped + logged.
 
     FIRING ANNOUNCEMENT (operator 2026-09-30):
       Every beat that SENDS into a chat — a post: command, an agent: turn — posts

@@ -641,6 +641,45 @@ describe('a Telegram node: a turn the spine starts names its chat like any other
   });
 });
 
+describe('a Telegram node: a heartbeat with topic: speaks in that topic of its own chat', () => {
+  const slug = (n) => n.state().contacts.telegram[MAIN].slug;
+  const dir = (n) => join(HOME, 'conversations', 'telegram', slug(n));
+  const topicTx = (n) => fs.readFile(join(dir(n), `transcript-${sanitizeSlug('SI+Contoso-mygroup')}.md`), 'utf8');
+  const mainTx = (n) => fs.readFile(join(dir(n), 'transcript.md'), 'utf8').catch(() => '');
+  const sentIn = (n, thread) => sends(n.api).filter((b) => (thread == null ? b.message_thread_id == null : b.message_thread_id === thread));
+
+  it('a post: goes to the topic and is recorded in the topic transcript, not the main one', async () => {
+    const n = await bootNode();
+    await splitInto(n);
+    await n.app.dispatchHeartbeatPost({ ns: `telegram/${slug(n)}`, text: 'el primo del tema 2749', topic: 77 });
+    expect(sentIn(n, 77).some((b) => b.text.includes('el primo del tema 2749'))).toBe(true);
+    expect(sentIn(n, null).some((b) => b.text.includes('el primo del tema 2749'))).toBe(false);
+    expect(await topicTx(n)).toMatch(/el primo del tema 2749/);
+    expect(await mainTx(n)).not.toMatch(/el primo del tema 2749/);
+    n.app.stop();
+  });
+
+  it('a turn reply goes to the topic and is recorded in the topic transcript', async () => {
+    const n = await bootNode();
+    await splitInto(n);
+    await n.app.dispatchHeartbeatTurn({ being: 'egpt', ns: `telegram/${slug(n)}`, prompt: 'latido del tema', topic: 77 });
+    expect(sentIn(n, 77).some((b) => b.text.includes('latido del tema'))).toBe(true);
+    expect(sentIn(n, null).some((b) => b.text.includes('latido del tema'))).toBe(false);
+    expect(await topicTx(n)).toMatch(/latido del tema/);
+    n.app.stop();
+  });
+
+  it('without topic: the post still goes to the main chat (unchanged)', async () => {
+    const n = await bootNode();
+    await splitInto(n);
+    await n.app.dispatchHeartbeatPost({ ns: `telegram/${slug(n)}`, text: 'el primo del chat 3571' });
+    expect(sentIn(n, null).some((b) => b.text.includes('el primo del chat 3571'))).toBe(true);
+    expect(sentIn(n, 77).some((b) => b.text.includes('el primo del chat 3571'))).toBe(false);
+    expect(await mainTx(n)).toMatch(/el primo del chat 3571/);
+    n.app.stop();
+  });
+});
+
 describe('a node with Beeper and Telegram: each /split makes its room on the chat\'s own limb', () => {
   it('a WhatsApp /split still makes a Beeper group of its own (no topic); a Telegram /split makes a topic (no Beeper group)', async () => {
     const beeper = fakeBeeper();
