@@ -3659,9 +3659,16 @@ export async function boot({
   // uses. Fail-closed like the compaction notice: admin unset/unresolvable → the reply is not posted,
   // never falling back to the own chat (silentBeatAdminChat logs the warning). There is no placeholder
   // to redirect (this path posts the final reply, not a live stream), so swapping the chat is enough.
-  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent }) => {
+  // TOPIC (`topic: <n>`): the beat's output goes to topic n of its OWN conversation's chat — the sub-chat
+  // `<chatId>/<n>`, the id a Telegram topic has everywhere else — so the event, the send and the transcript
+  // are the topic's, exactly as for a reply in it. The turn's own session keying is untouched.
+  const beatChat = async (ns, topic) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+    return topic ? { ...target, chatId: `${target.chatId}/${topic}` } : target;
+  };
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent, topic }) => {
+    const target = await beatChat(ns, topic);
     const ev = await services.identity.spineEvent(target.surface, target.chatId);
     // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being or one that would run unboxed
     const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
@@ -3701,14 +3708,13 @@ export async function boot({
   // chat — the SAME sayOnce send, destination swapped, no transcript record in the entity (the message
   // never went there; the compaction notice logs none either). Fail-closed: admin unset/unresolvable →
   // nothing posted, never the own chat (silentBeatAdminChat logs the warning).
-  const dispatchHeartbeatPost = async ({ ns, text, silent }) => {
+  const dispatchHeartbeatPost = async ({ ns, text, silent, topic }) => {
     if (silent) {
       const chatId = await silentBeatAdminChat(ns);
       if (!chatId) return false;   // fail-closed: nothing posted, never the own chat
       return sayOnce({ being: null, chatId, text, opts: {}, tag: {}, what: 'post' });
     }
-    const target = chatIdForEntity(await _loadState(), ns);
-    if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+    const target = await beatChat(ns, topic);
     await heartbeatSay({ being: null, ns, ev: await services.identity.spineEvent(target.surface, target.chatId), text, tag: {}, recordAs: 'system', what: 'post' });
   };
 

@@ -2289,3 +2289,82 @@ describe('createHeartbeatLoader — firing announcement + silent:', () => {
     expect(h.logs.some((l) => l.includes('whatsapp/x:beat: silent "yes" is not true or false — skipped'))).toBe(true);
   });
 });
+
+// ── topic: — the beat's output goes to a topic of its OWN conversation's chat (Telegram forum) ──
+describe('createHeartbeatLoader — topic:', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  function build(raw, { ns = 'telegram/x', node } = {}) {
+    const logs = [], posts = [], turns = [];
+    const { spawn, calls } = makeSpawn();
+    const registry = makeRegistry();
+    const loader = makeLoader({
+      getConfig: () => ({ default_time_zone: 'UTC', agents: { egpt: { default: true, handles: ['e'] } }, ...(node ? { heartbeats: node } : {}) }),
+      aliveMs: 0, egptHome: '/home', procCwd: '/checkout', spawn,
+      listEntityDirs: async () => [{ dir: `/home/c/${ns}`, ns }],
+      readEntityConfig: async () => ({ heartbeats: (raw && !node) ? { beat: raw } : {} }),
+      dispatchPost: async (p) => { posts.push(p); },
+      dispatchTurn: async (t) => { turns.push(t); return { text: 'the reply' }; },
+      io: { writeFile: async () => {}, mkdir: async () => {}, readFile: async () => 'script body\n' },
+      onLog: (m) => logs.push(m), now: () => 1_000_000,
+    });
+    return {
+      loader, registry, logs, posts, turns, calls,
+      async start() { loader.wrapRegistry(registry); await loader.collect(); await loader.activate({ stats: () => ({}) }); logs.length = 0; },
+      beat: () => registry.registered.find((r) => r.name === `${ns}:beat`)?.fn,
+    };
+  }
+
+  it('a post: beat threads topic to the announcement AND the output post', async () => {
+    const h = build({ frequency: '24h', command: 'node x.js', post: 'out: {stdout}', topic: 42 });
+    await h.start();
+    h.beat()();
+    h.calls[0].child.stdout.emit('data', '1637\n');
+    h.calls[0].child.emit('close', 0);
+    await flush();
+    expect(h.posts.map((p) => [p.text, p.topic])).toEqual([['🫀 beat', 42], ['out: 1637', 42]]);
+  });
+
+  it('an agent beat threads topic to the announcement AND to dispatchTurn', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi', topic: 42 });
+    await h.start();
+    h.beat()();
+    await flush();
+    expect(h.posts[0].topic).toBe(42);
+    expect(h.turns[0]).toMatchObject({ ns: 'telegram/x', topic: 42 });
+  });
+
+  it('REGRESSION: a beat without topic: carries no topic key anywhere', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi' });
+    const e = (await h.loader.collect()).entries.find((x) => x.name === 'telegram/x:beat');
+    expect(e.action).not.toHaveProperty('topic');
+    await h.start();
+    h.beat()();
+    await flush();
+    expect(h.posts[0]).not.toHaveProperty('topic');
+    expect(h.turns[0]).not.toHaveProperty('topic');
+  });
+
+  it.each([0, -3, 1.5, '42', true, 'x'])('topic: %j is not a positive integer — skipped + logged', async (topic) => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi', topic });
+    expect((await h.loader.collect()).entries).toEqual([]);
+    expect(h.logs.filter((l) => l.includes('telegram/x:beat: topic') && l.includes('not a positive integer'))).toHaveLength(1);
+  });
+
+  it('topic: on a surface without topics is skipped + logged', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi', topic: 42 }, { ns: 'whatsapp/x' });
+    expect((await h.loader.collect()).entries).toEqual([]);
+    expect(h.logs.some((l) => l.includes('whatsapp/x:beat: topic needs a Telegram conversation'))).toBe(true);
+  });
+
+  it('topic: on a node-level beat (no conversation) is skipped + logged', async () => {
+    const h = build(null, { node: { sweep: { frequency: '1h', command: 'node s.js', topic: 42 } } });
+    expect((await h.loader.collect()).entries.find((e) => e.name === 'sweep')).toBeUndefined();
+    expect(h.logs.some((l) => l.includes('sweep: topic needs a Telegram conversation'))).toBe(true);
+  });
+
+  it('topic: together with silent: true is rejected + logged', async () => {
+    const h = build({ frequency: '30m', agent: 'e', prompt: 'hi', topic: 42, silent: true });
+    expect((await h.loader.collect()).entries).toEqual([]);
+    expect(h.logs.some((l) => l.includes('telegram/x:beat: topic and silent: true contradict each other'))).toBe(true);
+  });
+});
