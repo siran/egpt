@@ -855,7 +855,7 @@ export const CONFIG_SCHEMA = {
         conversations/http/<client>-<sid>/ (sid: a hash of the session token; the
         token itself is never logged); with conversation_by: identity, each signed
         identity is (below). Under <path>/<client>/:
-          POST messages {session?, text, id?, identity?} → {session, message}; no or an unknown or
+          POST messages {session?, text, id?, identity?, place?} → {session, message, cold}; no or an unknown or
             expired session (session_days idle) starts a new one. application/json only.
             id (16-64 of A-Za-z0-9_-, the widget's per-line random): a POST repeating
             an id within 10 min posts nothing and gets the first one's answer (a retry).
@@ -867,7 +867,12 @@ export const CONFIG_SCHEMA = {
             /agents rethread), the session's history is cleared, and the team
             topic gets strings.ended. Unknown session 404. Nothing said since
             the last end: nothing done.
-          GET widget.js                     the embeddable bubble + panel
+          GET info → {client, title, max_chars, init, places}: what the chatbox's UI reads
+          GET <file>  a file of the chatbox's UI (widget.js, skin.json, skin.css, an image):
+            the last of its ui: folders that has it (below). A page embeds
+            <script src="https://<host>/chat/<client>/widget.js" … defer>
+        cold: the conversation was not warmed (a line or a prime) in the last 4 minutes,
+        so the being starts cold (the UI may say so while it waits).
         A message is {id, from: visitor|being, text, done, seq} or {id, deleted, seq}.
         The session's conversation is created with
         agents.<being>: { default: true, mode: on, allowed_users: ['*'] } and
@@ -899,7 +904,7 @@ export const CONFIG_SCHEMA = {
                               being: asesor
                               seed: seeds/contoso
                               title: "🐶 Agente Contoso SI"
-                              intro: "¡Hola, soy Edu, el súper agente inteligente de Contoso!"
+                              ui: [ plugins/chatboxes-egpt, plugins/contoso-skin ]
                               team_name: Equipo Contoso
                               team_group: -1000000000102
                               label: Marketer — website
@@ -908,8 +913,8 @@ export const CONFIG_SCHEMA = {
                               being: soporte
                               identity: required
                               allowed_origins: [ … ]
-                          A block holds a <client>'s keys (below), its strings written flat
-                          beside them (intro, send, placeholder, …); a strings: map there still
+                          A block holds a <client>'s keys (below), the limb's strings written
+                          flat beside them (ended, earlier); a strings: map there still
                           works, a flat key beats it. identity is the mode: its text goes in
                           strings:. url: the <client>, in the URL (/chat/contoso/widget.js),
                           the chat ids (http:contoso-<sid>), the folders and the key file;
@@ -917,6 +922,7 @@ export const CONFIG_SCHEMA = {
                           skipped. A block and a clients entry with the same <client>: the
                           block wins (logged). The blocks are restart-only, as limbs is.
                           /ayde lists the blocks in this order, then clients'.
+        ui                [<folder>, …]: the ui: of each chatbox with none of its own (below)
         clients:          the older form, still read: the same keys, one entry per chatbox
           <client>:       lowercase letters, digits, - and _
             being             the agent that answers its visitors
@@ -927,32 +933,35 @@ export const CONFIG_SCHEMA = {
             allowed_origins   CORS list; empty (default) = same-origin only: no CORS
                               headers and every preflight refused. Non-empty: a
                               request whose Origin is not listed is refused (403)
-            title             the panel's title
+            title             the chatbox's name: the team topic's {title} and info's title
+                              (the panel's, unless its skin names one); default the client
+            ui                [<folder>, …] (2026-11-12): the chatbox's UI, a plugin. The limb
+                              serves these folders' files (relative: under EGPT_HOME) at
+                              <path>/<client>/<file>: a flat name ending .js .css .json .svg
+                              .png .jpg .jpeg .webp .gif .woff2, at most 2 MB, from the LAST
+                              folder that has it; a link out of its folder is not served. The
+                              UI is github.com/siran/chatboxes-egpt (widget.js: the bubble and
+                              panel on Deep Chat; the panel's texts, waiting phrases, colours,
+                              face and places' looks in a skin folder: skin.json, skin.css),
+                              cloned on the node, the node's own skin folder after it:
+                              ui: [plugins/chatboxes-egpt, plugins/contoso-skin]. The limb knows
+                              none of it. None: no files (logged); the API still answers
             label             its section's title in /ayde (e.g. "Marketer — website",
                               "Support — Contoso app"); default the title, else the name
-            strings           UI strings (Spanish defaults): open, close,
-                              placeholder, send, error, too_long, too_many,
-                              end, end_confirm, end_yes, cancel, identity; support (heads a human
-                              support line: "Soporte · <ayde user>", default Soporte); intro (the panel's first
-                              line, again after an end; default none); ended (the
-                              line the team topic gets on an end); earlier (heads the
-                              recap a late topic gets, {n} = the earlier lines);
-                              waiting (a list of short phrases, at most 12 of 80 characters,
-                              shown in turn every 2.5 s, looping, in the loading bubble
-                              instead of ⏳; default none = ⏳), e.g.
-                              waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]
-                              waiting_cold (the same shape: the set shown instead when the line
-                              goes to a cold conversation, one not warmed by a line or a prime in
-                              the last 4 minutes; the POST's answer says cold: true|false, the
-                              widget guesses from its own last line until then; default none = waiting), e.g.
-                              waiting_cold: ["Corriendo a tu encuentro…", "Despertando, estirándome…"]
-            places            where the host page is: { <name>: { user_strip: bool, css: "…" } }
-                              (name: lowercase letters, digits, - and _; css at most 20000
-                              characters; other keys ignored). The page names its place with
-                              data-place on the widget's script tag; a configured one is told
-                              to the being ("(in <name>) …"), its css joins the page after the
-                              widget's, and user_strip shows the signed user's name under the
-                              header. An unknown place is logged and ignored. Default none
+            strings           the limb's own texts (Spanish defaults): identity (the 401's
+                              message); ended (the line the team topic gets on an end);
+                              earlier (heads the recap a late topic gets, {n} = the earlier
+                              lines). The panel's texts (open, close, placeholder, send,
+                              error, end, support, intro, waiting, waiting_cold, …) are the
+                              UI's, in its skin.json (2026-11-12); given here, flat or in
+                              strings:, they are logged and ignored
+            places            [<name>, …]: where the host page may be (lowercase letters,
+                              digits, - and _). The page names its place with data-place on
+                              the widget's script tag; a listed one is told to the being
+                              ("(in <name>) …"), an unknown one logged and ignored. info lists
+                              them for the UI; each place's look (css, the user strip) is the
+                              skin's. A map is read as its keys (its css and user_strip went
+                              to the skin, 2026-11-12). Default none
             session_days      idle days before a session expires (its token then
                               starts a new conversation and topic), default 365
             max_chars         one message, default 4000 (413 over it)

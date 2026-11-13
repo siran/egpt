@@ -447,7 +447,7 @@ contoso_marketer:
   being: asesor
   seed: seeds/contoso
   title: "🐶 Agente Contoso SI"
-  intro: "¡Hola, soy Edu, el súper agente inteligente de Contoso!"
+  ui: [ plugins/chatboxes-egpt, plugins/contoso-skin ]   # the chatbox's UI: the plugin, the node's skin over it
   team_name: Equipo Contoso
   team_group: -1000000000102
   label: Marketer — website
@@ -459,20 +459,32 @@ contoso_soporte:
 ```
 
 A block holds every chatbox key (`config/config-schema.mjs`, `limbs.http`), and
-its UI strings (`intro`, `send`, `placeholder`, `end`, …) are written beside
-them. A `strings:` map in the block still works; a key written beside it wins.
-`identity` is the mode (`off`, `optional`, `required`); its text goes in
-`strings: { identity: "…" }`. `url` defaults to the block's name. Keep the `url`
-of a chatbox that is already live: its widget's address, its chat ids and its
-conversation folders all use it.
+the limb's own strings (`ended`, the team topic's line on an end; `earlier`, its
+recap's head) are written beside them. A `strings:` map in the block still works;
+a key written beside it wins. `identity` is the mode (`off`, `optional`,
+`required`); its text (the 401's message) goes in `strings: { identity: "…" }`.
+`url` defaults to the block's name. Keep the `url` of a chatbox that is already
+live: its widget's address, its chat ids and its conversation folders all use it.
 
-Two optional widget behaviours, both off by default:
+**The UI is a plugin, not core.** The bubble and the panel, their texts, the
+waiting phrases, colours, face and each place's look are
+[chatboxes-egpt](https://github.com/siran/chatboxes-egpt) (the widget, on Deep
+Chat) with a skin folder over it (`skin.json`, `skin.css`, images; the format is
+in the plugin's README). Clone the plugin on the node, then list it and the
+node's skin after it in the chatbox's `ui:` (or in `limbs.http.ui`, for every
+chatbox with none). Relative folders are under EGPT_HOME. The limb serves those
+folders' files at `/chat/<url>/<file>`, taking each file from the last folder that
+has it. It also answers `GET /chat/<url>/info` with what the UI needs: `client`,
+`title`, `max_chars`, `init`, `places`. The page embeds `/chat/<url>/widget.js` as
+before. A panel text still given in the block (`intro`, `send`, `waiting`, …) is
+named in a boot line and ignored: move it to the skin's `skin.json`.
+
+`init` (off by default):
 
 ```yaml
 contoso_soporte:
   identity: required
   init: prime                  # true: record "(opened the chatbox, signed in as …)", no wake. prime: also wake the being
-  waiting: ["Un momento…", "Revisando tu carpeta…", "Ya casi…"]   # loading bubble phrases (2.5 s each, looping) instead of ⏳
 ```
 
 `init: prime` delivers that opening line to the being as a normal wake on every
@@ -487,41 +499,24 @@ silently (logged, no error). Nothing is shown on the panel and no team
 topic is seated. The being should answer a prime with `…` alone (the silence
 word). A prime's turn is quiet in every mode, so its `…` is never shown; any
 other answer would be posted whole.
-`waiting` takes at most
-12 phrases of 80 characters; they are escaped as text.
 
-### Places and look
+### Places
 
 One chatbox, one conversation per signed user, in several kinds of page. The host
 page says where it is with `data-place` on the widget's script tag, and the block
-says what each place turns on:
+lists the places it may be:
 
 ```yaml
 contoso_soporte:
-  places:
-    espacio: { user_strip: true, css: ".egc{--egc-user-bg:#345D98}" }   # css: at most 20000 characters
+  places: [ espacio, aula ]
 ```
 
-A place name is lowercase letters, digits, `-` and `_`; other keys are ignored. A
-configured place reaches the being as a prefix on that line, `(in espacio) …`
-(the init line: `(opened the chatbox in espacio, signed in as …)`); the
-visitor's panel and the conversation are the same in every place. An unknown or
-malformed `place` is logged and ignored. `user_strip: true` shows the signed
-user's `short_name` (else `username`) in a fixed strip under the header.
-
-The widget's own CSS yields to any page or place CSS (its selectors are in
-`:where()`). Deep Chat's bubbles read these custom properties from `.egc`, once,
-when the panel opens (unset = the default):
-
-```
---egc-bg #f6f8fa             --egc-bubble-max-width 85%      --egc-bubble-padding (Deep Chat's)
---egc-user-bg #1f6feb        --egc-user-fg #fff              --egc-user-radius (Deep Chat's)
---egc-ai-bg #fff             --egc-ai-fg #111                --egc-ai-border 1px solid #d0d7de
---egc-ai-radius (Deep Chat's) --egc-ai-shadow (none)          --egc-avatar url(...) (none)
-```
-
-`--egc-avatar` puts that image at the foot of each reply and hides the visitor's
-avatar. The widget is always in light mode (`color-scheme: light`).
+A place name is lowercase letters, digits, `-` and `_`. A listed place reaches the
+being as a prefix on that line, `(in espacio) …` (the init line: `(opened the
+chatbox in espacio, signed in as …)`); the visitor's panel and the conversation
+are the same in every place. An unknown or malformed `place` is logged and
+ignored. What a place looks like (its css, the signed user's strip) is the
+skin's, in `skin.json`.
 
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
 name the same `url`, the block wins and boot logs it. A name in `chatboxes` with

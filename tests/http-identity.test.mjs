@@ -1,6 +1,6 @@
 // http-identity.test.mjs — a signed visitor identity on the chatbox limb (clients.<c>.identity): the
 // host page signs {abrin, user_type, short_name, username, exp} with the client's key, the limb verifies
-// it, binds the session to that user, and renders the team topic's title from it. The widget reads it
+// it, binds the session to that user, and renders the team topic's title from it. The UI (the chatboxes-egpt widget) reads it
 // from data-identity and sends it on every call.
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHmac, createHash } from 'node:crypto';
@@ -522,13 +522,13 @@ describe('init: the widget opened', () => {
     });
   });
 
-  it('init: prime reaches the widget as init (and true stays true)', async () => {
+  it('init reaches the UI through info (prime and true as given, anything else false)', async () => {
     for (const init of [true, 'prime']) {
       const { url } = await limb('required', {}, { init });
-      expect(await (await fetch(`${url}widget.js`)).text()).toContain(`"init":${JSON.stringify(init)}`);
+      expect((await (await fetch(`${url}info`)).json()).init).toBe(init);
     }
     const { url } = await limb('required', {}, { init: 'other' });
-    expect(await (await fetch(`${url}widget.js`)).text()).not.toContain('"init"');
+    expect((await (await fetch(`${url}info`)).json()).init).toBe(false);
   });
 
   it('under conversation_by: identity, a second device\'s init joins the conversation and records its arrival', async () => {
@@ -580,130 +580,6 @@ describe('renderTopicTitle', () => {
   });
 });
 
-// widget.js on a minimal fake page: just what the loader touches.
-function page({ identity = null, stored = {}, place = null, vars = {} } = {}) {
-  const styles = [];
-  const storage = new Map(Object.entries(stored));
-  const calls = [], sources = [], parts = new Map(), responses = [];
-  let chat = null;
-  const node = (extra = {}) => ({ hidden: false, textContent: '', setAttribute() {}, appendChild() {}, ...extra });
-  const root = node({ querySelector: (sel) => parts.get(sel) ?? (parts.set(sel, node({ hidden: ['.egc-panel', '.egc-ask', '.egc-err', '.egc-user'].includes(sel) })), parts.get(sel)) });
-  const document = {
-    currentScript: { src: 'https://x.test/chat/acme/widget.js', getAttribute: (n) => (n === 'data-identity' ? identity : n === 'data-place' ? place : null) },
-    body: node(), head: node({ appendChild: (s) => styles.push(s.textContent) }),
-    createElement: (tag) => {
-      if (tag === 'div') return root;
-      if (tag === 'style') return node();
-      if (tag !== 'deep-chat') return node();
-      const msgs = [];
-      return (chat = { addMessage: (m) => msgs.push(m), getMessages: () => msgs, updateMessage() {}, focusInput() {}, scrollToBottom() {}, clearMessages() {}, style: { props: {}, setProperty(k, v) { this.props[k] = v; } } });
-    },
-    addEventListener() {},
-  };
-  const window = { getComputedStyle: () => ({ getPropertyValue: (k) => vars[k] ?? '' }), customElements: { get: () => true }, EventSource: function (src) { sources.push(src); this.close = () => {}; } };
-  const localStorage = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) };
-  const fetch = async (href, init) => {
-    calls.push({ href, init, body: init?.body ? JSON.parse(init.body) : null });
-    const r = responses.shift() ?? { status: 200, json: { session: 'tok-1', message: { id: '1', seq: 1, text: 'hola' }, seq: 0, messages: [] } };
-    return { ok: r.status < 300, status: r.status, json: async () => r.json };
-  };
-  return {
-    storage, calls, sources, responses, styles, part: (sel) => parts.get(sel), chat: () => chat,
-    run: (js) => new Function('document', 'window', 'localStorage', 'fetch', 'EventSource', js)(document, window, localStorage, fetch, window.EventSource),
-    open: () => parts.get('.egc-bubble').onclick(),
-  };
-}
-const flush = () => new Promise((r) => setTimeout(r, 20));
-
-describe('widget.js and the identity', () => {
-  it('reads data-identity and sends it with each line, each read and the end; each user has their own stored session', async () => {
-    const { url } = await limb();
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const identity = tok();
-    const p = page({ identity, stored: { 'egpt-chat:acme:IEV/jperez': 'tok-0', 'egpt-chat:acme': 'tok-anon' } });
-    p.run(js);
-    p.open();
-    await flush();
-    expect(p.calls[0].href).toBe(`https://x.test/chat/acme/messages?session=tok-0&identity=${encodeURIComponent(identity)}`);
-    const signals = { newUserMessage: {}, onOpen() {}, onResponse: (r) => { signals.got = r; } };
-    p.chat().connect.handler(null, signals);
-    expect(p.sources.at(-1)).toContain(`&identity=${encodeURIComponent(identity)}`);
-    p.chat().addMessage({ role: 'user', text: 'hola' });
-    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
-    await flush();
-    expect(p.calls[1].body).toMatchObject({ session: 'tok-0', text: 'hola', identity });
-    expect(p.storage.get('egpt-chat:acme:IEV/jperez')).toBe('tok-1');   // the server's answer: switched to its session
-    expect(p.storage.get('egpt-chat:acme')).toBe('tok-anon');
-
-    p.responses.push({ status: 401, json: { error: 'identity expired' } });
-    signals.newUserMessage.listener({ messages: [{ text: 'otra' }] });
-    await flush();
-    expect(signals.got).toEqual({ error: HTTP_STRINGS.identity });
-  });
-
-  it('init on: the page load sends one init (kind: init, its stored session, the identity) and keeps the answer\'s session', async () => {
-    const { url } = await limb('required', {}, { init: true });
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const identity = tok();
-    const p = page({ identity, stored: { 'egpt-chat:acme:IEV/jperez': 'tok-0' } });
-    p.responses.push({ status: 200, json: { session: 'tok-1' } });
-    p.run(js);
-    await flush();
-    expect(p.calls).toHaveLength(1);
-    expect(p.calls[0].href).toBe('https://x.test/chat/acme/messages');
-    expect(p.calls[0].body).toEqual({ kind: 'init', session: 'tok-0', identity });
-    expect(p.storage.get('egpt-chat:acme:IEV/jperez')).toBe('tok-1');
-  });
-
-  it('waiting: the loading bubble is ⏳ unless the client lists phrases; they rotate by CSS, one cell, escaped as text', async () => {
-    const run = async (client) => {
-      const { url } = await limb('required', {}, client);
-      const js = await (await fetch(`${url}widget.js`)).text();
-      const p = page({ identity: tok() });
-      p.run(js);
-      p.open();
-      await flush();
-      return { js, styles: p.chat().messageStyles };
-    };
-    const off = await run({});
-    expect(off.js).toContain('"waiting":[]');
-    expect(off.styles.loading).toEqual({ message: { html: '⏳' } });
-    const on = await run({ strings: { waiting: ['Un momento…', '<img src=x onerror=alert(1)>', 'Ya casi', 7, ''] } });
-    expect(on.js).toContain('"waiting":["Un momento…","<img src=x onerror=alert(1)>","Ya casi"]');
-    const html = on.styles.loading.message.html;
-    expect(html).toContain('@keyframes egc-w');
-    expect(html.match(/<span style="grid-area/g)).toHaveLength(3);
-    expect(html).toContain('animation:egc-w 7500ms linear 2500ms infinite');
-    expect(html).toContain('Un momento…');
-    expect(html).not.toContain('<img');
-    expect(html).toContain('&#60;img src=x onerror=alert(1)&#62;');
-    expect((await run({ strings: { waiting: ['Solo uno'] } })).styles.loading.message.html).toBe('Solo uno');
-  });
-
-  it('init off (the default), or no identity: nothing is sent on load', async () => {
-    const off = await limb('required');
-    const p = page({ identity: tok() });
-    p.run(await (await fetch(`${off.url}widget.js`)).text());
-    await flush();
-    expect(p.calls).toEqual([]);
-    const on = await limb('optional', {}, { init: true });
-    const anon = page();
-    anon.run(await (await fetch(`${on.url}widget.js`)).text());
-    await flush();
-    expect(anon.calls).toEqual([]);
-  });
-
-  it('a page with no data-identity sends none and keeps the shared slot', async () => {
-    const { url } = await limb('optional');
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const p = page({ stored: { 'egpt-chat:acme': 'tok-anon' } });
-    p.run(js);
-    p.open();
-    await flush();
-    expect(p.calls[0].href).toBe('https://x.test/chat/acme/messages?session=tok-anon');
-  });
-});
-
 describe('places: where the host page is', () => {
   const places = { espacio: { user_strip: true, css: '.egc{--egc-bg:#123}', ignored: 1 }, plain: {} };
 
@@ -741,144 +617,13 @@ describe('places: where the host page is', () => {
     }
   });
 
-  it('clientConfig embeds user_strip and css only, caps css, and drops bad names', async () => {
-    const { url } = await limb('required', {}, { places: { ...places, 'Bad Name': { css: 'x' }, big: { css: 'a'.repeat(30000) } } });
-    const js = await (await fetch(`${url}widget.js`)).text();
-    expect(js).toContain('"places":{"espacio":{"user_strip":true,"css":".egc{--egc-bg:#123}"},"plain":{"user_strip":false,"css":""},"big":{"user_strip":false,"css":"' + 'a'.repeat(20000) + '"}}');
-    expect(js).not.toContain('Bad Name');
-  });
-
-  it('no places: the widget config is as before', async () => {
-    const { url } = await limb('required');
-    const js = await (await fetch(`${url}widget.js`)).text();
-    expect(js).not.toContain('"places"');
-    expect(js).toMatch(/\)\(\{"client":"acme","maxChars":4000,"strings":\{.*\},"deepChat":\{[^}]*\}\}\);\n$/s);
-  });
-
-  it('widget: data-place names a configured place: its css after the base, the strip with the user, the place sent with a line and init', async () => {
-    const { url } = await limb('required', {}, { init: true, places });
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const identity = tok();
-    const p = page({ identity, place: 'espacio' });
-    p.run(js);
-    await flush();
-    expect(p.calls[0].body).toEqual({ kind: 'init', session: null, identity, place: 'espacio' });
-    p.open();
-    await flush();
-    expect(p.styles.at(-1)).toContain('.egc{--egc-bg:#123}');
-    expect(p.styles[0].indexOf('.egc{--egc-bg:#123}')).toBeGreaterThan(p.styles[0].indexOf(':where('));
-    expect(p.part('.egc-user').textContent).toBe('Juan Pérez');
-    expect(p.part('.egc-user').hidden).toBe(false);
-    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
-    p.chat().connect.handler(null, signals);
-    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
-    await flush();
-    expect(p.calls.at(-1).body).toMatchObject({ text: 'hola', place: 'espacio' });
-  });
-
-  it('widget: unknown place or none: no css, no strip, no place sent', async () => {
-    const { url } = await limb('required', {}, { places });
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const p = page({ identity: tok(), place: 'nope' });
-    p.run(js);
-    p.open();
-    await flush();
-    expect(p.styles.join('')).not.toContain('--egc-bg:#123');
-    expect(p.part('.egc-user')).toBeUndefined();   // never unhidden
-    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
-    p.chat().connect.handler(null, signals);
-    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
-    await flush();
-    expect(p.calls.at(-1).body).not.toHaveProperty('place');
-  });
-
-  it('widget: the strip falls back to username, and is empty with no identity', async () => {
-    const { url } = await limb('optional', {}, { places });
-    const js = await (await fetch(`${url}widget.js`)).text();
-    const a = page({ identity: tok({ abrin: 'IEV', username: 'solo' }), place: 'espacio' });
-    a.run(js);
-    expect(a.part('.egc-user').textContent).toBe('solo');
-    const b = page({ place: 'espacio' });
-    b.run(js);
-    expect(b.part('.egc-user')).toBeUndefined();
-  });
-
-  it('widget: look is overridable (:where, --egc-*, color-scheme), minimize and end are inline SVG, Deep Chat reads the variables', async () => {
-    const { url } = await limb('required');
-    const js = await (await fetch(`${url}widget.js`)).text();
-    expect(js).toContain('color-scheme:light');
-    expect(js).toContain(':where(.egc-panel)');
-    expect(js).toContain('class="egc-x">\' + icon(');
-    const p = page({ identity: tok() });
-    p.run(js);
-    p.open();
-    await flush();
-    expect(p.chat().chatStyle.backgroundColor).toBe('#f6f8fa');
-    expect(p.chat().messageStyles.default.user.bubble).toMatchObject({ backgroundColor: '#1f6feb', color: '#fff' });
-    expect(p.chat().avatars).toBeUndefined();
-    const v = page({ identity: tok(), vars: { '--egc-bg': ' #D3DDE9 ', '--egc-user-bg': '#345D98', '--egc-avatar': 'url("https://x.test/a.png")' } });
-    v.run(js);
-    v.open();
-    await flush();
-    expect(v.chat().chatStyle.backgroundColor).toBe('#D3DDE9');
-    expect(v.chat().messageStyles.default.user.bubble.backgroundColor).toBe('#345D98');
-    expect(v.chat().avatars.ai.src).toBe('https://x.test/a.png');
-    expect(v.chat().avatars.user.styles.container.display).toBe('none');
-  });
-});
-
-describe('widget.js: waiting_cold', () => {
-  const W = ['Un momento…', 'Ya casi'], COLD = ['Corriendo a tu encuentro…', 'Escucho atento, vengo corriendo…', 'Despertando, estirándome…'];
-  const opened = async (strings, stored = {}) => {
-    const { url } = await limb('required', {}, { strings });
-    const p = page({ identity: tok(), stored });
-    p.run(await (await fetch(`${url}widget.js`)).text());
-    p.open();
-    await flush();
-    const signals = { newUserMessage: {}, onOpen() {}, onResponse() {} };
-    p.chat().connect.handler(null, signals);
-    return { p, signals };
-  };
-
-  it('both sets sit in the bubble, the cold one hidden by default, each switched by a custom property (no re-render)', async () => {
-    const { p } = await opened({ waiting: W, waiting_cold: COLD });
-    const html = p.chat().messageStyles.loading.message.html;
-    expect(html).toContain('<span style="display:var(--egc-tibio,inline-grid)">');
-    expect(html).toContain('<span style="display:var(--egc-frio,none)">');
-    expect(html).toContain('@keyframes egc-w{');
-    expect(html).toContain('@keyframes egc-wf{');
-    expect(html).toContain('animation:egc-wf 7500ms linear 5000ms infinite');
-    for (const t of [...W, ...COLD]) expect(html).toContain(t);
-    expect(html.indexOf('Un momento…')).toBeLessThan(html.indexOf('--egc-frio'));
-    expect(html.indexOf('Corriendo a tu encuentro…')).toBeGreaterThan(html.indexOf('--egc-frio'));
-  });
-
-  it('a line with no session, or after 4 minutes of quiet, starts cold; the server\'s cold then decides', async () => {
-    const { p, signals } = await opened({ waiting: W, waiting_cold: COLD });
-    const props = p.chat().style.props;
-    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '1', seq: 1, text: 'hola' }, cold: false } });
-    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
-    expect(props).toEqual({ '--egc-frio': 'inline-grid', '--egc-tibio': 'none' });   // no session yet: guessed cold
-    await flush();
-    expect(props).toEqual({ '--egc-frio': 'none', '--egc-tibio': 'inline-grid' });   // the server: warm
-    expect(Number(p.storage.get('egpt-chat:acme:IEV/jperez:at'))).toBeGreaterThan(0);
-    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '2', seq: 2, text: 'otra' }, cold: true } });
-    signals.newUserMessage.listener({ messages: [{ text: 'otra' }] });
-    expect(props['--egc-frio']).toBe('none');   // a line just sent: guessed warm
-    await flush();
-    expect(props['--egc-frio']).toBe('inline-grid');   // the server knows better
-    p.storage.set('egpt-chat:acme:IEV/jperez:at', String(Date.now() - 5 * 60_000));
-    p.responses.push({ status: 200, json: { session: 'tok-1', message: { id: '3', seq: 3, text: 'tarde' } } });
-    p.chat().style.setProperty('--egc-frio', 'none');
-    signals.newUserMessage.listener({ messages: [{ text: 'tarde' }] });
-    expect(props['--egc-frio']).toBe('inline-grid');   // 5 minutes quiet: guessed cold, and no cold in the answer keeps the guess
-  });
-
-  it('no waiting_cold: the bubble is today\'s and nothing is switched', async () => {
-    const { p, signals } = await opened({ waiting: W });
-    expect(p.chat().messageStyles.loading.message.html).not.toContain('--egc-frio');
-    signals.newUserMessage.listener({ messages: [{ text: 'hola' }] });
-    await flush();
-    expect(p.chat().style.props).toEqual({});
+  it('places: a list of names, or a map\'s keys (their css and user_strip are the skin\'s); a bad name is none', async () => {
+    for (const given of [['espacio', 'Bad Name'], { espacio: { css: 'x' }, 'Bad Name': {} }]) {
+      const { post, got, url } = await limb('required', {}, { places: given });
+      await post({ text: 'hola', identity: tok(), place: 'espacio' });
+      await post({ text: 'hola', identity: tok(), place: 'Bad Name' });
+      expect(got.map((g) => g.text)).toEqual(['(in espacio) hola', 'hola']);
+      expect((await (await fetch(`${url}info`)).json()).places).toEqual(['espacio']);   // the UI sends only these
+    }
   });
 });

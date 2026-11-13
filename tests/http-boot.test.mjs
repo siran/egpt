@@ -13,6 +13,7 @@ const _HOME = vi.hoisted(() => {
 import { promises as fs, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { freeSafeHttpPort } from './free-safe-http-port.mjs';
+import { chatboxesOf } from '../src/bridges/http.mjs';
 
 let boot, emptyState, getContact, ensureContact;
 beforeAll(async () => {
@@ -369,24 +370,25 @@ describe('limbs.http.ayde through boot', () => {
 });
 
 describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured in its own top-level block', () => {
-  // EDW's shape: no clients:, the chatbox's keys and UI strings flat in its block.
+  // The shape of a node's config: no clients:, the chatbox's keys flat in its block.
   const blocks = (more = {}) => (cfg) => {
     cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['contoso_marketer'] };
     cfg.contoso_marketer = { url: 'contoso', being: 'ed', title: 'Agente Contoso', intro: '¡Hola, soy Edu!', ...more };
   };
-  const widget = (url) => fetch(`${url}widget.js`).then((r) => r.text());
+  const info = (url) => fetch(`${url}info`).then((r) => r.json());
   const slugOf = (turn) => turn.cwd.split(/[\\/]/).at(-1);
 
-  it('chatboxes alone: /chat/<url>/widget.js has the block\'s title and intro; a visitor reaches its being as http:<url>-<sid>, its desk from the block\'s seed', async () => {
-    const seedDir = join(_HOME, 'seeds', 'contoso');
+  it('chatboxes alone: /chat/<url>/info has the block\'s title, widget.js is its ui: folder\'s (under EGPT_HOME); a visitor reaches its being as http:<url>-<sid>, its desk from the block\'s seed', async () => {
+    const seedDir = join(_HOME, 'seeds', 'contoso'), uiDir = join(_HOME, 'seeds', 'ui');
     await fs.mkdir(seedDir, { recursive: true });
+    await fs.mkdir(uiDir, { recursive: true });
     await fs.writeFile(join(seedDir, 'identidad.md'), 'v1');
+    await fs.writeFile(join(uiDir, 'widget.js'), 'window.ui = 1;\n');
     try {
-      const { app, url, post, messages, turns, state, lines } = await bootChatbox({ edit: blocks({ seed: 'seeds/contoso' }) });
-      const js = await widget(url);
-      expect(js).toContain('"client":"contoso"');
-      expect(js).toContain('"title":"Agente Contoso"');
-      expect(js).toContain('"intro":"¡Hola, soy Edu!"');
+      const { app, url, post, messages, turns, state, lines } = await bootChatbox({ edit: blocks({ seed: 'seeds/contoso', ui: ['seeds/ui'] }) });
+      expect(await info(url)).toEqual({ client: 'contoso', title: 'Agente Contoso', max_chars: 4000, init: false, places: [] });
+      expect(await (await fetch(`${url}widget.js`)).text()).toBe('window.ui = 1;\n');
+      expect(lines).toContain('[http] contoso: intro — the chatbox UI\'s now (its skin, in a ui: folder); ignored here');
       const j = await post({ text: 'hola' });
       await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
       expect(settled((await messages(j.session)).messages).text).toMatch(/^🦉 /);
@@ -405,20 +407,18 @@ describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured 
       cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['democlient'] };
       cfg.democlient = { being: 'ed', title: 'Soporte' };
     } });
-    expect(await widget(url)).toContain('"client":"democlient"');
+    expect((await info(url)).client).toBe('democlient');
     const j = await post({ text: 'hola' });
     await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
     expect(slugOf(turns[0])).toMatch(/^democlient-[0-9a-f]{16}$/);
     app.stop();
   });
 
-  it('a flat string beats the block\'s strings: map; `identity` stays the mode, its text in strings:', async () => {
-    const { app, url } = await bootChatbox({ edit: blocks({ send: 'Mandar', waiting: ['Un momento…', 'Ya casi'], identity: 'required', strings: { send: 'Enviar ya', placeholder: 'Pregunta', identity: 'Inicia sesión' } }) });
-    const js = await widget(url);
-    expect(js).toContain('"send":"Mandar"');
-    expect(js).toContain('"waiting":["Un momento…","Ya casi"]');
-    expect(js).toContain('"placeholder":"Pregunta"');
-    expect(js).toContain('"intro":"¡Hola, soy Edu!"');
+  it('a flat string beats the block\'s strings: map; `identity` stays the mode, its text in strings:; the panel\'s texts are named as moved', async () => {
+    const boxes = chatboxesOf({ limbs: { http: { chatboxes: ['b'] } }, b: { being: 'ed', ended: 'Fin.', strings: { ended: 'otro', earlier: 'Antes: {n}' } } });
+    expect(boxes.b.strings).toEqual({ ended: 'Fin.', earlier: 'Antes: {n}' });
+    const { app, url, lines } = await bootChatbox({ edit: blocks({ send: 'Mandar', waiting: ['Un momento…', 'Ya casi'], identity: 'required', strings: { send: 'Enviar ya', placeholder: 'Pregunta', identity: 'Inicia sesión' } }) });
+    expect(lines).toContain('[http] contoso: placeholder, send, intro, waiting — the chatbox UI\'s now (its skin, in a ui: folder); ignored here');
     const r = await fetch(`${url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'hola' }) });
     expect(r.status).toBe(401);
     expect(await r.json()).toEqual({ error: 'identity required', message: 'Inicia sesión' });
@@ -431,10 +431,8 @@ describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured 
       cfg.contoso_marketer = { url: 'contoso', being: 'ed', title: 'Agente Contoso' };
       cfg.flat = 'not a block';
     } });
-    const js = await widget(url);
-    expect(js).toContain('"title":"Agente Contoso"');
-    expect(js).not.toContain('Viejo');
-    expect(await widget(`http://127.0.0.1:${port}/chat/acme/`)).toContain('"title":"Acme"');
+    expect((await info(url)).title).toBe('Agente Contoso');
+    expect((await info(`http://127.0.0.1:${port}/chat/acme/`)).title).toBe('Acme');
     const j = await post({ text: 'hola' });
     await vi.waitFor(async () => expect(settled((await messages(j.session)).messages)).toBeTruthy(), { timeout: 5000 });
     expect(settled((await messages(j.session)).messages).text).toMatch(/^🦉 /);

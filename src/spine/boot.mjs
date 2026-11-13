@@ -2342,6 +2342,7 @@ export async function boot({
       ...sharedBridgeOpts,
       bind: block.bind, port: block.port, path: block.path, clients, trustProxy: block.trust_proxy === true, now,
       identityKey: (client) => readSecret(EGPT_HOME, chatboxKeyFile(client)).token,
+      home: EGPT_HOME,   // a chatbox's relative ui: folders (its UI: the chatboxes-egpt plugin, a skin over it)
       ayde: block.ayde, aydeRoot: EGPT_HOME, timeZone: transcriptTimeZone,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
       aydeRegistry: _loadState,

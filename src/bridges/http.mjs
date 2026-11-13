@@ -10,7 +10,10 @@
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
-//   GET  <path>/<client>/widget.js                  a loader: Deep Chat (DEEP_CHAT) wired to the four above
+//   GET  <path>/<client>/info            {client, title, max_chars, init, places}: what the chatbox's UI reads from the limb
+//   GET  <path>/<client>/<file>          a file of the chatbox's UI (widget.js, skin.json, skin.css, an image): the last of its
+//                                        `ui:` folders that has it. The UI is a plugin (github.com/siran/chatboxes-egpt: the widget,
+//                                        its skins and phrases) with a skin folder over it; the limb knows none of it, only the files.
 //   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
 //   POST <ayde.path>/say                 {client, key, text}: a support line into a live chatbox conversation (ayde users, team and up); the widget shows it as "Soporte · <user>"
@@ -24,9 +27,8 @@
 // a session belongs to the identity it started with, and every call on it must present that identity.
 import { createServer } from 'node:http';
 import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, writeFile, mkdir, readdir, rename, unlink, stat, realpath } from 'node:fs/promises';
+import { join, resolve, isAbsolute, sep } from 'node:path';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
 import { createBrowser, checkUser, LEVELS, RESERVED_USER, SUPPORT } from './http-ayde.mjs';
@@ -40,19 +42,15 @@ export const httpClientOf = (chatId) => CHAT_RE.exec(String(chatId ?? ''))?.[1] 
 export const CLIENT_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 export const HTTP_DEFAULTS = Object.freeze({ path: '/chat', maxChars: 4000, rateMessages: 30, rateMinutes: 10, newSessions: 30, newSessionsMinutes: 60, sessionDays: 365 });
+// The limb's own texts: the 401's message, and two to the team topic. The panel's texts (title, placeholder,
+// waiting phrases, intro…) are the chatbox UI's, in its skin (UI_KEYS: read here only to say they moved).
 export const HTTP_STRINGS = Object.freeze({
-  title: 'Chat', open: 'Abrir chat', close: 'Cerrar', placeholder: 'Escribe tu mensaje…', send: 'Enviar',
-  error: 'No se pudo enviar. Intenta de nuevo.', too_long: 'El mensaje es demasiado largo.', too_many: 'Demasiados mensajes. Espera unos minutos.',
-  unavailable: 'No se pudo abrir el chat. Intenta de nuevo.',
-  identity: 'No pudimos verificar tu sesión. Recarga la página o vuelve a iniciar sesión.',
-  end: 'Terminar conversación', end_confirm: '¿Terminar esta conversación? El chat empezará de nuevo.', end_yes: 'Sí, terminar', cancel: 'Cancelar',
+  identity: 'No pudimos verificar tu sesión. Recarga la página o vuelve a iniciar sesión.',   // the 401's message
   ended: '🔚 El visitante terminó la conversación. Lo siguiente es una conversación nueva.',   // to the team topic
   earlier: '(conversación iniciada antes: {n} mensajes)',   // heads the recap a team topic gets when seated
-  support: 'Soporte',   // heads a human support line on the panel: "Soporte · <ayde user>"
-  intro: '',   // the panel's first line (Deep Chat introMessage), shown again after an end; empty: none
-  waiting: [],   // short phrases rotating in the loading bubble instead of ⏳; empty: ⏳
-  waiting_cold: [],   // the same, for a line to a cold conversation (the being not warmed in PRIME_GAP_MS); empty: waiting
 });
+const UI_KEYS = Object.freeze(['open', 'close', 'placeholder', 'send', 'error', 'too_long', 'too_many', 'unavailable', 'end', 'end_confirm',
+  'end_yes', 'cancel', 'support', 'intro', 'waiting', 'waiting_cold']);
 const LOG_MAX = 200;                           // messages a session keeps for replay
 const RECAP_LINES = 5, RECAP_CHARS = 300;
 const RETRY_MS = 10 * 60_000;                  // a POST's id is remembered this long
@@ -60,12 +58,13 @@ const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const PING_MS = 25_000;                        // SSE keep-alive, under common proxy idle timeouts
 const SESSIONS_FILE = 'http-sessions.json';
 const MESSAGES_DIR = 'http-messages';
-const WIDGET_SRC = readFileSync(new URL('./http-widget.js', import.meta.url), 'utf8');
-// github.com/OvidijusParsiunas/deep-chat (MIT), 2.5.1 of 2026-08-27; integrity = sha384 of that file.
-export const DEEP_CHAT = Object.freeze({
-  url: 'https://cdn.jsdelivr.net/npm/deep-chat@2.5.1/dist/deepChat.bundle.js',
-  integrity: 'sha384-djz34nrOoloJkHQBH1qoINnqdsX56zqoFpMpT0m3ghPF0o0otOUvWZEFwUViT9iF',
+// A UI file: a flat name with one of these extensions, at most UI_FILE_MAX bytes.
+const UI_TYPES = Object.freeze({
+  js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', json: 'application/json; charset=utf-8',
+  svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', woff2: 'font/woff2',
 });
+const UI_FILE_RE = new RegExp(`^[A-Za-z0-9][A-Za-z0-9_.-]*\\.(${Object.keys(UI_TYPES).join('|')})$`);
+const UI_FILE_MAX = 2 * 1024 * 1024;
 
 const sidOf = (token) => createHash('sha256').update(String(token)).digest('hex').slice(0, 16);
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
@@ -146,24 +145,29 @@ export const identityModeOf = (v) => {
 };
 const HOUR_MS = 3600_000;
 const PRIME_GAP_MS = 4 * 60_000;   // a conversation warmed (primed or spoken to) this recently skips the prime: under the 5-minute prompt-cache lifetime
-const PLACE_CSS_MAX = 20000;
 
-function clientConfig(name, c = {}) {
-  const strings = { ...HTTP_STRINGS, ...(c.strings && typeof c.strings === 'object' ? c.strings : {}), ...(c.title ? { title: String(c.title) } : {}) };
-  const phrases = (v) => (Array.isArray(v) ? v : []).filter((w) => typeof w === 'string' && w.trim()).slice(0, 12).map((w) => w.trim().slice(0, 80));
-  strings.waiting = phrases(strings.waiting);
-  strings.waiting_cold = phrases(strings.waiting_cold);
+// home: where a relative ui: folder is (boot: EGPT_HOME).
+function clientConfig(name, c = {}, home = null) {
+  const given = isMap(c.strings) ? c.strings : {};
+  const strings = { ...HTTP_STRINGS, ...Object.fromEntries(Object.entries(given).filter(([k]) => Object.hasOwn(HTTP_STRINGS, k))) };
   const maxChars = posInt(c.max_chars, HTTP_DEFAULTS.maxChars);
   const idc = isMap(c.identity) ? c.identity : {};
   const key = Array.isArray(idc.key) && idc.key.length ? idc.key.map(String) : IDENTITY_CLAIMS;
   const init = c.init === true || c.init === 'prime' ? c.init : false;   // prime: the init line wakes the being, true: record only
-  const places = {};   // where the host page is: { <name>: { user_strip, css } }; the widget gets them as they are
-  for (const [k, v] of Object.entries(isMap(c.places) ? c.places : {})) {
-    if (CLIENT_RE.test(k) && isMap(v)) places[k] = { user_strip: v.user_strip === true, css: typeof v.css === 'string' ? v.css.slice(0, PLACE_CSS_MAX) : '' };
-  }
+  // where the host page is: the names a line may say it comes from (a map's keys too: its css and user_strip are the skin's now)
+  const places = new Set((Array.isArray(c.places) ? c.places : isMap(c.places) ? Object.keys(c.places) : []).map(String).filter((k) => CLIENT_RE.test(k)));
+  const ui = (Array.isArray(c.ui) ? c.ui : c.ui == null ? [] : [c.ui]).map(String).filter(Boolean)
+    .map((d) => (isAbsolute(d) || !home ? resolve(d) : resolve(home, d)));
+  const title = String(c.title ?? '').trim() || name;
+  // the panel's texts and the places' looks given here, from before the UI was a plugin: ignored, named in the log
+  const moved = [...new Set([...UI_KEYS.filter((k) => Object.hasOwn(c, k) || Object.hasOwn(given, k)),
+    ...(isMap(c.places) && Object.values(c.places).some((v) => isMap(v) && (v.css != null || v.user_strip != null)) ? ['places css / user_strip'] : [])])];
   return {
     name,
     places,
+    ui,
+    moved,
+    info: { client: name, title, max_chars: maxChars, init, places: [...places] },
     label: String(c.label ?? '').trim() || String(c.title ?? '').trim() || name,   // its section in /ayde
     being: c.being ? String(c.being) : null,
     origins: Array.isArray(c.allowed_origins) ? c.allowed_origins.map(String) : [],
@@ -184,17 +188,17 @@ function clientConfig(name, c = {}) {
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
-    widget: `(${WIDGET_SRC.trim()})(${JSON.stringify({ client: name, maxChars, strings, deepChat: DEEP_CHAT, ...(init ? { init } : {}), ...(Object.keys(places).length ? { places } : {}) })});\n`,
   };
 }
 
 // THE CHATBOXES OF A CONFIG, { <client>: its limbs.http.clients-shaped config }: the one reader of
 // limbs.http.clients and limbs.http.chatboxes, what boot serves and reads. limbs.http.chatboxes names
-// top-level blocks, one chatbox each: a clients entry's keys, its UI strings (HTTP_STRINGS) flat beside
+// top-level blocks, one chatbox each: a clients entry's keys, the limb's strings (HTTP_STRINGS) flat beside
 // them, beating a `strings:` map there (`identity` is the mode; its text stays in strings:). Its client,
 // in the URL and the chat ids, is its `url`, default its name. A block beats a clients entry of the
-// same client; a name with no block (a map) is skipped. Both logged.
-const FLAT_STRINGS = Object.keys(HTTP_STRINGS).filter((k) => k !== 'title' && k !== 'identity');
+// same client; a name with no block (a map) is skipped. Both logged. A chatbox with no `ui:` of its own
+// takes limbs.http.ui.
+const FLAT_STRINGS = Object.keys(HTTP_STRINGS).filter((k) => k !== 'identity');
 const isMap = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
 export const chatboxNames = (cfg) => (Array.isArray(cfg?.limbs?.http?.chatboxes) ? cfg.limbs.http.chatboxes.map(String) : []);
 export function chatboxesOf(cfg, log = () => {}) {
@@ -215,6 +219,7 @@ export function chatboxesOf(cfg, log = () => {}) {
     if (blockOf[client]) log(`limbs.http.clients.${client} and the ${blockOf[client]}: block are both chatbox '${client}' — the block wins`);
     else out[client] = c;
   }
+  if (http?.ui != null) for (const [client, c] of Object.entries(out)) if (isMap(c) && c.ui == null) out[client] = { ...c, ui: http.ui };
   return out;
 }
 
@@ -223,6 +228,7 @@ export async function startHttpBridge({
   port,
   path = HTTP_DEFAULTS.path,
   clients: clientsCfg = {},   // chatboxesOf(config)
+  home = null,                // where a relative ui: folder is (boot: EGPT_HOME)
   wakeWords,
   addressWithoutAt = true,
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's
@@ -243,7 +249,9 @@ export async function startHttpBridge({
   const clients = new Map();
   for (const [name, c] of Object.entries(clientsCfg && typeof clientsCfg === 'object' ? clientsCfg : {})) {
     if (!CLIENT_RE.test(name)) { log(`client '${name}' skipped — a client name is lowercase letters, digits, - and _`); continue; }
-    const cc = clientConfig(name, c);
+    const cc = clientConfig(name, c, home);
+    if (cc.moved.length) log(`${name}: ${cc.moved.join(', ')} — the chatbox UI's now (its skin, in a ui: folder); ignored here`);
+    if (!cc.ui.length) log(`${name}: no ui: folder — its page gets no widget (the API answers)`);
     if (!cc.identity) { log(`${name}: identity '${isMap(c.identity) ? c.identity.mode : c.identity}' is not ${IDENTITY_MODES.join(' | ')} — treated as required`); cc.identity = 'required'; }
     if (c.conversation_by != null && !['session', 'identity'].includes(c.conversation_by)) log(`${name}: conversation_by '${c.conversation_by}' is not session | identity — session`);
     if ((cc.byIdentity || cc.init) && cc.identity === 'off') log(`${name}: ${cc.init ? 'init' : 'conversation_by: identity'} needs identity optional | required — it is off`);
@@ -387,8 +395,8 @@ export async function startHttpBridge({
     root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir, timeZone, say: (o) => supportLine(o),
     clients: [...clients.values()].map(({ name, label, idleMs }) => ({ name, label, idleMs })),
   }) : null;
-  // A support person's line (/ayde POST say), on a live chatbox conversation: on the panel as `support` (the widget heads
-  // it with strings.support and who said it) and recorded like any line. Its own mode is SUPPORT_MODE (lineMode: the gate
+  // A support person's line (/ayde POST say), on a live chatbox conversation: on the panel as `support` (the UI heads
+  // it with its skin's support text and who said it) and recorded like any line. Its own mode is SUPPORT_MODE (lineMode: the gate
   // reads it instead of the conversation's): accum, so the line is recorded and accumulated and wakes the being only when
   // it addresses it, read as the visitor's lines are (wake words, @handle); the visitor's own lines keep the conversation's
   // mode. Not session activity (lastAt stays). null: no live session of that chat; {error, status}: refused. The text is never logged.
@@ -479,7 +487,7 @@ export async function startHttpBridge({
     if (!init && !text.trim()) return json(res, 400, { error: 'empty message' }, cors);
     if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
     // place: the page's own name for where it is; only a configured one counts, a stale page keeps chatting
-    const place = typeof body?.place === 'string' && Object.hasOwn(c.places, body.place) ? body.place : null;
+    const place = typeof body?.place === 'string' && c.places.has(body.place) ? body.place : null;
     if (body?.place != null && !place) log(`${c.name}: place '${String(body.place).slice(0, 40)}' is not configured — no place`);
     const idn = identityOf(c, body?.identity);
     if (idn.status) return refuse(c, res, idn, cors);
@@ -691,12 +699,28 @@ export async function startHttpBridge({
     if (route === 'GET messages') return list(c, req, res, url, cors);
     if (route === 'GET events') return events(c, req, res, url, cors);
     if (route === 'POST end') return end(c, req, res, cors);
-    if (route === 'GET widget.js') {
-      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'max-age=300', ...cors });
-      return res.end(c.widget);
-    }
-    const known = ['messages', 'events', 'end', 'widget.js'].includes(action);
+    if (route === 'GET info') return json(res, 200, c.info, cors);
+    if (req.method === 'GET' && UI_FILE_RE.test(action)) return uiFile(c, res, action, cors);
+    const known = ['messages', 'events', 'end', 'info'].includes(action) || UI_FILE_RE.test(action);
     return json(res, known ? 405 : 404, { error: known ? 'method not allowed' : 'not found' }, cors);
+  }
+  // A UI file: the last ui: folder that has it, a regular file inside that folder (a link out of it is not served).
+  async function uiFile(c, res, name, cors) {
+    for (const dir of [...c.ui].reverse()) {
+      const real = await realpath(join(dir, name)).catch(() => null);
+      const root = real && await realpath(dir).catch(() => null);
+      if (!real || !root || !real.startsWith(root + sep)) continue;
+      const st = await stat(real).catch(() => null);
+      if (!st?.isFile()) continue;
+      if (st.size > UI_FILE_MAX) { log(`${c.name}: ${name} is over ${UI_FILE_MAX} bytes — not served`); break; }
+      const type = UI_TYPES[name.slice(name.lastIndexOf('.') + 1)];
+      res.writeHead(200, {
+        'Content-Type': type, 'Cache-Control': 'max-age=300', 'X-Content-Type-Options': 'nosniff', ...cors,
+        ...(type === 'image/svg+xml' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}),
+      });
+      return res.end(await readFile(real));
+    }
+    return json(res, 404, { error: 'not found' }, cors);
   }
 
   let alive = false, stopped = false;
