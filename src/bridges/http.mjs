@@ -91,7 +91,7 @@ function signedPayload(token, key, nowMs) {
   if (p.exp * 1000 <= nowMs) return { why: 'expired' };
   return { p };
 }
-// { identity: {abrin, user_type, short_name, username, user_id?, claims} } or { why: 'invalid' | 'expired' }.
+// { identity: {abrin, user_type, short_name, username, user_id?, claims, data?} } or { why: 'invalid' | 'expired' }.
 // claims: each string (as field), finite number or boolean claim, exp too; each `required` one non-empty.
 export function verifyIdentity(token, key, nowMs = Date.now(), required = IDENTITY_CLAIMS) {
   const { p, why } = signedPayload(token, key, nowMs);
@@ -103,8 +103,20 @@ export function verifyIdentity(token, key, nowMs = Date.now(), required = IDENTI
   const identity = { abrin: field(p.abrin), user_type: field(p.user_type), short_name: field(p.short_name), username: field(p.username) };
   if (field(p.user_id)) identity.user_id = field(p.user_id);
   identity.claims = claims;
+  // structured claims (arrays, objects — e.g. every account of the person), apart from the scalar `claims` that
+  // titles and keys read: strings as field, numbers and booleans kept, at most 50 items a level, 4 levels deep.
+  const data = Object.fromEntries(Object.entries(p).filter(([, v]) => v && typeof v === 'object').map(([k, v]) => [k, structured(v)]));
+  if (Object.keys(data).length) identity.data = data;
   return { identity };
 }
+const structured = (v, d = 0) => (d > 3 ? undefined
+  : typeof v === 'string' ? field(v)
+  : typeof v === 'boolean' || Number.isFinite(v) ? v
+  : Array.isArray(v) ? v.slice(0, 50).map((x) => structured(x, d + 1)).filter((x) => x !== undefined)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).slice(0, 50).map(([k, x]) => [k, structured(x, d + 1)]).filter(([, x]) => x !== undefined))
+  : undefined);
+// What a being reads of a signed visitor in the "(opened the chatbox, signed in as …)" line: every claim but exp.
+const signedAs = (identity) => JSON.stringify({ ...identity.claims, ...identity.data, exp: undefined });
 const AYDE_REFUSED = (level) => (level === 'team' ? 'Sign in with your ayde user.' : `This needs the ${level} level: sign in with a ${level} user.`);
 const AYDE_LOCKED = 'Too many failed logins. Wait 15 minutes.';
 const AYDE_INTERNAL = (level) => `The ${level} level opens only from the internal network.`;
@@ -456,7 +468,7 @@ export async function startHttpBridge({
     try { await beforeLine?.({ client: c.name, chatId, isNew, init: true, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
     catch (e) { log(`${name}: before the line — ${e?.message ?? e}`); }
     log(`incoming [${name}] the visitor opened the chatbox`);
-    deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })}; nothing to answer yet — answer … alone)`, {
+    deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)}; nothing to answer yet — answer … alone)`, {
       chatId, chatName: name, chatType: 'private', network: 'http',
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,
@@ -537,7 +549,7 @@ export async function startHttpBridge({
       const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
       const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
       log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${JSON.stringify({ ...idn.identity.claims, exp: undefined })})` : place ? `(in ${place}) ${text}` : text, {
+      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})` : place ? `(in ${place}) ${text}` : text, {
         chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
