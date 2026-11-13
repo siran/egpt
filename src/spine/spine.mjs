@@ -32,6 +32,7 @@ import { isBrainFailureResult } from '../brain-errors.mjs';
 import { replyLine, contextSinceLastTurn, promptWithRecentContext, bodyForMessageId, promptWithQuotedMessage, RECENT_CONTEXT_MAX_CHARS } from '../transcript-log.mjs';
 import { isHumanTurn, turnKind, parseStopWord, pauseNotice, isStopPhrase, STOP_PHRASE } from '../stop-guard.mjs';
 import { SHELL_SURFACE } from './identity.mjs';
+import { addressingView } from './router.mjs';
 import { mentionHits, withoutAddress, isDeliberateSilence, isSilenceReply } from '../auto-mode.mjs';
 import { lifecycleExit } from './ingest.mjs';
 import { cleanForSpeech } from '../speech-clean.mjs';
@@ -1048,14 +1049,16 @@ export function createSpine({
 
     // A SIGNED LINE (our own output, or any node's frame) wakes ONLY a being it EXPLICITLY addresses
     // (@mention/quote of its post) — never a being taken by its mode (operator 2026-10-13 own output,
-    // 2026-10-18 every node). Our own frame never wakes its AUTHOR; our output
+    // 2026-10-18 every node). Our own frame never wakes its AUTHOR — unless the line STARTS with that being's
+    // handle (operator 2026-11-13: a person pasting its post after "n …"); a being's own post starts with its
+    // stamp, which the router skips, so a stamped line (same leading edge the router sees) never counts as start. Our output
     // with no author wakes nobody. A peer's frame has no author exclusion (another node's instance).
     // Unaddressed = record-only ('off' still not received); a wake counts toward the loop guard.
     let crossBeingWake = false;
     const echo = kindOf(ev) === 'echo';
     if (echo || ev.fromNode != null) {
       const author = echo && fromThisNode(ev) && ev.fromBeing ? String(ev.fromBeing).toLowerCase() : null;
-      const wakes = (t) => !t.fallthrough && String(gateAs(t, '')).toLowerCase() !== author;
+      const wakes = (t) => !t.fallthrough && (String(gateAs(t, '')).toLowerCase() !== author || (t.mention?.atEStart && addressingView(ev, true) === addressingView(ev)));
       const woke = (author || !echo) ? targets.filter(wakes) : [];
       refused = author ? refused.filter(wakes) : [];
       if (!woke.length) {

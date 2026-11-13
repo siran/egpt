@@ -463,12 +463,13 @@ export function addressed(text, agents, { addressWithoutAt = true, isVoice = fal
 // THE ADDRESSING VIEW (operator 2026-11-04): what resolve() hands addressed() — the line's words,
 // with invisible characters, a leading node frame (rendered `<node>` by identity.build) and the
 // persona stamp skipped, for every sender. The recorded and prompted text keep all of it.
-// Also how commands.mjs reads a being's line for /<handle> super.
-export function addressingView(ev) {
+// Also how commands.mjs reads a being's line for /<handle> super. `keepStamp` leaves the stamp on,
+// so the spine can tell a being's own post (stamp present) from a person's line (spine.mjs).
+export function addressingView(ev, keepStamp = false) {
   let t = stripInvisible(ev?.body).trimStart();
   const frame = ev?.fromNode ? `<${ev.fromNode}>` : '';
   if (frame && t.startsWith(frame)) t = t.slice(frame.length);
-  return t.replace(BEING_STAMP, '');
+  return keepStamp ? t : t.replace(BEING_STAMP, '');
 }
 
 // `addressWithoutAt` is the node's dispatch.address_without_at (boot reads it once; DEFAULT true)

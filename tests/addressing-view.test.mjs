@@ -72,6 +72,38 @@ describe('addressing view — leading whitespace, invisible characters and a lea
   });
 });
 
+describe('addressing view — a person\'s line that STARTS with a handle wakes that being, whatever frame it carries', () => {
+  // Live 2026-11-13: An pasted E's own post (stamp … frame) after "e mira esto:". The frame names E as author.
+  const pasted = `🐶 E: hola${SIG_KG_E}`;
+  for (const lead of ['e mira esto', '@egpt mira esto']) {
+    it(`'${lead}: "<E's post>"' wakes E even though the pasted frame names E as author`, async () => {
+      const { spine, brain } = buildSpine({ mode: 'mention' });
+      await spine.handleInbound({ body: `${lead}: "${pasted}"\n`, from: from({ msgKey: 'paste-1', senderName: 'An' }) });
+      expect(woke(brain)).toEqual(['egpt']);
+    });
+  }
+
+  it('LOCK: own echo with the frame LEADING (`<kg>` before the stamp) and its own handle after the stamp never wakes its author', async () => {
+    for (const body of [`${SIG_KG_E}🐶 E: e hola`, `${SIG_KG_E}🐶 E: @egpt hola`]) {
+      const { spine, brain } = buildSpine({ mode: 'mention' });
+      await spine.handleInbound({ body, from: from({ msgKey: 'lead-frame' }) });
+      expect(woke(brain)).toEqual([]);
+    }
+  });
+
+  it('LOCK: the handle in the MIDDLE of a signed line is still author-excluded', async () => {
+    const { spine, brain } = buildSpine({ mode: 'mention' });
+    await spine.handleInbound({ body: `mira @egpt esto: "${pasted}"\n`, from: from({ msgKey: 'paste-2', senderName: 'An' }) });
+    expect(woke(brain)).toEqual([]);
+  });
+
+  it('LOCK: a peer node\'s signed line that addresses nobody still prompts nobody', async () => {
+    const { spine, brain } = buildSpine({ mode: 'on' });
+    await spine.handleInbound({ body: `🐶 don: hola a todos${SIG_DO_DON}`, from: from({ msgKey: 'peer-1' }) });
+    expect(woke(brain)).toEqual([]);
+  });
+});
+
 describe('addressing view — regression locks', () => {
   it("E's own handle in its own stamped line never wakes E", async () => {
     for (const body of [`🐶 E: e hola${SIG_KG_E}`, `🐶 E: @egpt hola${SIG_KG_E}`]) {

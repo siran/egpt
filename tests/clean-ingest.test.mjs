@@ -70,10 +70,11 @@ describe('clean ingest — the three-check wake model', () => {
     expect(wokeBeings(brain)).toEqual(['eplus']);
   });
 
-  // 2. SAME-BEING SELF. E's signed line containing @e must NOT wake E (no self-loop).
+  // 2. SAME-BEING SELF. E's signed line containing @e must NOT wake E (no self-loop). E's own post opens
+  //    with its stamp; an UNstamped line that starts with @e is a person's (addressing-view.test.mjs).
   it('2. a signed line from E containing @e does NOT wake E (no self-loop)', async () => {
     const { spine, brain } = buildSpine({ mode: 'mention' });
-    await spine.handleInbound({ body: `@e nota para mí${SIG_KG_E}`, from: from({ msgKey: 'kg-e-2', atEAnywhere: true, isSender: false }) });
+    await spine.handleInbound({ body: `🐶 E: @e nota para mí${SIG_KG_E}`, from: from({ msgKey: 'kg-e-2', atEAnywhere: true, isSender: false }) });
     expect(wokeBeings(brain)).toEqual([]);
   });
 
