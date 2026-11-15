@@ -198,6 +198,10 @@ function Open-BeeperClaim([string] $Path) {
   catch [IO.IOException] { return $null }
 }
 
+# beeper-update.ps1 holds it (Open-BeeperClaim) while Beeper must stay closed: closing the app,
+# stopping, installing, starting the services. beeper-window.ps1 reopens nothing while it is held.
+function Get-BeeperUpdateLockPath([string] $LocalAppData) { return Join-Path $LocalAppData 'Programs\BeeperTexts.egpt-update' }
+
 # Held? Probed with an exclusive open that lets go at once.
 function Test-BeeperClaimHeld([string] $Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return $false }

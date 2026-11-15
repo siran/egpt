@@ -841,6 +841,37 @@ describe('beeper-update.ps1 never kills Beeper', () => {
   });
 });
 
+// dolly 2026-11-15: the relaunch started Beeper.exe with no --user-data-dir (the default profile, an
+// extra instance on :23374, not the shared one), and the watcher could not reopen the right one while
+// the tool still ran: "FAILED at start: ... primary no-port".
+describe('beeper-update.ps1 hands the window back to beeper-window', () => {
+  const src = readFileSync(TOOL, 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+  it('(d) the relaunch never starts Beeper.exe itself: beeper-window opens the window, on its profile', () => {
+    expect(code).not.toMatch(/Start-Process explorer\.exe -ArgumentList "`"\$exe`""/);
+    expect(code).toMatch(/Start-Process explorer\.exe -ArgumentList "`"\$windowVbs`""/);
+    expect(code).toContain("$windowVbs  = Join-Path $repo 'setup\\beeper-window.vbs'");
+  });
+  it('(d) the update lock: held while the app is closed, the services stopped, installed and started; released for the relaunch', () => {
+    const take = "$updateLock = Open-BeeperClaim (Get-BeeperUpdateLockPath $LocalAppData)";
+    const closeOnly = code.slice(code.indexOf('if ($CloseAppOnly)'));
+    expect(closeOnly.indexOf(take)).toBeGreaterThan(0);
+    expect(closeOnly.indexOf(take)).toBeLessThan(closeOnly.indexOf('Close-BeeperApp '));
+    const main = code.slice(code.indexOf('$t0 = Get-Date'));
+    expect(main.indexOf(take)).toBeGreaterThan(0);
+    expect(main.indexOf(take)).toBeLessThan(main.indexOf('Close-BeeperApp 30'));
+    const release = main.indexOf('$updateLock.Dispose()');
+    expect(release).toBeGreaterThan(main.lastIndexOf('Start-Service $svc'));
+    expect(release).toBeLessThan(main.indexOf('$windowVbs'));
+  });
+  it('(d) the final check follows each connection to the port it answers on now', () => {
+    const wait = code.slice(code.indexOf('function Wait-Connection('));
+    expect(wait.slice(0, wait.indexOf('\n}'))).toContain('Find-BeeperPort $Token');
+    const lib = readFileSync(LIB, 'utf8');
+    expect(lib).toMatch(/function Find-BeeperPort\(\[string\] \$Token\) \{\r?\n  foreach \(\$port in \$BeeperApiPorts\)/);
+  });
+});
+
 describe('the service installer grants the same ACE on the service it creates', () => {
   const src = readFileSync(join(ROOT, 'setup', 'install-beeper-s0-service.ps1'), 'utf8');
   it('dot-sources the one library and grants after `nssm install`, to the user who ran it (carried through UAC)', () => {

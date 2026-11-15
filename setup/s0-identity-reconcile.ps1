@@ -1,8 +1,10 @@
 # s0-identity-reconcile.ps1 - the Session 0 backstop, from the egpt-s0-identity task (as the desktop
 # user, S4U, every 2 min and at boot). Two independent parts; one failing never skips the other:
 #   - a Beeper profile shared by the operator's window and a Session 0 service (beeper-desktop.ps1,
-#     "one profile, two runtimes"): start the service when it is stopped and Session 1 neither
-#     claims nor runs the profile. Stopping is setup\beeper-window.ps1's job, which then opens the window.
+#     "one profile, two runtimes"): start the service when it is stopped, Session 1 neither
+#     claims nor runs the profile, and no Session 1 egpt daemon holds state\s1.claim (while one does,
+#     the window is Session 1's to recover: setup\beeper-window.ps1 reopens it). Stopping is
+#     beeper-window.ps1's job, which then opens the window.
 #   - the egpt-daemon service (setup\install-nssm-service.ps1): start it when it is Stopped and
 #     Automatic, with no STOP file and no older Session 1 daemon (Get-EgptServiceStartVerdict).
 # Neither is ever stopped here.
@@ -57,6 +59,10 @@ function Invoke-BeeperPart {
 
   $state = [string](Get-Service $ServiceName).Status
   if ((Get-BeeperReconcileAction $state $claimed $inUse) -ne 'start') { return 0 }
+  if (Test-BeeperClaimHeld (Get-EgptS1ClaimPath $EgptHome)) {
+    Say "$ServiceName is $state and nothing in Session 1 owns $udd, but the Session 1 egpt daemon is live - not started: the window is Session 1's to reopen (setup\beeper-window.cmd, or the ""Beeper (eGPT)"" shortcut)"
+    return 0
+  }
   Say "$ServiceName is $state and nothing in Session 1 owns $udd - starting it"
   if (-not $WhatIf) { Start-Service $ServiceName }
   return 0

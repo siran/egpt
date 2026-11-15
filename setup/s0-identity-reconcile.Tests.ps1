@@ -141,6 +141,45 @@ Describe 'Invoke-BeeperPart - the normal pass starts only a service that shares 
   }
 }
 
+Describe 'Invoke-BeeperPart - while a Session 1 egpt runner is live the window is S1''s to recover' {
+  $reveAp = Get-BeeperServiceArgLine (Get-BeeperDefaultProfile $env:APPDATA)
+  function Use-Node([bool] $S1Live, [bool] $Claimed = $false, [string] $Status = 'Stopped') {
+    $script:S1Live = $S1Live; $script:Claimed = $Claimed; $script:Status = $Status
+    Mock Get-ItemProperty { [pscustomobject]@{ AppParameters = $reveAp } }
+    Mock Get-BeeperPreStartHook { '' }
+    Mock Test-BeeperClaimHeld { $script:Claimed }
+    Mock Test-BeeperClaimHeld { $script:S1Live } -ParameterFilter { $Path -eq 'C:\h\.egpt\state\s1.claim' }
+    Mock Test-BeeperProfileInUse { $false }
+    Mock Get-CimInstance { @() }
+    Mock Get-Service { [pscustomobject]@{ Status = $script:Status } }
+    Mock Start-Service { }
+    Mock Say { }
+    Mock Write-Host { }
+  }
+  It '(c) S1 is live, nothing in S1 claims or runs the profile: the service is NOT started, and the log says why' {
+    Use-Node $true
+    Invoke-BeeperPart | Should Be 0
+    Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
+    Assert-MockCalled Say -Times 1 -Exactly -Scope It -ParameterFilter { $m -match 'Session 1' -and $m -match 'not started' }
+  }
+  It 'nobody logged in, or just logged off (no S1 runner, no claim): the service is started' {
+    Use-Node $false
+    Invoke-BeeperPart | Should Be 0
+    Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It -ParameterFilter { $Name -eq 'egpt-beeper-primary' }
+  }
+  It 'S1 live and the window claims the profile: quiet, nothing started' {
+    Use-Node $true $true
+    Invoke-BeeperPart | Should Be 0
+    Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
+    Assert-MockCalled Say -Times 0 -Exactly -Scope It
+  }
+  It '-PreStart does not look at S1: the window''s fallback may start the service' {
+    $PreStart = $true
+    Use-Node $true
+    Invoke-BeeperPart | Should Be 0
+  }
+}
+
 Describe 'the pass and the hook' {
   $src = (Get-Content (Join-Path $PSScriptRoot 's0-identity-reconcile.ps1')) | Where-Object { $_ -notmatch '^\s*#' }
   It '-PreStart stays the Beeper hook only: it exits with the Beeper part and never reaches the pass' {
