@@ -246,6 +246,15 @@ export function createDaemonRuntime(opts = {}) {
   let spawnBeatMtime = null;
   let lastGoodRecorded = false;   // once per child; reset in spawnShell
 
+  // --- the primary Beeper follows the runner (operator 2026-11-15, GENOME 6) ----------------------
+  // This daemon is its supervisor: one PowerShell pass per tick, never two at once. S1: the
+  // operator's window on the shared profile (beeper-window.ps1 -Once). S0: the Beeper services
+  // (s0-identity-reconcile.ps1 -BeeperOnly; it leaves the primary to S1 while s1.claim is held).
+  const beeperIntervalMs = opts.beeperIntervalMs ?? (session1 ? 15_000 : 60_000);
+  const beeperArgs = session1 ? ['beeper-window.ps1', '-Once'] : ['s0-identity-reconcile.ps1', '-BeeperOnly'];
+  let beeperTimer = null;
+  let beeperPass = null;
+
   function log(msg) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}]${logTag ? ` [${logTag}]` : ''} ${msg}\n`);
   }
@@ -728,6 +737,24 @@ export function createDaemonRuntime(opts = {}) {
     }
   }
 
+  // A Beeper this pass opens inherits its environment, so EGPT_SESSION1 stays out of it.
+  function runBeeperPass() {
+    if (stopping || beeperPass) return;
+    const [script, mode] = beeperArgs;
+    const { [SESSION1_ENV]: _session1, ...env } = processObj.env;
+    const name = `${script} ${mode}`;
+    try {
+      beeperPass = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'setup', script), mode, '-EgptHome', egptHome], {
+        cwd: root, env: { ...env, EGPT_HOME: egptHome }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      });
+    } catch (e) { log(`beeper: could not run ${name} (${e.message})`); return; }
+    const say = (buf) => { for (const line of String(buf).split(/\r?\n/)) if (line.trim()) log(`beeper: ${line.trim()}`); };
+    beeperPass.stdout?.on('data', say);
+    beeperPass.stderr?.on('data', say);
+    beeperPass.on('error', (e) => { log(`beeper: ${name} failed to run (${e.message})`); beeperPass = null; });
+    beeperPass.on('exit', (code) => { beeperPass = null; if (code) log(`beeper: ${name} exited ${code}`); });
+  }
+
   function spawnShell() {
     if (stopping) return null;
     const blocked = blocker();
@@ -868,6 +895,8 @@ export function createDaemonRuntime(opts = {}) {
     closeChildLogs();
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
     if (holdTimer) { clearIntervalFn(holdTimer); holdTimer = null; }
+    if (beeperTimer) { clearIntervalFn(beeperTimer); beeperTimer = null; }
+    try { beeperPass?.kill('SIGTERM'); } catch { /* already gone */ }
     for (const fd of [runnerLock, s1Claim]) if (fd != null) unlockFile(fd);
     runnerLock = s1Claim = null;
     if (child) {
@@ -946,6 +975,10 @@ export function createDaemonRuntime(opts = {}) {
     if (livenessIntervalMs > 0 && !livenessTimer) {
       livenessTimer = setIntervalFn(checkLiveness, livenessIntervalMs);
       livenessTimer?.unref?.();
+    }
+    if (platform === 'win32' && beeperIntervalMs > 0 && !beeperTimer) {
+      beeperTimer = setIntervalFn(runBeeperPass, beeperIntervalMs);
+      beeperTimer?.unref?.();
     }
     return c;
   }

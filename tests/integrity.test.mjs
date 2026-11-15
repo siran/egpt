@@ -234,6 +234,11 @@ const PORTABLE_BY_DESIGN = [
     code: "? ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER_PATH, ...params]]",
     why: 'THE LAUNCHER PER PLATFORM (EDW 2026-10-24; was debt since 2026-09-04): the win32 branch of launchCommand. Linux runs docker/egpt-box through sudo with the same parameters; any other platform is refused by boxUnavailable before this is reached.',
   },
+  {
+    file: 'src/daemon-runtime.mjs',
+    code: "spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'setup', script)",
+    why: 'THE DAEMON SUPERVISES THE PRIMARY BEEPER (operator 2026-11-15, GENOME 6): one pass of setup/beeper-window.ps1 -Once (S1) or s0-identity-reconcile.ps1 -BeeperOnly (S0) per tick. Its timer starts only when platform === \'win32\' (start()), where the Beeper services and the S0/S1 split exist; the decisions stay in setup/*.ps1.',
+  },
 ];
 
 // Group 2: genuine platform coupling in the scanned tree. NOT excused — recorded, so the suite

@@ -14,14 +14,15 @@
 #   5 service     egpt-beeper-primary stopped and pointed at the profile (unless it already runs it),
 #                 with a 10 s Ctrl+C grace and the NSSM Start/Pre hook
 #   6 reconciler  egpt-s0-identity registered as the desktop user (S4U), never SYSTEM
-#   7 logon       Beeper's own Run value replaced by beeper-window.vbs, plus a "Beeper (eGPT)" shortcut
-#   8 launcher    beeper-window started: it claims the profile and watches the window
+#   7 logon       Beeper's own Run value (and an older conversion's egpt-beeper-window one) removed, plus
+#                 a "Beeper (eGPT)" shortcut. No logon watcher: the Session 1 egpt daemon keeps the window
+#                 open (setup\beeper-window.ps1 -Once).
 # The record of what it replaced (state\beeper-share.json, with the profile) is written before step 3
 # changes anything (a kept token is checked first).
 # -Resume finishes a conversion that stopped once the service runs the profile (after step 5, or
 # after step 3 when it already did): it looks at what is live and runs only
-# what is missing (config, service hook, 6, 7, 8), each step safe to run again.
-# -Revert undoes 8..3 from that record and names the profile backup. It starts the old service
+# what is missing (config, service hook, 6, 7), each step safe to run again.
+# -Revert undoes 7..3 from that record and names the profile backup. It starts the old service
 # device again, which only works until the operator logs that device out; a service that kept its
 # profile gets it back once Beeper is quit.
 # The service keeps its LocalSystem log-on. Running it as the desktop user is a separate, optional
@@ -68,10 +69,9 @@ function Get-ShareResumeSteps($s) {
       else { " - replacing the one that runs as $($s.task.userId) ($($s.task.logonType))" }
     $steps += "reconciler: register egpt-s0-identity as $($s.user) (S4U, every 2 min from now on, and at boot)$why"
   }
-  if ($s.runValue -or -not $s.launcherRunValue -or -not $s.shortcutExists) {
-    $steps += "logon: Run value $RunKeyBeeper ($(& $have $s.runValue)) -> $RunKeyWindow ($(& $have $s.launcherRunValue)); shortcut 'Beeper (eGPT)' ($(& $have $s.shortcutExists))"
+  if ($s.runValue -or $s.launcherRunValue -or -not $s.shortcutExists) {
+    $steps += "logon: Run values $RunKeyBeeper ($(& $have $s.runValue)) and $RunKeyWindow ($(& $have $s.launcherRunValue)) removed; shortcut 'Beeper (eGPT)' ($(& $have $s.shortcutExists))"
   }
-  if (-not $s.launcherRunning) { $steps += 'launcher: start beeper-window (claims the profile, watches the window)' }
   return $steps
 }
 
@@ -126,8 +126,7 @@ function Get-SharePlan($s, [bool] $Revert, [bool] $Resume = $false) {
     $(if ($runs) { "service: stop $($s.serviceName); AppParameters stay as they are; AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart" }
       else { "service: stop $($s.serviceName); AppParameters -> $(Get-BeeperServiceArgLine $s.profile); AppStopMethodConsole $StopGraceMs; AppEvents Start/Pre -> s0-identity-reconcile.ps1 -PreStart" }),
     "reconciler: register egpt-s0-identity as $($s.user) (S4U, every 2 min from now on, and at boot)",
-    "logon: Run value $RunKeyBeeper ($(if ($s.runValue) { 'present' } else { 'absent' })) -> $RunKeyWindow; shortcut 'Beeper (eGPT)'",
-    'launcher: start beeper-window (claims the profile, watches the window)') }
+    "logon: Run value $RunKeyBeeper ($(if ($s.runValue) { 'present' } else { 'absent' })) removed; shortcut 'Beeper (eGPT)' (the Session 1 egpt daemon keeps the window open)") }
 }
 
 function Test-NssmHooks([string] $Version) {
@@ -179,7 +178,6 @@ function Read-ShareState {
   $s.runValue = $run.$RunKeyBeeper
   $s.launcherRunValue = $run.$RunKeyWindow
   $s.shortcutExists = Test-Path -LiteralPath $shortcut
-  $s.launcherRunning = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' }).Count -gt 0
   $s.user = ([Security.Principal.SecurityIdentifier]$UserSid).Translate([Security.Principal.NTAccount]).Value
   if ($s.profileExists -and -not $record) {   # only a fresh conversion asks
     $gaps = @(Get-BeeperAclGaps $profileDir $UserSid)
@@ -261,16 +259,12 @@ function Invoke-ShareStep([string] $Id) {
     'reconciler' { & (Join-Path $PSScriptRoot 'register-s0-identity-task.ps1') -ServiceName $ServiceName -LogPath $hookLog -UserId $state.user }
     'logon' {
       Remove-ItemProperty -Path $runKey -Name $RunKeyBeeper -ErrorAction SilentlyContinue
-      Set-ItemProperty -Path $runKey -Name $RunKeyWindow -Value "`"$env:SystemRoot\System32\wscript.exe`" //B //Nologo `"$launcherVbs`""
+      Remove-ItemProperty -Path $runKey -Name $RunKeyWindow -ErrorAction SilentlyContinue
       $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
       $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
       $lnk.Arguments = "//B //Nologo `"$launcherVbs`""
       $lnk.IconLocation = "$exe,0"
       $lnk.Save()
-    }
-    'launcher' {   # as the desktop user, through the shortcut
-      if (@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { [string]$_.CommandLine -match 'beeper-window\.ps1' }).Count) { Say 'beeper-window is already running'; return }
-      Start-Process explorer.exe -ArgumentList "`"$shortcut`""
     }
     default { throw "unknown step '$Id'" }
   }
@@ -286,7 +280,7 @@ function Invoke-ShareTail([string[]] $Ids) {
 try {
 if ($Resume) {
   Invoke-ShareTail @($plan.steps | ForEach-Object { ($_ -split ':')[0] })
-  Say "done. Beeper stays open while you are logged in (beeper-window reopens it); $ServiceName takes the profile when you log off."
+  Say "done. Beeper stays open while you are logged in (the Session 1 egpt daemon reopens it); $ServiceName takes the profile when you log off."
   Done ([ordered]@{ ok = $true; resume = $true; steps = $plan.steps })
 }
 
@@ -384,9 +378,9 @@ if (Test-EgptSpineLive $EgptHome) { Send-EgptIngestLine $EgptHome '/restart'; Sa
 # 5 service - the account stays LocalSystem (see the header); one that already runs the profile keeps its AppParameters
 Stop-ShareService
 if (-not $keep) { Set-Nssm AppParameters (Get-BeeperServiceArgLine $profileDir) }
-# From here on a failure is something -Resume finishes: the rest of 5, then 6 reconciler, 7 logon, 8 launcher
-Invoke-ShareTail @('service', 'reconciler', 'logon', 'launcher')
-Say "done. Beeper stays open while you are logged in (beeper-window reopens it); $ServiceName takes the profile when you log off."
+# From here on a failure is something -Resume finishes: the rest of 5, then 6 reconciler, 7 logon
+Invoke-ShareTail @('service', 'reconciler', 'logon')
+Say "done. Beeper stays open while you are logged in (the Session 1 egpt daemon reopens it); $ServiceName takes the profile when you log off."
 Say "profile backup: $backup ($backupMb MB). Undo: share-beeper-primary-profile.cmd -Revert"
 Say "optional: beeper-services-run-as-user.cmd runs the Beeper services as you instead of LocalSystem"
 Done ([ordered]@{ ok = $true; profileBackup = $backup; profileBackupMB = $backupMb; port = $port })

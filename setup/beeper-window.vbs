@@ -1,5 +1,5 @@
-' beeper-window.vbs - silent launcher for beeper-window.ps1 beside it (the HKCU Run value and the
-' "Beeper (eGPT)" shortcut point here). Window style 0 = hidden; does not wait.
+' beeper-window.vbs - silent launcher for beeper-window.ps1 beside it (the "Beeper (eGPT)" shortcut
+' and beeper-update.ps1's relaunch point here). Window style 0 = hidden; does not wait.
 ' ASCII ONLY, same house rule as the .ps1 scripts beside it.
 
 Option Explicit

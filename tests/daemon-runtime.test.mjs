@@ -1181,6 +1181,105 @@ describe('one runner across sessions', () => {
 });
 
 // =====================================================================================
+// THE PRIMARY BEEPER FOLLOWS THE RUNNER (operator 2026-11-15, GENOME 6): the daemon is its
+// supervisor. Each tick runs one PowerShell pass: in S1 setup/beeper-window.ps1 -Once (the
+// window: take the profile from the service, reopen it, wait out an update), in S0
+// setup/s0-identity-reconcile.ps1 -BeeperOnly (the services). The decisions are Pester's.
+// =====================================================================================
+describe('the daemon supervises the primary Beeper for its session', () => {
+  function beeperWorld({ session1 = false, platform = 'win32', claimedByS1 = false } = {}) {
+    const processObj = makeProcess();
+    processObj.pid = session1 ? 5001 : 5000;
+    if (session1) processObj.env.EGPT_SESSION1 = '1';
+    const intervals = [];
+    const h = makeRuntime({
+      processObj,
+      platform,
+      lockHeld: (p) => claimedByS1 && String(p).endsWith('s1.claim'),
+      setInterval: (fn, ms) => { const t = { fn, ms, ref() { return t; }, unref() { t.unrefd = true; return t; } }; intervals.push(t); return t; },
+      clearInterval: (t) => { if (t) t.cleared = true; },
+    });
+    const passes = () => h.children.filter((c) => c.cmd === 'powershell.exe');
+    const tick = () => intervals.find((t) => t.ms === (session1 ? 15_000 : 60_000)).fn();
+    return { ...h, intervals, passes, tick };
+  }
+
+  it('S1 with no window: its tick runs beeper-window.ps1 -Once on this profile - the pass that opens it', () => {
+    const w = beeperWorld({ session1: true });
+    w.runtime.start();
+    expect(w.passes()).toHaveLength(0);
+    w.tick();
+    const [p] = w.passes();
+    expect(p.args.slice(0, 4)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']);
+    expect(p.args.slice(4)).toEqual(['-File', join('C:/repo/egpt', 'setup', 'beeper-window.ps1'), '-Once', '-EgptHome', 'C:/home/.egpt']);
+    expect(p.opts.windowsHide).toBe(true);
+  });
+
+  it('Beeper inherits the pass\'s environment: never EGPT_SESSION1', () => {
+    const w = beeperWorld({ session1: true });
+    w.runtime.start();
+    w.tick();
+    const [p] = w.passes();
+    expect(p.opts.env.EGPT_SESSION1).toBeUndefined();
+    expect(p.opts.env.EGPT_HOME).toBe('C:/home/.egpt');
+  });
+
+  it('the window exits: the next tick runs the pass again (it reopens); never two passes at once', async () => {
+    const w = beeperWorld({ session1: true });
+    w.runtime.start();
+    w.tick();
+    w.tick();                                   // the first pass is still running
+    expect(w.passes()).toHaveLength(1);
+    await w.passes()[0].child.handlers.exit(0, null);
+    w.tick();
+    expect(w.passes()).toHaveLength(2);
+  });
+
+  it('a failed pass is said in the daemon log and retried on the next tick', async () => {
+    const w = beeperWorld({ session1: true });
+    w.runtime.start();
+    w.tick();
+    await w.passes()[0].child.handlers.exit(1, null);
+    expect(w.logs.join('')).toMatch(/beeper-window\.ps1 -Once exited 1/);
+    w.tick();
+    expect(w.passes()).toHaveLength(2);
+  });
+
+  it('S0: its tick runs s0-identity-reconcile.ps1 -BeeperOnly - a stopped Beeper service is started there', () => {
+    const w = beeperWorld();
+    w.runtime.start();
+    w.tick();
+    const [p] = w.passes();
+    expect(p.args.slice(4)).toEqual(['-File', join('C:/repo/egpt', 'setup', 's0-identity-reconcile.ps1'), '-BeeperOnly', '-EgptHome', 'C:/home/.egpt']);
+  });
+
+  it('S0 holding off for Session 1 still runs its pass (the secondary stays up; the script leaves the primary to S1)', () => {
+    const w = beeperWorld({ claimedByS1: true });
+    expect(w.runtime.start()).toBeNull();
+    expect(w.runtime.state.holding).toMatch(/Session 1/);
+    w.tick();
+    expect(w.passes()).toHaveLength(1);
+  });
+
+  it('the timer never keeps the process up, and shutdown stops it and ends a pass in flight', () => {
+    const w = beeperWorld({ session1: true });
+    w.runtime.start();
+    const t = w.intervals.find((x) => x.ms === 15_000);
+    expect(t.unrefd).toBe(true);
+    w.tick();
+    w.runtime.shutdown('SIGTERM');
+    expect(t.cleared).toBe(true);
+    expect(w.passes()[0].child.killed).toEqual(['SIGTERM']);
+  });
+
+  it('off Windows: no Beeper pass at all', () => {
+    const w = beeperWorld({ session1: true, platform: 'linux' });
+    w.runtime.start();
+    expect(w.intervals.filter((x) => x.ms === 15_000 || x.ms === 60_000)).toEqual([]);
+  });
+});
+
+// =====================================================================================
 // THE SINGLETON: one daemon per profile per session, and none beside a live spine.
 // =====================================================================================
 describe('daemon runtime: the singleton is session-scoped', () => {

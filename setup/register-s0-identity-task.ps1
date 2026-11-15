@@ -1,8 +1,8 @@
 # register-s0-identity-task.ps1 - run setup\s0-identity-reconcile.ps1 every few minutes and at boot:
-# it starts a shared-profile Beeper service once Session 1 lets go of the profile (a logoff, a
-# window that quit with no launcher watching), and the egpt-daemon service when it is Stopped and
-# Automatic with no STOP file. setup\share-beeper-primary-profile.ps1 and install-nssm-service.ps1
-# register it. Logon needs no trigger: setup\beeper-window.ps1 and the egpt-daemon task own that moment.
+# it starts the Beeper services while no Session 0 egpt daemon is live (that daemon owns them), and
+# the egpt-daemon service when it is Stopped and Automatic with no STOP file.
+# setup\share-beeper-primary-profile.ps1 and install-nssm-service.ps1 register it. Logon needs no
+# trigger: the egpt-daemon task owns that moment (its beeper-window.ps1 -Once pass opens the window).
 #
 # AS THE DESKTOP USER, S4U: it runs whether or not that user is logged on, and no password is
 # stored. NEVER SYSTEM: the script lives in a folder the user can write, so SYSTEM running it would

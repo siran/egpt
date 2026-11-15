@@ -1,19 +1,19 @@
-# beeper-window.ps1 - open the operator's Beeper window on the profile a Session 0 service shares
-# with it, and keep it open while the operator is logged in. Never both at once.
+# beeper-window.ps1 - the operator's Beeper window on the profile a Session 0 service shares with it.
+# Never both at once. One pass; it never loops and never kills Beeper.
 #
-#   at logon (HKCU Run) and from the "Beeper (eGPT)" shortcut:
-#     claim the profile -> [hold the spine] stop the service -> wait until its Beeper lets go of
-#     the profile -> open the window -> [release the spine once the token answers]
-#   then it watches, holding the claim. When Beeper EXITS (tray Quit, a crash, Beeper's own
-#   update) - a hidden window still counts as open - it reopens it. After $Tries opens that never
-#   come up it starts the service and tries the window again $RetryMin minutes later.
-#   A logoff ends this process, which releases the claim; the reconciler task
-#   (s0-identity-reconcile.ps1) starts the service then.
-#   It never kills Beeper: if the service's Beeper does not let go, the window is not opened.
-#   It reopens nothing while an update needs Beeper closed (Test-UpdateRunning); beeper-update.ps1
-#   hands the window back to it.
+#   -Once   the Session 1 egpt daemon's pass (src\daemon-runtime.mjs, every few seconds; it holds
+#           state\s1.claim): claim the profile -> [hold the spine] stop the service -> wait until its
+#           Beeper lets go of the profile -> open the window -> [release the spine once the token
+#           answers] -> let go of the claim. A window already open: nothing. So a window that exits
+#           (tray Quit, a crash, Beeper's own update) is reopened by the next pass, and nothing is
+#           reopened while an update needs Beeper closed (Test-UpdateRunning) or another launcher
+#           holds the claim. The daemon ending (logoff) lets go of s1.claim; the Session 0 daemon
+#           starts the service then.
+#   (none)  the "Beeper (eGPT)" shortcut, and beeper-update.ps1's relaunch: while the Session 1 daemon
+#           holds s1.claim it only surfaces an open window (the daemon opens it); with no such daemon,
+#           the same handover once.
 #
-# No service shares the profile (the baseline): it just opens Beeper.
+# No service shares the profile (the baseline): the shortcut just opens Beeper; -Once does nothing.
 #   beeper-window.cmd [-DryRun]
 # ASCII ONLY: PowerShell 5.1 decodes a BOM-less UTF-8 script as ANSI.
 [CmdletBinding()]
@@ -22,24 +22,23 @@ param(
   [string] $EgptHome = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
   [string] $AppData = $env:APPDATA,
   [string] $LocalAppData = $env:LOCALAPPDATA,
-  [int] $PollSec = 3,
   [int] $WaitSec = 60,
-  [int] $Tries = 3,
-  [int] $RetryMin = 10,
+  [switch] $Once,
   [switch] $DryRun,
   [switch] $LoadFunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'beeper-desktop.ps1')
+. (Join-Path $PSScriptRoot 'egpt-runners.ps1')
 
 # What to do, from what is true now. 'show' surfaces a window another launcher already owns.
-function Get-BeeperWindowPlan([bool] $Shared, [bool] $Claimed, [string] $ServiceState, [bool] $WindowUp) {
+function Get-BeeperWindowPlan([bool] $Shared, [bool] $Claimed, [string] $ServiceState, [bool] $WindowUp, [bool] $Updating = $false) {
+  if ($Updating) { return @() }
   if (-not $Shared) { return @('open') }
   if (-not $Claimed) { if ($WindowUp) { return @('show') } return @() }
   $p = @()
   if ($ServiceState -ne 'Stopped') { $p += 'stop-service', 'wait-release' }
-  if (-not $WindowUp) { $p += 'open' }
-  return $p + 'watch'
+  if (-not $WindowUp) { if (-not $p) { $p += 'wait-release' }; $p += 'open' }
+  return $p
 }
 
 # Where the window opens: the profile this service shares with it (its --user-data-dir, needed
@@ -47,12 +46,6 @@ function Get-BeeperWindowPlan([bool] $Shared, [bool] $Claimed, [string] $Service
 function Get-BeeperWindowOpen([bool] $Shared, [string] $AppParameters, [string] $AppData) {
   $p = if ($Shared) { Get-BeeperShareProfile $AppParameters $AppData } else { Get-BeeperDefaultProfile $AppData }
   return [ordered]@{ profile = $p; args = (Get-BeeperWindowArgs $p $AppData) }
-}
-
-# Polls in a row with no Beeper and no update in progress; two mean Beeper has exited.
-function Get-BeeperWatchCount([bool] $BeeperUp, [bool] $UpdateRunning, [int] $Count) {
-  if ($BeeperUp -or $UpdateRunning) { return 0 }
-  return $Count + 1
 }
 
 # Beeper must stay closed: beeper-update.ps1 holds its lock (until it hands the window back),
@@ -67,26 +60,52 @@ function Test-UpdateRunning {
   return @(Get-CimInstance Win32_Process -Filter "SessionId=$session" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($updater, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
 }
 
-# Reopens Beeper whenever it exits. Returns only after $Tries opens in a row never came up, once
-# the service has the profile.
-function Watch-BeeperWindow {
-  $gone = 0; $opens = 0
-  while ($true) {
-    Start-Sleep -Seconds $PollSec
-    $up = (Test-WindowUp) -or (Test-BeeperLockHeld $profileDir)
-    if ($up) { $opens = 0 }
-    $gone = Get-BeeperWatchCount $up (Test-UpdateRunning) $gone
-    if ($gone -lt 2) { continue }
-    if ($opens -ge $Tries) { break }
-    Say $(if ($opens) { "Beeper did not come up - opening it again ($($opens + 1) of $Tries)" } else { 'Beeper exited - reopening it' })
-    try { Open-Window } catch { Say "FAILED to open Beeper: $($_.Exception.Message)" }
-    $opens++; $gone = 0
+# One pass. 0, or 1 when the handover failed.
+function Invoke-BeeperWindow {
+  if ($Once -and -not $shared) { return 0 }
+  $daemonOwns = -not $Once -and (Test-BeeperClaimHeld (Get-EgptS1ClaimPath $EgptHome))
+  $claim = $null
+  if ($shared -and -not $daemonOwns -and -not $DryRun) {
+    for ($i = 0; $i -lt 10 -and -not $claim; $i++) { $claim = Open-BeeperClaim $claimPath; if (-not $claim) { Start-Sleep -Milliseconds 300 } }
   }
-  Say "FAILED: Beeper did not come up after $Tries tries - starting $ServiceName; the window is tried again in $RetryMin min"
-  $held = Enter-EgptBeeperHold $EgptHome
-  $claim.Dispose()
-  try { Start-Service $ServiceName } catch { Say "FAILED to start ${ServiceName}: $($_.Exception.Message)" }
-  Exit-EgptBeeperHold $EgptHome $held (Get-Token)
+  $held = $false
+  try {
+    $claimed = if ($DryRun) { $shared -and -not $daemonOwns -and -not (Test-BeeperClaimHeld $claimPath) } else { [bool]$claim }
+    $serviceState = if ($shared) { [string](Get-Service $ServiceName).Status } else { '' }
+    $plan = Get-BeeperWindowPlan $shared $claimed $serviceState (Test-WindowUp) (Test-UpdateRunning)
+
+    if ($DryRun) {
+      Say "-DryRun: shared=$shared once=$Once daemon=$daemonOwns service=$ServiceName ($serviceState) profile=$profileDir open: Beeper.exe $($open.args) plan: $(if ($plan) { $plan -join ' -> ' } else { 'nothing' })"
+      return 0
+    }
+    if (-not $shared -or -not $claimed) {
+      if ($Once) { return 0 }
+      if ($plan -contains 'open' -or $plan -contains 'show') { Open-Window }
+      elseif ($daemonOwns) { Say 'the egpt daemon opens the window - nothing to do' }
+      return 0
+    }
+    if ($plan -contains 'stop-service') {
+      $held = Enter-EgptBeeperHold $EgptHome
+      Say "stopping $ServiceName"
+      Stop-Service $ServiceName
+      (Get-Service $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds($WaitSec))
+    }
+    if ($plan -contains 'wait-release') {
+      $deadline = (Get-Date).AddSeconds($WaitSec)
+      while ((Test-BeeperLockHeld $profileDir) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+      if (Test-BeeperLockHeld $profileDir) { throw "a Beeper still holds $profileDir after ${WaitSec}s - the window is not opened" }
+      if ($plan -contains 'stop-service') { Start-Sleep -Seconds 2 }   # let its sqlite/leveldb handles close
+    }
+    if ($plan -contains 'open') { Say 'opening Beeper'; Open-Window }
+    if ($held) { Exit-EgptBeeperHold $EgptHome $held (Get-Token) }
+    return 0
+  } catch {
+    Say "FAILED: $($_.Exception.Message)"
+    Exit-EgptBeeperHold $EgptHome $held $null
+    return 1
+  } finally {
+    if ($claim) { $claim.Dispose() }
+  }
 }
 
 if ($LoadFunctionsOnly) { return }
@@ -103,6 +122,7 @@ $exe = if ($par.Application) { [string]$par.Application } else { Join-Path $Loca
 $shared = [bool]$par -and (Test-BeeperSharedProfile ([string]$par.AppParameters) $AppData (Get-BeeperPreStartHook $ServiceName))
 $open = Get-BeeperWindowOpen $shared ([string]$par.AppParameters) $AppData
 $profileDir = $open.profile
+$claimPath = Get-BeeperClaimPath $profileDir
 $connection = $ServiceName -replace '^egpt-beeper-', ''
 $session = (Get-Process -Id $PID).SessionId
 
@@ -111,56 +131,7 @@ function Test-WindowUp {
   return @(Select-BeeperProfileProcesses $mine $profileDir).Count -gt 0
 }
 function Open-Window { if ($open.args) { Start-Process -FilePath $exe -ArgumentList $open.args } else { Start-Process -FilePath $exe } }
-
 # The spine's Beeper bridges wait (calls held, no redial) while the profile changes hands.
-$held = $false
 function Get-Token { (Get-BeeperTokens -RepoRoot (Split-Path -Parent $PSScriptRoot) -EgptHome $EgptHome)[$connection] }
 
-$claimPath = Get-BeeperClaimPath $profileDir
-$claim = $null
-if ($shared -and -not $DryRun) {
-  for ($i = 0; $i -lt 10 -and -not $claim; $i++) { $claim = Open-BeeperClaim $claimPath; if (-not $claim) { Start-Sleep -Milliseconds 300 } }
-}
-$claimed = if ($DryRun) { $shared -and -not (Test-BeeperClaimHeld $claimPath) } else { [bool]$claim }
-$serviceState = if ($shared) { [string](Get-Service $ServiceName).Status } else { '' }
-$plan = Get-BeeperWindowPlan $shared $claimed $serviceState (Test-WindowUp)
-
-if ($DryRun) {
-  Say "-DryRun: shared=$shared service=$ServiceName ($serviceState) profile=$profileDir open: Beeper.exe $($open.args) plan: $(if ($plan) { $plan -join ' -> ' } else { 'nothing (another launcher owns the profile)' })"
-  return
-}
-if (-not $shared) { Open-Window; return }
-if (-not $claimed) {
-  if ($plan -contains 'show') { Open-Window } else { Say 'another launcher is handing the profile over - nothing to do' }
-  return
-}
-
-while ($true) {
-  try {
-    if ($plan -contains 'stop-service') {
-      $held = Enter-EgptBeeperHold $EgptHome
-      Say "stopping $ServiceName"
-      Stop-Service $ServiceName
-      (Get-Service $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds($WaitSec))
-      $deadline = (Get-Date).AddSeconds($WaitSec)
-      while ((Test-BeeperLockHeld $profileDir) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-      if (Test-BeeperLockHeld $profileDir) { throw "the service's Beeper still holds $profileDir after ${WaitSec}s - the window is not opened" }
-      Start-Sleep -Seconds 2   # let its sqlite/leveldb handles close
-    }
-    if ($plan -contains 'open') { Say 'opening Beeper'; Open-Window }
-    Exit-EgptBeeperHold $EgptHome $held (Get-Token)
-  } catch {
-    Say "FAILED: $($_.Exception.Message)"
-    Exit-EgptBeeperHold $EgptHome $held $null
-    $claim.Dispose()
-    exit 1
-  }
-
-  Say 'watching: Beeper is reopened when it exits'
-  Watch-BeeperWindow
-  Start-Sleep -Seconds (60 * $RetryMin)
-  $claim = Open-BeeperClaim $claimPath
-  if (-not $claim) { Say 'another launcher has the profile now - nothing to do'; exit 0 }
-  $held = $false
-  $plan = Get-BeeperWindowPlan $true $true ([string](Get-Service $ServiceName).Status) (Test-WindowUp)
-}
+exit (Invoke-BeeperWindow)

@@ -15,18 +15,18 @@ function New-State([hashtable] $Over = @{}, [hashtable] $Service = @{}) {
     serviceName = 'egpt-beeper-primary'; appData = 'C:\Users\user\AppData\Roaming'; profile = 'C:\Users\user\AppData\Roaming\BeeperTexts'
     profileExists = $true; recordPath = 'C:\h\state\beeper-share.json'; record = $null; hooks = $true; spineLive = $true
     service = $svc; windowUp = $true; runValue = '"C:\B\Beeper.exe"'; config = [ordered]@{ primary = $true; primaryGui = $true }
-    user = 'reve\user'; task = $null; launcherRunValue = $null; shortcutExists = $false; launcherRunning = $false
+    user = 'reve\user'; task = $null; launcherRunValue = $null; shortcutExists = $false
   }
   foreach ($k in $Over.Keys) { $s[$k] = $Over[$k] }
   return [pscustomobject]$s
 }
 
 Describe 'Get-SharePlan - convert' {
-  It 'eight steps, backup first, the record before the token, the launcher last' {
+  It 'seven steps, backup first, the record before the token, the logon last: no launcher (the Session 1 egpt daemon keeps the window)' {
     $p = Get-SharePlan (New-State) $false
     $p.ok | Should Be $true
-    @($p.steps).Count | Should Be 8
-    ($p.steps | ForEach-Object { ($_ -split ':')[0] }) -join ',' | Should Be 'backup,window,token,config,service,reconciler,logon,launcher'
+    @($p.steps).Count | Should Be 7
+    ($p.steps | ForEach-Object { ($_ -split ':')[0] }) -join ',' | Should Be 'backup,window,token,config,service,reconciler,logon'
     $p.steps[0] | Should Match 'quit it'
     $p.steps[2] | Should Match 'beeper-share\.json'
     $p.steps[4] | Should Match ([regex]::Escape('--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts"'))
@@ -90,23 +90,25 @@ $script:S4U = [pscustomobject]@{ userId = 'reve\user'; logonType = 'S4U'; trigge
 $script:BootOnly = [pscustomobject]@{ userId = 'reve\user'; logonType = 'S4U'; triggers = @([pscustomobject]@{ kind = 'Boot'; interval = 'PT2M'; duration = '' }) }
 
 Describe 'Get-SharePlan - resume a conversion that stopped' {
-  It 'the live state (task, logon, launcher missing): exactly steps 6, 7, 8' {
+  It 'the live state (task, logon missing): exactly steps 6, 7' {
     $p = Get-SharePlan (New-HalfState) $false $true
     $p.ok | Should Be $true
-    Get-Ids $p | Should Be 'reconciler,logon,launcher'
+    Get-Ids $p | Should Be 'reconciler,logon'
     $p.steps[0] | Should Match 'as reve\\user \(S4U'
-    $p.steps[1] | Should Match 'com\.automattic\.beeper\.desktop \(present\) -> egpt-beeper-window \(absent\)'
+    $p.steps[1] | Should Match 'com\.automattic\.beeper\.desktop \(present\) and egpt-beeper-window \(absent\) removed'
   }
   It 'picks up at each step boundary' {
-    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U }) $false $true) | Should Be 'logon,launcher'
-    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $true }) $false $true) | Should Be 'launcher'
-    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $true; launcherRunning = $true }) $false $true) | Should Be ''
+    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U }) $false $true) | Should Be 'logon'
+    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; shortcutExists = $true }) $false $true) | Should Be ''
+  }
+  It 'an older conversion''s egpt-beeper-window Run value (the retired watcher) is a logon step: it goes' {
+    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $true }) $false $true) | Should Be 'logon'
   }
   It 'a half-done logon step (Beeper''s Run value gone, no shortcut yet) is redone whole' {
-    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $false }) $false $true) | Should Be 'logon,launcher'
+    Get-Ids (Get-SharePlan (New-HalfState @{ task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $false }) $false $true) | Should Be 'logon'
   }
   It 'reve after the resume: a task whose repetition hangs off AtStartup only is registered again; nothing else' {
-    $done = @{ runValue = $null; launcherRunValue = 'x'; shortcutExists = $true; launcherRunning = $true }
+    $done = @{ runValue = $null; shortcutExists = $true }
     $p = Get-SharePlan (New-HalfState ($done + @{ task = $script:BootOnly })) $false $true
     Get-Ids $p | Should Be 'reconciler'
     $p.steps[0] | Should Match 'every 2 min from now on, and at boot\) - replacing one with no repeating time trigger'
@@ -116,14 +118,14 @@ Describe 'Get-SharePlan - resume a conversion that stopped' {
   }
   It 'a task that runs as SYSTEM (or not S4U) is registered again, as the user' {
     $p = Get-SharePlan (New-HalfState @{ task = [pscustomobject]@{ userId = 'SYSTEM'; logonType = 'ServiceAccount' } }) $false $true
-    Get-Ids $p | Should Be 'reconciler,logon,launcher'
+    Get-Ids $p | Should Be 'reconciler,logon'
     $p.steps[0] | Should Match 'replacing the one that runs as SYSTEM'
-    Get-Ids (Get-SharePlan (New-HalfState @{ task = [pscustomobject]@{ userId = 'reve\user'; logonType = 'Password' } }) $false $true) | Should Be 'reconciler,logon,launcher'
+    Get-Ids (Get-SharePlan (New-HalfState @{ task = [pscustomobject]@{ userId = 'reve\user'; logonType = 'Password' } }) $false $true) | Should Be 'reconciler,logon'
   }
   It 'earlier gaps come first: primary_gui still there, the hook or the Ctrl+C grace not set' {
-    Get-Ids (Get-SharePlan (New-HalfState @{ config = [pscustomobject]@{ primary = $true; primaryGui = $true } }) $false $true) | Should Be 'config,reconciler,logon,launcher'
-    Get-Ids (Get-SharePlan (New-HalfState @{} @{ preHook = '' }) $false $true) | Should Be 'service,reconciler,logon,launcher'
-    Get-Ids (Get-SharePlan (New-HalfState @{} @{ stopConsole = '1500' }) $false $true) | Should Be 'service,reconciler,logon,launcher'
+    Get-Ids (Get-SharePlan (New-HalfState @{ config = [pscustomobject]@{ primary = $true; primaryGui = $true } }) $false $true) | Should Be 'config,reconciler,logon'
+    Get-Ids (Get-SharePlan (New-HalfState @{} @{ preHook = '' }) $false $true) | Should Be 'service,reconciler,logon'
+    Get-Ids (Get-SharePlan (New-HalfState @{} @{ stopConsole = '1500' }) $false $true) | Should Be 'service,reconciler,logon'
   }
   It 'refused without a record, and when the service does not run the profile yet (stopped before step 5)' {
     (Get-SharePlan (New-HalfState @{ record = $null }) $false $true).step | Should Be 'record'
@@ -150,11 +152,11 @@ function New-DollyState([hashtable] $Over = @{}, [hashtable] $Service = @{}) {
 function Read-Fixture([string] $Name) { Get-Content (Join-Path $PSScriptRoot "fixtures\share-state-$Name.json") -Raw | ConvertFrom-Json }
 
 Describe 'Get-SharePlan - dolly: the service already runs its own profile' {
-  It 'the fixture: eight steps on an-beeper; the service stopped for the backup, the window opened on it, the token kept and checked, AppParameters untouched' {
+  It 'the fixture: seven steps on an-beeper; the service stopped for the backup, the window opened on it, the token kept and checked, AppParameters untouched' {
     $p = Get-SharePlan (Read-Fixture 'dolly') $false
     $p.ok | Should Be $true
     $p.keepToken | Should Be $true
-    Get-Ids $p | Should Be 'backup,window,token,config,service,reconciler,logon,launcher'
+    Get-Ids $p | Should Be 'backup,window,token,config,service,reconciler,logon'
     $p.steps[0] | Should Be 'backup: egpt-beeper-primary runs it: stopped first; copy C:\Users\user\.egpt\state\an-beeper to C:\Users\user\.egpt\state\an-beeper.backup-<time>'
     $p.steps[1] | Should Be 'window: open Beeper.exe --user-data-dir="C:\Users\user\.egpt\state\an-beeper" and wait for its API'
     $p.steps[2] | Should Match '^token: keep beeper\.primary\.token .*no mint.*answers on the window''s port, then write .*beeper-share\.json$'
@@ -202,9 +204,9 @@ function New-DollyHalfState([hashtable] $Over = @{}, [hashtable] $Service = @{})
 
 Describe 'Get-SharePlan - dolly: resume and revert' {
   It 'resume picks up after step 3: AppParameters never change, so it is never "before step 5"' {
-    Get-Ids (Get-SharePlan (New-DollyHalfState) $false $true) | Should Be 'config,service,reconciler,logon,launcher'
-    Get-Ids (Get-SharePlan (New-DollyHalfState @{ config = [pscustomobject]@{ primary = $true; primaryGui = $false } } @{ preHook = $script:DollyHook; stopConsole = '10000' }) $false $true) | Should Be 'reconciler,logon,launcher'
-    $done = @{ config = [pscustomobject]@{ primary = $true; primaryGui = $false }; task = $script:S4U; runValue = $null; launcherRunValue = 'x'; shortcutExists = $true; launcherRunning = $true }
+    Get-Ids (Get-SharePlan (New-DollyHalfState) $false $true) | Should Be 'config,service,reconciler,logon'
+    Get-Ids (Get-SharePlan (New-DollyHalfState @{ config = [pscustomobject]@{ primary = $true; primaryGui = $false } } @{ preHook = $script:DollyHook; stopConsole = '10000' }) $false $true) | Should Be 'reconciler,logon'
+    $done = @{ config = [pscustomobject]@{ primary = $true; primaryGui = $false }; task = $script:S4U; runValue = $null; shortcutExists = $true }
     Get-Ids (Get-SharePlan (New-DollyHalfState $done @{ preHook = $script:DollyHook; stopConsole = '10000' }) $false $true) | Should Be ''
   }
   It 'revert: AppParameters stay, Beeper on the profile is quit before the service takes it back' {
@@ -218,5 +220,13 @@ Describe 'Get-SharePlan - dolly: resume and revert' {
   }
   It 'revert while the service logs on as the user is not refused: it keeps its --user-data-dir' {
     (Get-SharePlan (New-DollyHalfState @{} @{ account = '.\user' }) $true).ok | Should Be $true
+  }
+}
+
+Describe 'share-beeper-primary-profile.ps1 starts no watcher at logon' {
+  $code = ((Get-Content (Join-Path $PSScriptRoot 'share-beeper-primary-profile.ps1')) | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+  It 'it never writes the egpt-beeper-window Run value, and has no launcher step' {
+    $code | Should Not Match 'Set-ItemProperty -Path \$runKey -Name \$RunKeyWindow'
+    $code | Should Not Match "'launcher' \{"
   }
 }
