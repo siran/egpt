@@ -286,7 +286,7 @@ function Invoke-ShareTail([string[]] $Ids) {
 try {
 if ($Resume) {
   Invoke-ShareTail @($plan.steps | ForEach-Object { ($_ -split ':')[0] })
-  Say "done. Beeper stays yours while it is open; Quit it from the tray and $ServiceName takes the profile in ~10-30 s."
+  Say "done. Beeper stays open while you are logged in (beeper-window reopens it); $ServiceName takes the profile when you log off."
   Done ([ordered]@{ ok = $true; resume = $true; steps = $plan.steps })
 }
 
@@ -386,7 +386,7 @@ Stop-ShareService
 if (-not $keep) { Set-Nssm AppParameters (Get-BeeperServiceArgLine $profileDir) }
 # From here on a failure is something -Resume finishes: the rest of 5, then 6 reconciler, 7 logon, 8 launcher
 Invoke-ShareTail @('service', 'reconciler', 'logon', 'launcher')
-Say "done. Beeper stays yours while it is open; Quit it from the tray and $ServiceName takes the profile in ~10-30 s."
+Say "done. Beeper stays open while you are logged in (beeper-window reopens it); $ServiceName takes the profile when you log off."
 Say "profile backup: $backup ($backupMb MB). Undo: share-beeper-primary-profile.cmd -Revert"
 Say "optional: beeper-services-run-as-user.cmd runs the Beeper services as you instead of LocalSystem"
 Done ([ordered]@{ ok = $true; profileBackup = $backup; profileBackupMB = $backupMb; port = $port })

@@ -14,6 +14,9 @@
 #             for ports and one got none, 2026-10-15) - one restart of a service with no port,
 #             then the app LAST. Stopping a service needs the right to: grant it once with
 #             setup\grant-beeper-service-control.cmd, or let this script ask for administrator.
+# The relaunch is setup\beeper-window's (it opens the window on its profile, and reopens it when a
+# watcher supervises it); the update lock (Get-BeeperUpdateLockPath) keeps that watcher from reopening
+# Beeper from closing the app until the relaunch.
 # The app goes FIRST and gets WM_CLOSE (hidden window included). It hides instead of quitting
 # unless its "Quit Beeper when closing the main window" is on; then nothing is stopped or
 # installed and the result says to quit it from the tray.
@@ -66,6 +69,7 @@ $exe        = Join-Path $LocalAppData 'Programs\BeeperTexts\Beeper.exe'
 $pendingDir = Join-Path $LocalAppData 'beepertexts-updater\pending'
 $grantCmd   = Join-Path $repo 'setup\grant-beeper-service-control.cmd'
 $selfCmd    = Join-Path $PSScriptRoot 'beeper-update.cmd'
+$windowVbs  = Join-Path $repo 'setup\beeper-window.vbs'
 
 function Say($m) { Write-Host "[beeper-update] $m" }
 function Done($o, [int] $code = 0) {
@@ -139,6 +143,7 @@ function Get-UpdatePlan($s) {
 
 $closeAppRefusal = [ordered]@{ ok = $false; step = 'close-app'; error = 'the Beeper app hid instead of quitting'; remedy = 'quit Beeper from its tray icon (Quit), then update again'; connections = @(); app = [ordered]@{ ran = $true; relaunched = $false } }
 if ($CloseAppOnly) {
+  $updateLock = Open-BeeperClaim (Get-BeeperUpdateLockPath $LocalAppData)
   Say "closing the Beeper app (waiting up to ${WaitSec}s)"
   if (Close-BeeperApp $WaitSec (Get-BeeperDefaultProfile $AppData)) { Done ([ordered]@{ ok = $true; quit = $true }) }
   Say 'the Beeper app is still running - nothing was stopped'
@@ -195,6 +200,7 @@ function New-ConnectionRow($name, $service, $r, [bool] $hasToken, $expect) {
 $t0 = Get-Date
 $tokens = Get-BeeperTokens -RepoRoot $repo -EgptHome $EgptHome
 $failStep = $null; $failErr = $null; $step = 'stop'
+$updateLock = Open-BeeperClaim (Get-BeeperUpdateLockPath $LocalAppData)
 # The app first: if it will not quit, nothing has been stopped, so nothing needs bringing back.
 # (eGPT closes it beforehand with -CloseAppOnly, so this is for a run started by hand.)
 if ($plan.closeApp) {
@@ -257,8 +263,9 @@ foreach ($svc in $plan.start) {
 }
 if ($plan.relaunchApp) {
   # Through explorer.exe: the app runs as the desktop user, detached from this process, never elevated.
-  Say 'relaunching the Beeper app'
-  Start-Process explorer.exe -ArgumentList "`"$exe`""
+  Say 'relaunching the Beeper app (beeper-window)'
+  if ($updateLock) { $updateLock.Dispose() }
+  Start-Process explorer.exe -ArgumentList "`"$windowVbs`""
   foreach ($name in @($tokens.Keys | Where-Object { -not $ofService.ContainsKey($_) } | Sort-Object)) {
     [void]$conns.Add((New-ConnectionRow $name $null (Wait-Connection $tokens[$name]) $true $expect))
   }
