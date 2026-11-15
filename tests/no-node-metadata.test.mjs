@@ -77,6 +77,11 @@ describe('no node or personal metadata in tracked files', () => {
     expect(texts.size).toBeGreaterThan(300);
   });
 
+  // A node's runbook, plans and config live in its private repo (<node>-egpt, at ~/.egpt/node/).
+  it('no node runbook or node folder in core', () => {
+    expect(files.filter((f) => /(^|\/)OPERATIONS\.md$|^node\//i.test(f))).toEqual([]);
+  });
+
   it('the shapes are alive: each flags a real-looking value and passes its fake', () => {
     const t = (name, s) => { const [, re, leak] = SHAPES.find(([n]) => n === name); return [...s.matchAll(new RegExp(re.source, re.flags))].some(leak); };
     // Assembled, so this file never spells one; area code 097 does not exist, so no one's number.

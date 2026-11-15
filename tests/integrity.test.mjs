@@ -520,7 +520,6 @@ describe('the retired Beeper Desktop service names are gone from the tree', () =
   const MAY_NAME_THE_OLD_SERVICES = new Set([
     'setup/beeper-s0-naming.ps1',            // the old -> new map the detection reads
     'setup/rename-beeper-s0-service.ps1',    // the tool that performs the rename
-    'OPERATIONS.md',                         // the runbook that tells the operator to run it
     'tests/integrity.test.mjs',              // this scan
     // The Pester suite for the naming module. It ASSERTS the old -> new mapping, so it must
     // spell both sides. It was missed when this scan landed because the scan walks
