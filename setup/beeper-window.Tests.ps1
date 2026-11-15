@@ -9,12 +9,17 @@ Describe 'Get-BeeperWindowPlan' {
   It 'no shared service (the baseline): just open Beeper' {
     (Get-BeeperWindowPlan $false $false '' $false) -join ',' | Should Be 'open'
   }
-  It 'logon: stop the service, wait for its Beeper to let go, open the window, watch' {
-    (Get-BeeperWindowPlan $true $true 'Running' $false) -join ',' | Should Be 'stop-service,wait-release,open,watch'
+  It 'the service holds the profile (dolly 2026-11-15, S1 live): stop it, wait for its Beeper to let go, open the window' {
+    (Get-BeeperWindowPlan $true $true 'Running' $false) -join ',' | Should Be 'stop-service,wait-release,open'
   }
-  It 'the service already stopped: open and watch; a window already open: only watch' {
-    (Get-BeeperWindowPlan $true $true 'Stopped' $false) -join ',' | Should Be 'open,watch'
-    (Get-BeeperWindowPlan $true $true 'Stopped' $true) -join ',' | Should Be 'watch'
+  It 'no window (logon, a tray Quit, a crash): wait for the profile, open it; a window already open: nothing' {
+    (Get-BeeperWindowPlan $true $true 'Stopped' $false) -join ',' | Should Be 'wait-release,open'
+    @(Get-BeeperWindowPlan $true $true 'Stopped' $true).Count | Should Be 0
+  }
+  It 'an update needs Beeper closed: nothing, shared or not' {
+    @(Get-BeeperWindowPlan $true $true 'Stopped' $false $true).Count | Should Be 0
+    @(Get-BeeperWindowPlan $true $true 'Running' $false $true).Count | Should Be 0
+    @(Get-BeeperWindowPlan $false $false '' $false $true).Count | Should Be 0
   }
   It 'another launcher owns the profile: surface its window, or do nothing mid-handover' {
     (Get-BeeperWindowPlan $true $false 'Stopped' $true) -join ',' | Should Be 'show'
@@ -41,6 +46,13 @@ Describe 'Get-BeeperWindowOpen - where the window opens' {
     $o.profile | Should Be 'C:\Users\user\.egpt\state\an-beeper'
     $o.args | Should Be '--user-data-dir="C:\Users\user\.egpt\state\an-beeper"'
   }
+  It 'dolly as it is (forward slashes, unquoted): the an-beeper profile; the default-profile Beeper there is not it' {
+    $o = Get-BeeperWindowOpen $true '--user-data-dir=C:/Users/user/.egpt/state/an-beeper/userdata --disable-gpu --disable-gpu-compositing' $appData
+    $o.profile | Should Be 'C:/Users/user/.egpt/state/an-beeper/userdata'
+    $o.args | Should Be '--user-data-dir="C:/Users/user/.egpt/state/an-beeper/userdata"'
+    $stray = [pscustomobject]@{ Name = 'Beeper.exe'; CommandLine = '"C:\Users\user\AppData\Local\Programs\BeeperTexts\Beeper.exe" ' }
+    @(Select-BeeperProfileProcesses @($stray) $o.profile).Count | Should Be 0
+  }
   It 'not shared (the baseline, or dolly before its conversion): the user''s default profile, never the service''s own' {
     $o = Get-BeeperWindowOpen $false '--user-data-dir=C:\Users\user\.egpt\state\an-beeper --disable-gpu' $appData
     $o.profile | Should Be 'C:\Users\user\AppData\Roaming\BeeperTexts'
@@ -49,75 +61,125 @@ Describe 'Get-BeeperWindowOpen - where the window opens' {
   }
 }
 
-Describe 'Get-BeeperWatchCount' {
-  It 'Beeper exits after two empty polls; a hidden window, an update or the installer resets it' {
-    Get-BeeperWatchCount $false $false 0 | Should Be 1
-    Get-BeeperWatchCount $false $false 1 | Should Be 2
-    Get-BeeperWatchCount $true $false 1 | Should Be 0
-    Get-BeeperWatchCount $false $true 1 | Should Be 0
-  }
-}
-
-# Watch-BeeperWindow on a scripted timeline: one entry per poll, $true = Beeper up. Open-Window
-# brings it up unless $script:OpenFails. The loop never ends on its own while the operator is
-# logged in: the test ends it after the timeline.
-Describe 'Watch-BeeperWindow - while the operator is logged in the window is supervised' {
+# Invoke-BeeperWindow: one pass. -Once is the Session 1 egpt daemon's (it holds state\s1.claim and
+# runs a pass every few seconds); without it, the "Beeper (eGPT)" shortcut. Nothing here loops.
+Describe 'Invoke-BeeperWindow - the Session 1 daemon keeps the window open' {
   function Test-WindowUp { }
   function Open-Window { }
   function Say($m) { }
   function Get-Token { }
-  function Use-Timeline([bool[]] $Up, [bool[]] $Update = @(), [switch] $OpenFails, [int] $Polls = 30) {
-    $script:Up = $Up; $script:Update = $Update; $script:OpenFails = [bool]$OpenFails; $script:Polls = $Polls
-    $script:poll = 0; $script:opened = $false; $script:openedAt = @(); $script:disposed = $false
-    Mock Start-Sleep { $script:poll++; if ($script:poll -gt $script:Polls) { throw 'end of timeline' } }
-    Mock Test-WindowUp { if ($script:poll -le $script:Up.Count) { $script:Up[$script:poll - 1] } else { $script:opened -and -not $script:OpenFails } }
-    Mock Test-UpdateRunning { $script:poll -le $script:Update.Count -and $script:Update[$script:poll - 1] }
+  $EgptHome = 'C:\h\.egpt'
+  $ServiceName = 'egpt-beeper-primary'
+  $profileDir = 'C:/Users/user/.egpt/state/an-beeper/userdata'
+  $claimPath = Get-BeeperClaimPath $profileDir
+  $WaitSec = 60
+  $DryRun = $false
+  function Use-Node([string] $Status = 'Stopped', [bool] $Up = $false, [bool] $Update = $false, [bool] $S1Claim = $false, [bool] $ClaimFree = $true) {
+    $script:Status = $Status; $script:Up = $Up; $script:Update = $Update
+    $script:S1Claim = $S1Claim; $script:ClaimFree = $ClaimFree
+    $script:disposed = 0
+    Mock Test-WindowUp { $script:Up }
+    Mock Test-UpdateRunning { $script:Update }
+    Mock Test-BeeperClaimHeld { $script:S1Claim } -ParameterFilter { $Path -eq 'C:\h\.egpt\state\s1.claim' }
+    Mock Test-BeeperClaimHeld { -not $script:ClaimFree } -ParameterFilter { $Path -ne 'C:\h\.egpt\state\s1.claim' }
+    Mock Open-BeeperClaim { if ($script:ClaimFree) { New-Object psobject | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:disposed++ } -PassThru } }
+    Mock Get-Service { New-Object psobject -Property @{ Status = $script:Status } | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value { } -PassThru }
+    Mock Stop-Service { $script:Status = 'Stopped' }
+    Mock Start-Service { }
     Mock Test-BeeperLockHeld { $false }
-    Mock Open-Window { $script:opened = $true; $script:openedAt += $script:poll }
+    Mock Start-Sleep { }
+    Mock Open-Window { }
     Mock Enter-EgptBeeperHold { $false }
     Mock Exit-EgptBeeperHold { }
-    Mock Start-Service { }
     Mock Say { }
   }
-  $claim = New-Object psobject | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:disposed = $true } -PassThru
-  $profileDir = 'C:\Users\user\AppData\Roaming\BeeperTexts'
-
-  It '(a) Beeper exits (tray Quit, a crash): the window is reopened, the claim kept, the service never started' {
-    Use-Timeline @($true, $true, $false, $false)
-    try { Watch-BeeperWindow } catch { }
+  It 'S1 live, no window: the pass opens it on the shared profile and lets go of the claim' {
+    Use-Node
+    $Once = $true; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
+    Assert-MockCalled Stop-Service -Times 0 -Exactly -Scope It
+    $script:disposed | Should Be 1
+  }
+  It 'the window exited (tray Quit, a crash, Beeper''s own update): the next pass reopens it' {
+    Use-Node -Up $true
+    $Once = $true; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    $script:Up = $false
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
+  }
+  It 'dolly 2026-11-15: S1 live but egpt-beeper-primary holds the profile - taken over: stop, wait, open' {
+    Use-Node 'Running'
+    $Once = $true; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Stop-Service -Times 1 -Exactly -Scope It -ParameterFilter { $Name -eq 'egpt-beeper-primary' }
     Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
     Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
-    $script:disposed | Should Be $false
   }
-  It '(b) an update (beeper-update or Beeper''s own installer) with the window down is not an exit; the window reopens after it' {
-    Use-Timeline @($true, $false, $false, $false, $false, $false, $false, $false) @($false, $true, $true, $true, $true, $true)
-    try { Watch-BeeperWindow } catch { }
-    Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
-    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
-    $script:openedAt[0] | Should BeGreaterThan 6
-  }
-  It 'kg 2026-11-14 20:31: the watch starts after Beeper''s own installer already ended - reopen, not the service' {
-    Use-Timeline @($false, $false)
-    try { Watch-BeeperWindow } catch { }
-    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
-    Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
-  }
-  It 'a window that cannot be started: the service takes the profile after a few tries, said loudly' {
-    Use-Timeline @($false, $false) -OpenFails
-    try { Watch-BeeperWindow } catch { }
-    Assert-MockCalled Open-Window -Times 3 -Exactly -Scope It
-    Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It -ParameterFilter { $Name -eq 'egpt-beeper-primary' }
+  It 'the service''s Beeper never lets go: the window is not opened, the pass fails loudly, Beeper is never killed' {
+    Use-Node 'Running'
+    Mock Test-BeeperLockHeld { $true }
+    $Once = $true; $shared = $true; $WaitSec = 0
+    Invoke-BeeperWindow | Should Be 1
+    Assert-MockCalled Open-Window -Times 0 -Exactly -Scope It
     Assert-MockCalled Say -Scope It -ParameterFilter { $m -match '^FAILED' }
-    $script:disposed | Should Be $true
   }
-  It 'a window that comes back resets the tries' {
-    Use-Timeline @($false, $false, $false, $false, $true, $false, $false, $false, $false, $true, $false, $false, $false, $false) -OpenFails -Polls 14
-    try { Watch-BeeperWindow } catch { }
-    Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
+  It 'an update needs Beeper closed: the pass waits - nothing stopped, nothing opened' {
+    Use-Node 'Running' -Update $true
+    $Once = $true; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Stop-Service -Times 0 -Exactly -Scope It
+    Assert-MockCalled Open-Window -Times 0 -Exactly -Scope It
+  }
+  It 'another launcher holds the profile''s claim (the update installing, a shortcut mid-handover): nothing, never a show' {
+    Use-Node -Up $true -ClaimFree $false
+    $Once = $true; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 0 -Exactly -Scope It
+  }
+  It 'no service shares the profile: the daemon''s pass leaves Beeper alone' {
+    Use-Node
+    $Once = $true; $shared = $false
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 0 -Exactly -Scope It
+    Assert-MockCalled Open-BeeperClaim -Times 0 -Exactly -Scope It
+  }
+  It 'the shortcut while the S1 daemon holds s1.claim: surfaces an open window, never claims, stops or watches' {
+    Use-Node 'Running' -Up $true -S1Claim $true
+    $Once = $false; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
+    Assert-MockCalled Open-BeeperClaim -Times 0 -Exactly -Scope It
+    Assert-MockCalled Stop-Service -Times 0 -Exactly -Scope It
+  }
+  It 'the shortcut while the S1 daemon holds s1.claim and no window is up: nothing (the daemon opens it)' {
+    Use-Node -S1Claim $true
+    $Once = $false; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Open-Window -Times 0 -Exactly -Scope It
+    Assert-MockCalled Stop-Service -Times 0 -Exactly -Scope It
+  }
+  It 'the shortcut with no S1 daemon: the handover once, then it returns (no watcher)' {
+    Use-Node 'Running'
+    $Once = $false; $shared = $true
+    Invoke-BeeperWindow | Should Be 0
+    Assert-MockCalled Stop-Service -Times 1 -Exactly -Scope It
+    Assert-MockCalled Open-Window -Times 1 -Exactly -Scope It
+    $script:disposed | Should Be 1
   }
 }
 
-# Test-UpdateRunning: what keeps the watcher from reopening Beeper.
+Describe 'beeper-window.ps1 has no watcher left' {
+  $code = ((Get-Content (Join-Path $PSScriptRoot 'beeper-window.ps1')) | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+  It 'no loop and no fallback to the service' {
+    $code | Should Not Match 'while \(\$true\)'
+    $code | Should Not Match 'Start-Service'
+    $code | Should Not Match 'Watch-BeeperWindow'
+  }
+}
+
+# Test-UpdateRunning: what keeps the daemon's pass from reopening Beeper.
 Describe 'Test-UpdateRunning - Beeper must stay closed only while an update needs it closed' {
   $home_ = Join-Path ([IO.Path]::GetTempPath()) ('bw-' + [guid]::NewGuid())
   New-Item -ItemType Directory -Force -Path (Join-Path $home_ 'config\logs') | Out-Null
@@ -147,7 +209,7 @@ Describe 'Test-UpdateRunning - Beeper must stay closed only while an update need
     Use-Facts @($installer) $false @()
     Test-UpdateRunning | Should Be $true
   }
-  It 'dolly 2026-11-15: the update handed the window back and waits for its connection - not running, the watcher reopens it' {
+  It 'dolly 2026-11-15: the update handed the window back and waits for its connection - not running, the daemon''s pass reopens it' {
     Use-Facts @($tool) $false @('[beeper-update] starting egpt-beeper-secondary', '[beeper-update] relaunching the Beeper app')
     Test-UpdateRunning | Should Be $false
   }

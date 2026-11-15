@@ -46,6 +46,11 @@ Describe 'Test-BeeperSharedProfile' {
     Test-BeeperSharedProfile $dolly 'C:\Users\user\AppData\Roaming' 'powershell.exe -File other.ps1' | Should Be $false
     Test-BeeperSharedProfile $script:Flags 'C:\Users\user\AppData\Roaming' $hook | Should Be $false
   }
+  # The Session 0 egpt daemon's pass: never read as unshared (and started beside the window) for want of an APPDATA.
+  It 'behind the hook it needs no AppData' {
+    $hook = 'powershell.exe -NoProfile -File "C:\Users\user\bin\egpt\setup\s0-identity-reconcile.ps1" -PreStart'
+    Test-BeeperSharedProfile '--user-data-dir="C:\Users\user\AppData\Roaming\BeeperTexts" --disable-gpu' '' $hook | Should Be $true
+  }
 }
 
 Describe 'the shared profile and the window that opens it' {

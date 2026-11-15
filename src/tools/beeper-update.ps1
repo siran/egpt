@@ -14,9 +14,10 @@
 #             for ports and one got none, 2026-10-15) - one restart of a service with no port,
 #             then the app LAST. Stopping a service needs the right to: grant it once with
 #             setup\grant-beeper-service-control.cmd, or let this script ask for administrator.
-# The relaunch is setup\beeper-window's (it opens the window on its profile, and reopens it when a
-# watcher supervises it); the update lock (Get-BeeperUpdateLockPath) keeps that watcher from reopening
-# Beeper from closing the app until the relaunch.
+# The relaunch is setup\beeper-window's: while the Session 1 egpt daemon holds state\s1.claim, that
+# daemon's next pass opens the window on its profile (one owner); with none, beeper-window opens it.
+# The update lock (Get-BeeperUpdateLockPath) keeps the daemon's pass from reopening Beeper from
+# closing the app until the relaunch.
 # The app goes FIRST and gets WM_CLOSE (hidden window included). It hides instead of quitting
 # unless its "Quit Beeper when closing the main window" is on; then nothing is stopped or
 # installed and the result says to quit it from the tray.
@@ -263,7 +264,7 @@ foreach ($svc in $plan.start) {
 }
 if ($plan.relaunchApp) {
   # Through explorer.exe: the app runs as the desktop user, detached from this process, never elevated.
-  Say 'relaunching the Beeper app (beeper-window)'
+  Say 'relaunching the Beeper app (beeper-window; the Session 1 egpt daemon when it holds the profile)'
   if ($updateLock) { $updateLock.Dispose() }
   Start-Process explorer.exe -ArgumentList "`"$windowVbs`""
   foreach ($name in @($tokens.Keys | Where-Object { -not $ofService.ContainsKey($_) } | Sort-Object)) {

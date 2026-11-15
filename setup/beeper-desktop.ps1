@@ -167,8 +167,8 @@ function Get-BeeperPreStartHook([string] $ServiceName) {
 # Does this service share its profile with the desktop user's window? It runs the window's default
 # profile, or its own --user-data-dir behind the conversion's Start/Pre hook.
 function Test-BeeperSharedProfile([string] $AppParameters, [string] $AppData = $env:APPDATA, [string] $PreHook = '') {
-  if (Test-BeeperRunsProfile $AppParameters (Get-BeeperDefaultProfile $AppData)) { return $true }
-  return [bool](Get-BeeperUserDataDir $AppParameters) -and $PreHook -match $BeeperPreStartHook
+  if ((Get-BeeperUserDataDir $AppParameters) -and $PreHook -match $BeeperPreStartHook) { return $true }
+  return Test-BeeperRunsProfile $AppParameters (Get-BeeperDefaultProfile $AppData)
 }
 
 # The arguments that open the window on $Profile: none for the default profile.
