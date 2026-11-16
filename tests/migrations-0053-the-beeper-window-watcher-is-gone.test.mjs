@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { plan, elevated, RUN_VALUE } from '../migrations/0053-the-beeper-window-watcher-is-gone.mjs';
 
-const VBS = '"C:\\WINDOWS\\System32\\wscript.exe" //B //Nologo "C:\\Users\\an\\bin\\egpt\\setup\\beeper-window.vbs"';
+const VBS = '"C:\\WINDOWS\\System32\\wscript.exe" //B //Nologo "C:\\Users\\user\\bin\\egpt\\setup\\beeper-window.vbs"';
 
 function fakeNode({ run = VBS, watchers = [] } = {}) {
   const state = { run, watchers: [...watchers] };

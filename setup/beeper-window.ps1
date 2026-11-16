@@ -134,4 +134,6 @@ function Open-Window { if ($open.args) { Start-Process -FilePath $exe -ArgumentL
 # The spine's Beeper bridges wait (calls held, no redial) while the profile changes hands.
 function Get-Token { (Get-BeeperTokens -RepoRoot (Split-Path -Parent $PSScriptRoot) -EgptHome $EgptHome)[$connection] }
 
+# The profile the daemon's 1 s lockfile probe watches between passes.
+if ($Once -and $shared) { Write-Host "profile=$profileDir" }
 exit (Invoke-BeeperWindow)
