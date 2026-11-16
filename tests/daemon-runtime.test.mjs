@@ -22,6 +22,7 @@ class FakeChild {
     this.handlers = {};
     this.killed = [];
     this.pid = _nextFakePid++;
+    this.stdout = { on: (event, fn) => { this.handlers[`stdout.${event}`] = fn; } };
   }
   on(event, fn) {
     this.handlers[event] = fn;
@@ -101,6 +102,7 @@ function makeRuntime(extra = {}) {
     lockFile: extra.lockFile ?? (() => 1),
     unlockFile: extra.unlockFile ?? (() => {}),
     lockHeld: extra.lockHeld ?? (() => false),
+    beeperIntervalMs: 0,   // no Beeper pass here; the Beeper worlds pass undefined for the real cadence
     createCliHost: 'createCliHost' in extra ? extra.createCliHost : null,
     peerProbe: extra.peerProbe,
     now: extra.now ?? (() => Date.UTC(2026, 5, 18, 12, 0, 0)),
@@ -1196,6 +1198,7 @@ describe('the daemon supervises the primary Beeper for its session', () => {
       processObj,
       platform,
       lockHeld: (p) => claimedByS1 && String(p).endsWith('s1.claim'),
+      beeperIntervalMs: undefined,
       setInterval: (fn, ms) => { const t = { fn, ms, ref() { return t; }, unref() { t.unrefd = true; return t; } }; intervals.push(t); return t; },
       clearInterval: (t) => { if (t) t.cleared = true; },
     });
@@ -1204,11 +1207,12 @@ describe('the daemon supervises the primary Beeper for its session', () => {
     return { ...h, intervals, passes, tick };
   }
 
-  it('S1 with no window: its tick runs beeper-window.ps1 -Once on this profile - the pass that opens it', () => {
+  it('S1 with no window: start runs beeper-window.ps1 -Once on this profile at once - the pass that opens it', () => {
     const w = beeperWorld({ session1: true });
     w.runtime.start();
-    expect(w.passes()).toHaveLength(0);
-    w.tick();
+    expect(w.passes()).toHaveLength(1);
+    w.tick();                                   // still running: no second
+    expect(w.passes()).toHaveLength(1);
     const [p] = w.passes();
     expect(p.args.slice(0, 4)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']);
     expect(p.args.slice(4)).toEqual(['-File', join('C:/repo/egpt', 'setup', 'beeper-window.ps1'), '-Once', '-EgptHome', 'C:/home/.egpt']);
@@ -1275,7 +1279,133 @@ describe('the daemon supervises the primary Beeper for its session', () => {
   it('off Windows: no Beeper pass at all', () => {
     const w = beeperWorld({ session1: true, platform: 'linux' });
     w.runtime.start();
-    expect(w.intervals.filter((x) => x.ms === 15_000 || x.ms === 60_000)).toEqual([]);
+    expect(w.intervals.filter((x) => x.ms === 15_000 || x.ms === 60_000 || x.ms === 1_000)).toEqual([]);
+  });
+});
+
+// The 1 s probe (operator 2026-11-16): the pass costs ~1.1 s of PowerShell, so the daemon checks
+// the shared profile's Chromium lockfile itself every second and runs the pass only when no Beeper
+// holds it. The pass reports the profile it resolved (`profile=<dir>`); the slow pass stays.
+describe('a 1 s lockfile probe runs the Beeper pass the moment the profile is free', () => {
+  const PROFILE = 'C:\\Users\\user\\AppData\\Roaming\\BeeperTexts';
+  function probeWorld({ session1 = true } = {}) {
+    const processObj = makeProcess();
+    if (session1) processObj.env.EGPT_SESSION1 = '1';
+    const intervals = [];
+    const probe = { held: true, calls: [] };
+    const h = makeRuntime({
+      processObj,
+      beeperLockHeld: (dir) => { probe.calls.push(dir); return probe.held; },
+      beeperIntervalMs: undefined,
+      setInterval: (fn, ms) => { const t = { fn, ms, ref() { return t; }, unref() { t.unrefd = true; return t; } }; intervals.push(t); return t; },
+      clearInterval: (t) => { if (t) t.cleared = true; },
+    });
+    const passes = () => h.children.filter((c) => c.cmd === 'powershell.exe');
+    const slow = () => intervals.find((t) => t.ms === (session1 ? 15_000 : 60_000)).fn();
+    const second = (n = 1) => { for (let i = 0; i < n; i++) intervals.find((t) => t.ms === 1_000).fn(); };
+    // The running pass prints the profile it resolved, then exits.
+    const finish = async (out = `profile=${PROFILE}\r\n`, code = 0) => {
+      const p = passes().at(-1).child;
+      if (out) p.handlers['stdout.data'](Buffer.from(out));
+      await p.handlers.exit(code, null);
+    };
+    return { ...h, intervals, probe, passes, slow, second, finish };
+  }
+
+  it('S1: the window quits -> the pass runs on the next second, not 15 s later', async () => {
+    const w = probeWorld();
+    w.runtime.start();
+    w.slow();
+    await w.finish();
+    w.second(3);
+    expect(w.passes()).toHaveLength(1);           // held: nothing
+    w.probe.held = false;                          // the window exits
+    w.second();
+    expect(w.passes()).toHaveLength(2);
+    expect(w.passes()[1].args).toContain('-Once');
+    expect(w.probe.calls.at(-1)).toBe(PROFILE);
+  });
+
+  it('start runs the pass at once (S1 and S0), so the probe arms without waiting for the slow tick', async () => {
+    for (const session1 of [true, false]) {
+      const w = probeWorld({ session1 });
+      w.runtime.start();
+      expect(w.passes()).toHaveLength(1);
+      expect(w.passes()[0].args).toContain(session1 ? '-Once' : '-BeeperOnly');
+      await w.finish();
+      w.probe.held = false;
+      w.second();
+      expect(w.passes()).toHaveLength(2);
+    }
+  });
+
+  it('S0: the service dies -> its reconcile pass runs on the next second', async () => {
+    const w = probeWorld({ session1: false });
+    w.runtime.start();
+    w.slow();
+    await w.finish();
+    w.probe.held = false;
+    w.second();
+    expect(w.passes()).toHaveLength(2);
+    expect(w.passes()[1].args).toContain('-BeeperOnly');
+  });
+
+  it('held: the 1 s tick never spawns, and the slow pass still runs on its cadence', async () => {
+    const w = probeWorld();
+    w.runtime.start();
+    w.slow();
+    await w.finish();
+    w.second(30);
+    expect(w.passes()).toHaveLength(1);
+    w.slow();
+    expect(w.passes()).toHaveLength(2);
+  });
+
+  it('no storm: nothing while a pass runs, and a lock that stays free (an update) fires once until it is held again', async () => {
+    const w = probeWorld();
+    w.runtime.start();
+    w.slow();
+    w.probe.held = false;
+    w.second(5);                                    // the slow pass is still running
+    expect(w.passes()).toHaveLength(1);
+    await w.finish();
+    w.second();
+    expect(w.passes()).toHaveLength(2);             // free after it: one pass
+    await w.finish();
+    w.second(30);                                   // still free (update in progress): no more
+    expect(w.passes()).toHaveLength(2);
+    w.slow();                                       // the slow cadence keeps retrying
+    expect(w.passes()).toHaveLength(3);
+    await w.finish();
+    w.probe.held = true;
+    w.second();
+    w.probe.held = false;
+    w.second();
+    expect(w.passes()).toHaveLength(4);             // held again, then free: fires again
+  });
+
+  it('no profile reported (no shared service): no probe at all; the profile line is never logged', async () => {
+    const w = probeWorld();
+    w.runtime.start();
+    w.second(3);                                    // before any pass: nothing known
+    w.slow();
+    await w.finish('');
+    w.probe.held = false;
+    w.second(3);
+    expect(w.probe.calls).toEqual([]);
+    expect(w.passes()).toHaveLength(1);
+    w.slow();
+    await w.finish();
+    expect(w.logs.join('')).not.toMatch(/profile=/);
+  });
+
+  it('the probe timer never keeps the process up and stops on shutdown', () => {
+    const w = probeWorld();
+    w.runtime.start();
+    const t = w.intervals.find((x) => x.ms === 1_000);
+    expect(t.unrefd).toBe(true);
+    w.runtime.shutdown('SIGTERM');
+    expect(t.cleared).toBe(true);
   });
 });
 
@@ -1708,6 +1838,7 @@ describe('startProfileDaemons: a line from each profile lands in that profile\u2
       setInterval: () => 1,
       setTimeout: () => 1,
       livenessIntervalMs: 0,
+      beeperIntervalMs: 0,
     });
 
     expect(opened).toEqual([

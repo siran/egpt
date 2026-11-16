@@ -254,6 +254,12 @@ export function createDaemonRuntime(opts = {}) {
   const beeperArgs = session1 ? ['beeper-window.ps1', '-Once'] : ['s0-identity-reconcile.ps1', '-BeeperOnly'];
   let beeperTimer = null;
   let beeperPass = null;
+  // Between passes, a 1 s probe of the shared profile's lockfile (~50 us, no spawn): free -> the pass now.
+  const beeperProbeMs = opts.beeperProbeMs ?? 1_000;
+  const beeperLockHeld = opts.beeperLockHeld ?? lockfileHeld;
+  let beeperProbeTimer = null;
+  let beeperProfile = null;   // the profile the last pass reported (profile=<dir>); null: no probe
+  let beeperArmed = true;     // a free lock fires one pass, then waits until it is seen held again
 
   function log(msg) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}]${logTag ? ` [${logTag}]` : ''} ${msg}\n`);
@@ -748,11 +754,31 @@ export function createDaemonRuntime(opts = {}) {
         cwd: root, env: { ...env, EGPT_HOME: egptHome }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       });
     } catch (e) { log(`beeper: could not run ${name} (${e.message})`); return; }
-    const say = (buf) => { for (const line of String(buf).split(/\r?\n/)) if (line.trim()) log(`beeper: ${line.trim()}`); };
+    let reported = null;
+    const say = (buf) => {
+      for (const line of String(buf).split(/\r?\n/)) {
+        const m = /^profile=(.+)$/.exec(line.trim());
+        if (m) reported = m[1];
+        else if (line.trim()) log(`beeper: ${line.trim()}`);
+      }
+    };
     beeperPass.stdout?.on('data', say);
     beeperPass.stderr?.on('data', say);
     beeperPass.on('error', (e) => { log(`beeper: ${name} failed to run (${e.message})`); beeperPass = null; });
-    beeperPass.on('exit', (code) => { beeperPass = null; if (code) log(`beeper: ${name} exited ${code}`); });
+    beeperPass.on('exit', (code) => { beeperPass = null; beeperProfile = reported; if (code) log(`beeper: ${name} exited ${code}`); });
+  }
+
+  // Chromium holds <profile>\lockfile with no write sharing while a Beeper runs the profile: a write
+  // open fails exactly then. Test-BeeperLockHeld's verdict, without its delete.
+  function lockfileHeld(dir) {
+    try { closeSync(openSync(join(dir, 'lockfile'), 'r+')); return false; }
+    catch (e) { return e?.code !== 'ENOENT'; }
+  }
+
+  function probeBeeper() {
+    if (!beeperProfile || beeperPass) return;
+    if (beeperLockHeld(beeperProfile)) { beeperArmed = true; return; }
+    if (beeperArmed) { beeperArmed = false; runBeeperPass(); }
   }
 
   function spawnShell() {
@@ -896,6 +922,7 @@ export function createDaemonRuntime(opts = {}) {
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
     if (holdTimer) { clearIntervalFn(holdTimer); holdTimer = null; }
     if (beeperTimer) { clearIntervalFn(beeperTimer); beeperTimer = null; }
+    if (beeperProbeTimer) { clearIntervalFn(beeperProbeTimer); beeperProbeTimer = null; }
     try { beeperPass?.kill('SIGTERM'); } catch { /* already gone */ }
     for (const fd of [runnerLock, s1Claim]) if (fd != null) unlockFile(fd);
     runnerLock = s1Claim = null;
@@ -979,6 +1006,9 @@ export function createDaemonRuntime(opts = {}) {
     if (platform === 'win32' && beeperIntervalMs > 0 && !beeperTimer) {
       beeperTimer = setIntervalFn(runBeeperPass, beeperIntervalMs);
       beeperTimer?.unref?.();
+      beeperProbeTimer = setIntervalFn(probeBeeper, beeperProbeMs);
+      beeperProbeTimer?.unref?.();
+      runBeeperPass();   // now: it also reports the profile the probe watches
     }
     return c;
   }

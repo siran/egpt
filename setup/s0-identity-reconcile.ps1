@@ -117,4 +117,9 @@ if ($PreStart) {
 }
 
 try { . (Join-Path $PSScriptRoot 'egpt-runners.ps1') } catch { Say "FAILED: $($_.Exception.Message)"; exit 1 }
+# The primary's profile, for the daemon's 1 s lockfile probe between passes.
+if ($BeeperOnly) {
+  $primary = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\egpt-beeper-primary\Parameters' -ErrorAction SilentlyContinue
+  if ($primary) { Write-Host "profile=$(Get-BeeperShareProfile ([string]$primary.AppParameters))" }
+}
 if (Invoke-ReconcilePass) { exit 1 }
