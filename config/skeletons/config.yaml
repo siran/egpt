@@ -111,6 +111,7 @@ limbs:
 #   # identity: { mode: off, required: [abrin, username], key: [abrin, username] }   # mode off | optional | required: a signed user (secrets/chatbox-mysite.key); required: claims a token must carry; key: the claims that are the identity; its text: strings: { identity: "..." }
 #   # conversation_by: session      # identity: one conversation per signed identity, every session and tab (needs identity)
 #   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity)
+#   # prime_text: ""                # with init: prime, a warm-up phrase sent as the visitor's own line after the opening one (on the panel); a page's {kind: init, prime_text} goes the same line path, same limits
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

@@ -5,9 +5,8 @@
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
 //   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message, cold}; a repeated id (a retry) gets the first answer;
 //                                        cold: the conversation was not warmed (a line or a prime) in PRIME_GAP_MS, so the being starts cold;
-//                                        {kind: init, session?, identity, prime_text?} → {session} (init: the widget's page load or panel open;
-//                                        init: true records one line, init: prime also wakes the being with the warm-up phrase, prime_text,
-//                                        as the visitor's own line, so it is warm before the first line)
+//                                        {kind: init, session?, identity} → {session} (init: the widget's page load; init: true records
+//                                        one line, init: prime also wakes the being so it is warm before the first line)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -158,13 +157,6 @@ export const identityModeOf = (v) => {
 };
 const HOUR_MS = 3600_000;
 const PRIME_GAP_MS = 4 * 60_000;   // a conversation warmed (primed or spoken to) this recently skips the prime: under the 5-minute prompt-cache lifetime
-// The warm-up phrase (prime_text): what the prime says as the visitor's own line. The page may send the user's own
-// (kind: init, prime_text); else the chatbox's prime_text; else the prime is today's line, answered with … alone.
-const primeTextOf = (v, max) => {
-  if (typeof v !== 'string') return '';
-  const t = stripInvisible(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
-  return [...t].slice(0, max).join('').trim();
-};
 
 // home: where a relative ui: folder is (boot: EGPT_HOME).
 function clientConfig(name, c = {}, home = null) {
@@ -205,7 +197,7 @@ function clientConfig(name, c = {}, home = null) {
     byIdentity: c.conversation_by === 'identity',   // one conversation per signed identity, not per session
     identityTurns: posInt(c.rate?.turns_per_identity_per_hour, 0),   // 0: no per-identity budget
     init,
-    primeText: primeTextOf(c.prime_text, maxChars),
+    primeText: stripInvisible(String(c.prime_text ?? '')).trim(),   // the operator's warm-up phrase, sent as the visitor's line
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
@@ -471,9 +463,28 @@ export async function startHttpBridge({
   };
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
+  // A visitor's line: on the panel and recorded, delivered to the being. The one path of a typed line and of a prime_text.
+  const visitorLine = (c, s, text, place, n) => {
+    const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
+    const m = append(s.chat, 'visitor', text, true);
+    const st = mentionStatus(text, wakeWords, { addressWithoutAt });
+    log(`incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
+    deliver(place ? `(in ${place}) ${text}` : text, {
+      chatId, chatName: name, chatType: 'private', network: 'http',
+      userId: chatId, senderName: 'visitor', firstName: 'visitor',
+      isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
+      atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
+      // the widget is a reply thread with the client's being: every visitor line addresses it
+      backlog: false, prime: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+      msgKey: m.id, msgTs: n,
+    });
+    return m;
+  };
+
   // The prime: a wake no person typed, so the being's process and prompt cache are warm before the first line.
   // It counts in the identity's turn budget like a line; over it, it is skipped (a warm-up, not a user action: no error).
-  const prime = async (c, s, idn, { place, isNew, text }) => {
+  // phrase: the visitor's own line after the notice (the page's, gated as a line by post; or the chatbox's prime_text): visitorLine.
+  const prime = async (c, s, idn, { place, isNew, phrase = '' }) => {
     const who = whoOf(c, idn.identity), k = c.identityTurns && who ? `${c.name} ${who}` : null, t = now();
     if (k) {
       const spent = spentOf(k, t);
@@ -482,20 +493,17 @@ export async function startHttpBridge({
     }
     s.chat.warmAt = t;
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
-    try { await beforeLine?.({ client: c.name, chatId, isNew, init: true, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
+    try { await beforeLine?.({ client: c.name, chatId, isNew, init: !phrase, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
     catch (e) { log(`${name}: before the line — ${e?.message ?? e}`); }
     log(`incoming [${name}] the visitor opened the chatbox`);
-    // the warm-up is the visitor's own line (their phrase, or the chatbox's): the being answers it like any line;
-    // with neither, the prime is the opening line alone, answered with … (the silence word)
-    const said = text || s.chat.primeText || c.primeText;
-    const opened = `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)}`;
-    deliver(said ? `${opened})\n${said}` : `${opened}; nothing to answer yet — answer … alone)`, {
+    deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)}; nothing to answer yet — answer … alone)`, {
       chatId, chatName: name, chatType: 'private', network: 'http',
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,
       backlog: false, prime: true, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
       msgKey: String(nextTick()), msgTs: now(),
     });
+    if (phrase) visitorLine(c, s, phrase, place, t);
   };
 
   async function post(c, req, res, cors) {
@@ -510,7 +518,11 @@ export async function startHttpBridge({
     const init = c.init && body?.kind === 'init';
     const text = init ? '' : stripInvisible(String(body?.text ?? ''));
     if (!init && !text.trim()) return json(res, 400, { error: 'empty message' }, cors);
-    if ([...text].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
+    // prime_text (init: prime): the page's phrase is the visitor's line, so the line's gates below apply to it; else the chatbox's
+    const pageLine = init && c.init === 'prime' && typeof body?.prime_text === 'string' ? stripInvisible(body.prime_text) : '';
+    const phrase = pageLine.trim() ? pageLine : init && c.init === 'prime' ? c.primeText : '';
+    if ([...(text || pageLine)].length > c.maxChars) return json(res, 413, { error: 'too long', max_chars: c.maxChars }, cors);
+    const lined = !init || !!pageLine.trim();   // a line, or an init carrying the page's line (the chatbox's phrase is a warm-up, not gated)
     // place: the page's own name for where it is; only a configured one counts, a stale page keeps chatting
     const place = typeof body?.place === 'string' && c.places.has(body.place) ? body.place : null;
     if (body?.place != null && !place) log(`${c.name}: place '${String(body.place).slice(0, 40)}' is not configured — no place`);
@@ -521,7 +533,7 @@ export async function startHttpBridge({
     const key = typeof body?.id === 'string' && ID_RE.test(body.id) ? `${c.name} ${body.id}` : null;
     if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
     const n = now();
-    const budget = !init && c.identityTurns && who ? `${c.name} ${who}` : null;
+    const budget = lined && c.identityTurns && who ? `${c.name} ${who}` : null;
     const spent = budget ? spentOf(budget, n) : [];
     if (budget && spent.length >= c.identityTurns) {
       const wait = Math.ceil((spent[0] + HOUR_MS - n) / 1000);
@@ -531,7 +543,7 @@ export async function startHttpBridge({
     let token = body?.session, hit = sessionOfToken(c, token);
     if (hit && c.identity !== 'off' && hit.s.who !== who) { log(`${c.name}-${hit.sid}: another identity — a new session`); hit = null; }
     if (hit) {
-      const wait = init ? 0 : rateWait(c, hit.s, n);
+      const wait = lined ? rateWait(c, hit.s, n) : 0;
       if (wait) return json(res, 429, { error: 'too many messages', retry_after_s: wait }, { ...cors, 'Retry-After': String(wait) });
     } else {
       const key = `${c.name} ${addressOf(req)}`;
@@ -553,7 +565,7 @@ export async function startHttpBridge({
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
     const cold = !(n - (s.chat.warmAt ?? -Infinity) < PRIME_GAP_MS);   // read before this line warms it: the widget's waiting_cold
     if (!init) { s.posts.push(n); s.chat.warmAt = n; }
-    if (budget) turns.set(budget, [...spent, n]);
+    if (budget && !init) turns.set(budget, [...spent, n]);   // an init's turn is charged by its prime
     s.lastAt = n;
     persist();
     // a reload or another tab: resumed, nothing recorded; init: prime wakes it again unless it is still warm
@@ -561,9 +573,8 @@ export async function startHttpBridge({
     const isNew = !!(hit.isNew || s.chat.isNew);
     s.chat.isNew = false;
     if (init && c.init === 'prime') {
-      const text = primeTextOf(body?.prime_text, c.maxChars);
-      if (text) s.chat.primeText = text;   // the user's phrase, kept for the prime after an end
-      await prime(c, s, idn, { place, isNew, text });
+      if (pageLine.trim()) s.posts.push(n);
+      await prime(c, s, idn, { place, isNew, phrase: phrase.trim() ? phrase : '' });
       return json(res, 200, { session: token }, cors);
     }
     const reply = (async () => {
@@ -572,19 +583,16 @@ export async function startHttpBridge({
         await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity, ...chat });
       }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
-      const m = init ? { id: String(nextTick()) } : append(s.chat, 'visitor', text, true);
-      const st = init ? {} : mentionStatus(text, wakeWords, { addressWithoutAt });
-      log(init ? `incoming [${name}] the visitor opened the chatbox` : `incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-      deliver(init ? `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})` : place ? `(in ${place}) ${text}` : text, {
+      if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
+      log(`incoming [${name}] the visitor opened the chatbox`);
+      deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})`, {   // on the record only
         chatId, chatName: name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
-        isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
-        atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
-        // the widget is a reply thread with the client's being: every visitor line addresses it; an init's is on the record only
-        backlog: init, prime: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
-        msgKey: m.id, msgTs: n,
+        isSender: false, authorized: false,
+        backlog: true, prime: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+        msgKey: String(nextTick()), msgTs: n,
       });
-      return init ? { session: token } : { session: token, message: view(m), cold };
+      return { session: token };
     })();
     if (key) { posted.set(key, { at: n, reply }); reply.catch(() => posted.delete(key)); }
     return json(res, 200, await reply, cors);
@@ -616,7 +624,7 @@ export async function startHttpBridge({
     s.chat.warmAt = undefined;   // a fresh thread is a cold one (a prime below warms it again)
     saveLog(s.chat);
     log(`${c.name}-${sid}: the visitor ended the conversation`);
-    if (c.init === 'prime' && idn.identity) await prime(c, s, idn, { place: null, isNew: false });   // a fresh thread is a cold one
+    if (c.init === 'prime' && idn.identity) await prime(c, s, idn, { place: null, isNew: false, phrase: c.primeText });   // a fresh thread is a cold one
     return json(res, 200, { ok: true }, cors);
   }
 

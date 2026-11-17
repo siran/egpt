@@ -500,6 +500,21 @@ topic is seated. The being should answer a prime with `…` alone (the silence
 word). A prime's turn is quiet in every mode, so its `…` is never shown; any
 other answer would be posted whole.
 
+`prime_text` is the warm-up phrase, a visitor's own line sent right after the
+prime notice. The chatbox's (`prime_text:` in the block, the operator's) is also
+replayed after an end. The page may send its own (`{kind: "init", prime_text}`):
+it is a line like any typed one: over `max_chars` is a 413 (never truncated), the
+session rate and `rate.turns_per_identity_per_hour` apply (a 429, counted once),
+it is recorded on the panel and in the transcript, escaped like a line, and not
+kept for the prime after an end. Unlike the notice, the being answers it, and
+the answer is posted.
+
+```yaml
+contoso_soporte:
+  init: prime
+  prime_text: "Hola, ponte al día con mi carpeta"
+```
+
 ### Places
 
 One chatbox, one conversation per signed user, in several kinds of page. The host
