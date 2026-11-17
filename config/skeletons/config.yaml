@@ -97,7 +97,7 @@ limbs:
 #   # title: "Chat"
 #   # intro: "¡Hola!"               # the panel's first line; placeholder, send, end, ... (every UI string) override the Spanish defaults here too
 #   # waiting: ["Un momento…", "Ya casi…"]   # phrases in the loading bubble instead of ⏳ (at most 12 of 80 characters)
-#   # waiting_cold: ["Corriendo a tu encuentro…", "Despertando, estirándome…"]   # shown instead when the conversation is cold (no line or prime in 4 min)
+#   # waiting_cold: ["Corriendo a tu encuentro…", "Despertando, estirándome…"]   # shown instead when the conversation is cold (no line in 4 min)
 #   # label: "Marketer — website"   # its section's title in /ayde; default the title
 #   # max_chars: 4000
 #   # rate: { messages: 30, minutes: 10, turns_per_identity_per_hour: 0 }   # per session; the last: one signed identity across its sessions, 0 = off
@@ -110,8 +110,7 @@ limbs:
 #   # session_days: 365             # idle days before a session expires; also /ayde's "active" window: a chat is active while its last line is this recent
 #   # identity: { mode: off, required: [abrin, username], key: [abrin, username] }   # mode off | optional | required: a signed user (secrets/chatbox-mysite.key); required: claims a token must carry; key: the claims that are the identity; its text: strings: { identity: "..." }
 #   # conversation_by: session      # identity: one conversation per signed identity, every session and tab (needs identity)
-#   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity)
-#   # prime_text: ""                # with init: prime, a warm-up phrase sent as the visitor's own line after the opening one (on the panel); a page's {kind: init, prime_text} goes the same line path, same limits
+#   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity). prime: opening the chatbox sends the widget's opening phrase as the visitor's first line (the phrase lives in the plugin's skin.json, not here)
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the

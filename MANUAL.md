@@ -484,36 +484,29 @@ named in a boot line and ignored: move it to the skin's `skin.json`.
 ```yaml
 contoso_soporte:
   identity: required
-  init: prime                  # true: record "(opened the chatbox, signed in as …)", no wake. prime: also wake the being
+  init: prime                  # true: record "(opened the chatbox, signed in as …)", no wake. prime: opening the chatbox sends the opening phrase
 ```
 
-`init: prime` delivers that opening line to the being as a normal wake on every
-init, a new session or a resumed one (a reload, a return the next day), so its
-process and prompt cache are warm before the person types the first line. Not
-when the conversation was primed or spoken to within the last 4 minutes (another
-tab); and the visitor's "end conversation" primes right after it, whatever the
-gap (its fresh thread is cold). With `init: true` a resumed session records
-nothing. A prime counts in
-`rate.turns_per_identity_per_hour` like a line; over the budget it is skipped
-silently (logged, no error). Nothing is shown on the panel and no team
-topic is seated. The being should answer a prime with `…` alone (the silence
-word). A prime's turn is quiet in every mode, so its `…` is never shown; any
-other answer would be posted whole.
+`init: prime`: **opening the chatbox sends the opening** — one message, the
+phrase the widget sends with the init (`{kind: "init", prime_text}`), as the
+visitor's first line. The phrase is the widget's, not core's: the embedding page's
+(`data-prime-text` / `window.egptChatPrimeText`), else the plugin's default
+(`prime_text` in the skin's `skin.json`). Core holds none. The line goes the
+line's own path: over `max_chars` is a 413 (never truncated), the session rate
+and `rate.turns_per_identity_per_hour` apply (a 429, counted once), it is
+recorded on the panel and in the transcript, escaped like a line, and the being
+answers it and the answer is posted. No notice goes to the being.
 
-`prime_text` is the warm-up phrase, a visitor's own line sent right after the
-prime notice. The chatbox's (`prime_text:` in the block, the operator's) is also
-replayed after an end. The page may send its own (`{kind: "init", prime_text}`):
-it is a line like any typed one: over `max_chars` is a 413 (never truncated), the
-session rate and `rate.turns_per_identity_per_hour` apply (a 429, counted once),
-it is recorded on the panel and in the transcript, escaped like a line, and not
-kept for the prime after an end. Unlike the notice, the being answers it, and
-the answer is posted.
+No phrase (the page gives none and the plugin's is empty): the init sends nothing
+— no turn, no notice. The opening is not sent into a thread that already has
+lines (a reload, another tab or device), and after the visitor's "end
+conversation" core sends nothing: a later init (the fresh thread has no lines) sends the
+opening again. With `init: true` a resumed session records nothing. `init` is off
+by default; leaving it off disables opening messages entirely.
 
-```yaml
-contoso_soporte:
-  init: prime
-  prime_text: "Hola, ponte al día con mi carpeta"
-```
+`prime_text:` in the client's block no longer exists: it is ignored and named in
+a boot line (`prime_text — the chatbox UI's now …`). Move it to the plugin's
+`skin.json` (`"prime_text": "…"`).
 
 ### Places
 

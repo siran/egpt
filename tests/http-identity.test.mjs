@@ -396,7 +396,7 @@ describe('init: the widget opened', () => {
     const i = await post({ kind: 'init', identity });
     expect(i).toEqual({ status: 200, session: expect.any(String) });
     expect(got).toHaveLength(1);
-    expect(got[0].from).toMatchObject({ backlog: true, prime: false, network: 'http', senderName: 'visitor' });
+    expect(got[0].from).toMatchObject({ backlog: true, network: 'http', senderName: 'visitor' });
     expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})');
     expect(hooks[0]).toMatchObject({ isNew: true, init: true, identity: { username: 'jperez' } });
     expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
@@ -420,190 +420,134 @@ describe('init: the widget opened', () => {
     expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","cuentas":[{"abrin":"IEV","usuario":"jperez","tipo":"P"}]})');
   });
 
-  it("init: prime delivers the same line as a wake (not backlog), addressed to the being, once per new session; a reload or another tab primes nothing; the prime is charged to the turn budget and no hook seats a topic", async () => {
-    const { post, got, hooks, read } = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 2 } });
+  // init: prime — "opening the chatbox sends the opening": ONE message, the phrase the widget sends as prime_text, as the
+  // visitor's first line through the normal line path. The limb holds no phrase of its own and sends no notice.
+  describe("init: prime — the opening phrase is the visitor's first line, one turn", () => {
     const identity = tok({ ...JP, user_id: 4711 });
-    const i = await post({ kind: 'init', identity });
-    expect(i).toEqual({ status: 200, session: expect.any(String) });
-    expect(got).toHaveLength(1);
-    expect(got[0].from).toMatchObject({ backlog: false, replyToBot: true, replyToBeing: 'ed', network: 'http', senderName: 'visitor' });
-    expect(got[0].text).toBe('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711}; nothing to answer yet — answer … alone)');
-    expect(got[0].from).toMatchObject({ prime: true });
-    expect(hooks[0]).toMatchObject({ isNew: true, init: true });
-    expect((await (await read(i.session, identity)).json()).messages).toEqual([]);
-    expect((await post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);   // a reload / another tab
-    expect(got).toHaveLength(1);
-    // the prime took one of the two turns of the hour; one line is left
-    expect((await post({ session: i.session, text: 'hola', identity })).status).toBe(200);
-    expect(got[1]).toMatchObject({ text: 'hola', from: { backlog: false } });
-    expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
-  });
-
-  describe("prime_text: a visitor line (the page's), or the chatbox's warm-up phrase", () => {
-    const OPENED = '(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})';
-    const identity = tok({ ...JP, user_id: 4711 });
-    const said = async (r, session) => (await (await r.read(session, identity)).json()).messages.map((m) => [m.from, m.text]);
-    it("the page's prime_text goes the line's path: the notice as before, then the phrase as the visitor's line, recorded on the panel", async () => {
-      const r = await limb('required', {}, { init: 'prime' });
-      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
-      expect(i.status).toBe(200);
-      expect(r.got.map((g) => g.text)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`, 'revisa mis notas']);
-      expect(r.got[0].from).toMatchObject({ prime: true });
-      expect(r.got[1].from).toMatchObject({ prime: false, backlog: false, replyToBeing: 'ed', senderName: 'visitor' });
-      expect(await said(r, i.session)).toEqual([['visitor', 'revisa mis notas']]);
-    });
-    it("over max_chars: 413 like a line, no turn, no session; never truncated", async () => {
-      const r = await limb('required', {}, { init: 'prime', max_chars: 20 });
-      expect((await r.post({ kind: 'init', identity, prime_text: 'x'.repeat(21) })).status).toBe(413);
-      expect(r.got).toEqual([]);
-      expect(r.hooks).toEqual([]);
-    });
-    it('counted by the same limiters as a line: the session rate, once in the identity budget', async () => {
-      const a = await limb('required', {}, { init: 'prime', rate: { messages: 1 } });
-      const i = await a.post({ kind: 'init', identity, prime_text: 'uno' });
-      expect((await a.post({ session: i.session, text: 'dos', identity })).status).toBe(429);
-      let t = Date.now();
-      const b = await limb('required', { now: () => t }, { init: 'prime', rate: { messages: 1 } });
-      const j = await b.post({ session: (await b.post({ kind: 'init', identity })).session, text: 'hola', identity });
-      t += 5 * 60_000;
-      const over = await b.post({ kind: 'init', session: j.session, identity, prime_text: 'otra' });
-      expect(over).toMatchObject({ status: 429, retry_after_s: expect.any(Number) });
-      expect(b.got.every((g) => g.text !== 'otra')).toBe(true);
-      const c = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 2 } });
-      const k = await c.post({ kind: 'init', identity, prime_text: 'uno' });   // one turn, not two
-      expect((await c.post({ session: k.session, text: 'dos', identity })).status).toBe(200);
-      expect((await c.post({ session: k.session, text: 'tres', identity })).status).toBe(429);
-      const d = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 1 } });
-      await d.post({ session: (await d.post({ kind: 'init', identity })).session, text: 'hola', identity });
-      const full = await d.post({ kind: 'init', identity, prime_text: 'otra' });
-      expect(full.status).toBe(429);
-    });
-    it("the page's phrase is not kept: the prime after an end is the notice alone", async () => {
-      const r = await limb('required', {}, { init: 'prime' });
-      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
-      expect((await r.end({ session: i.session, identity })).status).toBe(200);
-      expect(r.got.map((g) => g.text).slice(2)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`]);
-      expect(await said(r, i.session)).toEqual([]);
-    });
-    it("a chatbox prime_text (the operator's) is the visitor's line too, recorded; a blank or non-string page one falls back to it; it is replayed after an end", async () => {
-      const r = await limb('required', {}, { init: 'prime', prime_text: 'hola Edu, ponte al día' });
-      const i = await r.post({ kind: 'init', identity, prime_text: 42 });
-      expect(r.got.map((g) => g.text)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`, 'hola Edu, ponte al día']);
-      expect(await said(r, i.session)).toEqual([['visitor', 'hola Edu, ponte al día']]);
-      await r.end({ session: i.session, identity });
-      expect(r.got.at(-1).text).toBe('hola Edu, ponte al día');
-      expect(await said(r, i.session)).toEqual([['visitor', 'hola Edu, ponte al día']]);
-    });
-    it('init: true and no phrase anywhere: the opening line alone, as before', async () => {
-      const a = await limb('required', {}, { init: true });
-      await a.post({ kind: 'init', identity, prime_text: 'revisa' });
-      expect(a.got.map((g) => g.text)).toEqual([OPENED]);
-      const b = await limb('required', {}, { init: 'prime' });
-      await b.post({ kind: 'init', identity });
-      expect(b.got).toHaveLength(1);
-    });
-  });
-
-  describe('the prime is kept warm: every init, unless the conversation was warmed within 4 minutes', () => {
     const MIN = 60_000;
-    const rig = async (init, extra = {}, cfg = {}) => {
+    const said = async (r, session) => (await (await r.read(session, identity)).json()).messages.map((m) => [m.from, m.text]);
+    const rig = async (cfg = {}, extra = {}) => {
       let t = Date.now();
-      const r = await limb('required', { now: () => t, ...extra }, { init, ...cfg });
-      const identity = tok(JP, { exp: exp(86400) });
-      return { ...r, identity, tick: (ms) => { t += ms; }, init: (session) => r.post({ kind: 'init', session, identity }) };
+      const r = await limb('required', { now: () => t, ...extra }, { init: 'prime', ...cfg });
+      return { ...r, tick: (ms) => { t += ms; } };
     };
 
-    it('a resumed init after the gap primes again (prime, not backlog); within the gap after a prime, after a visitor line, or from a second tab: none', async () => {
-      const { post, got, hooks, identity, tick, init } = await rig('prime');
-      const a = await init();
-      expect(got).toHaveLength(1);
-      tick(MIN);
-      await init(a.session);   // within the gap after a prime
-      expect(got).toHaveLength(1);
-      tick(5 * MIN);
-      await init(a.session);   // resumed, after the gap
-      expect(got).toHaveLength(2);
-      expect(got[1].from).toMatchObject({ prime: true, backlog: false });
-      expect(got[1].text).toBe(got[0].text);
-      expect(hooks[1]).toMatchObject({ isNew: false, init: true });
-      tick(5 * MIN);
-      await post({ session: a.session, text: 'hola', identity });
-      expect(got).toHaveLength(3);
-      tick(3 * MIN);
-      await init(a.session);   // within the gap after a visitor line
-      expect(got).toHaveLength(3);
-      tick(2 * MIN);
-      await Promise.all([init(a.session), init(a.session)]);   // two tabs back to back
-      expect(got).toHaveLength(4);
+    it('open with a phrase: exactly one being turn, whose text is the phrase, a visitor line recorded on the panel, counted once; no notice anywhere', async () => {
+      const r = await rig({ rate: { messages: 2, turns_per_identity_per_hour: 2 } });
+      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      expect(i).toMatchObject({ status: 200, session: expect.any(String) });
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas']);
+      expect(r.got[0].from).toMatchObject({ backlog: false, replyToBot: true, replyToBeing: 'ed', network: 'http', senderName: 'visitor' });
+      expect(await said(r, i.session)).toEqual([['visitor', 'revisa mis notas']]);
+      expect(r.hooks).toHaveLength(1);
+      expect(r.hooks[0]).toMatchObject({ isNew: true, init: false });
+      expect(JSON.stringify([r.got, r.lines])).not.toMatch(/opened the chatbox|nothing to answer yet/);
+      // counted once: one of the 2 session messages and one of the 2 turns of the hour; one line is left, then both gates close
+      expect((await r.post({ session: i.session, text: 'hola', identity })).status).toBe(200);
+      expect((await r.post({ session: i.session, text: 'otra', identity })).status).toBe(429);
     });
 
-    it('end() primes right after onEnd, even within the gap; nothing said: no prime', async () => {
-      const { post, end, got, identity, tick, init } = await rig('prime');
-      const a = await init();
-      expect((await end({ session: a.session, identity })).status).toBe(200);   // nothing said
-      expect(got).toHaveLength(1);
-      await post({ session: a.session, text: 'hola', identity });
-      expect(got).toHaveLength(2);
-      tick(MIN);
-      expect((await end({ session: a.session, identity })).status).toBe(200);
-      expect(got).toHaveLength(3);
-      expect(got[2].from).toMatchObject({ prime: true, backlog: false });
-      expect(got[2].text).toBe(got[0].text);
+    it('open with an empty phrase (none, blank, not a string): no turn, no notice, no panel line; the session is made', async () => {
+      for (const prime_text of [undefined, '', '   ', 42, null]) {
+        const r = await rig();
+        const i = await r.post({ kind: 'init', identity, ...(prime_text !== undefined ? { prime_text } : {}) });
+        expect(i).toEqual({ status: 200, session: expect.any(String) });
+        expect(r.got).toEqual([]);
+        expect(r.hooks).toEqual([]);
+        expect(await said(r, i.session)).toEqual([]);
+        expect((await r.post({ session: i.session, text: 'hola', identity })).status).toBe(200);   // the first typed line is as ever
+        expect(r.got.map((g) => g.text)).toEqual(['hola']);
+      }
     });
 
-    it('end() does not replay the page phrase: the prime after it is the notice alone', async () => {
-      const { post, end, got, identity } = await rig('prime');
-      const a = await post({ kind: 'init', identity, prime_text: 'mi frase' });
-      await post({ session: a.session, text: 'hola', identity });
-      await end({ session: a.session, identity });
-      expect(got).toHaveLength(4);   // notice, phrase, hola, notice
-      expect(got[3].text).toContain('nothing to answer yet');
-      expect(got[3].text).not.toContain('mi frase');
+    it("the limb holds no phrase: a prime_text in the client's block is ignored (the plugin's now) and named at start", async () => {
+      const r = await rig({ prime_text: 'hola Edu, ponte al día' });
+      const i = await r.post({ kind: 'init', identity });
+      expect(r.got).toEqual([]);
+      expect(await said(r, i.session)).toEqual([]);
+      expect(r.lines.filter((l) => /acme: prime_text — the chatbox UI's now \(its skin, in a ui: folder\); ignored here/.test(l))).toHaveLength(1);
     });
 
-    it('end() delivers the prime after onEnd has run', async () => {
+    it('the line gates apply to the opening: 413 over max_chars (never truncated, no turn); 429 by the session rate; 429 by the identity budget', async () => {
+      const a = await rig({ max_chars: 20 });
+      expect((await a.post({ kind: 'init', identity, prime_text: 'x'.repeat(21) })).status).toBe(413);
+      expect(a.got).toEqual([]);
+      expect(a.hooks).toEqual([]);
+      const b = await rig({ rate: { messages: 1 } });
+      const i = await b.post({ kind: 'init', identity, prime_text: 'uno' });
+      expect((await b.post({ session: i.session, text: 'dos', identity })).status).toBe(429);   // the opening was the one message
+      const c = await rig({ rate: { messages: 1 } });
+      const j = await c.post({ text: 'hola', identity });
+      await c.end({ session: j.session, identity });               // a fresh thread, the session's window still spent
+      const over = await c.post({ kind: 'init', session: j.session, identity, prime_text: 'otra' });
+      expect(over).toMatchObject({ status: 429, retry_after_s: expect.any(Number) });
+      expect(c.got.map((g) => g.text)).toEqual(['hola']);
+      const d = await rig({ rate: { turns_per_identity_per_hour: 1 } });
+      await d.post({ text: 'hola', identity });
+      const full = await d.post({ kind: 'init', identity, prime_text: 'otra' });
+      expect(full).toMatchObject({ status: 429, error: 'too many messages from this identity' });
+      expect(d.got.map((g) => g.text)).toEqual(['hola']);
+    });
+
+    it('a reload or another tab: the opening is not resent into a conversation that already has lines — within the old 4 min gap or long after', async () => {
+      const r = await rig();
+      const a = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      r.tick(1 * MIN);
+      await r.post({ kind: 'init', session: a.session, identity, prime_text: 'revisa mis notas' });
+      r.tick(30 * MIN);
+      await r.post({ kind: 'init', session: a.session, identity, prime_text: 'revisa mis notas' });
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas']);
+      expect(await said(r, a.session)).toEqual([['visitor', 'revisa mis notas']]);
+    });
+
+    it("conversation_by identity: a second device's init joins the conversation and does not resend the opening", async () => {
+      const r = await rig({ conversation_by: 'identity' });
+      await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      const b = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      expect(b.status).toBe(200);
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas']);
+    });
+
+    it('after an end: core replays nothing — not the page phrase, not a configured one; the next open (a fresh thread) sends the opening again', async () => {
+      const r = await rig({ prime_text: 'de la config' });
+      const a = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      await r.post({ session: a.session, text: 'hola', identity });
+      expect((await r.end({ session: a.session, identity })).status).toBe(200);
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas', 'hola']);
+      expect(await said(r, a.session)).toEqual([]);
+      await r.post({ kind: 'init', session: a.session, identity, prime_text: 'revisa mis notas' });
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas', 'hola', 'revisa mis notas']);
+    });
+
+    it('end() delivers nothing after onEnd (no prime, no notice)', async () => {
       const order = [];
-      const { post, end, identity } = await rig('prime', { onEnd: () => { order.push('end'); }, onIncoming: (x, f) => order.push(f.prime ? 'prime' : 'line') });
-      const a = await post({ text: 'hola', identity });
-      await end({ session: a.session, identity });
-      expect(order).toEqual(['line', 'end', 'prime']);
+      const r = await rig({}, { onEnd: () => { order.push('end'); }, onIncoming: (x, f) => order.push('line') });
+      const a = await r.post({ text: 'hola', identity });
+      await r.end({ session: a.session, identity });
+      expect(order).toEqual(['line', 'end']);
     });
 
-    it('a prime counts in rate.turns_per_identity_per_hour: primes plus lines in an hour never exceed N; an over-budget prime is skipped, no error', async () => {
-      const N = 3;
-      const { post, end, got, identity, tick, init, lines } = await rig('prime', {}, { rate: { turns_per_identity_per_hour: N } });
-      const a = await init();                                          // prime 1
-      tick(5 * MIN);
-      expect((await init(a.session)).status).toBe(200);                // prime 2
-      tick(5 * MIN);
-      expect((await post({ session: a.session, text: 'hola', identity })).status).toBe(200);   // line 3
-      expect((await post({ session: a.session, text: 'otra', identity })).status).toBe(429);
-      expect((await end({ session: a.session, identity })).status).toBe(200);   // its end-prime is over budget: skipped
-      tick(5 * MIN);
-      expect((await init(a.session)).status).toBe(200);                // skipped too
-      expect(got.map((g) => g.from.prime)).toEqual([true, true, false]);
-      expect(lines.filter((l) => /acme: a prime skipped — 3 already from one identity in 60 min/.test(l)).length).toBeGreaterThanOrEqual(1);
-      tick(60 * MIN);                                                  // the hour passes: primes count again
-      expect((await init(a.session)).status).toBe(200);
-      expect(got.map((g) => g.from.prime)).toEqual([true, true, false, true]);
+    it('the opening counts in rate.turns_per_identity_per_hour like a line: N in an hour at most; over it the open is a 429, not a silent skip', async () => {
+      const r = await rig({ rate: { turns_per_identity_per_hour: 2 } });
+      const identity = tok({ ...JP, user_id: 4711 }, { exp: exp(86400) });   // outlives the hour
+      await r.post({ kind: 'init', identity, prime_text: 'uno' });
+      await r.post({ kind: 'init', identity, prime_text: 'dos' });   // a second session of the identity
+      expect((await r.post({ kind: 'init', identity, prime_text: 'tres' })).status).toBe(429);
+      expect(r.got.map((g) => g.text)).toEqual(['uno', 'dos']);
+      r.tick(61 * MIN);
+      expect((await r.post({ kind: 'init', identity, prime_text: 'cuatro' })).status).toBe(200);
     });
 
-    it('no identity budget configured: primes are not limited', async () => {
-      const { got, tick, init } = await rig('prime');
-      const a = await init();
-      for (let i = 0; i < 20; i++) { tick(5 * MIN); await init(a.session); }
-      expect(got).toHaveLength(21);
-    });
-
-    it('init: true keeps today: a resumed init records nothing; no init: end() delivers nothing', async () => {
-      const { got, tick, init } = await rig(true);
-      const a = await init();
-      tick(10 * MIN);
-      await init(a.session);
-      expect(got).toHaveLength(1);
-      const off = await rig(undefined);
-      const b = await off.post({ text: 'hola', identity: off.identity });
-      await off.end({ session: b.session, identity: off.identity });
+    it('init: true is as it was: one recorded line (never a phrase), a resumed session records nothing; no init: end() delivers nothing', async () => {
+      const t = await limb('required', {}, { init: true });
+      const i = await t.post({ kind: 'init', identity, prime_text: 'revisa' });
+      await t.post({ kind: 'init', session: i.session, identity });
+      expect(t.got).toHaveLength(1);
+      expect(t.got[0].from.backlog).toBe(true);
+      expect(t.got[0].text).toMatch(/^\(opened the chatbox, signed in as /);
+      const off = await limb('required');
+      const b = await off.post({ text: 'hola', identity });
+      await off.end({ session: b.session, identity });
       expect(off.got).toHaveLength(1);
     });
   });
@@ -696,11 +640,12 @@ describe('places: where the host page is', () => {
   });
 
   it('init with a place names it', async () => {
-    for (const init of [true, 'prime']) {
-      const { post, got } = await limb('required', {}, { init, places });
-      await post({ kind: 'init', identity: tok(), place: 'espacio' });
-      expect(got[0].text.startsWith('(opened the chatbox in espacio, signed in as {')).toBe(true);
-    }
+    const t = await limb('required', {}, { init: true, places });
+    await t.post({ kind: 'init', identity: tok(), place: 'espacio' });
+    expect(t.got[0].text.startsWith('(opened the chatbox in espacio, signed in as {')).toBe(true);
+    const p = await limb('required', {}, { init: 'prime', places });   // the opening phrase is a line: its place prefixes the being's copy only
+    await p.post({ kind: 'init', identity: tok(), place: 'espacio', prime_text: 'hola' });
+    expect(p.got.map((g) => g.text)).toEqual(['(in espacio) hola']);
   });
 
   it('places: a list of names, or a map\'s keys (their css and user_strip are the skin\'s); a bad name is none', async () => {

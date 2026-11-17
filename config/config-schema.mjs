@@ -871,7 +871,7 @@ export const CONFIG_SCHEMA = {
           GET <file>  a file of the chatbox's UI (widget.js, skin.json, skin.css, an image):
             the last of its ui: folders that has it (below). A page embeds
             <script src="https://<host>/chat/<client>/widget.js" … defer>
-        cold: the conversation was not warmed (a line or a prime) in the last 4 minutes,
+        cold: the conversation was not spoken to (a line) in the last 4 minutes,
         so the being starts cold (the UI may say so while it waits).
         A message is {id, from: visitor|being, text, done, seq} or {id, deleted, seq}.
         The session's conversation is created with
@@ -952,7 +952,7 @@ export const CONFIG_SCHEMA = {
                               message); ended (the line the team topic gets on an end);
                               earlier (heads the recap a late topic gets, {n} = the earlier
                               lines). The panel's texts (open, close, placeholder, send,
-                              error, end, support, intro, waiting, waiting_cold, …) are the
+                              error, end, support, intro, waiting, waiting_cold, prime_text, …) are the
                               UI's, in its skin.json (2026-11-12); given here, flat or in
                               strings:, they are logged and ignored
             places            [<name>, …]: where the host page may be (lowercase letters,
@@ -1041,22 +1041,17 @@ export const CONFIG_SCHEMA = {
                               as backlog: recorded, never dispatched (no turn), not on
                               the panel, no team topic (the first line seats it). A
                               reload or another tab (the same session) records nothing.
-                              prime: the same line is delivered as a wake, addressed to the
-                              being like a visitor line, so its process starts and it reads
-                              before the person types: on every init, new or resumed, unless
-                              the conversation was primed or spoken to in the last 4 min; the
-                              visitor's end-conversation primes right after it, whatever the
-                              gap. Not on the panel, no team topic; counted in
-                              rate.turns_per_identity_per_hour (over it, skipped silently). The being
-                              answers it with "…" alone (the silence word); that turn is quiet in
-                              every mode, so the "…" is never shown. Then the warm-up phrase, if any,
-                              follows as a visitor line, the line path itself: the page's
-                              {kind: init, prime_text} (the user's own words: the same
-                              max_chars (413), rate gates (429), identity budget (once) and
-                              escaping as a typed line; recorded on the panel; NOT kept for the
-                              prime after an end), else prime_text below. Neither: the notice alone.
-            prime_text        the chatbox's warm-up phrase (the operator's) for init: prime when the
-                              page sends none: a visitor line, on the panel, replayed after an end.
+                              prime: opening the chatbox sends ONE message: the widget's
+                              {kind: init, prime_text}, the opening phrase (the page's, else the
+                              plugin's default in its skin.json; this limb holds none), as the
+                              visitor's first line, the line path itself: max_chars (413), rate
+                              gates (429), identity budget (once, in rate.turns_per_identity_per_hour),
+                              escaping, recorded on the panel, answered and posted like any line.
+                              No phrase: nothing is sent (no turn, no notice). Not sent when the
+                              thread already has lines (a reload, another tab or device); after the
+                              visitor's end-conversation nothing is replayed (the next open sends the
+                              opening again). prime_text in this block is ignored (it moved to the
+                              plugin's skin.json; logged at start). Off by default.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.

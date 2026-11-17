@@ -105,7 +105,6 @@ function brain(turns) {
       sessionId: id,
       async turn(m) {
         turns.push({ cwd: opts.cwd, m, session: id, resumed: opts.sessionId ?? null });
-        if (m.includes('nothing to answer yet')) return { text: '…', sessionId: id };   // the being's silence for a prime
         if (m.includes('ESPERA') && hold.p) await hold.p;
         return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: id };
       },
@@ -569,38 +568,39 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 
-  // The prime: a wake no person typed. The being answers it "…"; nothing reaches the visitor's panel or the team topic,
-  // in mention mode (a team_group) and in mode on (none). A real line still opens its ⏳ bubble and is answered.
+  // init: prime — the opening phrase (the widget's prime_text) is the visitor's first line, in mention mode (a team_group)
+  // and in mode on (none): one turn, answered and posted like any line. No phrase: nothing is sent.
   for (const [label, team] of [['mention (team_group)', { team_group: GROUP, team_name: 'Equipo Contoso' }], ['on (no team_group)', {}]]) {
-    it(`init: prime, ${label}: wakes the being once in its folder, and its "…" is shown nowhere; no topic; a repeated init adds no turn`, async () => {
-      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
-      const identity = signed(JP);
-      const i = await n.post({ kind: 'init', identity });
-      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
-      expect(n.turns[0].cwd).toMatch(/contoso-[0-9a-f]{16}/);
-      expect(n.turns[0].m).toContain('(opened the chatbox, signed in as');
-      expect(n.turns[0].m).toContain('nothing to answer yet — answer … alone');
-      expect((await n.post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);
-      await settle();
-      await settle();
-      expect(n.turns).toHaveLength(1);
-      expect(await n.messages(i.session, identity)).toEqual([]);   // no ✓, no ⏳, no "…"
-      expect(n.api.of('createForumTopic')).toEqual([]);
-      expect(n.inThread()).toEqual([]);
-      n.app.stop();
-    });
-
-    it(`init: prime, ${label}: the page's prime_text is a visitor line: the notice's "…" stays hidden, the phrase is on the panel and its answer posts`, async () => {
+    it(`init: prime, ${label}: the opening phrase is ONE turn, the visitor's line on the panel and its answer posts; no notice; a reload adds no turn`, async () => {
       const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
       const identity = signed(JP);
       const i = await n.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
-      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
-      expect(n.turns[0].m).toContain('nothing to answer yet');
-      expect(n.turns[1].m).toContain('revisa mis notas');
+      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+      expect(n.turns[0].cwd).toMatch(/contoso-[0-9a-f]{16}/);
+      expect(n.turns[0].m).toContain('revisa mis notas');
+      expect(n.turns[0].m).not.toMatch(/opened the chatbox|nothing to answer yet/);
       await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being' && m.done)).toHaveLength(1), { timeout: 5000 });
       const all = await n.messages(i.session, identity);
       expect(all.find((m) => m.from === 'visitor')).toMatchObject({ text: 'revisa mis notas' });
       expect(all.find((m) => m.from === 'being').text).toContain('revisa mis notas');
+      expect((await n.post({ kind: 'init', session: i.session, identity, prime_text: 'revisa mis notas' })).session).toBe(i.session);
+      await settle();
+      await settle();
+      expect(n.turns).toHaveLength(1);
+      expect(n.api.of('createForumTopic')).toHaveLength(team.team_group ? 1 : 0);   // a line seats the topic, as any line
+      n.app.stop();
+    });
+
+    it(`init: prime, ${label}: no phrase, no turn: nothing reaches the being, the panel or the team topic`, async () => {
+      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
+      const identity = signed(JP);
+      const i = await n.post({ kind: 'init', identity });
+      await settle();
+      await settle();
+      expect(n.turns).toEqual([]);
+      expect(await n.messages(i.session, identity)).toEqual([]);
+      expect(n.api.of('createForumTopic')).toEqual([]);
+      expect(n.inThread()).toEqual([]);
       n.app.stop();
     });
 
@@ -608,7 +608,6 @@ describe('a signed visitor (identity)', () => {
       const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
       const identity = signed(JP);
       const i = await n.post({ kind: 'init', identity });
-      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
       let release;
       hold.p = new Promise((r) => { release = r; });
       try {
