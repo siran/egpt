@@ -1042,14 +1042,21 @@ export const CONFIG_SCHEMA = {
                               the panel, no team topic (the first line seats it). A
                               reload or another tab (the same session) records nothing.
                               prime: the same line is delivered as a wake, addressed to the
-                              being like a visitor line, so its process starts and it can
-                              read its folder before the person types: on every init, new
-                              or resumed, unless the conversation was primed or spoken to
-                              in the last 4 min; the visitor's end-conversation primes
-                              right after it, whatever the gap. Not on the panel, no team topic; counted in
-                              rate.turns_per_identity_per_hour (over it, skipped silently). The being answers it with
-                              "…" alone (the silence word). Its turn is quiet in every
-                              mode, so that "…" is never shown.
+                              being like a visitor line, so its process starts and it reads
+                              before the person types: on every init, new or resumed, unless
+                              the conversation was primed or spoken to in the last 4 min; the
+                              visitor's end-conversation primes right after it, whatever the
+                              gap. Not on the panel, no team topic; counted in
+                              rate.turns_per_identity_per_hour (over it, skipped silently). The being
+                              answers it with "…" alone (the silence word); that turn is quiet in
+                              every mode, so the "…" is never shown. Then the warm-up phrase, if any,
+                              follows as a visitor line, the line path itself: the page's
+                              {kind: init, prime_text} (the user's own words: the same
+                              max_chars (413), rate gates (429), identity budget (once) and
+                              escaping as a typed line; recorded on the panel; NOT kept for the
+                              prime after an end), else prime_text below. Neither: the notice alone.
+            prime_text        the chatbox's warm-up phrase (the operator's) for init: prime when the
+                              page sends none: a visitor line, on the panel, replayed after an end.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.

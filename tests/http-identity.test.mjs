@@ -439,6 +439,71 @@ describe('init: the widget opened', () => {
     expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
   });
 
+  describe("prime_text: a visitor line (the page's), or the chatbox's warm-up phrase", () => {
+    const OPENED = '(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})';
+    const identity = tok({ ...JP, user_id: 4711 });
+    const said = async (r, session) => (await (await r.read(session, identity)).json()).messages.map((m) => [m.from, m.text]);
+    it("the page's prime_text goes the line's path: the notice as before, then the phrase as the visitor's line, recorded on the panel", async () => {
+      const r = await limb('required', {}, { init: 'prime' });
+      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      expect(i.status).toBe(200);
+      expect(r.got.map((g) => g.text)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`, 'revisa mis notas']);
+      expect(r.got[0].from).toMatchObject({ prime: true });
+      expect(r.got[1].from).toMatchObject({ prime: false, backlog: false, replyToBeing: 'ed', senderName: 'visitor' });
+      expect(await said(r, i.session)).toEqual([['visitor', 'revisa mis notas']]);
+    });
+    it("over max_chars: 413 like a line, no turn, no session; never truncated", async () => {
+      const r = await limb('required', {}, { init: 'prime', max_chars: 20 });
+      expect((await r.post({ kind: 'init', identity, prime_text: 'x'.repeat(21) })).status).toBe(413);
+      expect(r.got).toEqual([]);
+      expect(r.hooks).toEqual([]);
+    });
+    it('counted by the same limiters as a line: the session rate, once in the identity budget', async () => {
+      const a = await limb('required', {}, { init: 'prime', rate: { messages: 1 } });
+      const i = await a.post({ kind: 'init', identity, prime_text: 'uno' });
+      expect((await a.post({ session: i.session, text: 'dos', identity })).status).toBe(429);
+      let t = Date.now();
+      const b = await limb('required', { now: () => t }, { init: 'prime', rate: { messages: 1 } });
+      const j = await b.post({ session: (await b.post({ kind: 'init', identity })).session, text: 'hola', identity });
+      t += 5 * 60_000;
+      const over = await b.post({ kind: 'init', session: j.session, identity, prime_text: 'otra' });
+      expect(over).toMatchObject({ status: 429, retry_after_s: expect.any(Number) });
+      expect(b.got.every((g) => g.text !== 'otra')).toBe(true);
+      const c = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 2 } });
+      const k = await c.post({ kind: 'init', identity, prime_text: 'uno' });   // one turn, not two
+      expect((await c.post({ session: k.session, text: 'dos', identity })).status).toBe(200);
+      expect((await c.post({ session: k.session, text: 'tres', identity })).status).toBe(429);
+      const d = await limb('required', {}, { init: 'prime', rate: { turns_per_identity_per_hour: 1 } });
+      await d.post({ session: (await d.post({ kind: 'init', identity })).session, text: 'hola', identity });
+      const full = await d.post({ kind: 'init', identity, prime_text: 'otra' });
+      expect(full.status).toBe(429);
+    });
+    it("the page's phrase is not kept: the prime after an end is the notice alone", async () => {
+      const r = await limb('required', {}, { init: 'prime' });
+      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      expect((await r.end({ session: i.session, identity })).status).toBe(200);
+      expect(r.got.map((g) => g.text).slice(2)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`]);
+      expect(await said(r, i.session)).toEqual([]);
+    });
+    it("a chatbox prime_text (the operator's) is the visitor's line too, recorded; a blank or non-string page one falls back to it; it is replayed after an end", async () => {
+      const r = await limb('required', {}, { init: 'prime', prime_text: 'hola Edu, ponte al día' });
+      const i = await r.post({ kind: 'init', identity, prime_text: 42 });
+      expect(r.got.map((g) => g.text)).toEqual([`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`, 'hola Edu, ponte al día']);
+      expect(await said(r, i.session)).toEqual([['visitor', 'hola Edu, ponte al día']]);
+      await r.end({ session: i.session, identity });
+      expect(r.got.at(-1).text).toBe('hola Edu, ponte al día');
+      expect(await said(r, i.session)).toEqual([['visitor', 'hola Edu, ponte al día']]);
+    });
+    it('init: true and no phrase anywhere: the opening line alone, as before', async () => {
+      const a = await limb('required', {}, { init: true });
+      await a.post({ kind: 'init', identity, prime_text: 'revisa' });
+      expect(a.got.map((g) => g.text)).toEqual([OPENED]);
+      const b = await limb('required', {}, { init: 'prime' });
+      await b.post({ kind: 'init', identity });
+      expect(b.got).toHaveLength(1);
+    });
+  });
+
   describe('the prime is kept warm: every init, unless the conversation was warmed within 4 minutes', () => {
     const MIN = 60_000;
     const rig = async (init, extra = {}, cfg = {}) => {
@@ -484,6 +549,16 @@ describe('init: the widget opened', () => {
       expect(got).toHaveLength(3);
       expect(got[2].from).toMatchObject({ prime: true, backlog: false });
       expect(got[2].text).toBe(got[0].text);
+    });
+
+    it('end() does not replay the page phrase: the prime after it is the notice alone', async () => {
+      const { post, end, got, identity } = await rig('prime');
+      const a = await post({ kind: 'init', identity, prime_text: 'mi frase' });
+      await post({ session: a.session, text: 'hola', identity });
+      await end({ session: a.session, identity });
+      expect(got).toHaveLength(4);   // notice, phrase, hola, notice
+      expect(got[3].text).toContain('nothing to answer yet');
+      expect(got[3].text).not.toContain('mi frase');
     });
 
     it('end() delivers the prime after onEnd has run', async () => {

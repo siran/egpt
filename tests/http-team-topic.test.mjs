@@ -590,6 +590,20 @@ describe('a signed visitor (identity)', () => {
       n.app.stop();
     });
 
+    it(`init: prime, ${label}: the page's prime_text is a visitor line: the notice's "…" stays hidden, the phrase is on the panel and its answer posts`, async () => {
+      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
+      const identity = signed(JP);
+      const i = await n.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      expect(n.turns[0].m).toContain('nothing to answer yet');
+      expect(n.turns[1].m).toContain('revisa mis notas');
+      await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being' && m.done)).toHaveLength(1), { timeout: 5000 });
+      const all = await n.messages(i.session, identity);
+      expect(all.find((m) => m.from === 'visitor')).toMatchObject({ text: 'revisa mis notas' });
+      expect(all.find((m) => m.from === 'being').text).toContain('revisa mis notas');
+      n.app.stop();
+    });
+
     it(`regression, ${label}: a visitor's real line still opens its ⏳ bubble while the being works, and the answer posts`, async () => {
       const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
       const identity = signed(JP);
