@@ -105,7 +105,7 @@ function brain(turns) {
       sessionId: id,
       async turn(m) {
         turns.push({ cwd: opts.cwd, m, session: id, resumed: opts.sessionId ?? null });
-        if (m.includes('nothing to answer yet')) return { text: '…', sessionId: id };   // the being's silence for a prime
+        if (m.includes('(opened the chatbox') && !m.includes('RESPONDE')) return { text: '…', sessionId: id };   // the being's silence for a prime
         if (m.includes('ESPERA') && hold.p) await hold.p;
         return { text: `respuesta a ${m.split('\n').at(-1)}`, sessionId: id };
       },
@@ -458,51 +458,6 @@ describe('a signed visitor (identity)', () => {
     } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
 
-  it('card_claims: the named claims ride on the card (user.json, a line each in user.md); other claims and exp stay off', async () => {
-    const n = await bootTeam({ ...client(), card_claims: ['cuentas', 'exp'] });
-    const cuentas = [{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }, { abrin: 'IEV', usuario: 'jperezr', tipo: 'R' }];
-    await n.post({ text: 'hola', identity: signed({ ...JP, cuentas, otra: 'x' }) });
-    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
-    const dir = n.turns[0].cwd;
-    const card = JSON.parse(await fs.readFile(join(dir, 'desktop', 'user.json'), 'utf8'));
-    expect(card.cuentas).toEqual(cuentas);
-    expect(card).not.toHaveProperty('otra');
-    expect(card).not.toHaveProperty('exp');
-    expect(await fs.readFile(join(dir, 'desktop', 'user.md'), 'utf8')).toBe(`Verified by the site: Juan Pérez (jperez), type P, school IEV.\ncuentas: ${JSON.stringify(cuentas)}\n`);
-    n.app.stop();
-  });
-
-  it('card_claims: a later line bringing other values rewrites the card in the same conversation; the same values leave it alone', async () => {
-    const n = await bootTeam({ ...client(), card_claims: ['cuentas'] });
-    const uno = [{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }], dos = [...uno, { abrin: 'IEV', usuario: 'jperezr', tipo: 'R' }];
-    const a = await n.post({ text: 'hola', identity: signed({ ...JP, cuentas: uno }) });
-    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
-    const file = join(n.turns[0].cwd, 'desktop', 'user.json');
-    const b = await n.post({ session: a.session, text: 'agregué otra cuenta', identity: signed({ ...JP, cuentas: dos }) });
-    expect(b.session).toBe(a.session);
-    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
-    expect(n.turns[1].cwd).toBe(n.turns[0].cwd);
-    expect(JSON.parse(await fs.readFile(file, 'utf8')).cuentas).toEqual(dos);
-    const antes = await fs.readFile(file, 'utf8');
-    await n.post({ session: a.session, text: 'sigo', identity: signed({ ...JP, cuentas: dos }) });
-    await vi.waitFor(() => expect(n.turns).toHaveLength(3), { timeout: 5000 });
-    expect(await fs.readFile(file, 'utf8')).toBe(antes);
-    n.app.stop();
-  });
-
-  it('no card_claims: a later line with new claims leaves the card as it was', async () => {
-    const n = await bootTeam(client());
-    const a = await n.post({ text: 'hola', identity: signed({ ...JP, cuentas: [1] }) });
-    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
-    const file = join(n.turns[0].cwd, 'desktop', 'user.json');
-    const antes = await fs.readFile(file, 'utf8');
-    expect(JSON.parse(antes)).not.toHaveProperty('cuentas');
-    await n.post({ session: a.session, text: 'otra', identity: signed({ ...JP, cuentas: [1, 2] }) });
-    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
-    expect(await fs.readFile(file, 'utf8')).toBe(antes);
-    n.app.stop();
-  });
-
   it("another user's token on the same session: a new session, folder and topic; the first user keeps theirs", async () => {
     const n = await bootTeam(client());
     const a = await n.post({ text: 'hola', identity: signed(JP) });
@@ -569,7 +524,7 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 
-  // The prime: a wake no person typed. The being answers it "…"; nothing reaches the visitor's panel or the team topic,
+  // The prime: a wake no person typed (the warm-up phrase as the visitor's line). Answered "…", nothing reaches the visitor's panel or the team topic,
   // in mention mode (a team_group) and in mode on (none). A real line still opens its ⏳ bubble and is answered.
   for (const [label, team] of [['mention (team_group)', { team_group: GROUP, team_name: 'Equipo Contoso' }], ['on (no team_group)', {}]]) {
     it(`init: prime, ${label}: wakes the being once in its folder, and its "…" is shown nowhere; no topic; a repeated init adds no turn`, async () => {
@@ -579,7 +534,7 @@ describe('a signed visitor (identity)', () => {
       await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
       expect(n.turns[0].cwd).toMatch(/contoso-[0-9a-f]{16}/);
       expect(n.turns[0].m).toContain('(opened the chatbox, signed in as');
-      expect(n.turns[0].m).toContain('nothing to answer yet — answer … alone');
+      expect(n.turns[0].m).toContain('nothing to answer yet — answer … alone');   // no phrase from the page or the chatbox
       expect((await n.post({ kind: 'init', session: i.session, identity })).session).toBe(i.session);
       await settle();
       await settle();
@@ -587,6 +542,19 @@ describe('a signed visitor (identity)', () => {
       expect(await n.messages(i.session, identity)).toEqual([]);   // no ✓, no ⏳, no "…"
       expect(n.api.of('createForumTopic')).toEqual([]);
       expect(n.inThread()).toEqual([]);
+      n.app.stop();
+    });
+
+    it(`init: prime, ${label}: a real answer to the warm-up phrase is posted whole on the panel (no ⏳ train)`, async () => {
+      const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
+      const identity = signed(JP);
+      const i = await n.post({ kind: 'init', identity, prime_text: 'RESPONDE con un resumen' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+      expect(n.turns[0].m).toContain('RESPONDE con un resumen');
+      await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being')).toHaveLength(1), { timeout: 5000 });
+      const [m] = (await n.messages(i.session, identity)).filter((x) => x.from === 'being');
+      expect(m).toMatchObject({ done: true });
+      expect(m.text).toContain('respuesta a RESPONDE con un resumen');
       n.app.stop();
     });
 

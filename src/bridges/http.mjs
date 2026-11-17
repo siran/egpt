@@ -5,8 +5,9 @@
 // token (the visitor's credential) never reaches a log, a folder name or a transcript.
 //   POST <path>/<client>/messages        {session?, text, id?, identity?} → {session, message, cold}; a repeated id (a retry) gets the first answer;
 //                                        cold: the conversation was not warmed (a line or a prime) in PRIME_GAP_MS, so the being starts cold;
-//                                        {kind: init, session?, identity} → {session} (init: the widget's page load; init: true records
-//                                        one line, init: prime also wakes the being so it is warm before the first line)
+//                                        {kind: init, session?, identity, prime_text?} → {session} (init: the widget's page load or panel open;
+//                                        init: true records one line, init: prime also wakes the being with the warm-up phrase, prime_text,
+//                                        as the visitor's own line, so it is warm before the first line)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -157,6 +158,13 @@ export const identityModeOf = (v) => {
 };
 const HOUR_MS = 3600_000;
 const PRIME_GAP_MS = 4 * 60_000;   // a conversation warmed (primed or spoken to) this recently skips the prime: under the 5-minute prompt-cache lifetime
+// The warm-up phrase (prime_text): what the prime says as the visitor's own line. The page may send the user's own
+// (kind: init, prime_text); else the chatbox's prime_text; else the prime is today's line, answered with … alone.
+const primeTextOf = (v, max) => {
+  if (typeof v !== 'string') return '';
+  const t = stripInvisible(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+  return [...t].slice(0, max).join('').trim();
+};
 
 // home: where a relative ui: folder is (boot: EGPT_HOME).
 function clientConfig(name, c = {}, home = null) {
@@ -197,6 +205,7 @@ function clientConfig(name, c = {}, home = null) {
     byIdentity: c.conversation_by === 'identity',   // one conversation per signed identity, not per session
     identityTurns: posInt(c.rate?.turns_per_identity_per_hour, 0),   // 0: no per-identity budget
     init,
+    primeText: primeTextOf(c.prime_text, maxChars),
     identityText: strings.identity,
     ended: strings.ended,
     earlier: strings.earlier,
@@ -464,7 +473,7 @@ export async function startHttpBridge({
 
   // The prime: a wake no person typed, so the being's process and prompt cache are warm before the first line.
   // It counts in the identity's turn budget like a line; over it, it is skipped (a warm-up, not a user action: no error).
-  const prime = async (c, s, idn, { place, isNew }) => {
+  const prime = async (c, s, idn, { place, isNew, text }) => {
     const who = whoOf(c, idn.identity), k = c.identityTurns && who ? `${c.name} ${who}` : null, t = now();
     if (k) {
       const spent = spentOf(k, t);
@@ -476,7 +485,11 @@ export async function startHttpBridge({
     try { await beforeLine?.({ client: c.name, chatId, isNew, init: true, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity }); }
     catch (e) { log(`${name}: before the line — ${e?.message ?? e}`); }
     log(`incoming [${name}] the visitor opened the chatbox`);
-    deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)}; nothing to answer yet — answer … alone)`, {
+    // the warm-up is the visitor's own line (their phrase, or the chatbox's): the being answers it like any line;
+    // with neither, the prime is the opening line alone, answered with … (the silence word)
+    const said = text || s.chat.primeText || c.primeText;
+    const opened = `(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)}`;
+    deliver(said ? `${opened})\n${said}` : `${opened}; nothing to answer yet — answer … alone)`, {
       chatId, chatName: name, chatType: 'private', network: 'http',
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,
@@ -547,7 +560,12 @@ export async function startHttpBridge({
     if (init && (c.init === 'prime' ? n - (s.chat.warmAt ?? -Infinity) < PRIME_GAP_MS : !hit.started)) return json(res, 200, { session: token }, cors);
     const isNew = !!(hit.isNew || s.chat.isNew);
     s.chat.isNew = false;
-    if (init && c.init === 'prime') { await prime(c, s, idn, { place, isNew }); return json(res, 200, { session: token }, cors); }
+    if (init && c.init === 'prime') {
+      const text = primeTextOf(body?.prime_text, c.maxChars);
+      if (text) s.chat.primeText = text;   // the user's phrase, kept for the prime after an end
+      await prime(c, s, idn, { place, isNew, text });
+      return json(res, 200, { session: token }, cors);
+    }
     const reply = (async () => {
       try {
         const chat = idn.identity ? { title: renderChatLabel(c.chatTitle, idn.identity.claims), subtitle: renderChatLabel(c.chatSubtitle, idn.identity.claims) } : {};
