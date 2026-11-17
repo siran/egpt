@@ -250,7 +250,7 @@ export function createSpine({
   if (commands) commands = new Proxy(commands, { get: (t, k) => (k === 'run' && typeof t[k] === 'function' ? ordered(t[k].bind(t)) : Reflect.get(t, k)) });
   // LIVENESS (src/spine/liveness.mjs): a running turn and a chat's background work stay visibly
   // alive in the chat; long background work is asked about through the wake path below.
-  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, backgroundChangeMs: livenessBackgroundChangeMs, stopped: () => !!stopSwitch?.present(), labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
+  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, backgroundChangeMs: livenessBackgroundChangeMs, stopped: () => !!stopSwitch?.present(), timeZone, labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
