@@ -428,6 +428,32 @@ describe('init: the widget opened', () => {
     expect((await post({ session: i.session, text: 'otra', identity })).status).toBe(429);
   });
 
+  describe('the warm-up phrase (prime_text): the user\'s first, then the chatbox\'s', () => {
+    const OPENED = '(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})';
+    it('the page\'s prime_text is the visitor\'s line: trimmed, control characters as spaces, capped at max_chars', async () => {
+      const { post, got } = await limb('required', {}, { init: 'prime', max_chars: 20 });
+      const identity = tok({ ...JP, user_id: 4711 });
+      await post({ kind: 'init', identity, prime_text: '  revisa\n\tmis notas y mi horario  ' });
+      expect(got[0].text).toBe(`${OPENED}\nrevisa mis notas y m`);
+      expect(got[0].from).toMatchObject({ prime: true, backlog: false, senderName: 'visitor' });
+    });
+    it('no prime_text (or a blank or non-string one): the chatbox\'s prime_text; without it, the opening line alone, answered with …', async () => {
+      const identity = tok({ ...JP, user_id: 4711 });
+      const own = await limb('required', {}, { init: 'prime', prime_text: 'hola Edu, ponte al día' });
+      await own.post({ kind: 'init', identity, prime_text: '   ' });
+      expect(own.got[0].text).toBe(`${OPENED}\nhola Edu, ponte al día`);
+      const dflt = await limb('required', {}, { init: 'prime' });
+      await dflt.post({ kind: 'init', identity, prime_text: 42 });
+      expect(dflt.got[0].text).toBe(`${OPENED.slice(0, -1)}; nothing to answer yet — answer … alone)`);
+    });
+    it('init: true keeps recording one backlog line, with no phrase', async () => {
+      const { post, got } = await limb('required', {}, { init: true });
+      await post({ kind: 'init', identity: tok({ ...JP, user_id: 4711 }), prime_text: 'revisa' });
+      expect(got[0].text).toBe(OPENED);
+      expect(got[0].from).toMatchObject({ backlog: true, prime: false });
+    });
+  });
+
   describe('the prime is kept warm: every init, unless the conversation was warmed within 4 minutes', () => {
     const MIN = 60_000;
     const rig = async (init, extra = {}, cfg = {}) => {
@@ -473,6 +499,14 @@ describe('init: the widget opened', () => {
       expect(got).toHaveLength(3);
       expect(got[2].from).toMatchObject({ prime: true, backlog: false });
       expect(got[2].text).toBe(got[0].text);
+    });
+
+    it('end() primes again with the user\'s last phrase', async () => {
+      const { post, end, got, identity } = await rig('prime');
+      const a = await post({ kind: 'init', identity, prime_text: 'mi frase' });
+      await post({ session: a.session, text: 'hola', identity });
+      await end({ session: a.session, identity });
+      expect(got[2].text.endsWith('\nmi frase')).toBe(true);
     });
 
     it('end() delivers the prime after onEnd has run', async () => {

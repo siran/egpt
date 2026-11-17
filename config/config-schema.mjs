@@ -1036,15 +1036,19 @@ export const CONFIG_SCHEMA = {
                               as backlog: recorded, never dispatched (no turn), not on
                               the panel, no team topic (the first line seats it). A
                               reload or another tab (the same session) records nothing.
-                              prime: the same line is delivered as a wake, addressed to the
-                              being like a visitor line, so its process starts and it can
-                              read its folder before the person types: on every init, new
+                              prime: the same line, followed by the warm-up phrase, is delivered
+                              as a wake, addressed to the being like a visitor line, so its
+                              process starts and it reads before the person types: on every init, new
                               or resumed, unless the conversation was primed or spoken to
                               in the last 4 min; the visitor's end-conversation primes
                               right after it, whatever the gap. Not on the panel, no team topic; counted in
-                              rate.turns_per_identity_per_hour (over it, skipped silently). The being answers it with
-                              "…" alone (the silence word). Its turn is quiet in every
-                              mode, so that "…" is never shown.
+                              rate.turns_per_identity_per_hour (over it, skipped silently). The warm-up phrase is the
+                              visitor's own line: the page's {kind: init, prime_text} (the user's phrase; trimmed,
+                              control characters as spaces, capped at max_chars; kept for the prime after an end),
+                              else prime_text below; with neither, the opening line alone, answered with "…" (the silence
+                              word). The being answers a phrase like any line; its turn is quiet in every mode
+                              (no ⏳, posted whole, a "…" never shown), so a real answer appears and a silence does not.
+            prime_text        the chatbox's warm-up phrase for init: prime when the page sends none (see init).
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.
