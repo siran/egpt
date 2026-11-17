@@ -2309,17 +2309,36 @@ export async function boot({
     // A new conversation's folder starts with its verified user (desktop/user.json, desktop/user.md: the
     // desk's start, never the token) and a copy of its client's `seed` folder (relative: under EGPT_HOME).
     // The line never waits on Telegram; an init (the widget's page load) seats no team topic.
+    // card_claims: [<claim>, …] (per chatbox): claims of the token kept on the card beside the standard fields
+    // (e.g. every account of the person, signed by the site). They can change between page loads, so the card is
+    // rewritten whenever a verified line or init brings other values — not only for a new conversation.
+    const cardSeen = new Map();   // chatId → the card claims as last written or read
     const beforeLine = async ({ client, chatId, isNew, init, recap, identity, title, subtitle }) => {
       const c = clients[client] ?? {};
-      if (isNew && identity) {
+      const extra = (Array.isArray(c.card_claims) ? c.card_claims.map(String) : []).filter((k) => k && k !== 'exp' && k !== 'iat');
+      if (identity && (isNew || extra.length)) {
+        const picked = {};
+        for (const k of extra) { const v = identity.claims?.[k] ?? identity.data?.[k]; if (v !== undefined) picked[k] = v; }
+        const sig = JSON.stringify(picked);
         const dir = slugDir('http', fixedSlugFor('http', chatId));
-        await mkdir(join(dir, 'desktop'), { recursive: true });
-        const { claims, ...fields } = identity;
-        // title, subtitle: the chat's name in /ayde's lists (http.mjs chat_title, chat_subtitle)
-        await writeFile(join(dir, 'desktop', 'user.json'), `${JSON.stringify({ ...fields, ...(title ? { title } : {}), ...(subtitle ? { subtitle } : {}), verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
-        const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `type ${identity.user_type}`, `school ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
-        await writeFile(join(dir, 'desktop', 'user.md'), `Verified by the site: ${parts.filter(Boolean).join(', ')}.\n`, 'utf8');
-        hlog(`${chatId}: its user is on the desk (desktop/user.json)`);
+        const file = join(dir, 'desktop', 'user.json');
+        let write = isNew;
+        if (!write && cardSeen.get(chatId) !== sig) {
+          let had = null;
+          try { const old = JSON.parse(await readFile(file, 'utf8')); had = {}; for (const k of extra) if (old[k] !== undefined) had[k] = old[k]; } catch { had = null; }
+          write = had === null || JSON.stringify(had) !== sig;
+        }
+        if (write) {
+          await mkdir(join(dir, 'desktop'), { recursive: true });
+          const { claims, data, ...fields } = identity;
+          // title, subtitle: the chat's name in /ayde's lists (http.mjs chat_title, chat_subtitle)
+          await writeFile(file, `${JSON.stringify({ ...fields, ...picked, ...(title ? { title } : {}), ...(subtitle ? { subtitle } : {}), verified_at: new Date(now()).toISOString() }, null, 2)}\n`, 'utf8');
+          const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `type ${identity.user_type}`, `school ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
+          const more = Object.entries(picked).map(([k, v]) => `${k}: ${JSON.stringify(v)}\n`).join('');
+          await writeFile(join(dir, 'desktop', 'user.md'), `Verified by the site: ${parts.filter(Boolean).join(', ')}.\n${more}`, 'utf8');
+          hlog(`${chatId}: its user is on the desk (desktop/user.json)${isNew ? '' : ', card claims updated'}`);
+        }
+        cardSeen.set(chatId, sig);
       }
       if (isNew && c.seed) {
         const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));

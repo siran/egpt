@@ -458,6 +458,51 @@ describe('a signed visitor (identity)', () => {
     } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
 
+  it('card_claims: the named claims ride on the card (user.json, a line each in user.md); other claims and exp stay off', async () => {
+    const n = await bootTeam({ ...client(), card_claims: ['cuentas', 'exp'] });
+    const cuentas = [{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }, { abrin: 'IEV', usuario: 'jperezr', tipo: 'R' }];
+    await n.post({ text: 'hola', identity: signed({ ...JP, cuentas, otra: 'x' }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    const dir = n.turns[0].cwd;
+    const card = JSON.parse(await fs.readFile(join(dir, 'desktop', 'user.json'), 'utf8'));
+    expect(card.cuentas).toEqual(cuentas);
+    expect(card).not.toHaveProperty('otra');
+    expect(card).not.toHaveProperty('exp');
+    expect(await fs.readFile(join(dir, 'desktop', 'user.md'), 'utf8')).toBe(`Verified by the site: Juan Pérez (jperez), type P, school IEV.\ncuentas: ${JSON.stringify(cuentas)}\n`);
+    n.app.stop();
+  });
+
+  it('card_claims: a later line bringing other values rewrites the card in the same conversation; the same values leave it alone', async () => {
+    const n = await bootTeam({ ...client(), card_claims: ['cuentas'] });
+    const uno = [{ abrin: 'IEV', usuario: 'jperez', tipo: 'P' }], dos = [...uno, { abrin: 'IEV', usuario: 'jperezr', tipo: 'R' }];
+    const a = await n.post({ text: 'hola', identity: signed({ ...JP, cuentas: uno }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    const file = join(n.turns[0].cwd, 'desktop', 'user.json');
+    const b = await n.post({ session: a.session, text: 'agregué otra cuenta', identity: signed({ ...JP, cuentas: dos }) });
+    expect(b.session).toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(n.turns[1].cwd).toBe(n.turns[0].cwd);
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).cuentas).toEqual(dos);
+    const antes = await fs.readFile(file, 'utf8');
+    await n.post({ session: a.session, text: 'sigo', identity: signed({ ...JP, cuentas: dos }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(3), { timeout: 5000 });
+    expect(await fs.readFile(file, 'utf8')).toBe(antes);
+    n.app.stop();
+  });
+
+  it('no card_claims: a later line with new claims leaves the card as it was', async () => {
+    const n = await bootTeam(client());
+    const a = await n.post({ text: 'hola', identity: signed({ ...JP, cuentas: [1] }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    const file = join(n.turns[0].cwd, 'desktop', 'user.json');
+    const antes = await fs.readFile(file, 'utf8');
+    expect(JSON.parse(antes)).not.toHaveProperty('cuentas');
+    await n.post({ session: a.session, text: 'otra', identity: signed({ ...JP, cuentas: [1, 2] }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(await fs.readFile(file, 'utf8')).toBe(antes);
+    n.app.stop();
+  });
+
   it("another user's token on the same session: a new session, folder and topic; the first user keeps theirs", async () => {
     const n = await bootTeam(client());
     const a = await n.post({ text: 'hola', identity: signed(JP) });
