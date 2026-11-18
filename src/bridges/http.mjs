@@ -13,7 +13,8 @@
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
 //   GET  <path>/<client>/info            {client, title, max_chars, init, places}: what the chatbox's UI reads from the limb
 //   GET  <path>/<client>/<file>          a file of the chatbox's UI (widget.js, skin.json, skin.css, an image): the last of its
-//                                        `ui:` folders that has it. The UI is a plugin (github.com/siran/chatboxes-egpt: the widget,
+//                                        `ui:` folders that has it (skin.json is served from a folder's skin.yaml when it has one:
+//                                        yaml beats json in a folder, the last folder with either wins). The UI is a plugin (github.com/siran/chatboxes-egpt: the widget,
 //                                        its skins and phrases) with a skin folder over it; the limb knows none of it, only the files.
 //   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
@@ -30,6 +31,7 @@ import { createServer } from 'node:http';
 import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { readFile, writeFile, mkdir, readdir, rename, unlink, stat, realpath } from 'node:fs/promises';
 import { join, resolve, isAbsolute, sep } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
 import { createBrowser, checkUser, LEVELS, RESERVED_USER, SUPPORT } from './http-ayde.mjs';
@@ -714,20 +716,35 @@ export async function startHttpBridge({
     return json(res, known ? 405 : 404, { error: known ? 'method not allowed' : 'not found' }, cors);
   }
   // A UI file: the last ui: folder that has it, a regular file inside that folder (a link out of it is not served).
+  // skin.json is the skin's name for the browser; the human-edited file is skin.yaml, converted here: in each folder skin.yaml
+  // beats skin.json, and the last folder holding either wins. A skin.yaml that does not parse is a 500, never half a skin.
   async function uiFile(c, res, name, cors) {
-    for (const dir of [...c.ui].reverse()) {
-      const real = await realpath(join(dir, name)).catch(() => null);
+    const files = name === 'skin.json' ? ['skin.yaml', 'skin.json'] : [name];
+    for (const dir of [...c.ui].reverse()) for (const file of files) {
+      const real = await realpath(join(dir, file)).catch(() => null);
       const root = real && await realpath(dir).catch(() => null);
       if (!real || !root || !real.startsWith(root + sep)) continue;
       const st = await stat(real).catch(() => null);
       if (!st?.isFile()) continue;
-      if (st.size > UI_FILE_MAX) { log(`${c.name}: ${name} is over ${UI_FILE_MAX} bytes — not served`); break; }
+      if (st.size > UI_FILE_MAX) { log(`${c.name}: ${file} is over ${UI_FILE_MAX} bytes — not served`); return json(res, 404, { error: 'not found' }, cors); }
+      let body = await readFile(real);
+      if (file !== name) {
+        try {
+          const skin = parseYaml(body.toString('utf8'));
+          if (skin === null || typeof skin !== 'object' || Array.isArray(skin)) throw new Error('not a mapping');
+          body = JSON.stringify(skin);
+        } catch (e) {
+          const line = e?.linePos?.[0]?.line;
+          log(`${c.name}: ${real}${line ? `:${line}` : ''} — skin.yaml does not parse (${String(e?.message ?? e).split('\n')[0]}); not served`);
+          return json(res, 500, { error: `skin.yaml does not parse${line ? ` (line ${line})` : ''}` }, cors);
+        }
+      }
       const type = UI_TYPES[name.slice(name.lastIndexOf('.') + 1)];
       res.writeHead(200, {
         'Content-Type': type, 'Cache-Control': 'max-age=300', 'X-Content-Type-Options': 'nosniff', ...cors,
         ...(type === 'image/svg+xml' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}),
       });
-      return res.end(await readFile(real));
+      return res.end(body);
     }
     return json(res, 404, { error: 'not found' }, cors);
   }

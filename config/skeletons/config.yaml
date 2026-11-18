@@ -110,7 +110,7 @@ limbs:
 #   # session_days: 365             # idle days before a session expires; also /ayde's "active" window: a chat is active while its last line is this recent
 #   # identity: { mode: off, required: [abrin, username], key: [abrin, username] }   # mode off | optional | required: a signed user (secrets/chatbox-mysite.key); required: claims a token must carry; key: the claims that are the identity; its text: strings: { identity: "..." }
 #   # conversation_by: session      # identity: one conversation per signed identity, every session and tab (needs identity)
-#   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity). prime: opening the chatbox sends the widget's opening phrase as the visitor's first line (the phrase lives in the plugin's skin.json, not here)
+#   # init: false                   # true: the widget posts {kind: init} on load; a new session records one "opened the chatbox" line (needs identity). prime: opening the chatbox sends the widget's opening phrase as the visitor's first line (the phrase lives in the plugin's skin.yaml, not here)
 
 # --- This node's identity ----------------------------------------------------
 node_name: kg                     # REQUIRED - this node's name on the network, and the
