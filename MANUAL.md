@@ -469,15 +469,15 @@ live: its widget's address, its chat ids and its conversation folders all use it
 **The UI is a plugin, not core.** The bubble and the panel, their texts, the
 waiting phrases, colours, face and each place's look are
 [chatboxes-egpt](https://github.com/siran/chatboxes-egpt) (the widget, on Deep
-Chat) with a skin folder over it (`skin.json`, `skin.css`, images; the format is
+Chat) with a skin folder over it (`skin.yaml` (`skin.json` still accepted), `skin.css`, images; the format is
 in the plugin's README). Clone the plugin on the node, then list it and the
 node's skin after it in the chatbox's `ui:` (or in `limbs.http.ui`, for every
 chatbox with none). Relative folders are under EGPT_HOME. The limb serves those
 folders' files at `/chat/<url>/<file>`, taking each file from the last folder that
 has it. It also answers `GET /chat/<url>/info` with what the UI needs: `client`,
-`title`, `max_chars`, `init`, `places`. The page embeds `/chat/<url>/widget.js` as
+`title`, `max_chars`, `init`, `places`. The browser asks for `skin.json`; the limb serves it from the folder's `skin.yaml` (parsed, sent as JSON; a skin.yaml that does not parse is a 500 and a log line with its path and line), and in one folder skin.yaml beats skin.json. The page embeds `/chat/<url>/widget.js` as
 before. A panel text still given in the block (`intro`, `send`, `waiting`, …) is
-named in a boot line and ignored: move it to the skin's `skin.json`.
+named in a boot line and ignored: move it to the skin's `skin.yaml`.
 
 `init` (off by default):
 
@@ -491,7 +491,7 @@ contoso_soporte:
 phrase the widget sends with the init (`{kind: "init", prime_text}`), as the
 visitor's first line. The phrase is the widget's, not core's: the embedding page's
 (`data-prime-text` / `window.egptChatPrimeText`), else the plugin's default
-(`prime_text` in the skin's `skin.json`). Core holds none. The line goes the
+(`prime_text` in the skin's `skin.yaml`). Core holds none. The line goes the
 line's own path: over `max_chars` is a 413 (never truncated), the session rate
 and `rate.turns_per_identity_per_hour` apply (a 429, counted once), it is
 recorded on the panel and in the transcript, escaped like a line, and the being
@@ -506,7 +506,7 @@ by default; leaving it off disables opening messages entirely.
 
 `prime_text:` in the client's block no longer exists: it is ignored and named in
 a boot line (`prime_text — the chatbox UI's now …`). Move it to the plugin's
-`skin.json` (`"prime_text": "…"`).
+`skin.yaml` (`prime_text: …`).
 
 ### Places
 
@@ -524,7 +524,7 @@ being as a prefix on that line, `(in espacio) …` (the init line: `(opened the
 chatbox in espacio, signed in as …)`); the visitor's panel and the conversation
 are the same in every place. An unknown or malformed `place` is logged and
 ignored. What a place looks like (its css, the signed user's strip) is the
-skin's, in `skin.json`.
+skin's, in `skin.yaml`.
 
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
 name the same `url`, the block wins and boot logs it. A name in `chatboxes` with

@@ -514,6 +514,59 @@ describe('the chatbox UI: info and its files (a plugin; the limb knows only the 
     expect((await fetch(`${url()}widget.js`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405);
   });
 
+  it('skin.yaml is served as skin.json (JSON, nosniff, cached like any UI file); yaml beats json in a folder; the last folder with either wins', async () => {
+    const { plugin, skin, root } = await uiDirs();
+    await writeFile(join(skin, 'skin.yaml'), '# comment\nstrings:\n  intro: Hola yaml\n  prime_text: "¿Qué tal?"\nlist: [1, 2]\n');
+    const { url } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    const r = await fetch(`${url()}skin.json`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/^application\/json/);
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(r.headers.get('cache-control')).toBe('max-age=300');
+    expect(await r.json()).toEqual({ strings: { intro: 'Hola yaml', prime_text: '¿Qué tal?' }, list: [1, 2] });   // not the json beside it
+    expect((await fetch(`${url()}skin.yaml`)).status).toBe(404);                                                    // the raw yaml is not a UI file
+    // folder order: a later folder's skin.json beats an earlier folder's skin.yaml; and an earlier-only yaml is served
+    const late = join(root, 'late'); await mkdir(late); await writeFile(join(late, 'skin.json'), '{"strings":{"intro":"late json"}}');
+    const b = await limb({ acme: { being: 'ed', ui: [plugin, skin, late] } });
+    expect((await (await fetch(`${b.url()}skin.json`)).json()).strings.intro).toBe('late json');
+    const lateYaml = join(root, 'lateyaml'); await mkdir(lateYaml); await writeFile(join(lateYaml, 'skin.yaml'), 'strings: {intro: late yaml}\n');
+    const d = await limb({ acme: { being: 'ed', ui: [lateYaml, skin] } });
+    expect((await (await fetch(`${d.url()}skin.json`)).json()).strings.intro).toBe('Hola yaml');
+    const e = await limb({ acme: { being: 'ed', ui: [skin, lateYaml] } });
+    expect((await (await fetch(`${e.url()}skin.json`)).json()).strings.intro).toBe('late yaml');
+  });
+
+  it('a skin.yaml that does not parse is a 500 with a short message and a log of its path and line, never a half skin', async () => {
+    const { plugin, skin } = await uiDirs();
+    await writeFile(join(skin, 'skin.yaml'), 'strings:\n  intro: ok\n  bad: [unclosed\n');
+    const { url, lines } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    const r = await fetch(`${url()}skin.json`);
+    expect(r.status).toBe(500);
+    expect(r.headers.get('content-type')).toMatch(/^application\/json/);
+    expect((await r.json()).error).toMatch(/^skin\.yaml does not parse/);
+    expect(lines.some((l) => l.includes('skin.yaml') && /:\d+ — skin\.yaml does not parse/.test(l))).toBe(true);
+    await writeFile(join(skin, 'skin.yaml'), '- just\n- a list\n');
+    expect((await fetch(`${url()}skin.json`)).status).toBe(500);
+  });
+
+  it('a skin.yaml over the size cap is not served (404, logged), as any UI file', async () => {
+    const { plugin, skin } = await uiDirs();
+    await writeFile(join(skin, 'skin.yaml'), 'a: ' + 'x'.repeat(2 * 1024 * 1024 + 1) + '\n');
+    const { url, lines } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    expect((await fetch(`${url()}skin.json`)).status).toBe(404);
+    expect(lines.some((l) => l.includes('skin.yaml is over'))).toBe(true);
+  });
+
+  it('a skin.yaml that is a link out of its folder is not served', async () => {
+    const { plugin, skin, root } = await uiDirs();
+    await writeFile(join(root, 'outside.yaml'), 'secret: 1\n');
+    await symlink(join(root, 'outside.yaml'), join(skin, 'skin.yaml'));
+    const { url } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });
+    const body = await (await fetch(`${url()}skin.json`)).text();
+    expect(body).not.toMatch(/secret/);
+    expect(body).toBe('{"strings":{"intro":"Hola"}}');   // falls to the folder's skin.json
+  });
+
   it('only flat names with a UI extension, inside a ui: folder: no other type, no dotfile, no subpath, no link out', async () => {
     const { plugin, skin } = await uiDirs();
     const { url, port } = await limb({ acme: { being: 'ed', ui: [plugin, skin] } });

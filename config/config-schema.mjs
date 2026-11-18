@@ -868,7 +868,7 @@ export const CONFIG_SCHEMA = {
             topic gets strings.ended. Unknown session 404. Nothing said since
             the last end: nothing done.
           GET info → {client, title, max_chars, init, places}: what the chatbox's UI reads
-          GET <file>  a file of the chatbox's UI (widget.js, skin.json, skin.css, an image):
+          GET <file>  a file of the chatbox's UI (widget.js, skin.json (served from its skin.yaml), skin.css, an image):
             the last of its ui: folders that has it (below). A page embeds
             <script src="https://<host>/chat/<client>/widget.js" … defer>
         cold: the conversation was not spoken to (a line) in the last 4 minutes,
@@ -942,7 +942,7 @@ export const CONFIG_SCHEMA = {
                               folder that has it; a link out of its folder is not served. The
                               UI is github.com/siran/chatboxes-egpt (widget.js: the bubble and
                               panel on Deep Chat; the panel's texts, waiting phrases, colours,
-                              face and places' looks in a skin folder: skin.json, skin.css),
+                              face and places' looks in a skin folder: skin.yaml (skin.json too), skin.css),
                               cloned on the node, the node's own skin folder after it:
                               ui: [plugins/chatboxes-egpt, plugins/contoso-skin]. The limb knows
                               none of it. None: no files (logged); the API still answers
@@ -953,7 +953,7 @@ export const CONFIG_SCHEMA = {
                               earlier (heads the recap a late topic gets, {n} = the earlier
                               lines). The panel's texts (open, close, placeholder, send,
                               error, end, support, intro, waiting, waiting_cold, prime_text, …) are the
-                              UI's, in its skin.json (2026-11-12); given here, flat or in
+                              UI's, in its skin.yaml (2026-11-12); given here, flat or in
                               strings:, they are logged and ignored
             places            [<name>, …]: where the host page may be (lowercase letters,
                               digits, - and _). The page names its place with data-place on
@@ -1043,7 +1043,7 @@ export const CONFIG_SCHEMA = {
                               reload or another tab (the same session) records nothing.
                               prime: opening the chatbox sends ONE message: the widget's
                               {kind: init, prime_text}, the opening phrase (the page's, else the
-                              plugin's default in its skin.json; this limb holds none), as the
+                              plugin's default in its skin.yaml; this limb holds none), as the
                               visitor's first line, the line path itself: max_chars (413), rate
                               gates (429), identity budget (once, in rate.turns_per_identity_per_hour),
                               escaping, recorded on the panel, answered and posted like any line.
@@ -1051,7 +1051,7 @@ export const CONFIG_SCHEMA = {
                               thread already has lines (a reload, another tab or device); after the
                               visitor's end-conversation nothing is replayed (the next open sends the
                               opening again). prime_text in this block is ignored (it moved to the
-                              plugin's skin.json; logged at start). Off by default.
+                              plugin's skin.yaml; logged at start). Off by default.
             escritorio        REMOVED 2026-10-27, with <path>/<client>/escritorio/, the
                               old admin route and AyDE's signed link: limbs.http.ayde
                               replaces them. Both routes answer 404.
