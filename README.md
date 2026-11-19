@@ -195,7 +195,7 @@ On Telegram, one group with topics holds both:
    **admin**: only then does it see every message, and post in the topics.
 2. Create two topics, `eGPT Admin` and `eGPT Logs`.
 3. Get each topic's id. Write a message in the topic, then right-click it (long-press on a
-   phone) → **Copy Message Link**. From `https://t.me/c/4301923150/185/190`, the topic is
+   phone) → **Copy Message Link**. From `https://t.me/c/1000000000104/185/190`, the topic is
    `tg:-1000000000104/185`: `-100` and the number after `/c/`, then the topic's number.
 4. In `config.yaml`, at the top level (the skeleton has both lines, commented out):
 
