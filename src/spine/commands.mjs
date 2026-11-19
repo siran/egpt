@@ -53,7 +53,7 @@ import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config
 import { isRestartKey } from './config-swap.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { createCdpClient, createChannelTransport } from '../tools/cdp.mjs';
-import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder } from '../tools/chrome-launcher.mjs';
+import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder, killProcessTree as defaultKillProcessTree, chromeProcesses as defaultChromeProcesses } from '../tools/chrome-launcher.mjs';
 import { connectChromeHost } from '../chrome-host.mjs';
 import { linkOf, GRACE_MS, IDLE_MS } from '../tools/screen-tunnel.mjs';
 import { admitLaunch, estimateChromeBytes, BRAIN_GROUP, SHARED_GROUP, isSafeGroupName, chromeConversationOf } from './chrome-pool.mjs';
@@ -584,6 +584,8 @@ export function createCommands({
   // Run by the Session 0 daemon: no desktop, so no browser until someone logs in (operator 2026-10-22).
   inSession0 = process.env.EGPT_SUPERVISED === '1' && String(process.env.EGPT_SESSION1 ?? '').trim() !== '1',
   profileHolder = defaultProfileHolder,
+  killProcessTree = defaultKillProcessTree,   // seam: tests never kill a real pid
+  chromeProcesses = defaultChromeProcesses,
   freeMem = () => freemem(),
   rssOf = defaultRssOf,
   onChromeLog = () => {},
@@ -1158,7 +1160,8 @@ export function createCommands({
   const _ensuring = new Map();   // profileDir → in-flight launch (per-profile single-flight)
   const _signin = new Map();     // profileDir → { group, pid, chatId }: a plain Chrome holds it (/browser refresh)
   const chromeAlive = (e) => !!e && !e.channel.closed;
-  const evictable = (e) => !e.busy && chromeAlive(e) && e.group !== BRAIN_GROUP && e.group !== SHARED_GROUP;
+  // (operator 2026-11-19: a group someone is watching through its link is not idle — eviction left them a black screen)
+  const evictable = (e) => !e.busy && chromeAlive(e) && e.group !== BRAIN_GROUP && e.group !== SHARED_GROUP && !(hasScreens() && screenTunnel?.isOpen(e.group));
   const launchEstimateBytes = () => (Number(cfg()?.chrome?.launch_estimate_mb) || CHROME_LAUNCH_ESTIMATE_MB) * MB;
   const memoryMarginBytes = () => (Number(cfg()?.chrome?.memory_margin_mb) || CHROME_MEMORY_MARGIN_MB) * MB;
 
@@ -1235,7 +1238,7 @@ export function createCommands({
       const holder = profileHolder(profileDir);
       if (holder) {
         onChromeLog(`not launching "${group}" Chrome ${profileDir}: another Chrome holds it (${holder})`);
-        return { group, profileDir, client: null, launched: false, running: false, why: `the "${group}" browser is open in a normal window; close it to hand it back to the spine` };
+        return { group, profileDir, client: null, launched: false, running: false, why: `the "${group}" browser is open in a normal window; close it to hand it back to the spine, or \`browser close\` closes it for you` };
       }
       if (group !== BRAIN_GROUP) {
         const estimateBytes = estimateChromeBytes({
@@ -1427,15 +1430,26 @@ export function createCommands({
     if (!profileDir) return `no browser for ${named ? `group "${named}"` : 'this chat'} — ${why}`;
     await _reattached;
     const live = _groups.get(profileDir);
-    const chrome = chromeAlive(live) || _signin.has(profileDir);
-    if (chrome) { chromeHost?.kill(group); _groups.delete(profileDir); }
+    const tracked = chromeAlive(live) || _signin.has(profileDir);
+    // A Chrome nobody tracks but that holds the profile (a plain sign-in window that outlived a daemon restart): on a
+    // container node the operator cannot reach it to close it by hand (operator 2026-11-19). Windows names no pid: kill nothing.
+    // SingletonLock can be stale and its pid reused: kill it only if that pid is a Chrome on THIS profile.
+    const lockHolder = tracked ? null : profileHolder(profileDir);
+    const lockPid = /^pid (\d+)$/.exec(lockHolder ?? '')?.[1];
+    const isOurChrome = lockPid && chromeProcesses().some((p) => String(p.pid) === lockPid && p.cmd.includes(`--user-data-dir=${profileDir}`));
+    const holder = lockPid && !isOurChrome ? null : lockHolder;
+    const holderPid = isOurChrome ? lockPid : undefined;
+    const chrome = tracked || !!holderPid;
+    if (tracked) { chromeHost?.kill(group); _groups.delete(profileDir); }
+    else if (holderPid) killProcessTree(Number(holderPid));
     // Its X server goes only once Chrome has written its profile and let go of it (as /browser refresh waits).
     for (let i = 0; chrome && hasScreens() && profileHolder(profileDir) && i < 40; i++) await new Promise((r) => setTimeout(r, 250));
     const link = hasScreens() && screenTunnel.close(group);
     const screen = hasScreens() && browserScreens.close(group);
     const closed = [chrome && 'its Chrome', link && 'its link', screen && 'its screen'].filter(Boolean);
     onChromeLog(`/browser close "${group}": ${closed.join(', ') || 'nothing was open'}`);
-    return closed.length ? `closed the ${group} browser: ${closed.join(', ')}. It starts again on next need.` : `the ${group} browser was not open.`;
+    const unclosed = holder && !holderPid ? ` (a Chrome holds the profile; it could not be closed by pid)` : '';
+    return closed.length ? `closed the ${group} browser: ${closed.join(', ')}${unclosed}. It starts again on next need.` : `the ${group} browser was not open${unclosed}.`;
   }
   // The plain window's Chrome exited: the group is eGPT's again.
   function signinDone(dir, h) {
