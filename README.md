@@ -355,7 +355,7 @@ ordinary text (the editor shell console still takes it):
                               node's confined default), all (unconfined), or
                               sandbox (all's capability, only inside the OS box)
 /<handle> restart             bounce the node (daemon respawns the current checkout)
-/<handle> upgrade             git pull + npm install + rebuild, then respawn
+/<handle> upgrade [full]      git pull + npm install + rebuild, then respawn; full: the daemon too
 /<handle> rewind <ref>        check out <ref>, reinstall, respawn
 ```
 

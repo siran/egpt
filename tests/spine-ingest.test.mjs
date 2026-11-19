@@ -49,6 +49,10 @@ describe('lifecycleExit', () => {
   it('maps the lifecycle commands to the daemon exit codes', () => {
     expect(lifecycleExit('/restart')).toBe(43);
     expect(lifecycleExit('/upgrade')).toBe(42);
+    expect(lifecycleExit('/upgrade full')).toBe(46);
+    expect(lifecycleExit('/upgrade full force')).toBe(46);
+    expect(lifecycleExit('/upgrade force full')).toBe(46);
+    expect(lifecycleExit('/upgrade force')).toBe(42);
     expect(lifecycleExit('hello')).toBe(null);
     expect(lifecycleExit('')).toBe(null);
   });
@@ -126,5 +130,13 @@ describe('createIngest sweep', () => {
     const io = { readdir: async () => { throw Object.assign(new Error('nodir'), { code: 'ENOENT' }); }, readFile: async () => '', unlink: async () => {}, mkdir: async () => {} };
     const ing = createIngest({ dir: '/nope', io, handle: async () => { throw new Error('should not run'); } });
     await expect(ing.sweep()).resolves.toBeUndefined();
+  });
+});
+
+describe('lifecycleForce', () => {
+  it('/upgrade full force skips the background wait like /upgrade force', () => {
+    expect(lifecycleForce('/upgrade full force')).toBe(true);
+    expect(lifecycleForce('/upgrade force full')).toBe(true);
+    expect(lifecycleForce('/upgrade full')).toBe(false);
   });
 });

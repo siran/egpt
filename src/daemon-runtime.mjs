@@ -14,6 +14,12 @@ export const RESTART_EXIT_CODE = 43;
 export const REWIND_EXIT_CODE = 44;
 // /standdown: the spine handed the profile to the waiting Session 1 daemon (operator 2026-10-22).
 export const STANDDOWN_EXIT_CODE = 45;
+// /upgrade full: the /upgrade, and then THE DAEMON goes too, so whatever respawns it (the container's
+// keep_running, docker/entrypoint.sh) brings it back on the new code. /upgrade alone renews only the
+// spine: chrome-host, cli-host and this file stay as loaded until the daemon itself restarts.
+export const UPGRADE_FULL_EXIT_CODE = 46;
+// The container's entrypoint, whose keep_running respawns a daemon that exits.
+export const CONTAINER_ENTRYPOINT = '/usr/local/bin/egpt-entrypoint';
 export const CLEAN_EXIT_CODE = 0;
 const HOLD_LOG_MS = 60_000;   // while a daemon waits for the profile, it says who holds it this often
 
@@ -150,6 +156,13 @@ export function createDaemonRuntime(opts = {}) {
   const sessionLabel = session1 ? 'the s1 (logon) session' : 'the s0 (service) session';
   const chromeHost = session1 && createChromeHost ? createChromeHost({ profilesRoot: join(egptHome, 'chrome', 'profiles'), log }) : null;
   const cliHost = createCliHost ? createCliHost({ log }) : null;
+  // Does anything bring this daemon back when it exits? Only then may /upgrade full end it. The
+  // container's entrypoint does (EGPT_DAEMON_RESPAWNS=1, or the entrypoint on disk for images built
+  // before it exported that); a Windows service or task is not assumed to. A process shared by
+  // several profiles (startProfileDaemons) never ends for one of them.
+  const daemonRespawns = opts.daemonRespawns
+    ?? (processObj.env?.EGPT_DAEMON_RESPAWNS === '1' || (platform === 'linux' && existsSync(CONTAINER_ENTRYPOINT)));
+  const sharedProcess = opts.sharedProcess ?? false;
   // The singleton's own file, written by the DAEMON, one per session. Distinct from
   // state/spine.pid, which the spine writes and which is shared by whichever spine holds the
   // profile — that file cannot say which session a supervisor is in, and it is why the old
@@ -460,6 +473,11 @@ export function createDaemonRuntime(opts = {}) {
   function addOutcome(outcome) {
     try { writeFileSync(restartAnnouncePath, JSON.stringify({ ...JSON.parse(readFileSync(restartAnnouncePath, 'utf8')), outcome })); }
     catch { /* best-effort */ }
+  }
+  function appendOutcome(more) {
+    let was = '';
+    try { was = JSON.parse(readFileSync(restartAnnouncePath, 'utf8')).outcome ?? ''; } catch { /* no sidecar */ }
+    addOutcome(was ? `${was}, ${more}` : more);
   }
 
   async function runUpgrade() {
@@ -874,6 +892,27 @@ export function createDaemonRuntime(opts = {}) {
         return;
       }
 
+      // The pull, and then the daemon itself, even when the pull brought nothing: a checkout pulled by
+      // an earlier /upgrade is on disk while this daemon still runs the code it started with.
+      if (code === UPGRADE_FULL_EXIT_CODE) {
+        await runUpgrade();
+        if (daemonRespawns && !sharedProcess) {
+          appendOutcome('daemon renewed');
+          log('/upgrade full — the daemon exits now; its supervisor respawns it on the new code');
+          stopAll();
+          cliHost?.endAll('/upgrade full: the daemon renews');
+          chromeHost?.closeAll?.('/upgrade full: the daemon renews');
+          setTimeoutFn(() => processObj.exit(UPGRADE_FULL_EXIT_CODE), 500);
+          return;
+        }
+        const why = sharedProcess ? 'this process supervises other profiles too' : 'nothing respawns this daemon (EGPT_DAEMON_RESPAWNS unset)';
+        appendOutcome(`daemon NOT renewed: ${why} — restart the service`);
+        log(`/upgrade full — ${why}: only the spine renews; restart the service to renew the daemon`);
+        backoff = RESTART_MIN_MS;
+        spawnShell();
+        return;
+      }
+
       if (code === RESTART_EXIT_CODE) {
         log('restart requested — no upgrade, no build, no backoff');
         backoff = RESTART_MIN_MS;
@@ -938,8 +977,17 @@ export function createDaemonRuntime(opts = {}) {
   }
 
   function shutdown(sig) {
-    stopping = true;
     log(`${sig} received — stopping egpt-daemon`);
+    stopAll();
+    if (child) {
+      try { child.kill('SIGTERM'); } catch {}
+    }
+    setTimeoutFn(() => processObj.exit(0), 500);
+  }
+
+  // What any leaving daemon lets go of: its claim, its logs, its timers, its locks.
+  function stopAll() {
+    stopping = true;
     releaseSession();
     closeChildLogs();
     if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
@@ -949,10 +997,6 @@ export function createDaemonRuntime(opts = {}) {
     try { beeperPass?.kill('SIGTERM'); } catch { /* already gone */ }
     for (const fd of [runnerLock, s1Claim]) if (fd != null) unlockFile(fd);
     runnerLock = s1Claim = null;
-    if (child) {
-      try { child.kill('SIGTERM'); } catch {}
-    }
-    setTimeoutFn(() => processObj.exit(0), 500);
   }
 
   // Is a live pid recorded in `path`, by the same two facts liveDaemonPid has always decided
@@ -1100,7 +1144,7 @@ export function startProfileDaemons({ profiles, createRuntime = createDaemonRunt
   const failed = [];
   for (const home of homes) {
     const runtime = createRuntime({
-      ...opts, perProfileLogs, logTag: opts.logTag ?? tagFor(home), egptHome: home, processObj: seamFor(home),
+      ...opts, perProfileLogs, sharedProcess: shared, logTag: opts.logTag ?? tagFor(home), egptHome: home, processObj: seamFor(home),
     });
     runtimes.push({ egptHome: home, runtime });
     let child = null;

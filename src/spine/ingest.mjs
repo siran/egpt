@@ -6,6 +6,7 @@
 //
 //   /restart        -> exit 43  (daemon respawns this checkout — picks up commits)
 //   /upgrade        -> exit 42  (daemon git pull + npm + build, then respawn)
+//   /upgrade full   -> exit 46  (the same, then the daemon exits too, for its supervisor to respawn)
 //   /rewind <ref>   -> exit 44  (daemon checks out <ref>, then respawn)
 //   /standdown      -> exit 45  (hand the profile to the waiting Session 1 daemon; the Session 0
 //                                daemon holds off until Session 1 lets go — daemon-runtime.mjs)
@@ -169,6 +170,9 @@ export function createIngestAsks({ path, io = {}, onLog = () => {}, now = Date.n
   };
 }
 
+// `full` and `force` in either order: `/upgrade full force` and `/upgrade force full` are one command.
+const UPGRADE_FULL = /^(full(\s+force)?|force\s+full)$/;
+
 // Map a command line to the daemon exit code (+ side effect). Returns the exit
 // code to call, or null for an unknown command. Pure + exported so the mapping is
 // test-locked separately from the fs sweep.
@@ -176,7 +180,7 @@ export function lifecycleExit(line, { writeRewindTarget } = {}) {
   const cmd = String(line ?? '').trim();
   const tok = cmd.split(/\s+/)[0];
   if (tok === '/restart') return 43;
-  if (tok === '/upgrade') return 42;
+  if (tok === '/upgrade') return UPGRADE_FULL.test(cmd.slice(tok.length).trim()) ? 46 : 42;
   if (tok === '/rewind') {
     const ref = cmd.slice(tok.length).trim();
     if (ref) writeRewindTarget?.(ref);
@@ -190,5 +194,5 @@ export function lifecycleExit(line, { writeRewindTarget } = {}) {
 // still waited for). `/standdown force`: it does not wait for the turns either (background work is
 // never waited for there). Same code as the bare command; the callers hand this to announceAndExit.
 export function lifecycleForce(line) {
-  return /^\/(restart|upgrade|standdown)\s+force$/.test(String(line ?? '').trim());
+  return /^\/(restart|upgrade(\s+full)?|standdown)\s+force$|^\/upgrade\s+force\s+full$/.test(String(line ?? '').trim());
 }

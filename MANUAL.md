@@ -133,8 +133,12 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                the current checkout); waits for
                                                turns and background work in
                                                flight, no cap; `force` skips it
-/<handle> upgrade                              git pull + npm install + rebuild,
-                                               then respawn
+/<handle> upgrade [full]                       git pull + npm install + rebuild,
+                                               then respawn; `full` also ends the
+                                               daemon (its Chromes and sessions)
+                                               for its supervisor to respawn it:
+                                               the container does, a Windows
+                                               service is not assumed to
 /<handle> rewind <ref>                         git checkout <ref>, reinstall,
                                                respawn
 /<handle> update beeper                        install the Beeper update this

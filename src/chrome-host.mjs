@@ -118,6 +118,14 @@ export function createChromeHost({ profilesRoot, spawn = nodeSpawn, setPriority,
       child.on('message', fromSpine);
       child.on('disconnect', () => { if (spine === child) dropped(); });
     },
+    // The daemon is leaving to be respawned (/upgrade full): every Chrome it holds goes with it, the
+    // plain sign-in windows too, which the next daemon's sweep would not find.
+    closeAll(why) {
+      for (const [group, c] of chromes) {
+        log(`chrome-host: closing "${group}" ${c.plain ? 'plain ' : ''}Chrome pid ${c.child.pid} — ${why}`);
+        try { killTree(c.child.pid); } catch { /* already gone */ }
+      }
+    },
     // At daemon start, a pipe Chrome on one of OUR profiles is an orphan: the daemon that held its
     // pipe is gone. Nothing else is touched.
     sweepOrphans() {

@@ -153,5 +153,6 @@ if [ -s "$EGPT_HOME/secrets/claude-oauth.token" ]; then
 fi
 
 cd "$REPO"
+export EGPT_DAEMON_RESPAWNS=1   # keep_running brings the daemon back: /upgrade full may end it
 keep_running egpt node egpt-daemon.mjs &
 wait

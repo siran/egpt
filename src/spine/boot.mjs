@@ -2976,7 +2976,7 @@ export async function boot({
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
   //     on the next boot. The bounce is otherwise invisible to the operator. ---
   const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
-  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown' };
+  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown', 46: '/upgrade full' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
   // A lifecycle line goes to the announce chat (announceChatId, above) AND to log_to_group when that is
@@ -3026,7 +3026,7 @@ export async function boot({
   // pull must still happen; the daemon holds off after it), 45 outranks 43.
   let restartCode = null;   // the code a pending restart drain leaves with
   let beeperUpdate = null;  // /update beeper (created below, real node only)
-  const OUTRANKS = { 42: 3, 45: 2, 43: 1 };
+  const OUTRANKS = { 46: 4, 42: 3, 45: 2, 43: 1 };
   async function announceAndExit(code, { force = false } = {}) {
     if (code === 45 && session1) { log.line?.('[standdown] this spine runs in Session 1 — nothing to hand over to; ignored'); return; }
     if (code === 45 && !successorWaiting()) { log.line?.('[standdown] no Session 1 daemon waits for this profile (state/s1.claim is free) — ignored'); return; }
