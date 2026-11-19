@@ -7,7 +7,8 @@
 // No time limit while watched (operator #112: "can vnc close on browser/tab close? do we even need a time limit?"):
 // the tunnel closes GRACE after the last viewer of that screen leaves, or IDLE if nobody ever connected. A viewer is
 // an established session on the screen's x11vnc port (browser-screens.mjs `viewers`). Nothing else closes it but
-// /browser stop and /browser close.
+// /browser stop and /browser close, and the idle timer (commands.mjs, chrome.idle_minutes: no browser use for N minutes
+// closes it even while watched, unless that launch said `keep`).
 //
 // cloudflared runs detached with its pid in state/browser-screens/<group>/tunnel.pid, so a spine restart leaves the
 // link up; the next spine adopts it and watches it again (IDLE starts over). The binary lives in ~/.egpt/bin
