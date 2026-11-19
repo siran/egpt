@@ -361,6 +361,47 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(2);
   });
 
+  // What /upgrade did joins the sidecar the going-down spine wrote; boot's back-up line says it
+  // (operator 2026-11-03: "nothing happened… or you didn't show updates").
+  describe('the /upgrade outcome joins the restart-announce sidecar', () => {
+    const SPINE_SIDECAR = { chatId: 'tg:-1000000000104/3', kind: '/upgrade', preSha: 'oldsha', pid: 7 };
+    const upgradeWith = async ({ shas, pull = { status: 0 }, sidecar = SPINE_SIDECAR }) => {
+      const writes = [];
+      const base = makeSpawnSync({ shas });
+      const spawnSync = (cmd, args = [], opts = {}) => {
+        if (cmd === 'git' && args[0] === 'pull') { base.calls.push({ cmd, args, opts }); return { stdout: Buffer.from(''), stderr: Buffer.from(''), ...pull }; }
+        if (cmd === 'git' && args[0] === 'rev-list') return { status: 0, stdout: Buffer.from('3\n') };
+        return base(cmd, args, opts);
+      };
+      const { runtime, children } = makeRuntime({
+        spawnSync,
+        readFileSync: (p) => { if (sidecar && String(p).includes('restart-announce.json')) return JSON.stringify(sidecar); const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+      });
+      runtime.spawnShell();
+      await children[0].child.handlers.exit(UPGRADE_EXIT_CODE, null);
+      expect(children).toHaveLength(2);
+      return writes.filter((w) => w.p.includes('restart-announce.json')).map((w) => JSON.parse(w.body));
+    };
+
+    it('already up to date', async () => {
+      expect(await upgradeWith({ shas: ['oldsha'] })).toEqual([{ ...SPINE_SIDECAR, outcome: 'already up to date' }]);
+    });
+
+    it('pulled: the commit count and npm install', async () => {
+      expect(await upgradeWith({ shas: ['oldsha', 'newsha'] })).toEqual([{ ...SPINE_SIDECAR, outcome: 'pulled 3 commits, npm install ok' }]);
+    });
+
+    it('the pull failed: git\'s reason and the sha it stays on', async () => {
+      const pull = { status: 128, stderr: Buffer.from('fatal: Not possible to fast-forward, aborting.\n') };
+      expect(await upgradeWith({ shas: ['oldsha'], pull })).toEqual([{ ...SPINE_SIDECAR, outcome: 'git pull failed (fatal: Not possible to fast-forward, aborting.), still on oldsha' }]);
+    });
+
+    it('no sidecar from the spine: nothing is written', async () => {
+      expect(await upgradeWith({ shas: ['oldsha'], sidecar: null })).toEqual([]);
+    });
+  });
+
   // === restart-announce sidecar — the daemon writes a fallback marker for the two exit
   // paths where the dying spine never got a chance to write its own (announceAndExit's
   // graceful path is untouched/out of scope): a genuine crash, and a wedge-kill. Same
@@ -459,6 +500,33 @@ describe('daemon runtime fake-world harness', () => {
       expect(timers).toHaveLength(1);
       timers[0].fn();
       expect(children).toHaveLength(2);   // respawn still proceeds despite the resolution failure
+    });
+
+    // admin_chat_ids (operator 2026-11-03: "put An in chat_ids, btw it should be called
+    // admin_chat_ids"): the crash sidecar names the same chat boot's announceChatId does.
+    const crashChatId = async (yaml) => {
+      const writes = [];
+      const { runtime, children } = makeRuntime({
+        readFileSync: (p) => { if (String(p).includes('config.yaml')) return yaml; const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+      });
+      runtime.spawnShell();
+      await children[0].child.handlers.exit(1, null);
+      const w = writes.find((x) => x.p.includes('restart-announce.json'));
+      return w ? JSON.parse(w.body).chatId : null;
+    };
+
+    it('no whatsapp admin chat: the crash sidecar names the first telegram admin chat (nu)', async () => {
+      expect(await crashChatId('networks:\n  whatsapp:\n    admin_chat_ids: []\n  telegram:\n    admin_chat_ids:\n      - "tg:-1000000000104/3"\n')).toBe('tg:-1000000000104/3');
+    });
+
+    it('a whatsapp admin chat still wins over telegram', async () => {
+      expect(await crashChatId('networks:\n  whatsapp:\n    admin_chat_ids: ["!self:beeper.com"]\n  telegram:\n    admin_chat_ids: ["tg:-1000000000104/3"]\n')).toBe('!self:beeper.com');
+    });
+
+    it('admin_chat_ids is preferred over the legacy chat_ids; a legacy telegram chat_ids is still read', async () => {
+      expect(await crashChatId('networks:\n  whatsapp:\n    admin_chat_ids: ["!new:beeper.com"]\n    chat_ids: ["!old:beeper.com"]\n')).toBe('!new:beeper.com');
+      expect(await crashChatId('networks:\n  whatsapp:\n    chat_ids: []\n  telegram:\n    chat_ids: ["tg:-1000000000104/3"]\n')).toBe('tg:-1000000000104/3');
     });
   });
 });

@@ -1270,7 +1270,7 @@ export const CONFIG_SCHEMA = {
     that chat at all. So every outbound this node places — an agent's reply and
     the node's own announces alike — rides the mouth when the mouth can reach
     the chat, and otherwise the connection that holds it (the one it arrived on,
-    or the ear for this node's own networks.<surface>.chat_ids). One rule, no
+    or the ear for this node's own networks.<surface>.admin_chat_ids). One rule, no
     exception for node-level sends. beeper.use is therefore an OPTIONAL override
     of the default mouth, never a requirement: with it absent the names decide,
     and no chat becomes unreachable either way.
@@ -1635,9 +1635,13 @@ export const CONFIG_SCHEMA = {
 
     SHAPE:
       whatsapp | telegram | signal:
-        chat_ids
+        admin_chat_ids
           STABLE command-channel ids — chats that accept /agents, /restart, … ; a
-          LIST; a node may own several.
+          LIST; a node may own several. The FIRST admin chat of whatsapp (the
+          Self-DM), else of telegram, else of any other surface, gets the
+          lifecycle lines: "↻ /restart… (pid)" going down, "✅ egpt back up!" /
+          "✅ egpt started" at boot (src/spine/boot.mjs announceChatId). Named
+          chat_ids until 2026-11-03.
         allowed_users
           OPTIONAL. This surface's owners — STABLE sender ids that may command
           this node on THIS surface, and whom a being answers here — jids /
@@ -1647,11 +1651,13 @@ export const CONFIG_SCHEMA = {
           account owner is always allowed.
 
     Ids are per-surface NAMESPACES (a WhatsApp jid authorizes nothing on
-    Telegram). ONE resolver reads this (src/spine/router.mjs ownersOf).
+    Telegram). ONE resolver reads each key (src/spine/router.mjs ownersOf,
+    adminChatIdsOf).
 
-    BACK-COMPAT: the OLD top-level whatsapp: / telegram: / signal: blocks plus a
+    BACK-COMPAT: the pre-rename chat_ids is still read where admin_chat_ids is
+    absent, and the OLD top-level whatsapp: / telegram: / signal: blocks plus a
     SINGULAR chat_id are still accepted (a singular chat_id normalizes to a
-    1-element chat_ids). Prefer networks: when present.
+    1-element list). Prefer networks: when present.
   `,
 
   echo: `
@@ -3336,15 +3342,17 @@ export const CONFIG_SCHEMA = {
 
     WHERE IT WORKS: **THE SELF CHAT ONLY** (operator 2026-07-26: "is must be a
     single word message in Self, 'stop', case insensitive") — that is
-    networks.<surface>.chat_ids[0] on whatsapp, the same Self-DM the restart
-    announce posts to. It used to fire from ANY chat on ANY surface, which made one
+    networks.whatsapp.admin_chat_ids[0], the same Self-DM the restart announce
+    posts to (the announce falls back to telegram's first admin chat; the safe
+    word does not). It used to fire from ANY chat on ANY surface, which made one
     stray "stop" in a group — or anyone at the operator console, which is
     unconditionally authorized — enough to take the node down. In every OTHER chat,
     group, and on the shell surface, "stop" is now ordinary text. No Self chat
     configured → the chat safe word is simply unavailable (fail-closed); the STOP
-    file is still the way out. The other admin chats (chat_ids[1..]) and every
-    group take stop_phrase instead (operator 2026-10-18, superseding 0a2fc04's
-    2026-10-15 widening of the bare word to every chat_ids entry).
+    file is still the way out. The other admin chats (admin_chat_ids[1..], and
+    every other surface's) and every group take stop_phrase instead (operator
+    2026-10-18, superseding 0a2fc04's 2026-10-15 widening of the bare word to
+    every chat_ids entry).
 
     WHAT COUNTS AS THE WORD: the WHOLE trimmed message, case-insensitive, trailing
     '.'/'!' tolerated. "stop it", "please stop", "stopping" are ordinary text.
@@ -3666,10 +3674,13 @@ export const CONFIG_SCHEMA = {
     compaction notice: "🗜️ <node> · <being> in <chat> compacted its context
     (was Nk tokens)...", said after a /compact that succeeded
     (src/spine/compaction.mjs, boot.mjs noticeToAdmin). Every node may name the
-    same chat; the line says which node it came from.
+    same chat; the line says which node it came from. /<handle> browser sends
+    its CONTROL link here, never into the chat it was typed in (unset: that
+    form is refused).
 
     VALUE: a chat NAME or a raw Beeper room id in SHORT form, exactly like
-    advice_channel. A name is resolved to its room by the bridge's own
+    advice_channel, or a Telegram chat id: tg:<chat>, a topic tg:<chat>/<topic>
+    (a bot cannot look a Telegram chat up by name). A name is resolved to its room by the bridge's own
     resolveChatId before the line is said, so the being's mouth can say it in
     its own room. Unset (or empty): nothing is posted, the notice stays in the
     daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
@@ -3685,8 +3696,14 @@ export const CONFIG_SCHEMA = {
     <outcome> is appended only where a silent/side-effecting handler returns one
     (today: /end); every other command is just its invocation line.
 
-    VALUE: a chat NAME or a raw Beeper room id in SHORT form, resolved to its room
-    EXACTLY like admin_channel — the SAME boot.mjs resolver + poster (noticeToChannel),
+    The lifecycle lines go here too (2026-11-03): "↻ /restart|/upgrade|/rewind…"
+    before the exit, "✅ egpt back up! (sha → sha) pids — /upgrade: <what it did>"
+    and "✅ egpt started", besides the first admin chat (networks.<surface>.
+    admin_chat_ids); said once when that is this same chat.
+
+    VALUE: a chat NAME or a raw Beeper room id in SHORT form, or a Telegram id
+    (tg:<chat>[/<topic>], a topic included), resolved to its room EXACTLY like
+    admin_channel — the SAME boot.mjs resolver + poster (noticeToChannel),
     fail-closed, said from the being's own mouth. It MAY name the same chat as
     admin_channel or a different one. Unset (or empty): auditing is OFF — nothing is
     posted and no command's behavior changes (src/spine/commands.mjs run() chokepoint,

@@ -67,7 +67,7 @@ import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
 // wake set boot hands the ports and the router's own @token scan can never disagree again.
-import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf, isOwner, mayWake } from './router.mjs';
+import { createRouter, wakeTokens, voiceWakeTokens, fallbackWake, strangerAgentFor, addressableTokens, agentsInChat, STRANGER_SEED, configWarnings, isLocalAgent, ownersOf, adminChatIdsOf, isOwner, mayWake } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 // createSender: the reply path. makeOutbound: the ONE answer to "which connection does this
 // outbound go out on" (sender.mjs's header), asked by makePeerMouth below rather than copied.
@@ -125,6 +125,8 @@ import { readRoomConfig, readRoomsFile, roomsFilePath, agentsFilePath } from '..
 import { RACY_MS } from '../stat-cache.mjs';
 import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
+import { createBrowserScreens } from '../tools/browser-screens.mjs';
+import { createScreenTunnel } from '../tools/screen-tunnel.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -1592,26 +1594,38 @@ export async function boot({
     : (noteKey) => { const rank = echoRank(node_name, echoPeers, noteKey); return { rank, winner: rank === 1 }; };
 
   // Per-surface config resolver (operator 2026-07-09): the NEW shape wraps the per-surface
-  // blocks under `networks:` and lists command channels as `chat_ids` (plural); the OLD shape
-  // has top-level whatsapp:/telegram:/signal: blocks with a singular `chat_id`. ONE resolver
-  // reads BOTH, PREFERS `networks:`, and always yields a `chat_ids` LIST so every reader below
-  // is shape-agnostic (a singular chat_id normalizes to a 1-element list).
+  // blocks under `networks:` and lists command channels as `admin_chat_ids` (2026-11-03; before
+  // that `chat_ids`); the OLD shape has top-level whatsapp:/telegram:/signal: blocks with a
+  // singular `chat_id`. ONE resolver reads them all (router.mjs adminChatIdsOf), PREFERS
+  // `networks:`, and always yields an `admin_chat_ids` LIST so every reader below is shape-agnostic.
   const surfaceCfg = (surface) => {
     const raw = (cfg.networks?.[surface] && typeof cfg.networks[surface] === 'object') ? cfg.networks[surface]
               : (cfg[surface] && typeof cfg[surface] === 'object') ? cfg[surface]
               : {};
-    const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
+    const admin_chat_ids = adminChatIdsOf(cfg, surface);
     const allowed_users = ownersOf(cfg, surface);   // networks.<surface> joined with conversation_defaults
-    return { ...raw, chat_ids, allowed_users };
+    return { ...raw, admin_chat_ids, allowed_users };
   };
   // === THE SELF CHAT — ONE definition, three readers ===================================
-  // The operator's own command channel: networks.whatsapp.chat_ids[0] (the live config
+  // The operator's own command channel: networks.whatsapp.admin_chat_ids[0] (the live config
   // annotates that entry "Self-DM = operator command channel"). It was already THE Self
   // notion in two places — announceAndExit's restart-announce target and the mesh's
   // fallback transport — spelled out inline in both. The KILL SWITCH now needs the same
   // answer (below), so it is named ONCE here rather than copied a third time: three
   // copies of "which chat is Self" is three chances to drift.
-  const selfChatId = () => surfaceCfg('whatsapp').chat_ids[0] ?? null;
+  const selfChatId = () => surfaceCfg('whatsapp').admin_chat_ids[0] ?? null;
+  // WHERE THE LIFECYCLE LINES LAND (↻ going down, ✅ back up / started; operator 2026-11-03 — nu has
+  // no whatsapp admin chat, its command channel is a Telegram topic): the first admin chat of
+  // whatsapp (= Self), else of telegram, else of any other surface. Only the announce widens: every
+  // other reader of Self (the safe word, the ear's claim, alerts, the outbox, the mesh) keeps selfChatId.
+  // A tg: id is the Telegram limb's: sayOnce reaches it through makeLimbAwareBridge, as a command reply does.
+  const announceChatId = () => {
+    for (const s of new Set(['whatsapp', 'telegram', ...Object.keys(cfg.networks ?? {})])) {
+      const id = surfaceCfg(s).admin_chat_ids[0];
+      if (id != null) return id;
+    }
+    return null;
+  };
   // Is THIS message in Self? The ONLY place the "stop" safe word is honoured since
   // 2026-07-26 ("is must be a single word message in Self"). Two conditions:
   //   - the SURFACE is whatsapp — the surface Self is defined on. Ids are per-surface
@@ -2637,7 +2651,7 @@ export async function boot({
   // WHICH CONNECTION A CHAT LIVES ON — THREE SOURCES FOR ONE FACT, none of them a guess:
   //   · the ARRIVAL stamp (rememberArrival, above): a chat this node HEARD is a room on the
   //     connection that heard it, permanently — a chatId belongs to exactly one account.
-  //   · THE SELF CHAT (selfChatId, above — `networks.<surface>.chat_ids[0]`), declared in this
+  //   · THE SELF CHAT (selfChatId, above — `networks.whatsapp.admin_chat_ids[0]`), declared in this
   //     node's OWN config as the operator command channel. A command channel is by definition a
   //     chat this node HEARS, so that id was minted by the install this node's EAR is: it is a
   //     room on the ear whether or not anything has arrived yet.
@@ -2965,10 +2979,20 @@ export async function boot({
   const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
+  // A lifecycle line goes to the announce chat (announceChatId, above) AND to log_to_group when that is
+  // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
+  // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
+  const sayLifecycle = async (chatId, text) => {
+    const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
+    await Promise.all([
+      chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,
+      group && !(chatId && group.chatId === chatId) ? noticeToChannel({ configKey: 'log_to_group', text, what: 'announce', tag: 'announce' }) : null,
+    ]);
+  };
   // The going-down half, unchanged: the sidecar the NEXT boot reads back, the capped "↻ …" line,
   // then the exit itself.
   async function goDown(code) {
-    const selfDm = selfChatId();   // the Self chat (above) = the Self-DM announce target
+    const selfDm = announceChatId();   // the lifecycle announce target (above): Self, else the first admin chat
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
     // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the
     // exit). Said through the one placement (sayOnce, above, 2026-09-16): the mouth, in its own room,
@@ -2977,7 +3001,7 @@ export async function boot({
     // Beeper account that id does not exist there (operator 2026-09-11).
     // The failure is SAID rather than swallowed: a restart line that never landed leaves the
     // operator watching a silent chat, and this is the last thing the process does.
-    try { if (selfDm) await Promise.race([sayOnce({ chatId: selfDm, text: `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`, what: 'announce' }), new Promise((r) => setTimeout(r, 3000))]); }
+    try { await Promise.race([sayLifecycle(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); }
     catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
     try { await unlink(drainingFile); } catch { /* no drain was published — the usual case */ }
     exit(code);
@@ -3440,6 +3464,7 @@ export async function boot({
     ownNames: () => ownNodeNamesOf(getConfig()),
     onLog: (m) => log.line?.(`[beeper-update] ${m}`),
   }) : null;
+  const browserScreens = createBrowserScreens({ egptHome: EGPT_HOME, log: (m) => log.line?.(`[chrome] ${m}`) });
   const commands = createCommands({
     getConfig,
     seedOf: strangerSeedOf,                           // a new chat's public_commands, before its entry exists
@@ -3555,6 +3580,10 @@ export async function boot({
     reportUndelivered,                                   // a side group's lost opener → one log_to_group line (above)
     requestLogin,                                        // /login <site> → the auto-login limb (src/spine/login.mjs); returns an outcome token, never a credential
     onChromeLog: (m) => log.line?.(`[chrome] ${m}`),    // group Chrome launches / refusals ("no browser for …")
+    // A screen per browser group + its link (plans/2611022204-BROWSER-SCREENS.md); /browser's control link goes to
+    // admin_channel through the SAME resolver the compaction notice uses (resolveAdminChat, above).
+    browserScreens, screenTunnel: createScreenTunnel({ egptHome: EGPT_HOME, screens: browserScreens, log: (m) => log.line?.(`[chrome] ${m}`) }),
+    adminChat: resolveAdminChat,
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
   commands.run = commandTranscript.wrapRun(commands.run);
@@ -4018,10 +4047,11 @@ export async function boot({
   if (ingest) shellPort.start();
 
   // Back-up announce: if we respawned from a lifecycle command (or a crash/wedge the daemon
-  // caught — src/daemon-runtime.mjs writes the same fallback sidecar for those), tell Self
-  // with the commit we came up on. A cold boot with NO sidecar at all (first-ever start, or
-  // either gap the fallback couldn't resolve a chat id for either) still gets a plain
-  // "started" line below — the operator must never be silently in the dark about a restart.
+  // caught — src/daemon-runtime.mjs writes the same fallback sidecar for those), tell Self (else
+  // the first admin chat: announceChatId, above) with the commit we came up on. A cold boot with
+  // NO sidecar at all (first-ever start, or either gap the fallback couldn't resolve a chat id
+  // for either) still gets a plain "started" line below — the operator must never be silently
+  // in the dark about a restart.
   // Gated on the real-node flag so tests don't read/send through it.
   //
   // BOTH LINES ARE SAID THROUGH sayOnce, NOT THE DEFAULT `bridge` (operator 2026-09-11; the
@@ -4036,7 +4066,6 @@ export async function boot({
     let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { sc = null; }
     if (sc) {
       try { await unlink(sidecar); } catch {}
-      if (!sc?.chatId) return;
       const nowSha = shortSha();
       const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
       const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
@@ -4045,15 +4074,14 @@ export async function boot({
       // way the recovery reaches a human: it names what the daemon did on its own and, for a
       // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
       // Absent on every other sidecar, which therefore renders byte-for-byte as before.
-      try { await sayOnce({ chatId: sc.chatId, text: `✅ egpt back up! (${head}) ${pids}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
+      // `outcome` (daemon-runtime.mjs addOutcome, 2026-11-03): what /upgrade or /rewind did.
+      try { await sayLifecycle(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.outcome ? ` — ${sc.kind}: ${sc.outcome}` : ''}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return;
     }
-    const selfDm = selfChatId();
-    if (!selfDm) return;
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await sayOnce({ chatId: selfDm, text: `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`, what: 'announce' }); }
+    try { await sayLifecycle(announceChatId(), `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 

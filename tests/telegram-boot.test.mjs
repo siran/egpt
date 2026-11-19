@@ -82,10 +82,11 @@ function fakeTransport(declared = {}) {
   return { start, built };
 }
 
-async function bootWith(config, { state, telegram = true, session = fakeSession, tgExtra = {} } = {}) {
+async function bootWith(config, { state, telegram = true, session = fakeSession, tgExtra = {}, ingest = false } = {}) {
   const beeper = fakeTransport();
   const tg = fakeTransport({ visibleOnly: true, ...tgExtra });   // as the real limb declares (telegram.mjs)
   const lines = [];
+  const exits = [];
   let convState = state ?? emptyState();
   const app = await boot({
     readConfig: () => config,
@@ -95,11 +96,13 @@ async function bootWith(config, { state, telegram = true, session = fakeSession,
     probeEndpoint: async () => ({ ok: false, status: 0 }),
     loadState: async () => convState,
     writeState: async (s) => { convState = s; },
-    io: memIo(), ingest: false, tickMs: 0,
+    io: memIo(), ingest, tickMs: 0,
+    ...(ingest ? { spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }), reapPort: () => 0 } : {}),
+    exit: (code) => exits.push(code),
     now: () => Date.UTC(2026, 9, 23, 14, 5),
     log: { line: (s) => lines.push(s) },
   });
-  return { app, beeper: beeper.built, tg: tg.built, lines };
+  return { app, beeper: beeper.built, tg: tg.built, lines, exits };
 }
 
 function seedOn(surface, chatId, name) {
@@ -193,7 +196,131 @@ describe('a node whose only limb is Telegram', () => {
   });
 });
 
+// ── networks.<surface>.admin_chat_ids (operator 2026-11-03: "put An in chat_ids, btw it should be
+// called admin_chat_ids"). nu has no whatsapp admin chat; its command channel is a Telegram topic.
+// The lifecycle lines (boot announceChatId) go there; the bare "stop" stays a whatsapp-Self word.
+describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', () => {
+  const TOPIC = 'tg:-1000000000104/3';
+  const SIDECAR = join(_HOME, 'state', 'restart-announce.json');
+  const NU = (tg = { admin_chat_ids: [TOPIC], allowed_users: [42] }) => ({ ...TELEGRAM_ONLY(), networks: { whatsapp: { admin_chat_ids: [] }, telegram: tg } });
+  const inTopic = { ...tgFrom, chatId: TOPIC, chatName: 'admin', chatType: 'supergroup', msgKey: '9' };
+  afterEach(async () => {
+    await fs.rm(join(_HOME, 'state'), { recursive: true, force: true });
+    await fs.rm(join(_HOME, 'STOP'), { force: true });
+  });
+
+  it('cold boot: "egpt started" goes to the telegram admin chat when whatsapp has none', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(NU(), { ingest: true });
+    await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt started/.test(s.text))).toBe(true), { timeout: 10000 });
+    expect(tg[0].sent.filter((s) => /egpt started/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
+    app.stop();
+  });
+
+  it('a legacy chat_ids is still read: the same line, same chat', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith(NU({ chat_ids: [TOPIC], allowed_users: [42] }), { ingest: true });
+    await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt started/.test(s.text))).toBe(true), { timeout: 10000 });
+    expect(tg[0].sent.filter((s) => /egpt started/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
+    app.stop();
+  });
+
+  it('/e restart in the topic, from a sender on no list: the topic is an admin chat, so it runs; "↻" goes there and the sidecar names it', async () => {
+    await writeToken();
+    const { app, tg, exits } = await bootWith(NU());
+    await tg[0].onIncoming('/e restart', { ...inTopic, userId: '99', senderName: 'X', authorized: false });
+    await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
+    expect(tg[0].sent.filter((s) => s.text.includes('↻')).map((s) => s.chatId)).toEqual([TOPIC]);
+    expect(JSON.parse(await fs.readFile(SIDECAR, 'utf8')).chatId).toBe(TOPIC);
+    app.stop();
+  });
+
+  it('the read-back: "egpt back up!" goes to the chat the sidecar names', async () => {
+    await writeToken();
+    await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+    await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+    const { app, tg } = await bootWith(NU(), { ingest: true });
+    await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt back up!/.test(s.text))).toBe(true), { timeout: 10000 });
+    expect(tg[0].sent.filter((s) => /egpt back up!/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
+    app.stop();
+  });
+
+  // log_to_group as a Telegram topic (operator 2026-11-03: "can you fix so that it shows in the log
+  // channel? btw, we should create a eGPT logs topic"; nu's is tg:-1000000000104/185).
+  const LOGS = 'tg:-1000000000104/185';
+  const resolveChatId = (id) => (id.startsWith('tg:') ? id : null);   // the real limb's answer (telegram-limb.test.mjs)
+  const said = (tg, re) => tg[0].sent.filter((s) => re.test(s.text)).map((s) => s.chatId);
+
+  it('log_to_group a tg: topic: a command\'s audit line lands in that topic', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
+    await tg[0].onIncoming('/e status', tgFrom);
+    await vi.waitFor(() => expect(said(tg, /\/status in An R by An R/)).toEqual([LOGS]), { timeout: 10000 });
+    app.stop();
+  });
+
+  it('"↻" goes to the admin topic AND the log topic', async () => {
+    await writeToken();
+    const { app, tg, exits } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
+    await tg[0].onIncoming('/e restart', inTopic);
+    await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
+    expect(said(tg, /↻/).sort()).toEqual([TOPIC, LOGS].sort());
+    app.stop();
+  });
+
+  it('"egpt back up!" goes to both; once when log_to_group IS the admin chat', async () => {
+    for (const [logTo, want] of [[LOGS, [TOPIC, LOGS]], [TOPIC, [TOPIC]]]) {
+      await writeToken();
+      await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+      await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+      const { app, tg } = await bootWith({ ...NU(), log_to_group: logTo }, { ingest: true, tgExtra: { resolveChatId } });
+      await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toHaveLength(want.length), { timeout: 10000 });
+      expect(said(tg, /egpt back up!/).sort()).toEqual([...want].sort());
+      app.stop();
+    }
+  });
+
+  it('"egpt started" reaches log_to_group even with no admin chat at all', async () => {
+    await writeToken();
+    const { app, tg } = await bootWith({ ...NU({ allowed_users: [42] }), log_to_group: LOGS }, { ingest: true, tgExtra: { resolveChatId } });
+    await vi.waitFor(() => expect(said(tg, /egpt started/)).toEqual([LOGS]), { timeout: 10000 });
+    app.stop();
+  });
+
+  // The outcome daemon-runtime.mjs addOutcome joins to the sidecar.
+  for (const outcome of ['already up to date', 'pulled 3 commits, npm install ok', 'git pull failed (fatal: Not possible to fast-forward, aborting.), still on abc123']) {
+    it(`the back-up line after /upgrade says what it did: ${outcome}`, async () => {
+      await writeToken();
+      await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+      await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/upgrade', preSha: 'abc123', pid: 999, outcome }), 'utf8');
+      const { app, tg } = await bootWith(NU(), { ingest: true });
+      await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toEqual([TOPIC]), { timeout: 10000 });
+      expect(tg[0].sent.find((s) => /egpt back up!/.test(s.text)).text.split('\n')[0]).toMatch(new RegExp(`^✅ egpt back up! \\(.+\\) pid 999 → \\d+ — /upgrade: ${outcome.replace(/[().]/g, '\\$&')}$`));
+      app.stop();
+    });
+  }
+
+  it('the stop safe word is NOT widened: a bare "stop" in the telegram admin chat is ordinary text', async () => {
+    await writeToken();
+    const { app, tg, exits } = await bootWith(NU());
+    await tg[0].onIncoming('stop', inTopic);   // the owner (42, authorized), in the admin topic
+    expect(exits).toEqual([]);
+    await expect(fs.access(join(_HOME, 'STOP'))).rejects.toThrow();
+    app.stop();
+  });
+});
+
 describe('a node with Beeper and Telegram', () => {
+  it('admin_channel named by a tg: topic id: the notice goes to that topic through Telegram, not to a Beeper chat by name', async () => {
+    await writeToken();
+    const resolveChatId = (id) => (id.startsWith('tg:') ? id : null);   // the real limb's answer (telegram-limb.test.mjs)
+    const { app, beeper, tg } = await bootWith({ ...MIXED(), admin_channel: 'tg:-1000000000104/124' }, { tgExtra: { resolveChatId } });
+    expect(await app.noticeToAdmin('🗜️ compacted')).toBeTruthy();
+    expect(tg[0].sent.map((s) => s.chatId)).toEqual(['tg:-1000000000104/124']);
+    expect(beeper[0].sent).toEqual([]);
+    app.stop();
+  });
+
   it('each reply goes out the limb its chat belongs to', async () => {
     await writeToken();
     let state = seedOn('whatsapp', waFrom.chatId, 'fam');
