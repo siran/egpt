@@ -174,7 +174,7 @@ describe('the link (a quick tunnel per group)', () => {
 const STATE = { contacts: { whatsapp: { '!work': { slug: 'Work chat-2601010000' }, '!admin': { slug: 'eGPT Admin-2601010000' } } } };
 const GROUPS = { work: ['Work chat'] };
 const URL = 'https://q.trycloudflare.com';
-function build({ available = true, admin = { chatId: '!admin' }, chromeHost } = {}) {
+function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [] } = {}) {
   const fake = fakePipeChrome({ listTabs: async () => [] });
   const ops = [];
   const browserScreens = {
@@ -191,7 +191,7 @@ function build({ available = true, admin = { chatId: '!admin' }, chromeHost } = 
   const cmds = createCommands({
     getConfig: () => ({ node_name: 'nu', agents: { n: {} }, chrome: { bin: '/x/chrome' } }),
     chromeHost: chromeHost === undefined ? fake.chromeHost : chromeHost,
-    profileHolder: () => null, freeMem: () => 8192 * 1024 * 1024, rssOf: () => null,
+    profileHolder, killProcessTree, chromeProcesses, freeMem: () => 8192 * 1024 * 1024, rssOf: () => null,
     browserGroups: async () => GROUPS, profileFolders: () => [],
     loadState: async () => STATE, writeState: async () => {},
     send: async (chatId, text) => sent.push({ chatId, text }),
@@ -258,6 +258,41 @@ describe('/<handle> browser — who gets which link', () => {
     await w.run('!work', '/browser refresh');
     await w.run('!work', '/browser close');
     expect(w.events).toEqual(['plain:work', 'kill:work']);
+  });
+
+  it('`close` kills an untracked Chrome that holds the profile (a sign-in window left by a restarted daemon)', async () => {
+    let held = 'pid 4242';
+    const killed = [];
+    let dir;
+    const w = build({ profileHolder: (d) => { dir = d; return held; }, killProcessTree: (pid) => { killed.push(pid); held = null; }, chromeProcesses: () => [{ pid: 4242, cmd: `google-chrome --user-data-dir=${dir}` }] });
+    await w.run('!work', '/browser close');
+    expect(killed).toEqual([4242]);
+    expect(w.sent.at(-1).text).toBe('closed the work browser: its Chrome, its screen. It starts again on next need.');
+  });
+
+  it('`close` does not kill a stale-lock pid that is no longer a Chrome on this profile (pid reuse)', async () => {
+    const killed = [];
+    const w = build({ profileHolder: () => 'pid 4242', killProcessTree: (pid) => killed.push(pid), chromeProcesses: () => [{ pid: 4242, cmd: '/usr/bin/sleep 100' }] });
+    await w.run('!work', '/browser close');
+    expect(killed).toEqual([]);
+    expect(w.sent.at(-1).text).toBe('closed the work browser: its screen. It starts again on next need.');   // no "its Chrome", no "could not be closed"
+  });
+
+  it('`close` with a holder that names no pid (Windows) kills nothing and says so', async () => {
+    const killed = [];
+    const w = build({ profileHolder: () => 'EBUSY', killProcessTree: (pid) => killed.push(pid) });
+    await w.run('!work', '/browser close');
+    expect(killed).toEqual([]);
+    expect(w.sent.at(-1).text).toContain('could not be closed by pid');
+  });
+
+  it('`close` of a tracked Chrome still goes through chromeHost.kill, never the pid kill', async () => {
+    const killed = [];
+    const w = build({ killProcessTree: (pid) => killed.push(pid) });
+    await w.run('!work', '/browser all');
+    await w.run('!work', '/browser close');
+    expect(w.handles[0].child.killed).toBe(true);
+    expect(killed).toEqual([]);
   });
 
   it('/browser refresh opens the plain window on the group\'s screen and answers with its link, not "Open VNC (:6080)"', async () => {

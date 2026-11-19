@@ -2396,7 +2396,7 @@ describe('/chrome', () => {
   it('the brain profile open in a normal window → the clear answer, nothing launched over it', async () => {
     const { cmds, sent, spawns } = harness({ config: { ...AGENTS, ...kg }, cdp: reachable, profileHolder: () => 'EBUSY' });
     await cmds.run({ ...self, body: '/chrome' });
-    expect(sent[0].text).toBe('no browser for this chat — the "brain" browser is open in a normal window; close it to hand it back to the spine');
+    expect(sent[0].text).toBe('no browser for this chat — the "brain" browser is open in a normal window; close it to hand it back to the spine, or `browser close` closes it for you');
     expect(spawns).toHaveLength(0);
   });
 
