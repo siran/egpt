@@ -3053,6 +3053,18 @@ export const CONFIG_SCHEMA = {
         this margin; below it, evict the idlest group Chrome and retry, else
         launch anyway with one log line — a browser is never denied (operator
         2026-10-24). NEVER gates or evicts the brain Chrome. Node-level.
+      idle_minutes
+        INT minutes (DEFAULT 30), or "keep"; 0 and "keep" = never. A browser
+        group's screen link (/<handle> browser) closes, with its VNC, after this
+        many minutes with no browser use through the spine (a being's browser
+        tool, /tabs, /open, /<handle> browser...), even while someone still
+        watches: a static page nobody touches is idle. The Chrome stays, but a
+        group with no open link is evictable again under memory pressure (an open
+        one is pinned). One line in the chat the link was shared in:
+        "browser <group> screen closed after N min idle". Per launch,
+        /<handle> browser [all] [<profile>] keep holds that link until
+        /<handle> browser close. Control-link typing alone does not count as
+        use. Node-level.
 
     NOTE: which Chrome a CHAT uses is not a chrome key. It is config/browsers.yaml
     (skeleton: config/skeletons/browsers.yaml): groups of chat names; group

@@ -144,14 +144,15 @@ export function createBrowserScreens({ egptHome, platform = process.platform, sp
       return ensuring.get(group);
     },
     // /browser close: stop its noVNC, x11vnc and Xvfb (a Chrome still on it goes with its X server). The number stays.
-    // → whether anything was running.
-    close(group) {
+    // `keepDisplay` (the idle timer): only the viewing side stops, the Xvfb and the Chrome on it stay. → whether anything was running.
+    close(group, { keepDisplay = false } = {}) {
       const all = read();
       const s = all[group];
       if (!s) return false;
       const d = `:${s.display}`, { rfbPort } = portsOf(s.display);
       let any = false;
       for (const [k, bin, needle] of [['web', 'websockify', `localhost:${rfbPort}`], ['vnc', 'x11vnc', rfbPort], ['xvfb', 'Xvfb', d]]) {
+        if (keepDisplay && k === 'xvfb') continue;
         if (running(s[k], bin, needle)) { try { kill(s[k]); any = true; } catch (e) { log(`browser screen ${group}: could not stop ${bin} pid ${s[k]} — ${e?.message ?? e}`); } }
         delete s[k];
       }
