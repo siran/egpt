@@ -9,8 +9,9 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, patchContact, getContact, conversationPathOf } from '../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, getContact, reslug } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
+import { renameRoomRow } from '../rooms-file.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -21,10 +22,15 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
   }
   const rename = io.rename ?? fsRename;
   const appendFile = io.appendFile ?? fsAppendFile;
+  const renameRow = io.renameRoomRow ?? renameRoomRow;
   // A chat that moved to a new id (boot moveChat): its old id resolves to where it went. In memory
   // (moves are rare): a restart forgets it, and the limb re-learns it from the next refused send.
   const movedTo = new Map();
   const current = (surface, chatId) => movedTo.get(`${surface}\0${chatId}`) ?? chatId;
+  // When this process registered each chat (ms): ensureContact merges a second id of the same chat
+  // arriving within 60 s by it. The registry stores no first-seen time (the slim shape).
+  const firstSeen = new Map();
+  const ctxOf = (surface, chatName, seed) => ({ pushedName: chatName, slugHint: chatName, seed, firstSeenOf: (id) => firstSeen.get(`${surface}\0${id}`) });
 
   /**
    * Resolve (and self-heal) the slug for a chat. ALWAYS calls ensureContact —
@@ -39,7 +45,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
       // A known chat with nothing to change is a READ: answered without the node-wide lock.
       if (chatId) {
         try {
-          const seen = ensureContact(await loadState(), surface, current(surface, chatId), { pushedName: chatName, slugHint: chatName, seed });
+          const seen = ensureContact(await loadState(), surface, current(surface, chatId), ctxOf(surface, chatName, seed));
           if (!seen.changed) return seen.slug ?? null;
         } catch { /* the locked path below reports it */ }
       }
@@ -51,11 +57,11 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         if (!chatId) return null;
         chatId = current(surface, chatId);   // again under the lock: a move may have landed meanwhile
         const state = await loadState();
-        const ens = ensureContact(state, surface, chatId, { pushedName: chatName, slugHint: chatName, seed });
+        const ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed));
 
         // Rename: the chat's TITLE changed (a group renamed, or a placeholder
-        // learning its real name) → ensureContact already recomputed the slug
-        // (keeping the -yymmddhhmm suffix). The thread is NOT reset (operator
+        // learning its real name, or a legacy -yymmddhhmm slug dropping its stamp)
+        // → ensureContact already recomputed the slug. The thread is NOT reset (operator
         // ruling 2026-07-26: a rename is the SAME conversation under a new name) —
         // the nested per-being threadId carries over untouched. The pushedName-only
         // rename logic lives entirely in ensureContact; here we only do the
@@ -74,15 +80,22 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
             try { await appendFile(join(newDir, 'renames.log'), renameLogLine(ens.renamedFrom, ens.renamedTo, 'name changed'), 'utf8'); }
             catch (e) { onLog(`renames.log "${ens.renamedTo}": ${e?.message ?? e}`); }
           } else if (failed.code !== 'ENOENT') {   // ENOENT = no folder yet → adopt the new name
-            // Folder didn't move → entry stays on it (slug + path); a later sighting retries.
+            // Folder didn't move → entry and its forks stay on it (slug + path); a later sighting retries.
             onLog(`re-slug rename "${ens.renamedFrom}"→"${ens.renamedTo}" failed, kept old folder: ${failed.message ?? failed}`);
             slug = ens.renamedFrom;
-            next = patchContact(next, surface, ens.jid, { slug, conversation_path: conversationPathOf(surface, slug) });
+            next = reslug(next, surface, ens.jid, ens.renamedTo, slug);
             changed = JSON.stringify(getContact(next, surface, chatId)?.entry) !== JSON.stringify(getContact(state, surface, chatId)?.entry);
+          }
+          // Its config/rooms.yaml row (members, radio, heartbeats, …) is keyed by the slug too.
+          if (slug === ens.renamedTo) {
+            const [from, to] = [ens.renamedFrom, ens.renamedTo].map((s) => Room.forChat(surface, s).ns());
+            try { if (await renameRow(from, to)) onLog(`rooms.yaml row "${from}" → "${to}"`); }
+            catch (e) { onLog(`rooms.yaml row "${from}" not moved: ${e?.message ?? e}`); }
           }
         }
 
         if (changed) await writeState(next);
+        if (ens.isNew) firstSeen.set(`${surface}\0${ens.jid}`, Date.now());
         return slug ?? null;
       } catch (e) { onLog(`resolve ${surface}/${chatId}: ${e?.message ?? e}`); return null; }
       });

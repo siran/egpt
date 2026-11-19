@@ -284,7 +284,7 @@ describe('brainpool — the four identity keys derive from the SCOPE, not the ch
     await brain.turn('e', groupEv);
 
     expect(pool.calls[0].key).toBe('e:ccode:room:acim');
-    expect(pool.calls[1].key).toMatch(/^e:ccode:whatsapp:perrito traducciones-\d{10}$/);
+    expect(pool.calls[1].key).toMatch(/^e:ccode:whatsapp:perrito traducciones$/);
     expect(pool.calls[1].key).not.toBe(pool.calls[0].key);          // a SECOND warm CLI
     expect(pool.calls[1].brainOptions.sessionId).toBe(null);        // a fresh thread of its own
     expect(pool.calls[1].brainOptions.dangerouslySkipPermissions).toBe(false);   // 'regular', the global default
@@ -545,7 +545,7 @@ describe('the mesh is TRANSPORT, not identity — a relayed group turn lands on 
     await meshFlush();
 
     expect(pool.calls).toHaveLength(1);
-    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:egpt-mesh-do-kg-\d{10}$/);
+    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:egpt-mesh-do-kg$/);
     expect(pool.calls[0].brainOptions.sessionId).toBe(null);                    // its own thread
     expect(pool.calls[0].brainOptions.dangerouslySkipPermissions).toBe(false);  // 'regular'
   });

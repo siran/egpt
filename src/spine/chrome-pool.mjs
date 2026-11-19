@@ -62,8 +62,8 @@ export const isSafeGroupName = (g) => typeof g === 'string' && g !== '' && sanit
 // THE GROUP LOOKUP: a conversation's registry ENTRY + config/browsers.yaml's `groups:` map
 // (rooms-file.readBrowserGroups) → the descriptor ensureChrome takes, `{ key, name, group }`.
 //   • key   — basename of `conversation_path`, else `entry.slug`.
-//   • name  — the key minus its `-yymmddhhmm` creation stamp: the chat name as the slug carries it,
-//     sanitized (conversations-state ensureContact mints and renames slugs by this rule). Every entry
+//   • name  — the key minus a legacy `-yymmddhhmm` stamp (slugs carried one until 2026-11-19): the chat
+//     name as the slug carries it, sanitized (conversations-state ensureContact mints and renames slugs). Every entry
 //     has it; pushedName is only a key comment in the live file and absent on most entries.
 //   • group — the one group listing the name (compared as sanitizeSlug(listed)); unlisted → `shared`.
 //     Listed in two groups, or in a group whose name is not a safe path segment → null (no browser)

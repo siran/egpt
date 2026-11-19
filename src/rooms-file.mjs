@@ -147,6 +147,19 @@ export async function removeRoomRow(ns, { reg = registryOf(ns), path = registryP
   await write(path, String(doc), 'utf8');
 }
 
+/** Re-key one row in place (its folder was renamed), comments kept. Never onto an existing row. */
+export async function renameRoomRow(fromNs, toNs, { reg = registryOf(fromNs), path = registryPath(reg), read = readFile, write = writeFile } = {}) {
+  let text = '';
+  try { text = await read(path, 'utf8'); } catch { return false; }
+  const doc = YAML.parseDocument(text || '');
+  const rows = doc.get(reg.root) ?? doc.contents;   // the wrapped `rooms:` map, or a bare one
+  if (!YAML.isMap(rows) || !rows.has(String(fromNs)) || rows.has(String(toNs))) return false;
+  const pair = rows.items.find((p) => String(YAML.isScalar(p.key) ? p.key.value : p.key) === String(fromNs));
+  if (YAML.isScalar(pair.key)) pair.key.value = String(toNs); else pair.key = String(toNs);
+  await write(path, String(doc), 'utf8');
+  return true;
+}
+
 /** Drop ONE block from one room's row, leaving the row and its siblings alone. */
 export async function deleteRoomConfigBlock(ns, key, { reg = registryOf(ns), path = registryPath(reg), read = readFile, write = writeFile } = {}) {
   let text = '';

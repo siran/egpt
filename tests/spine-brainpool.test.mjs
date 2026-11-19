@@ -135,7 +135,7 @@ describe('brainpool.turn', () => {
     const out = await brain.turn('e', ev);
     expect(out.text).toBe('hi there');
     expect(pool.calls).toHaveLength(1);
-    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
+    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER$/);
     expect(pool.calls[0].klass).toBe('conversation');
     expect(pool.calls[0].message).toBe(ev.line);   // no feed configured → raw line
     expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe('sid-1');
@@ -210,7 +210,7 @@ describe('brainpool.turn', () => {
     const brains = { resolve: () => ({ name: 'default', type: 'codex', model: 'gpt-5.4-mini', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
-    expect(pool.calls[0].key).toMatch(/^e:codex:whatsapp:SPOILER-\d{10}$/);       // engine from the brain, not hardcoded ccode
+    expect(pool.calls[0].key).toMatch(/^e:codex:whatsapp:SPOILER$/);       // engine from the brain, not hardcoded ccode
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: DEFAULT_ALLOWED_TOOLS });
   });
 
@@ -318,7 +318,7 @@ describe('brainpool.turn', () => {
     const config = { agents: { e: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
-    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
+    expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: DEFAULT_ALLOWED_TOOLS });
   });
 
@@ -392,7 +392,7 @@ describe('brainpool.turn', () => {
     const { brain } = harness([{ text: 'ok', sessionId: 'sid-9' }], { afterTurn: (x) => seen.push(x) });
     await brain.turn('e', ev);
     expect(seen).toHaveLength(1);
-    expect(seen[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
+    expect(seen[0].key).toMatch(/^e:ccode:whatsapp:SPOILER$/);
     expect(seen[0].sessionId).toBe('sid-9');
   });
 
@@ -790,7 +790,7 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'd1' }],
       { brains, config, loadFeed: async () => 'FEED-LAYERS' });
     await brain.turn('don-local', ev);
-    expect(pool.calls[0].key).toMatch(/^don-local:ccode:whatsapp:SPOILER-\d{10}$/);
+    expect(pool.calls[0].key).toMatch(/^don-local:ccode:whatsapp:SPOILER$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: 'Read,Bash' });
     // EVERY agent gets its own kickoff feed — the persona/sibling split was
     // evicted (operator 2026-08-28: "we only have agents now"). A local agent

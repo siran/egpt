@@ -153,7 +153,7 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(surface).toBe(WA);
     expect(primary).toBe(jid);
     // slug follows the TITLE (pushedName), path-safe — accents/spaces/parens kept
-    expect(slug).toMatch(/^Diego Pruéba \(Kilo\)-\d{10}$/);
+    expect(slug).toBe('Diego Pruéba (Kilo)');
     expect(entry.slug).toBe(slug);
     // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — a fresh
     // contact is NOT seeded with one; the identity feed is a property of the agent type.
@@ -175,8 +175,8 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     let s = emptyState();
     const r1 = ensureContact(s, WA, '10000000000011@lid', { pushedName: 'Diego Pruéba (Kilo)', slugHint: 'diego' });
     s = r1.state;
-    // same person's 2nd JID carries the same title → same candidate slug → alias
-    const r2 = ensureContact(s, WA, '15550100006@s.whatsapp.net', { pushedName: 'Diego Pruéba (Kilo)', slugHint: 'diego' });
+    // same person's 2nd JID, seconds later, carries the same title → alias
+    const r2 = ensureContact(s, WA, '15550100006@s.whatsapp.net', { pushedName: 'Diego Pruéba (Kilo)', slugHint: 'diego', firstSeenOf: () => Date.now() });
     expect(r2.slug).toBe(r1.slug);
     expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
@@ -189,41 +189,40 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     s = r1.state;
     const r2 = ensureContact(s, TG, '100000001', { slugHint: 'an-tg' });
     expect(r1.slug).not.toBe(r2.slug);
-    expect(r2.state.contacts[WA]['100000001'].slug).toMatch(/^an-wa-\d{10}$/);
-    expect(r2.state.contacts[TG]['100000001'].slug).toMatch(/^an-tg-\d{10}$/);
+    expect(r2.state.contacts[WA]['100000001'].slug).toBe('an-wa');
+    expect(r2.state.contacts[TG]['100000001'].slug).toBe('an-tg');
   });
 
   it('re-encountering a known JID with a new name re-slugs to the current name (not frozen)', () => {
     let s = emptyState();
     const r1 = ensureContact(s, WA, '10000000000011@lid', { pushedName: '', slugHint: 'diego' });
     s = r1.state;
-    const suffix = r1.slug.match(/-(\d{10})$/)[1];
     const r2 = ensureContact(s, WA, '10000000000011@lid', { pushedName: 'Diego Pruéba (Kilo)' });
     expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
     expect(r2.changed).toBe(true);
     expect(r2.entry.pushedName).toBe('Diego Pruéba (Kilo)');
-    // slug tracks the current name (keeps the firstSeen suffix). A rename does NOT
+    // slug tracks the current name. A rename does NOT
     // reset the thread (operator ruling: a rename is the SAME conversation under a
     // new name), and there is no FLAT threadId slot to reset either way — creation
     // stopped minting it (2026-07-26); a thread lives in `entry[<being>].threadId`.
     expect(r2.renamedFrom).toBe(r1.slug);
-    expect(r2.slug).toBe(`Diego Pruéba (Kilo)-${suffix}`);
+    expect(r2.slug).toBe('Diego Pruéba (Kilo)');
     expect(r2.state.contacts[WA]['10000000000011@lid']).not.toHaveProperty('threadId');
   });
 
-  it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
+  it('falls back to a `contact` slug when no slugHint or pushedName', () => {
     const s = emptyState();
     const jid = '15550100006@s.whatsapp.net';
     const r = ensureContact(s, WA, jid, {});
-    expect(r.slug).toMatch(/^contact-\d{10}$/);
+    expect(r.slug).toBe('contact');
     expect(r.state.contacts[WA][jid].slug).toBe(r.slug);
   });
 
   it('aliasOf resolves through findContactByJid', () => {
     let s = emptyState();
     const r1 = ensureContact(s, WA, '10000000000011@lid', { slugHint: 'diego' });
-    s = ensureContact(r1.state, WA, '15550100006@s.whatsapp.net', { slugHint: 'diego' }).state;
+    s = aliasContact(r1.state, WA, '15550100006@s.whatsapp.net', '10000000000011@lid');
     expect(findContactByJid(s, WA, '10000000000011@lid')).toBe(r1.slug);
     expect(findContactByJid(s, WA, '15550100006@s.whatsapp.net')).toBe(r1.slug);
   });
@@ -251,7 +250,7 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
 
   it('a known title produces a named slug, not a placeholder', () => {
     const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
-    expect(r.slug).toMatch(/^morgan-\d{10}$/);
+    expect(r.slug).toBe('morgan');
     expect(isPlaceholderSlug(r.slug)).toBe(false);
   });
 });
@@ -272,18 +271,18 @@ describe('conversation_path (stored) backfill', () => {
   it('stores home_dir + a home-relative conversation_path on a fresh contact', () => {
     const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
     expect(r.entry.conversation_path).toBe(conversationPathOf(WA, r.slug));
-    expect(r.entry.conversation_path).toMatch(/\/conversations\/whatsapp\/morgan-\d{10}$/);
+    expect(r.entry.conversation_path).toMatch(/\/conversations\/whatsapp\/morgan$/);
     expect(r.entry.home_dir).toBe(homeDirMsys());
   });
 
   it('backfills conversation_path on a legacy entry that lacks it (threadCwd is retired — never written)', () => {
     // legacy shape: a started thread but no conversation_path
     const s = { contacts: { [WA]: { '111@s.whatsapp.net': {
-      slug: 'Mom-2605200520', threadId: 'sess-mom', pushedName: 'Mom',
+      slug: 'Mom', threadId: 'sess-mom', pushedName: 'Mom',
     } } } };
     const r = ensureContact(s, WA, '111@s.whatsapp.net', { pushedName: 'Mom' });
     expect(r.changed).toBe(true);
-    expect(r.entry.conversation_path).toBe(conversationPathOf(WA, 'Mom-2605200520'));
+    expect(r.entry.conversation_path).toBe(conversationPathOf(WA, 'Mom'));
     expect('threadCwd' in r.entry).toBe(false);   // retired 2026-07-02 — no v2 writer
   });
 
@@ -309,7 +308,7 @@ describe('recentContacts — was the /e browser list (that wizard is retired; fu
     s = ensureContact(s, WA, '2@s', { pushedName: 'Bob' }).state;
     s = ensureContact(s, TG, '3', { pushedName: 'Carol' }).state;
     // an alias must NOT appear as its own row
-    s = ensureContact(s, WA, '1b@lid', { pushedName: 'Alice', slugHint: 'Alice' }).state;
+    s = aliasContact(s, WA, '1b@lid', '1@s');
     return s;
   };
 
@@ -383,28 +382,27 @@ describe('isPlaceholderSlug — placeholder vs real names', () => {
 
 describe('ensureContact — self-heals a placeholder slug when the title resolves', () => {
   // The Morgan bug (operator 2026-06-14): a chat first seen before its Beeper
-  // title resolved got slug 'contact-<ts>'; later the title was known but the
+  // title resolved got slug 'contact'; later the title was known but the
   // slug stayed nameless forever because path-1 only refreshed pushedName.
   const ROOM = '!FakeRoomId0000000020:beeper.local';
   function placeholderState() {
-    const r = ensureContact(emptyState(), WA, ROOM, {});   // no name → contact-<ts>
-    expect(r.slug).toMatch(/^contact-\d{10}$/);
+    const r = ensureContact(emptyState(), WA, ROOM, {});   // no name → contact
+    expect(r.slug).toBe('contact');
     // pretend a thread was already spawned at the placeholder cwd (persona = nested 'e')
     return { state: recordThread(r.state, WA, ROOM, 'thread-abc', undefined, 'e'), placeholderSlug: r.slug };
   }
 
-  it('renames the slug to the resolved name, keeping the firstSeen suffix', () => {
+  it('renames the slug to the resolved name', () => {
     const { state, placeholderSlug } = placeholderState();
-    const suffix = placeholderSlug.match(/-(\d{10})$/)[1];
     const r = ensureContact(state, WA, ROOM, { pushedName: 'morgan', slugHint: 'morgan' });
     expect(r.renamedFrom).toBe(placeholderSlug);
-    expect(r.renamedTo).toBe(`morgan-${suffix}`);
-    expect(r.slug).toBe(`morgan-${suffix}`);
+    expect(r.renamedTo).toBe('morgan');
+    expect(r.slug).toBe('morgan');
     expect(r.changed).toBe(true);
     expect(isPlaceholderSlug(r.slug)).toBe(false);
     // the registry entry moved to the new slug; the nested thread SURVIVES the
     // rename (operator ruling: a rename is the SAME conversation under a new name).
-    expect(r.state.contacts[WA][ROOM].slug).toBe(`morgan-${suffix}`);
+    expect(r.state.contacts[WA][ROOM].slug).toBe('morgan');
     expect(r.state.contacts[WA][ROOM].agents.e.threadId).toBe('thread-abc');
   });
 
@@ -426,25 +424,22 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   });
 
   it('does not collide onto an existing slug', () => {
-    // another contact already holds morgan-<suffix>; the placeholder must not steal it
+    // another contact already holds morgan; the placeholder must not steal it
     const { state, placeholderSlug } = placeholderState();
-    const suffix = placeholderSlug.match(/-(\d{10})$/)[1];
-    const taken = `morgan-${suffix}`;
-    const withTaken = { ...state, contacts: { ...state.contacts, [WA]: { ...state.contacts[WA], '!other:beeper.local': { slug: taken, personality: 'default' } } } };
+    const withTaken = { ...state, contacts: { ...state.contacts, [WA]: { ...state.contacts[WA], '!other:beeper.local': { slug: 'morgan', personality: 'default' } } } };
     const r = ensureContact(withTaken, WA, ROOM, { pushedName: 'morgan', slugHint: 'morgan' });
-    expect(r.renamedTo).toBe(null);            // collision → no rename
-    expect(r.slug).toBe(placeholderSlug);      // stays a placeholder until safe
+    expect(r.renamedFrom).toBe(placeholderSlug);
+    expect(r.renamedTo).toBe('morgan-000020');  // collision → the tail of its own id
   });
 
   it('tracks a RENAME of an already-named contact/group (not frozen)', () => {
     // morgan exists with a real name + a live thread; the contact/group is renamed.
     let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'morgan' }).state;
     s = recordThread(s, WA, ROOM, 'thread-xyz', undefined, 'e');
-    const before = s.contacts[WA][ROOM].slug;            // morgan-<suffix>
-    const suffix = before.match(/-(\d{10})$/)[1];
+    const before = s.contacts[WA][ROOM].slug;            // morgan
     const r = ensureContact(s, WA, ROOM, { pushedName: 'Mauricio' });
     expect(r.renamedFrom).toBe(before);
-    expect(r.renamedTo).toBe(`Mauricio-${suffix}`);      // keeps the firstSeen suffix
+    expect(r.renamedTo).toBe('Mauricio');
     expect(r.entry.pushedName).toBe('Mauricio');
     expect(r.state.contacts[WA][ROOM].agents.e.threadId).toBe('thread-xyz');   // the being's thread SURVIVES the rename (operator ruling)
   });

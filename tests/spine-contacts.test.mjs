@@ -30,7 +30,7 @@ describe('contacts.resolve', () => {
   it('first sight: registers the contact + returns a slug, state written once', async () => {
     const { contacts, getState, writes } = harness();
     const slug = await contacts.resolve(SURFACE, CHAT, { chatName: 'fam' });
-    expect(slug).toMatch(/^fam-\d{10}$/);
+    expect(slug).toBe('fam');
     expect(getContact(getState(), SURFACE, CHAT)?.slug).toBe(slug);
     expect(writes()).toBe(1);
   });
@@ -54,10 +54,8 @@ describe('contacts.resolve', () => {
     const { contacts, renames, appends, getState } = harness(seed);
     const newSlug = await contacts.resolve(SURFACE, CHAT, { chatName: 'crew' });
 
-    expect(newSlug).toMatch(/^crew-\d{10}$/);
+    expect(newSlug).toBe('crew');
     expect(newSlug).not.toBe(oldSlug);
-    // the -yymmddhhmm suffix is preserved (encodes firstSeen → keeps ordering)
-    expect(newSlug.match(/-(\d{10})$/)[1]).toBe(oldSlug.match(/-(\d{10})$/)[1]);
 
     // fs side-effects: the folder moved + logged its own rename history
     expect(renames).toHaveLength(1);
@@ -88,7 +86,7 @@ describe('contacts.resolve', () => {
     const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
 
     const newSlug = await contacts.resolve(SURFACE, CHAT, { chatName: 'crew' });
-    expect(newSlug).toMatch(/^crew-\d{10}$/);
+    expect(newSlug).toBe('crew');
     expect(newSlug).not.toBe(oldSlug);
     expect(getContact(state, SURFACE, CHAT).slug).toBe(newSlug);   // state moved despite the fs miss
     expect(appends).toHaveLength(0);   // ENOENT → no folder to log the rename into
@@ -126,7 +124,7 @@ describe('contacts.resolve', () => {
     // unlocked: the retry moves folder + slug + path together, logged once
     busy = false;
     const newSlug = await contacts.resolve(SURFACE, CHAT, { chatName: 'crew' });
-    expect(newSlug).toMatch(/^crew-\d{10}$/);
+    expect(newSlug).toBe('crew');
     const moved = getContact(state, SURFACE, CHAT).entry;
     expect(moved.slug).toBe(newSlug);
     expect(moved.conversation_path).toBe(conversationPathOf(SURFACE, newSlug));
@@ -143,7 +141,7 @@ describe('contacts.resolve', () => {
     };
     const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
     const newSlug = await contacts.resolve(SURFACE, CHAT, { chatName: 'crew' });
-    expect(newSlug).toMatch(/^crew-\d{10}$/);
+    expect(newSlug).toBe('crew');
     expect(getContact(state, SURFACE, CHAT).slug).toBe(newSlug);
   });
 
@@ -173,8 +171,8 @@ describe('contacts.resolve', () => {
       contacts.resolve(SURFACE, CHAT_A, { chatName: 'alpha' }),
       contacts.resolve(SURFACE, CHAT_B, { chatName: 'bravo' }),
     ]);
-    expect(slugA).toMatch(/^alpha-\d{10}$/);
-    expect(slugB).toMatch(/^bravo-\d{10}$/);
+    expect(slugA).toBe('alpha');
+    expect(slugB).toBe('bravo');
     // BOTH contacts must survive in the final registry — the race would drop one.
     expect(getContact(state, SURFACE, CHAT_A)?.slug).toBe(slugA);
     expect(getContact(state, SURFACE, CHAT_B)?.slug).toBe(slugB);

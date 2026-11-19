@@ -170,13 +170,13 @@ describe('lobby slug — the shell console seat is the durable lobby, not an aut
     expect(ensureContact(emptyState(), 'agent', 'wren').slug).toBe('wren');
   });
 
-  it('fixedSlugFor leaves every OTHER surface null — no Beeper conversation loses its tail', () => {
+  it('fixedSlugFor leaves every OTHER surface null — a Beeper conversation is named by its title', () => {
     expect(fixedSlugFor('whatsapp', 'acim')).toBe(null);
     expect(fixedSlugFor('whatsapp', '@1234@s.whatsapp.net')).toBe(null);
     expect(fixedSlugFor('telegram', 'acim')).toBe(null);
     expect(fixedSlugFor('shell', 'acim')).toBe(null);
-    // and the tail really is still minted for them
-    expect(ensureContact(emptyState(), 'whatsapp', '@x', { pushedName: 'acim' }).slug).toMatch(/^acim-\d{10}$/);
+    // and the title, not the chat id, names them
+    expect(ensureContact(emptyState(), 'whatsapp', '@x', { pushedName: 'Acim grupo' }).slug).toBe('Acim grupo');
   });
 
   it('ensureContact("room","acim") mints the suffix-less slug "acim" at rooms/acim', () => {

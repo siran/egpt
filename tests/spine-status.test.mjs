@@ -214,8 +214,8 @@ describe('/status <target>', () => {
     expect(text.startsWith('```yaml\n')).toBe(true);
     expect(text).toMatch(/name: HFM/);
     expect(text).toMatch(/surface: whatsapp/);
-    expect(text).toMatch(/slug: HFM-\d{10}/);
-    expect(text).toMatch(/conversation_path: .*conversations\/whatsapp\/HFM-\d{10}/);
+    expect(text).toMatch(/slug: HFM$/m);
+    expect(text).toMatch(/conversation_path: .*conversations\/whatsapp\/HFM$/m);
     expect(text).toMatch(/mode: mention \(default\)/);   // no per-conv mode set → global default, marked
     expect(text).toMatch(/agent: egpt/);
     expect(text).toMatch(/engine: ccode/);

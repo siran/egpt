@@ -204,13 +204,13 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     await bridge.emit({ body: 'hola', from: { ...baseFrom, chatName: 'crew', atEStart: false, atEAnywhere: false, replyToBot: false } });
 
     expect(renames).toHaveLength(1);
-    expect(renames[0].from).toMatch(/whatsapp[\\/]fam-\d{10}$/);
-    expect(renames[0].to).toMatch(/whatsapp[\\/]crew-\d{10}$/);
+    expect(renames[0].from).toMatch(/whatsapp[\\/]fam$/);
+    expect(renames[0].to).toMatch(/whatsapp[\\/]crew$/);
 
     const paths = [...files.keys()];
     const transcriptPath = paths.find((p) => /transcript\.md$/.test(p));
-    expect(transcriptPath).toMatch(/crew-\d{10}[\\/]transcript\.md$/);   // lands in the NEW dir
-    expect(paths.some((p) => /fam-\d{10}[\\/]transcript\.md$/.test(p))).toBe(false);  // nothing left in the old dir
+    expect(transcriptPath).toMatch(/crew[\\/]transcript\.md$/);   // lands in the NEW dir
+    expect(paths.some((p) => /fam[\\/]transcript\.md$/.test(p))).toBe(false);  // nothing left in the old dir
     expect(files.get(transcriptPath)).toContain('An@[crew].wa (14:05) #m1: hola');
   });
 });

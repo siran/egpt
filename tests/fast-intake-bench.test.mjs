@@ -17,7 +17,7 @@ process.env.EGPT_HOME = HOME;
 
 const N = 120;
 const chatId = (i) => `chat-${i}`;
-const slugOf = (i) => `Group ${i}-2607030000`;   // sanitizeSlug keeps case and spaces
+const slugOf = (i) => `Group ${i}`;   // sanitizeSlug keeps case and spaces
 const nameOf = (i) => `Group ${i}`;
 
 function conversationsYaml({ conversationPathOf, homeDirMsys }) {   // the paths ensureContact would backfill: a settled registry

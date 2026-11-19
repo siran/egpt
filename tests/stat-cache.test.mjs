@@ -32,7 +32,7 @@ async function writeSettled(path, text) { await fs.writeFile(path, text, 'utf8')
 const CONV = `contacts:
   whatsapp:
     "chat-1": # Group One
-      conversation_path: .egpt/conversations/whatsapp/Group One-2607030000
+      conversation_path: .egpt/conversations/whatsapp/Group One
       home_dir: /c/Users/fixture
       agents:
         egpt:
@@ -204,7 +204,7 @@ describe('rooms.yaml / config.yaml', () => {
 describe('contacts.resolve — a known chat is a read, not a lock', () => {
   it('answers while another writer holds the registry lock', async () => {
     const state = parse(CONV);
-    state.contacts.whatsapp['chat-1'].conversation_path = conversationPathOf('whatsapp', 'Group One-2607030000');   // nothing to backfill
+    state.contacts.whatsapp['chat-1'].conversation_path = conversationPathOf('whatsapp', 'Group One');   // nothing to backfill
     const writeState = async () => {};
     const contacts = createContacts({ loadState: async () => state, writeState });
     let release;
@@ -214,6 +214,6 @@ describe('contacts.resolve — a known chat is a read, not a lock', () => {
       new Promise((r) => setTimeout(() => r('BLOCKED'), 500)),
     ]);
     release(); await held;
-    expect(slug).toBe('Group One-2607030000');
+    expect(slug).toBe('Group One');
   });
 });

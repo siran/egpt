@@ -566,7 +566,7 @@ describe('a Telegram node: the conversation follows the chat to its new id', () 
   });
 
   it('a turn still running in the old group when it moves files its reply in the moved conversation: nothing is registered for the old id', async () => {
-    const SLUG = 'Contoso-2610240312';   // made days before the move, as live
+    const SLUG = 'Contoso';   // the old id's folder
     const state = patchContact(basicSeed(), 'telegram', BASIC, { slug: SLUG, conversation_path: conversationPathOf('telegram', SLUG) });
     let release, started;
     const gate = new Promise((r) => { release = r; });

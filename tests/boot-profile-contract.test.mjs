@@ -41,7 +41,7 @@ process.env.EGPT_HOME = HOME;
 // drives onIncoming directly (bypassing the real bridge) and the registry's canonical
 // layout stores short ids now.
 const CHAT_ID = 'room-fixture';
-const SLUG = 'fixture-2607030000';
+const SLUG = 'fixture';
 const THREAD_ID = 'existing-thread-123';
 
 // Canonical layout paths — HARD-CODED (the contract). NOT imported from the code.

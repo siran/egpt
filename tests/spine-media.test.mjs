@@ -31,7 +31,7 @@ describe('media.save', () => {
     const dest = await media.save(META);
     expect(copies).toHaveLength(1);
     expect(copies[0].src).toBe('/tmp/dl/photo.jpg');
-    expect(dest).toMatch(/whatsapp[\\/]fam-\d{10}[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
+    expect(dest).toMatch(/whatsapp[\\/]fam[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
     expect(appends[0].data).toContain('[20260629-140530-an-image-m5.jpg]');   // index links the file
     expect(appends[0].data).toContain('look');                                // caption
   });
@@ -51,7 +51,7 @@ describe('media.save', () => {
     const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
     const media = createMedia({ contacts, io });
     const dest = await media.save({ ...META, network: 'telegram' });
-    expect(dest).toMatch(/telegram[\\/]fam-\d{10}[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
+    expect(dest).toMatch(/telegram[\\/]fam[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
     expect(dest).not.toMatch(/whatsapp/);
     expect(state.contacts.telegram?.['!room:beeper.com']).toBeTruthy();   // contact registered in the telegram bucket
     expect(state.contacts.whatsapp).toBeUndefined();                       // NOT the whatsapp bucket
@@ -60,7 +60,7 @@ describe('media.save', () => {
   it("falls back to the constructor surface when meta carries no network", async () => {
     const { media } = harness();
     const dest = await media.save(META);   // META has no `network`
-    expect(dest).toMatch(/whatsapp[\\/]fam-\d{10}[\\/]media[\\/]/);
+    expect(dest).toMatch(/whatsapp[\\/]fam[\\/]media[\\/]/);
   });
 
   it('returns null (never throws) when localPath or chatID is missing', async () => {

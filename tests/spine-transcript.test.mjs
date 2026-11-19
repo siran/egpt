@@ -482,7 +482,7 @@ describe('transcript.log — currentRoomOf redirects WHERE a write lands, ev its
 describe('transcript.log — a /join side-room gets a PER-SURFACE transcript in the SHARED folder', () => {
   const PRIMARY = 'primaryroom';          // the original chat's (short) id
   const SIDE = 'sideroom99';              // the /join side-room's (short) id — aliasOf PRIMARY
-  const PRIMARY_SLUG = 'fam-2605200133';
+  const PRIMARY_SLUG = 'fam';
   // The side-room's STORED transcript key — its sanitized title, written by /join onto the alias
   // entry. NOT the chatId, and deliberately ≠ the live ev.chatName below, so the tests prove the
   // filename follows the stored TITLE and never a live name. (sanitizeSlug removed the ':'.)
