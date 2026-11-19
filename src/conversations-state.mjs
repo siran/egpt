@@ -298,6 +298,14 @@ export async function statsPath(surface, chatId, { name, io = {}, rename = false
   return path;
 }
 
+// A chat's stats `first_seen` (ms), or null when it has none. `name` finds the file without a scan.
+export async function chatFirstSeen(surface, chatId, { name, io = {} } = {}) {
+  try {
+    const fp = await statsPath(surface, chatId, { name, io });
+    return Date.parse(YAML.parse(await (io.readFile ?? readFile)(fp, 'utf8'))?.first_seen) || null;
+  } catch { return null; }
+}
+
 // Filename-safe key for a SENDER id (the per-contact stats file's basename). A sender id
 // is a Matrix user id like "@anaprueba:beeper.com" or "10000000000011@lid" and is NEVER
 // shortened (a user can live on another homeserver) — so it can carry ':' etc., invalid in
@@ -733,6 +741,9 @@ export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = 
       stats.members[senderId] = { ...addMetrics(stats.members[senderId], delta), ...(facts.id != null ? { last_id: facts.id } : {}) };
       if (facts.at != null && !(Date.parse(existing.last_msg?.at) > facts.at)) stats.last_msg = { sender_id: senderId, at: new Date(facts.at).toISOString() };
     }
+    // first_seen (operator 2026-11-19: "the date of first transcribes"): set by the chat's first
+    // recorded message, never moved. A file that already counts members predates it and gets none.
+    if (existing.first_seen == null && existing.members == null) stats.first_seen = isoTs;
     Object.assign(stats, mergeNameHistory(existing, chatName, isoTs, { id: chatId }));   // chat name + former_names
     const withId = { chat_id: chatId, ...stats };
     try {
@@ -1037,11 +1048,11 @@ const _slugHeld = (state, surface, slug, jid) => !!_slugHolder(state, surface, s
 // A second id of the same chat arrives seconds after the first (dual-identity inbound): within this
 // window of the holder's first sighting, a new id with its exact title is an alias of it.
 const MERGE_WINDOW_MS = 60_000;
-// When a chat was first seen (ms): the caller's record (the registry keeps none since the slim
-// shape), a stored firstSeenAt, or the stamp a legacy slug encodes. null when unknown.
+// When a chat was first seen (ms): what the caller knows (contacts.resolve: its own record, else
+// the chat's stats first_seen), else the stamp a legacy slug encodes. null when unknown.
 function _firstSeenMs(jid, entry, firstSeenOf) {
   const m = /-(\d\d)(\d\d)(\d\d)(\d\d)(\d\d)$/.exec(entry.slug);
-  return firstSeenOf?.(jid) ?? (Date.parse(entry.firstSeenAt) || (m ? Date.UTC(2000 + +m[1], m[2] - 1, +m[3], +m[4], +m[5]) : null));
+  return firstSeenOf?.(jid) ?? (m ? Date.UTC(2000 + +m[1], m[2] - 1, +m[3], +m[4], +m[5]) : null);
 }
 
 // `base`, or when another chat holds it, `base-<tail of the chat id>`: 6 letters/digits, more while
@@ -1684,7 +1695,8 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     || sanitizeSlug(ctx.slugHint)
     || 'contact';
   const holder = !fixed && baseSlug !== 'contact' && _slugHolder(state, surface, baseSlug, jid);   // two nameless chats are never one
-  const seen = holder && holder[1].slug.replace(LEGACY_SUFFIX, '') === baseSlug ? _firstSeenMs(holder[0], holder[1], ctx.firstSeenOf) : null;
+  const same = holder && holder[1].slug.replace(LEGACY_SUFFIX, '') === baseSlug ? holder[0] : null;
+  const seen = same ? _firstSeenMs(same, holder[1], ctx.firstSeenOf) : null;
   if (seen != null && (ctx.now ?? Date.now()) - seen <= MERGE_WINDOW_MS) {
     nextBucket[jid] = { aliasOf: holder[0] };
     return { state: next, surface, jid: holder[0], slug: holder[1].slug, entry: holder[1], isNew: false, changed: true };
@@ -1709,7 +1721,8 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     ...(_obj(ctx.seed) ? ctx.seed : {}),
   };
   nextBucket[jid] = entry;
-  return { state: next, surface, jid, slug: candidateSlug, entry, isNew: true, changed: true };
+  // needsFirstSeen: a same-title holder whose first-seen time the caller may know (its stats file).
+  return { state: next, surface, jid, slug: candidateSlug, entry, isNew: true, changed: true, ...(same && seen == null ? { needsFirstSeen: same } : {}) };
 }
 
 // patchContact accepts EITHER a JID or a slug as the lookup key, scoped

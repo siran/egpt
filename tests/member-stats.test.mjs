@@ -149,6 +149,20 @@ describe('recordMemberStat — per-member metrics in the chat file and the conta
     expect(get(files, 'Ana.yaml')).toMatchObject({ count: 8, messages: 1 });
   });
 
+  it('first_seen: the chat\'s first recorded message sets it, later ones never move it', async () => {
+    const { files, io } = memIo();
+    await rec(io, msg({ ts: T0 }));
+    await rec(io, msg({ ts: T0 + 3600_000, senderId: '@b' }));
+    expect(get(files, 'Chat.yaml').first_seen).toBe(new Date(T0).toISOString());
+  });
+
+  it('first_seen: a file that already counts members predates it and never gets one', async () => {
+    const old = YAML.stringify({ chat_id: '!c', name: 'Chat', members: { '@a': { name: 'Ana', count: 7, last_seen: 'T' } } });
+    const { files, io } = memIo({ [`${DIR}/Chat.yaml`]: old });
+    await rec(io, msg());
+    expect(get(files, 'Chat.yaml').first_seen).toBeUndefined();
+  });
+
   it('without an event the entry keeps exactly its old shape', async () => {
     const { files, io } = memIo();
     await recordMemberStat('whatsapp', '!c', '@a', 'T', { io, statsDirOf: () => DIR, senderName: 'Ana', chatName: 'Chat' });

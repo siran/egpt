@@ -9,7 +9,7 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, getContact, reslug } from '../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, getContact, reslug, chatFirstSeen } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { renameRoomRow } from '../rooms-file.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -27,9 +27,11 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
   // (moves are rare): a restart forgets it, and the limb re-learns it from the next refused send.
   const movedTo = new Map();
   const current = (surface, chatId) => movedTo.get(`${surface}\0${chatId}`) ?? chatId;
-  // When this process registered each chat (ms): ensureContact merges a second id of the same chat
-  // arriving within 60 s by it. The registry stores no first-seen time (the slim shape).
+  // When a chat was first seen (ms), for ensureContact's 60 s merge of a second id of the same chat:
+  // this process's record of the chats it registered (a new chat's stats write can trail its second
+  // id), else, when ensureContact asks, the holder's stats first_seen, which survives a restart.
   const firstSeen = new Map();
+  const statsFirstSeen = io.statsFirstSeen ?? ((surface, id, name) => chatFirstSeen(surface, id, { name, io }));
   const ctxOf = (surface, chatName, seed) => ({ pushedName: chatName, slugHint: chatName, seed, firstSeenOf: (id) => firstSeen.get(`${surface}\0${id}`) });
 
   /**
@@ -57,7 +59,12 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         if (!chatId) return null;
         chatId = current(surface, chatId);   // again under the lock: a move may have landed meanwhile
         const state = await loadState();
-        const ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed));
+        let ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed));
+        if (ens.needsFirstSeen) {
+          const holder = ens.needsFirstSeen;
+          const ms = await statsFirstSeen(surface, holder, getContact(state, surface, holder)?.entry?.pushedName);
+          if (ms != null) { firstSeen.set(`${surface}\0${holder}`, ms); ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed)); }
+        }
 
         // Rename: the chat's TITLE changed (a group renamed, or a placeholder
         // learning its real name, or a legacy -yymmddhhmm slug dropping its stamp)

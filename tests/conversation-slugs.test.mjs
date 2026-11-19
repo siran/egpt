@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { renameRoomRow } from '../src/rooms-file.mjs';
-import { emptyState, ensureContact, getContact, recordThread, forkContact, conversationPathOf, fixedSlugFor, parse, serialize } from '../src/conversations-state.mjs';
+import { emptyState, ensureContact, getContact, recordThread, forkContact, conversationPathOf, fixedSlugFor, parse, serialize, recordMemberStat } from '../src/conversations-state.mjs';
 
 const WA = 'whatsapp';
 const TITLE = 'eGPT Rodz Lulu An';
@@ -56,27 +56,64 @@ describe('the same chat under a second id seconds later (the merge window)', () 
     expect([r.jid, r.slug, r.isNew]).toEqual([B, `${TITLE}-bbb222`, true]);
   });
 
-  it('a legacy holder is timed by its stamp; a stored firstSeenAt counts too', () => {
+  it('a legacy holder is timed by the stamp its slug encodes', () => {
     const legacy = { contacts: { [WA]: { [A]: { slug: `${TITLE}-2611191000`, pushedName: TITLE } } } };
     expect(ensureContact(legacy, WA, B, { pushedName: TITLE, now: T0 + 40_000 }).jid).toBe(A);
     expect(ensureContact(legacy, WA, B, { pushedName: TITLE, now: T0 + 61_000 }).jid).toBe(B);
-    const stored = { contacts: { [WA]: { [A]: { slug: TITLE, pushedName: TITLE, firstSeenAt: '2026-11-19T10:00:00Z' } } } };
-    expect(ensureContact(stored, WA, B, { pushedName: TITLE, now: T0 + 5_000 }).jid).toBe(A);
   });
 
-  it('no first-seen time, or a different title, never merges', () => {
-    expect(ensureContact(withA(), WA, B, { pushedName: TITLE }).jid).toBe(B);
-    expect(ensureContact(withA(), WA, B, { pushedName: TITLE.toLowerCase(), firstSeenOf: seenAt(T0), now: T0 }).jid).toBe(B);
+  it('no first-seen time, or a different title, never merges; an unknown time is asked for', () => {
+    const r = ensureContact(withA(), WA, B, { pushedName: TITLE });
+    expect([r.jid, r.needsFirstSeen]).toEqual([B, A]);
+    const other = ensureContact(withA(), WA, B, { pushedName: TITLE.toLowerCase(), firstSeenOf: seenAt(T0), now: T0 });
+    expect([other.jid, other.needsFirstSeen]).toEqual([B, undefined]);
   });
+});
 
-  it('contacts.resolve: back-to-back ids merge through the written registry; a restart forgets', async () => {
+describe('contacts.resolve times the holder by its stats first_seen', () => {
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  function node() {
+    const files = new Map();
+    const stats = {
+      readFile: async (p) => { if (!files.has(norm(p))) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return files.get(norm(p)); },
+      writeFile: async (p, d) => { files.set(norm(p), d); },
+      mkdir: async () => {},
+      rename: async (a, b) => { files.set(norm(b), files.get(norm(a))); files.delete(norm(a)); },
+      existsSync: (p) => files.has(norm(p)),
+      readdir: async (dir) => { const pre = `${norm(dir)}/`; return [...files.keys()].filter((k) => k.startsWith(pre)).map((k) => k.slice(pre.length)); },
+    };
     let state = emptyState();
-    const deps = { loadState: async () => parse(serialize(state)), writeState: async (s) => { state = parse(serialize(s)); }, io: { rename: async () => {}, appendFile: async () => {}, renameRoomRow: async () => false } };
-    const contacts = createContacts(deps);
+    const deps = {
+      loadState: async () => parse(serialize(state)), writeState: async (s) => { state = parse(serialize(s)); },
+      io: { ...stats, rename: async () => {}, appendFile: async () => {}, renameRoomRow: async () => false },
+    };
+    // what transcribing a chat's first message writes (spine/transcript.mjs → the stats collector)
+    const transcribe = (id, ms) => recordMemberStat(WA, id, '@u', new Date(ms).toISOString(), { io: stats, chatName: TITLE });
+    return { deps, transcribe, state: () => state };
+  }
+
+  it('back-to-back ids in one process merge before the stats write lands', async () => {
+    const n = node();
+    const contacts = createContacts(n.deps);
     expect(await contacts.resolve(WA, A, { chatName: TITLE })).toBe(TITLE);
     expect(await contacts.resolve(WA, B, { chatName: TITLE })).toBe(TITLE);
-    expect(state.contacts[WA][B]).toEqual({ aliasOf: A });
-    expect(await createContacts(deps).resolve(WA, 'CCCCCCCCCCCCCCccc333', { chatName: TITLE })).toBe(`${TITLE}-ccc333`);
+    expect(n.state().contacts[WA][B]).toEqual({ aliasOf: A });
+  });
+
+  it('a restart between the two ids still merges within 60 s', async () => {
+    const n = node();
+    expect(await createContacts(n.deps).resolve(WA, A, { chatName: TITLE })).toBe(TITLE);
+    await n.transcribe(A, Date.now());
+    expect(await createContacts(n.deps).resolve(WA, B, { chatName: TITLE })).toBe(TITLE);   // a fresh process
+    expect(n.state().contacts[WA][B]).toEqual({ aliasOf: A });
+  });
+
+  it('after a restart, a holder first seen over 60 s ago, or with no first_seen, is not merged into', async () => {
+    const n = node();
+    await createContacts(n.deps).resolve(WA, A, { chatName: TITLE });
+    await n.transcribe(A, Date.now() - 61_000);
+    expect(await createContacts(n.deps).resolve(WA, B, { chatName: TITLE })).toBe(`${TITLE}-bbb222`);
+    expect(await createContacts(n.deps).resolve(WA, 'CCCCCCCCCCCCCCccc333', { chatName: TITLE })).toBe(`${TITLE}-ccc333`);
   });
 });
 
