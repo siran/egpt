@@ -141,7 +141,7 @@ describe('boot — a background task\'s completion wakes the being where it last
     });
     const statuses = () => spy.sent.map(([text]) => String(text)).filter((t) => t.includes('⚙️'));
     await vi.waitFor(() => expect(statuses()).toHaveLength(1));
-    expect(statuses()[0]).toContain('⚙️ background work (1):\n• Run the audit · ');
+    expect(statuses()[0]).toContain('⚙️ background work (1):\n• running: Run the audit · ');
     expect(spy.streams).toHaveLength(1);                              // the turn's own placeholder: the status is no stream
 
     sessions[0].backgroundTasks = [];
@@ -193,7 +193,7 @@ describe('boot — a background task\'s completion wakes the being where it last
     t += 60_000; app.spine.tick();                                    // gone: one quiet pulse
     t += 60_000; app.spine.tick();
     await vi.waitFor(() => expect(statuses()).toHaveLength(2));
-    expect(statuses()[1]).toContain('⚠️ background work ended:\n✗ Run the audit · 1m00s — Background command "Run the audit" failed (exit code 2)');
+    expect(statuses()[1]).toContain('⚠️ background work ended:\n✗ failed: Run the audit · 1 min — Background command "Run the audit" failed (exit code 2)');
     app.stop();
   });
 });
