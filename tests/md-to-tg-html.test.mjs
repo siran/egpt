@@ -62,4 +62,45 @@ describe('mdToTgHtml', () => {
     expect(mdToTgHtml('🌉 🦉 ED: **hola** ñandú_x 💸')).toBe('🌉 🦉 ED: <b>hola</b> ñandú_x 💸');
     expect(mdToTgHtml(null)).toBe('');
   });
+
+  // (operator 2026-11-20: Telegram has no tables; the bridge makes them readable)
+  it('a wide table is the header in italics, then one line per row with the first cell bold', () => {
+    const md = '| Consulta como demoapp.R01 (EXPLAIN ANALYZE) | Tiempo |\n|---|---|\n| asignatura y lapso exactos | 12 ms |\n| ordenada por fecha, sin rango, LIMIT 5 | 22 ms |\n| asignatura = sin usuario | 14 ms |';
+    expect(mdToTgHtml(md)).toBe('<i>Consulta como demoapp.R01 (EXPLAIN ANALYZE) · Tiempo</i>\n<b>asignatura y lapso exactos</b> — 12 ms\n<b>ordenada por fecha, sin rango, LIMIT 5</b> — 22 ms\n<b>asignatura = sin usuario</b> — 14 ms');
+  });
+
+  it('a narrow table is one <pre> with padded columns, honoring right alignment', () => {
+    expect(mdToTgHtml('| Name | Ms |\n|---|---|\n| a<b | 12 |')).toBe('<pre>Name  Ms\n────────\na&lt;b   12</pre>');
+    expect(mdToTgHtml('| Name | Ms |\n|:--|--:|\n| a | 12 |\n| bcd | 7 |')).toBe('<pre>Name  Ms\n────────\na     12\nbcd    7</pre>');
+  });
+
+  it('a wide table with 3+ columns names the other columns', () => {
+    const long = 'x'.repeat(30);
+    expect(mdToTgHtml(`| Query | Time | Rows |\n|---|---|---|\n| ${long} | 12 ms | 5 |\n| b | 3 ms | 9 |`))
+      .toBe(`<i>Query · Time · Rows</i>\n<b>${long}</b> — Time: 12 ms · Rows: 5\n<b>b</b> — Time: 3 ms · Rows: 9`);
+  });
+
+  it('wide: cells get inline formatting and the first cell is bold exactly once', () => {
+    const long = 'y'.repeat(40);
+    expect(mdToTgHtml(`| K | V |\n|---|---|\n| **${long}** | **x** and \`c\` |`)).toBe(`<i>K · V</i>\n<b>${long}</b> — <b>x</b> and <code>c</code>`);
+  });
+
+  it('a table with no body: header as one italic line when wide, the <pre> when narrow; \\| stays a pipe', () => {
+    const long = 'h'.repeat(41);
+    expect(mdToTgHtml(`| ${long} | B |\n|---|---|`)).toBe(`<i>${long} · B</i>`);
+    expect(mdToTgHtml('| A | B |\n|---|---|')).toBe('<pre>A  B\n────</pre>');
+    expect(mdToTgHtml('| A | B |\n|---|---|\n| a\\|b | c |')).toBe('<pre>A    B\n──────\na|b  c</pre>');
+  });
+
+  it('table-like text that is not a table stays as it was', () => {
+    expect(mdToTgHtml('a | b in a sentence')).toBe('a | b in a sentence');
+    expect(mdToTgHtml('| a | b |\n| c | d |')).toBe('| a | b |\n| c | d |');
+    expect(mdToTgHtml('```\n| a | b |\n|---|---|\n| 1 | 2 |\n```')).toBe('<pre><code>| a | b |\n|---|---|\n| 1 | 2 |</code></pre>');
+    expect(mdToTgHtml('| Header | Two |')).toBe('| Header | Two |');
+    expect(mdToTgHtml('intro\n| Header | Two |\n')).toBe('intro\n| Header | Two |\n');
+  });
+
+  it('paragraph + list + code render as before next to a table', () => {
+    expect(mdToTgHtml('Intro **x**\n\n- a\n- b\n\n```\ncode | here\n```')).toBe('Intro <b>x</b>\n\n- a\n- b\n\n<pre><code>code | here</code></pre>');
+  });
 });

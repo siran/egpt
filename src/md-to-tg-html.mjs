@@ -21,6 +21,9 @@ const TAG = /<(\/?)(b|strong|i|em|u|ins|s|strike|del|a|blockquote|tg-spoiler)(\s
 const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s)\0]+)\)/g;
 const URL = /https?:\/\/[^\s\0]+?(?=[*_~.,;:!?)\]]*(?:[\s\0]|$))/gu;
 const HELD = /\0(\d+)\0/g;
+const TABLE_MAX = 40;   // (operator 2026-11-20) characters that fit a phone's width in Telegram's monospace
+const DELIM = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const cells = (line) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
 
 const codeClass = (attrs = '') => {
   if (!attrs.trim()) return '';
@@ -67,6 +70,37 @@ export function mdToTgHtml(text) {
     const cls = c && codeClass(c[1]);
     return hold(cls != null ? `<pre><code${cls}>${escapeHtml(raw(c[2]))}</code></pre>` : `<pre>${escapeHtml(raw(inner))}</pre>`, m);
   });
+
+  // Tables (operator 2026-11-20: Telegram has no table tags). A table is a header row, a delimiter row,
+  // then consecutive pipe rows. Streaming: only a delimiter row makes a table, so a lone header stays literal;
+  // a last row without its newline is already a body row. Narrow (fits TABLE_MAX): one <pre>, padded columns,
+  // honoring :-- / --: / :-: alignment. Wide: the header as one italic line, then a line per row, first cell bold, the rest through the inline pass.
+  const lines = s.split('\n'), out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const head = lines[i].includes('|') && DELIM.test(lines[i + 1] ?? '') ? cells(lines[i]) : null;
+    const align = head && cells(lines[i + 1]).map((c) => (c.startsWith(':') ? (c.endsWith(':') ? 'c' : 'l') : c.endsWith(':') ? 'r' : 'l'));
+    if (!head || align.length !== head.length) { out.push(lines[i]); continue; }
+    let end = i + 2;
+    while (end < lines.length && lines[end].includes('|')) end++;
+    const body = lines.slice(i + 2, end).map((l) => { const c = cells(l); return head.map((_, k) => c[k] ?? ''); });
+    const rows = [head, ...body].map((r) => r.map((c) => raw(c)));
+    const width = head.map((_, k) => Math.max(...rows.map((r) => [...r[k]].length)));
+    const pad = (c, k) => { const n = width[k] - [...c].length, l = align[k] === 'r' ? n : align[k] === 'c' ? n >> 1 : 0; return ' '.repeat(l) + c + ' '.repeat(n - l); };
+    const line = (r) => r.map(pad).join('  ').trimEnd();
+    const total = width.reduce((a, b) => a + b, 0) + 2 * (width.length - 1);
+    if (total <= TABLE_MAX) {
+      const text = [line(rows[0]), '─'.repeat(total), ...rows.slice(1).map(line)];
+      out.push(hold(`<pre>${escapeHtml(text.join('\n'))}</pre>`, lines.slice(i, end).join('\n')));
+    } else {
+      out.push(`${hold('<i>')}${head.join(' · ')}${hold('</i>')}`);   // the header keeps what the columns are
+      for (const r of body) {
+        const rest = r.slice(1).map((c, k) => (r.length > 2 ? `${head[k + 1]}: ${c}` : c));
+        out.push(`${hold('<b>')}${r[0].replace(/^\*\*(.+)\*\*$/, '$1')}${hold('</b>')} — ${rest.join(' · ')}`);
+      }
+    }
+    i = end - 1;
+  }
+  s = out.join('\n');
 
   // A being's own tags: only matched pairs pass; an unclosed one (mid-stream) is text.
   const pass = new Map(), stack = [];
