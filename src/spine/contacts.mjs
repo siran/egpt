@@ -9,7 +9,7 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, getContact, reslug, chatFirstSeen } from '../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState, aliasTargetOf, aliasTranscriptKeyOf, forkKeyOf, getContact, reslug, chatFirstSeen, accumChatsOf } from '../conversations-state.mjs';
 import { Room } from '../room-core.mjs';
 import { renameRoomRow } from '../rooms-file.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
@@ -128,13 +128,31 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
     const slug = await resolve(surface, chatId, { chatName, seed });
     if (!slug) return null;
     const room = Room.forChat(surface, slug);
+    return { slug, room, path: room.transcriptPathFor(transcriptKeyOf(await loadState(), surface, chatId)) };
+  }
+  // aliasTargetOf non-null ⇒ a side-room ⇒ transcript-<key>.md, key = its stored title (else the
+  // short chatId); a /split fork ⇒ its own key; a primary/standalone chat ⇒ null ⇒ transcript.md.
+  const transcriptKeyOf = (state, surface, chatId) => (aliasTargetOf(state, surface, chatId)
+    ? (aliasTranscriptKeyOf(state, surface, chatId) ?? shortChatId(chatId))
+    : forkKeyOf(state, surface, chatId));
+
+  /**
+   * THE FILES ONE ACCUM READS for a chat (operator 2026-11-20): its own transcriptTarget first, then the
+   * transcript of every other chat that is one conversation with it — a chat and its SI+ side group
+   * (conversations-state.accumChatsOf; a /join room and a /split are not). A chat with no such sibling:
+   * null, its transcriptTarget alone is the accum. The siblings share the folder, so their files are named
+   * from state alone: only the chat itself is resolved, with the name it arrived under — a sibling is never
+   * resolved by another group's title, which would re-slug the chat.
+   * @returns {Promise<Array<{chatId:string, slug:string, room:Room, path:string}>|null>}
+   */
+  async function accumTargets(surface, chatId, { chatName, seed } = {}) {
+    const own = await transcriptTarget(surface, chatId, { chatName, seed });
+    if (!own) return null;
     const state = await loadState();
-    // aliasTargetOf non-null ⇒ a side-room ⇒ transcript-<key>.md, key = its stored title (else the
-    // short chatId); a /split fork ⇒ its own key; a primary/standalone chat ⇒ null ⇒ transcript.md.
-    const aliased = aliasTargetOf(state, surface, chatId);
-    const key = aliased ? (aliasTranscriptKeyOf(state, surface, chatId) ?? shortChatId(chatId)) : forkKeyOf(state, surface, chatId);
-    return { slug, room, path: room.transcriptPathFor(key) };
+    const others = accumChatsOf(state, surface, chatId).slice(1);
+    if (!others.length) return null;
+    return [{ chatId, ...own }, ...others.map((id) => ({ chatId: id, slug: own.slug, room: own.room, path: own.room.transcriptPathFor(transcriptKeyOf(state, surface, id)) }))];
   }
 
-  return { resolve, transcriptTarget, moved: (surface, from, to) => movedTo.set(`${surface}\0${from}`, to) };
+  return { resolve, transcriptTarget, accumTargets, moved: (surface, from, to) => movedTo.set(`${surface}\0${from}`, to) };
 }

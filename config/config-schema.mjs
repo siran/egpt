@@ -4011,6 +4011,12 @@ export const CONFIG_SCHEMA = {
     configuring (2026-10-19). Both nodes making one at
     once is fine: two groups, each node links the other's, and each keeps replying in the first it
     holds (its own); a line in either reaches both, as an alias of the chat.
+
+    ONE ACCUM (operator 2026-11-20: "E's accum should grow from original group and the side group; it's
+    a same thread but replying in other group"): a turn woken in the chat or in its side group, in mode
+    accum, is prompted with the lines of BOTH transcripts (transcript.md and transcript-SI+<name>.md)
+    since the being's last turn, in time order, each under its own group's name. A /split is another
+    thread and a /join room (made before 2026-10-25) keeps its own log: each reads only its own.
   `,
 
   aliases: `

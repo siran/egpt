@@ -1828,6 +1828,23 @@ export function aliasTranscriptKeyOf(state, surface, jid) {
   return (entry && entry.aliasOf) ? (entry.transcript ?? null) : null;
 }
 
+// ── ONE ACCUM FOR A CHAT AND ITS SI+ SIDE GROUP (operator 2026-11-20) ─────────────────────────────
+// The side group (reply_in_side_group) is the SAME conversation replying in another group: same thread,
+// folder and files, a log of its own beside the chat's. Its entry is an alias marked `automatic: true`
+// (aliasOf → the chat); a /join room is an alias without the mark and a /split is an entry of its own
+// (parent_chat), both another log of another thread, so neither is one. Raw reads, like aliasTargetOf.
+// The chats whose transcripts one accum reads for `chatId`: itself first, then the rest — the chat
+// the side group(s) alias and each of its side groups. Only `chatId` when it has none (a plain chat, a
+// /join room, a /split, an unknown id). The chat may itself be a /split: its side group is its own.
+export function accumChatsOf(state, surface, chatId) {
+  const bucket = state?.contacts?.[surface] ?? {};
+  const own = bucket[chatId];
+  const origin = !own ? null : own.aliasOf ? (own.automatic === true ? own.aliasOf : null) : chatId;
+  if (!origin || !bucket[origin] || bucket[origin].aliasOf) return [chatId];
+  const sides = Object.keys(bucket).filter((id) => bucket[id]?.aliasOf === origin && bucket[id].automatic === true);
+  return [chatId, ...[origin, ...sides].filter((id) => id !== chatId)];
+}
+
 // ── THE PERSISTED MOUTH ROOM (operator 2026-10-12) ───────────────────────────
 // A super/side-room lives on BOTH accounts under DIFFERENT ids; the mouth (second account) must
 // deliver to ITS id. That main↔second mapping was re-derived LIVE every reply and never stored, so a

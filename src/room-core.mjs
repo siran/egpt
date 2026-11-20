@@ -145,7 +145,8 @@ export class Room {
   // identical on the write path and every read path. (Sanitized again here — idempotent — so a
   // raw-title key is still filesystem-safe.) Null (the canonical chat) → transcript.md,
   // byte-identical to transcriptPath. baseDir()/media/thread are untouched: ONLY the filename is
-  // per-surface.
+  // per-surface. The files stay apart as LOGS; the accum of a chat and its SI+ side group (an alias
+  // marked automatic) reads both (operator 2026-11-20, src/spine/accum.mjs).
   transcriptPathFor(sideRoomKey = null) {
     return sideRoomKey
       ? join(this.baseDir(), `transcript-${sanitizeSlug(sideRoomKey)}.md`)

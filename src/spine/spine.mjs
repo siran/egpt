@@ -191,6 +191,10 @@ export function createSpine({
   // rather than re-derived: one resolver, so this can never read a different chat's file.
   // Null (every existing pipe path) = the option cannot engage — byte-identical to before.
   readTranscript = null,
+  // ONE ACCUM FROM A CHAT AND ITS SI+ SIDE GROUP (operator 2026-11-20) — `(chatId, {chatName, network, being}) =>
+  // Promise<string|null>`: the text mode:accum reads when the chat has a side group (src/spine/accum.mjs; their
+  // transcripts joined in time order), null when it has none. Null / absent = readTranscript's text, as before.
+  readAccum = null,
   // CONFIG REFRESH ON MESSAGE ARRIVAL (2026-08, replacing the old tick-based hot reload):
   // optional () => Promise<void>, called at the top of handleFast for every inbound message —
   // boot.mjs wires it to re-scan the config resolver + reload the heartbeat set (see
@@ -1591,11 +1595,22 @@ export function createSpine({
       if (readTranscript && (d.mode === 'accum' || ev.replyToId != null)) {
         try {
           const text = await readTranscript(ev.chatId, { chatName: ev.chatName, network: ev.surface });
-          if (text && d.mode === 'accum') {
-            // BOTH of this being's labels: the NAME its lines carry since 2026-08-28 and the map
-            // KEY every older line carries. transcript.md is append-only, so a live file holds
-            // both and either one is a valid boundary (transcript-log.beingReplyRe).
-            const got = contextSinceLastTurn(text, { being: [labelOf(to), to], maxChars: RECENT_CONTEXT_MAX_CHARS, exclude: ev.line ?? ev.body });
+          // BOTH of this being's labels: the NAME its lines carry since 2026-08-28 and the map
+          // KEY every older line carries. transcript.md is append-only, so a live file holds
+          // both and either one is a valid boundary (transcript-log.beingReplyRe).
+          const labels = [labelOf(to), to];
+          // A chat and its SI+ side group are one conversation in two groups (operator 2026-11-20: "E's
+          // accum should grow from original group and the side group; it's a same thread but replying in
+          // other group"): a turn woken in either reads both transcripts, so its boundary — its last
+          // reply, logged in whichever group woke that turn — and everything said since are found in
+          // the joined text. A /split or a /join room has none to join: its own file, as ever.
+          let said = text;
+          if (d.mode === 'accum' && readAccum) {
+            try { said = (await readAccum(ev.chatId, { chatName: ev.chatName, network: ev.surface, being: labels })) ?? text; }
+            catch (e) { note(`accum ${to}/${ev.chatId}: ${e?.message ?? e}`); }   // a file unreadable: this chat's own
+          }
+          if (said && d.mode === 'accum') {
+            const got = contextSinceLastTurn(said, { being: labels, maxChars: RECENT_CONTEXT_MAX_CHARS, exclude: ev.line ?? ev.body });
             if (got.blocks.length) recent = got;
           }
           if (text && ev.replyToId != null) {
