@@ -184,10 +184,11 @@ eGPT answers **from your own WhatsApp number**, so your contacts see its replies
 Give the node two chats of its own, so you see what it does without reading its terminal:
 
 - **eGPT Admin**: where you type its commands (`/e status`, `/e upgrade`, ...), and where it
-  sends its own notices, such as the control link of `/e browser`.
+  sends the notices that need you, such as the control link of `/e browser`.
 - **eGPT Logs**: one line per command (`/upgrade in <chat> by <you> → ok`), and the lifecycle
   lines: `↻ restarting`, `✅ egpt back up! — /upgrade: pulled 3 commits, npm install ok`,
-  `✅ egpt started`.
+  `✅ egpt started`; also the compaction notices and a public being's errors, so eGPT Admin
+  stays clean. With no Logs chat set, those two go to eGPT Admin.
 
 On Telegram, one group with topics holds both:
 

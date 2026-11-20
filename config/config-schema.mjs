@@ -2263,8 +2263,9 @@ export const CONFIG_SCHEMA = {
         (edw-marketer): the person in its chat sees only its reply text - no
         "⏳ Thinking…" placeholder, no persona prefix, no visible signature
         (the invisible node frame stays), no error line. A failed or empty
-        turn is noticed in admin_channel instead (src/spine/sender.mjs plain
-        branch, src/bridges/persona-wrap.mjs).
+        turn is noticed in log_to_group instead (admin_channel when that is
+        unset; 2026-11-20; src/spine/sender.mjs plain branch,
+        src/bridges/persona-wrap.mjs).
       mode
         OPTIONAL (operator 2026-07-25) — THIS agent's own default reply-mode.
         ENUM: on | auto | mute | mention-direct | mention | accum | off
@@ -3722,13 +3723,18 @@ export const CONFIG_SCHEMA = {
   admin_channel: `
     The node's admin channel (operator 2026-09-24: "make it's posted on admin
     channel, eGPT Admin. BTW the 'admin channel' must be defined in config.yaml")
-    - the ONE chat this node posts its own notices to. Today that is the
-    compaction notice: "🗜️ <node> · <being> in <chat> compacted its context
-    (was Nk tokens)...", said after a /compact that succeeded
-    (src/spine/compaction.mjs, boot.mjs noticeToAdmin). Every node may name the
-    same chat; the line says which node it came from. /<handle> browser sends
-    its CONTROL link here, never into the chat it was typed in (unset: that
-    form is refused).
+    - the ONE chat this node posts its own notices to. Since 2026-11-20 that is
+    the browser CONTROL link (/<handle> browser sends it here, never into the
+    chat it was typed in; unset: that form is refused), the captcha notice
+    (captcha_channel, below) and the output of a silent: heartbeat. It is
+    where the operator types commands, so it is kept clean: the LOG-type notices
+    - the compaction notice ("🗜️ <node> · <being> in <chat> compacted its
+    context (was Nk tokens)...", said after a /compact that succeeded,
+    src/spine/compaction.mjs, boot.mjs noticeToAdmin) and a public being's
+    error line - go to log_to_group (eGPT Logs) when it is set (operator An,
+    2026-11-20: "please put eGPT Logs in its channel, so eGPT Admin stays
+    clean"), and only fall back here when it is not. Every node may name the
+    same chat; the line says which node it came from.
 
     VALUE: a chat NAME or a raw Beeper room id in SHORT form, exactly like
     advice_channel, or a Telegram chat id: tg:<chat>, a topic tg:<chat>/<topic>
@@ -3752,6 +3758,15 @@ export const CONFIG_SCHEMA = {
     before the exit, "✅ egpt back up! (sha → sha) pids — /upgrade: <what it did>"
     and "✅ egpt started", besides the first admin chat (networks.<surface>.
     admin_chat_ids); said once when that is this same chat.
+
+    The node's other LOG-type notices go here too (operator An, 2026-11-20:
+    "please put eGPT Logs in its channel, so eGPT Admin stays clean" ... "configure
+    log_channel it's in config.yaml" - this key is that channel): the compaction
+    notice (the pre-compaction warning and the "compacted" confirmation) and a
+    public being's error line (agents.<name>.public). With log_to_group unset they
+    stay in admin_channel, so a node without a log channel loses nothing. The browser
+    control links, the captcha notice and a silent: heartbeat's output stay in
+    admin_channel.
 
     VALUE: a chat NAME or a raw Beeper room id in SHORT form, or a Telegram id
     (tg:<chat>[/<topic>], a topic included), resolved to its room EXACTLY like
@@ -4051,7 +4066,7 @@ export const CONFIG_SCHEMA = {
         DEFAULT: 0.03 (operator 2026-10-08). The WARN threshold sits this fraction
         of the window BELOW ratio: warn_threshold = (ratio - warn_gap) of the
         window, clamped at >= 0. At the warn threshold the being writes its handoff
-        and the admin channel gets the pre-compaction notice (compaction_warn_notice,
+        and the log channel gets the pre-compaction notice (compaction_warn_notice,
         a top-level key), ONCE per thread; at ratio the actual /compact runs. So the
         operator is warned and the handoff exists ~warn_gap of the window before the
         context compacts. Per-being/room overridable, same place as ratio. A
@@ -4111,7 +4126,9 @@ export const CONFIG_SCHEMA = {
   `,
 
   compaction_warn_notice: `
-    The PRE-COMPACTION notice posted to the admin channel at the WARN threshold
+    The PRE-COMPACTION notice posted to the log channel (log_to_group; admin_channel
+    when that is unset - operator An, 2026-11-20: "please put eGPT Logs in its
+    channel, so eGPT Admin stays clean") at the WARN threshold
     (compaction.warn_gap below compaction.ratio), operator 2026-10-08 — the PRIMARY
     compaction notice now, said a few % before the context compacts so the operator
     is warned AND the handoff already exists. The node still prefixes its own
@@ -4128,6 +4145,6 @@ export const CONFIG_SCHEMA = {
     DEFAULT: unset — the operator's reference wording is used:
     "the conversation is at {percent}%, handoff being written, compaction next. you
     can read the handoff here: {path}". A blank/whitespace string SKIPS the notice
-    (same degrade as handoff_prompt / welcome); no admin_channel sink also skips it.
+    (same degrade as handoff_prompt / welcome); neither log_to_group nor admin_channel set also skips it.
   `,
 };

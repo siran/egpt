@@ -3160,10 +3160,11 @@ export async function boot({
     // time). log_to_group unset ⇒ logToGroup is a no-op post and the daemon line (sender's onLog) is
     // all there is — no crash, no second channel.
     // publicOf / noticeAdmin (2026-10-15): a public being's lead sees only its reply; its errors go
-    // to admin_channel through noticeToChannel (forward ref, like logToGroup: fires at reply time).
+    // to the log channel (logChannelKey: log_to_group, else admin_channel; 2026-11-20) through
+    // noticeToChannel (forward ref, like logToGroup: fires at reply time).
     sender: createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, peerMouth,
       publicOf: isPublicAgent,
-      noticeAdmin: ({ being, chatId, text }) => noticeToChannel({ configKey: 'admin_channel', text: `${being} in ${chatId}: ${text}`, what: 'public-error', tag: 'public' }),
+      noticeAdmin: ({ being, chatId, text }) => noticeToChannel({ configKey: logChannelKey(), text: `${being} in ${chatId}: ${text}`, what: 'public-error', tag: 'public' }),
       onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }),
       onLog: mouthLog, now }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
@@ -3240,12 +3241,17 @@ export async function boot({
   // first, like the alert above: the log does not need a network. Unset => the log is all there
   // is (fail-closed, like the advice channel).
   // declaredChannel — the trimmed NAME a config key declares (empty/unset => null). THE ONE reader
-  // every config-named channel shares: admin_channel (compaction + silent heartbeat) and log_to_group
-  // (the per-command audit), read identically so neither grows its own copy.
+  // every config-named channel shares: admin_channel (the browser control link + silent heartbeat) and
+  // log_to_group (the per-command audit), read identically so neither grows its own copy.
   const declaredChannel = (key) => { const c = getConfig()?.[key]; const s = c == null ? '' : String(c).trim(); return s || null; };
+  // logChannelKey — the config key a LOG-type notice (the compaction notice, a public being's error)
+  // goes to (operator An, 2026-11-20: "please put eGPT Logs in its channel, so eGPT Admin stays clean"
+  // … "configure log_channel it's in config.yaml"; the key is log_to_group): log_to_group when set,
+  // else admin_channel, so a node with no log channel loses nothing.
+  const logChannelKey = () => (declaredChannel('log_to_group') ? 'log_to_group' : 'admin_channel');
   const adminChannelDeclared = () => declaredChannel('admin_channel');
   // eGPT Admin (config.yaml `admin_channel`), resolved to a concrete chat id — the ONE resolveChatId
-  // call the compaction notice AND a `silent:` heartbeat share, never a second copy (the operator's
+  // call /browser's control link AND a `silent:` heartbeat share, never a second copy (the operator's
   // 2026-09-30 ruling routes a silent beat's whole output here). A configured NAME becomes its room by
   // the bridge's own resolveChatId, the resolver the send already runs. Returns { chatId } on success,
   // else { reason } — 'unset' | 'no-chat' | 'unresolvable' (with `to`/`error`) — so each caller FAILS
@@ -3276,7 +3282,7 @@ export async function boot({
     if (r.reason === 'unresolvable') { log.line?.(`[${tag}] ${configKey} ${JSON.stringify(r.to)} could not be resolved - notice not sent: ${r.error}`); return false; }
     return sayOnce({ being, chatId: r.chatId, text, opts: { systemLine: true }, what });
   };
-  const noticeToAdmin = (text, being) => noticeToChannel({ configKey: 'admin_channel', text, being, what: 'compaction', tag: 'compact' });
+  const noticeToAdmin = (text, being) => noticeToChannel({ configKey: logChannelKey(), text, being, what: 'compaction', tag: 'compact' });
   // THE PER-COMMAND AUDIT SINK (operator 2026-10-08): config.log_to_group, resolved + posted by the
   // SAME noticeToChannel as the compaction notice — never a second subsystem. Unset/empty → OFF,
   // silently (no post, no log line). Fail-closed and non-throwing, so a command's own reply is never
@@ -4322,7 +4328,7 @@ export async function boot({
     httpPort,                                            // null unless limbs.http is wired
     get cfg() { return cfg; },                           // the LIVE config (swapped by applyConfig)
     peerMouth,                                           // null on a node with no peer_spine — exposed for the same reason: "absent means absent" is assertable
-    noticeToAdmin,                                       // the admin-channel notice compaction says — exposed so it is assertable without a cooling timer
+    noticeToAdmin,                                       // the notice compaction says (log_to_group, else admin_channel) — exposed so it is assertable without a cooling timer
     logToGroup,                                          // the per-command audit sink (config.log_to_group) — exposed for the same reason: the generalized resolve+post is assertable without running the whole dispatch
     requestLogin,                                        // the spine's being-facing auto-login entry ("egpt can request to log in") — exposed so its outcome is assertable without a live Chrome
     dispatchHeartbeatPost, dispatchHeartbeatTurn,        // the heartbeat send paths — exposed so silent-vs-own-chat routing is assertable (like noticeToAdmin), no spine tick needed

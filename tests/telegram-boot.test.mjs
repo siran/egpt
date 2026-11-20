@@ -321,6 +321,16 @@ describe('a node with Beeper and Telegram', () => {
     app.stop();
   });
 
+  it('log_to_group named by a tg: topic id too: the compaction notice goes to the log topic, not the admin topic (2026-11-20)', async () => {
+    await writeToken();
+    const resolveChatId = (id) => (id.startsWith('tg:') ? id : null);
+    const { app, beeper, tg } = await bootWith({ ...MIXED(), admin_channel: 'tg:-1000000000104/124', log_to_group: 'tg:-1000000000104/185' }, { tgExtra: { resolveChatId } });
+    expect(await app.noticeToAdmin('🗜️ compacted')).toBeTruthy();
+    expect(tg[0].sent.map((s) => s.chatId)).toEqual(['tg:-1000000000104/185']);
+    expect(beeper[0].sent).toEqual([]);
+    app.stop();
+  });
+
   it('each reply goes out the limb its chat belongs to', async () => {
     await writeToken();
     let state = seedOn('whatsapp', waFrom.chatId, 'fam');
