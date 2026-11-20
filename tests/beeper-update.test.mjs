@@ -12,6 +12,7 @@ import {
   autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine, startLine,
   peerUpdating, refusalText, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
   runToolDry, runTool, readInstalledVersion, readInstalledLinux, runLinuxDry, runLinux, beeperMains, ENTRYPOINT_MARKER,
+  findMacApp, readInstalledMac, runMacDry, runMac, macMains, reopenArgs, readLatest,
 } from '../src/tools/beeper-update.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { lifecycleExit } from '../src/spine/ingest.mjs';
@@ -31,10 +32,10 @@ const REVE = () => ({
 });
 
 describe('beeper.auto_update — the method per OS', () => {
-  it('defaults to auto on windows and linux, to none on mac, silently', () => {
+  it('defaults to auto on every OS, silently', () => {
     expect(autoUpdateMethod({}, 'win32')).toEqual({ os: 'windows', method: 'auto', note: null });
     expect(autoUpdateMethod({}, 'linux')).toEqual({ os: 'linux', method: 'auto', note: null });
-    expect(autoUpdateMethod({ beeper: { primary: { token: 't' } } }, 'darwin')).toEqual({ os: 'mac', method: 'none', note: null });
+    expect(autoUpdateMethod({ beeper: { primary: { token: 't' } } }, 'darwin')).toEqual({ os: 'mac', method: 'auto', note: null });
   });
 
   it('reads auto | manual | none per OS', () => {
@@ -47,10 +48,16 @@ describe('beeper.auto_update — the method per OS', () => {
     }
   });
 
-  it('mac accepts a method but runs none, with ONE note to log at boot', () => {
-    const m = autoUpdateMethod({ beeper: { auto_update: { mac: { method: 'auto' } } } }, 'darwin');
+  it('mac reads auto | manual | none like the others', () => {
+    for (const m of ['auto', 'manual', 'none']) {
+      expect(autoUpdateMethod({ beeper: { auto_update: { mac: { method: m } } } }, 'darwin')).toEqual({ os: 'mac', method: m, note: null });
+    }
+  });
+
+  it('an OS with no install path accepts a method but runs none, with ONE note to log at boot', () => {
+    const m = autoUpdateMethod({ beeper: { auto_update: { freebsd: { method: 'auto' } } } }, 'freebsd');
     expect(m.method).toBe('none');
-    expect(m.note).toMatch(/not implemented on mac/);
+    expect(m.note).toMatch(/not implemented on freebsd/);
   });
 
   it('an unknown method is none, said once', () => {
@@ -62,9 +69,9 @@ describe('beeper.auto_update — the method per OS', () => {
   it('the tick logs the not-implemented note once, and never checks', async () => {
     const lines = [];
     let detects = 0;
-    const u = createBeeperUpdate({ getConfig: () => ({ beeper: { auto_update: { mac: { method: 'auto' } } } }), platform: 'darwin', home: tmp(), detect: async () => { detects += 1; return REVE(); }, onLog: (m) => lines.push(m) });
+    const u = createBeeperUpdate({ getConfig: () => ({ beeper: { auto_update: { freebsd: { method: 'auto' } } } }), platform: 'freebsd', home: tmp(), detect: async () => { detects += 1; return REVE(); }, onLog: (m) => lines.push(m) });
     u.tick(0); u.tick(CHECK_LATER); await flush(); await flush();
-    expect(lines.filter((l) => /not implemented on mac/.test(l))).toHaveLength(1);
+    expect(lines.filter((l) => /not implemented on freebsd/.test(l))).toHaveLength(1);
     expect(detects).toBe(0);
   });
 });
@@ -147,7 +154,7 @@ describe('detection — the states, from structured facts only', () => {
 function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null, runs = [], fetchImpl = async () => { throw new Error('no network in tests'); } } = {}) {
   const calls = [], posts = [], edits = [], lines = [], tool = [];
   let drained = null;
-  const cfg = { node_name: node, beeper: { auto_update: { [platform === 'linux' ? 'linux' : 'windows']: { method } } } };
+  const cfg = { node_name: node, beeper: { auto_update: { [{ win32: 'windows', linux: 'linux', darwin: 'mac' }[platform] ?? platform]: { method } } } };
   const u = createBeeperUpdate({
     getConfig: () => cfg, platform, home, repoRoot: 'C:\\egpt', fetchImpl,
     detect: async () => { calls.push('detect'); return det(); },
@@ -466,9 +473,9 @@ describe('/update beeper — the flow', () => {
     expect(u.busy()).toBe(false);
   });
 
-  it('not implemented on mac', async () => {
-    const r = rig({ platform: 'darwin' });
-    expect(await r.u.update()).toBe('kg · Beeper updates are not implemented on mac yet');
+  it('not implemented on an OS with no install path', async () => {
+    const r = rig({ platform: 'freebsd' });
+    expect(await r.u.update()).toBe('kg · Beeper updates are not implemented on freebsd yet');
     expect(r.calls).toEqual([]);
   });
 });
@@ -1218,5 +1225,212 @@ describe('the service installer grants the same ACE on the service it creates', 
     expect(grant).toContain('Set-BeeperServiceAccess -Name $s.Name -Sid $Sid -Revoke:$Revoke -DryRun:$DryRun');
     expect(grant).toContain("-Verb RunAs");
     expect(readFileSync(join(ROOT, 'setup', 'grant-beeper-service-control.cmd'), 'utf8')).toContain('grant-beeper-service-control.ps1');
+  });
+});
+
+// ── mac: the feed's zip swapped in for Beeper Desktop.app ────────────────────────────────────────
+const BEEPER_ID = 'com.automattic.beeper.desktop';
+const MAC_APP = 'Beeper Desktop.app';
+// The Info.plist the 4.3.334 arm64 zip carries, cut to the two keys read.
+const plist = (id, v) => `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>CFBundleIdentifier</key>\n\t<string>${id}</string>\n\t<key>CFBundleShortVersionString</key>\n\t<string>${v}</string>\n</dict>\n</plist>\n`;
+function macApp(dir, version, id = BEEPER_ID) {
+  const app = join(dir, MAC_APP);
+  mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true });
+  writeFileSync(join(app, 'Contents', 'Info.plist'), plist(id, version));
+  writeFileSync(join(app, 'Contents', 'MacOS', 'Beeper Desktop'), '', { mode: 0o755 });
+  return app;
+}
+const bundleVersion = (app) => (/<string>(\d[^<]*)<\/string>/.exec(readFileSync(join(app, 'Contents', 'Info.plist'), 'utf8')) ?? [])[1];
+
+describe('mac — detection: the app bundle', () => {
+  it('the first candidate that is Beeper\'s bundle, with its version; none: null', async () => {
+    const sys = tmp(), user = tmp();
+    macApp(sys, '4.3.229', 'com.example.other');
+    macApp(user, '4.3.264');
+    const candidates = [join(sys, MAC_APP), join(user, MAC_APP)];
+    expect(await findMacApp({ candidates })).toEqual({ app: join(user, MAC_APP), version: '4.3.264' });
+    expect(await readInstalledMac({ candidates })).toBe('4.3.264');
+    expect(await readInstalledMac({ candidates: [join(tmp(), MAC_APP)] })).toBe(null);
+  });
+
+  it('the feed is asked for the Mac\'s own architecture; every other OS stays x64', async () => {
+    const asked = [];
+    const fetchImpl = async (url) => { const q = new URL(url).searchParams; asked.push(`${q.get('platform')}/${q.get('arch')}`); return { status: 204 }; };
+    for (const [platform, arch] of [['darwin', 'arm64'], ['darwin', 'x64'], ['linux', 'arm64'], ['win32', 'arm64']]) await readLatest('4.3.229', { fetchImpl, platform, arch });
+    expect(asked).toEqual(['darwin/arm64', 'darwin/x64', 'linux/x64', 'win32/x64']);
+  });
+});
+
+describe('mac — the dry run: the app found, and writable by this process', () => {
+  it('a writable bundle plans the bundle flow and leaves no probe behind', async () => {
+    const app = macApp(tmp(), '4.3.229');
+    expect(await runMacDry({ candidates: [app] })).toEqual({ ok: true, flow: 'bundle' });
+    expect(readdirSync(join(app, 'Contents')).sort()).toEqual(['Info.plist', 'MacOS']);
+  });
+
+  it('no Beeper app: refused, naming where it looked', async () => {
+    const dir = tmp();
+    expect(await runMacDry({ candidates: [join(dir, MAC_APP)] })).toEqual({ ok: false, step: 'find-app', error: `no ${MAC_APP} of ${BEEPER_ID} in ${dir}`, remedy: 'install Beeper Desktop there' });
+  });
+
+  it('a bundle macOS will not let this process write (App Management): refused, with the setting to grant', async () => {
+    const app = macApp(tmp(), '4.3.229');
+    const io = { access: async () => {}, writeFile: async () => { throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' }); }, rm: async () => {} };
+    const r = await runMacDry({ candidates: [app], io });
+    expect(r).toEqual({ ok: false, step: 'bundle', error: `${app} is not writable by this process (EPERM)`, remedy: 'give the app that runs eGPT App Management (System Settings → Privacy & Security → App Management)' });
+    expect(refusalText(r)).toBe(`${app} is not writable by this process (EPERM) — give the app that runs eGPT App Management (System Settings → Privacy & Security → App Management)`);
+  });
+});
+
+describe('mac — the Beeper processes', () => {
+  const app = '/Applications/Beeper Desktop.app';
+
+  it('macMains: the app\'s own executable, never its helpers or another app; its flags kept for the reopen', async () => {
+    const ps = async () => [
+      `  412 ${app}/Contents/MacOS/Beeper Desktop`,
+      `  518 ${app}/Contents/MacOS/Beeper Desktop --user-data-dir=/Users/an/Library/Application Support/BeeperTexts2 --pas-port=23374`,
+      `  420 ${app}/Contents/Frameworks/Beeper Desktop Helper (Renderer).app/Contents/MacOS/Beeper Desktop Helper (Renderer) --type=renderer`,
+      `  421 ${app}/Contents/MacOS/Beeper Desktop --type=gpu-process`,
+      '  430 /Applications/Other.app/Contents/MacOS/Other',
+      `  431 ${app}/Contents/MacOS/Beeper Desktop -psn_0_12345`,
+    ].join('\n');
+    expect(await macMains(app, { ps })).toEqual([
+      { pid: 412, args: [] },
+      { pid: 518, args: ['--user-data-dir=/Users/an/Library/Application Support/BeeperTexts2', '--pas-port=23374'] },
+      { pid: 431, args: [] },
+    ]);
+  });
+
+  it('reopenArgs: a plain main as the app itself, one with flags as a new instance with them, each once', () => {
+    expect(reopenArgs(app, [{ pid: 1, args: [] }, { pid: 2, args: ['--user-data-dir=/x y'] }, { pid: 3, args: [] }])).toEqual([
+      ['-g', '-a', app],
+      ['-n', '-g', '-a', app, '--args', '--user-data-dir=/x y'],
+    ]);
+    expect(reopenArgs(app, [])).toEqual([]);
+  });
+});
+
+describe('mac — the install and the restart, through injected seams', () => {
+  // Beeper Desktop.app at `installed`; the feed's zip in a download folder; unzip() unpacks a bundle of `unpacks`.
+  // Two mains, quitting quitMs after their SIGTERM; after the reopen, both report `unpacks` from the third poll.
+  function install({ installed = '4.3.229', unpacks = '4.3.334', unpackId = BEEPER_ID, running, capMs, quitMs = 2_000, unzipThrows = null } = {}) {
+    const dir = tmp(), dl = tmp();
+    const app = macApp(dir, installed);
+    const installer = join(dl, 'Beeper-4.3.334-arm64-mac.zip');
+    writeFileSync(installer, 'zip bytes');
+    const events = [], dead = new Set();
+    let clock = 0, polls = 0, termAt = null;
+    const seams = {
+      installer, candidates: [app],
+      unzip: async (zip, stage) => {
+        events.push(`unzip:${zip === installer && dirname(stage) === dir}`);
+        if (unzipThrows) throw new Error(unzipThrows);
+        macApp(stage, unpacks, unpackId);
+      },
+      mains: async (a) => { events.push(`mains:${a === app}:${bundleVersion(app)}`); return [{ pid: 201, args: [] }, { pid: 202, args: ['--user-data-dir=/u/b'] }]; },
+      kill: (pid, sig) => { events.push(`${sig}:${pid}`); if (sig === 'SIGTERM') termAt ??= clock; else dead.add(pid); },
+      alive: (pid) => !dead.has(pid) && (termAt == null || clock - termAt < quitMs),
+      open: async (args) => { events.push(`open:${args.join(' ')}:${bundleVersion(app)}`); },
+      running: async () => {
+        if (!events.some((e) => e.startsWith('open'))) return [{ name: 'primary', port: 23373, version: installed }, { name: 'secondary', port: 23374, version: installed }];
+        polls += 1;
+        return running ? running(polls) : [{ name: 'primary', port: 23373, version: polls < 3 ? null : unpacks }, { name: 'secondary', port: 23374, version: polls < 3 ? null : unpacks }];
+      },
+      sleep: async (ms) => { clock += ms; },
+      now: () => clock,
+      capMs,
+    };
+    return { seams, events, app, dir, dl };
+  }
+  const REOPEN = (app, v) => [`open:-g -a ${app}:${v}`, `open:-n -g -a ${app} --args --user-data-dir=/u/b:${v}`];
+
+  it('unzips beside the app, quits the mains, swaps the bundle, reopens them, waits for the new version; the old bundle and the zip go', async () => {
+    const t = install();
+    const r = await runMac(t.seams);
+    expect(r).toEqual({ ok: true, restartSec: 12, connections: [{ name: 'primary', status: 'ok' }, { name: 'secondary', status: 'ok' }] });
+    // unzipped before anything quits; the old bundle until they have quit; the new one when they reopen
+    expect(t.events).toEqual(['unzip:true', 'mains:true:4.3.229', 'SIGTERM:201', 'SIGTERM:202', ...REOPEN(t.app, '4.3.334')]);
+    expect(await readInstalledMac({ candidates: [t.app] })).toBe('4.3.334');
+    expect(readdirSync(t.dir)).toEqual([MAC_APP]);   // no stage folder, no old bundle
+    expect(readdirSync(t.dl)).toEqual([]);           // the zip is deleted
+    expect(resultLine('mac', { from: '4.3.229', to: '4.3.334', result: r })).toBe('🔄 mac · Beeper 4.3.229 → 4.3.334 · restarted in 12 s · primary ✓ · secondary ✓');
+  });
+
+  it('a main that does not quit within a minute is killed before the swap', async () => {
+    const t = install({ quitMs: Infinity });
+    const r = await runMac(t.seams);
+    expect(r.ok).toBe(true);
+    expect(r.restartSec).toBe(70);
+    expect(t.events).toEqual(['unzip:true', 'mains:true:4.3.229', 'SIGTERM:201', 'SIGTERM:202', 'SIGKILL:201', 'SIGKILL:202', ...REOPEN(t.app, '4.3.334')]);
+  });
+
+  it('a failed unzip: FAILED at extract, nothing quit, the app as it was, no stage folder, the zip kept for a retry', async () => {
+    const t = install({ unzipThrows: 'ditto: No space left on device' });
+    expect(await runMac(t.seams)).toEqual({ ok: false, step: 'extract', error: 'ditto: No space left on device' });
+    expect(t.events).toEqual(['unzip:true']);
+    expect(bundleVersion(t.app)).toBe('4.3.229');
+    expect(readdirSync(t.dir)).toEqual([MAC_APP]);
+    expect(readdirSync(t.dl)).toEqual(['Beeper-4.3.334-arm64-mac.zip']);
+  });
+
+  it('a zip without Beeper\'s bundle is refused, not installed', async () => {
+    const t = install({ unpackId: 'com.example.other' });
+    expect(await runMac(t.seams)).toEqual({ ok: false, step: 'extract', error: `Beeper-4.3.334-arm64-mac.zip unpacked without ${MAC_APP} of ${BEEPER_ID}` });
+    expect(t.events).toEqual(['unzip:true']);
+    expect(bundleVersion(t.app)).toBe('4.3.229');
+    expect(readdirSync(t.dir)).toEqual([MAC_APP]);
+  });
+
+  it('a swap that fails puts the old bundle back and reopens it; the stage goes only once the app is back', async () => {
+    const t = install();
+    const r = await runMac({ ...t.seams, mains: async (a) => {
+      const stage = readdirSync(t.dir).find((n) => n.startsWith('.beeper-update-'));
+      rmSync(join(t.dir, stage, MAC_APP), { recursive: true });   // the unzipped bundle gone between the check and the swap
+      return t.seams.mains(a);
+    } });
+    expect(r).toMatchObject({ ok: false, step: 'swap', error: expect.stringMatching(/ENOENT/) });
+    expect(t.events).toEqual(['unzip:true', 'mains:true:4.3.229', 'SIGTERM:201', 'SIGTERM:202', ...REOPEN(t.app, '4.3.229')]);
+    expect(readdirSync(t.dir)).toEqual([MAC_APP]);
+    expect(readdirSync(t.dl)).toEqual(['Beeper-4.3.334-arm64-mac.zip']);   // kept for a retry
+  });
+
+  it('a Beeper that never reports the new version: FAILED at restart after the cap', async () => {
+    const t = install({ running: () => [{ name: 'primary', port: 23373, version: '4.3.334' }, { name: 'secondary', port: 23374, version: null }], capMs: 180_000 });
+    const r = await runMac(t.seams);
+    expect(r).toEqual({ ok: false, step: 'restart', error: 'not every Beeper reported 4.3.334 within 3 min', restartSec: 182, connections: [{ name: 'primary', status: 'ok' }, { name: 'secondary', status: 'still down' }] });
+    expect(bundleVersion(t.app)).toBe('4.3.334');   // swapped in; the reopen is what failed
+  });
+
+  it('restart only (restart-needed): no unzip, the same quit and reopen, waits for the version the bundle holds', async () => {
+    const t = install({ installed: '4.3.264', unpacks: '4.3.264' });
+    const { installer, ...seams } = t.seams;
+    const r = await runMac({ ...seams, unzip: async () => { throw new Error('must not unzip'); } });
+    expect(r.ok).toBe(true);
+    expect(t.events).toEqual(['mains:true:4.3.264', 'SIGTERM:201', 'SIGTERM:202', ...REOPEN(t.app, '4.3.264')]);
+    expect(readdirSync(t.dl)).toEqual(['Beeper-4.3.334-arm64-mac.zip']);   // not an install: nothing deleted
+  });
+
+  it('a stage folder a crashed update left beside the app is gone before the next unzip', async () => {
+    const t = install();
+    mkdirSync(join(t.dir, '.beeper-update-crashed', MAC_APP), { recursive: true });
+    const seen = [];
+    const r = await runMac({ ...t.seams, unzip: async (zip, stage) => { seen.push(readdirSync(t.dir).filter((n) => n.startsWith('.beeper-update-')).length); return t.seams.unzip(zip, stage); } });
+    expect(r.ok).toBe(true);
+    expect(seen).toEqual([1]);
+    expect(readdirSync(t.dir)).toEqual([MAC_APP]);
+  });
+
+  it('the same service on a Mac: the available zip downloaded, planned and run as the bundle flow', async () => {
+    const MFILE = 'Beeper-4.3.264-arm64-mac.zip';
+    const feed = () => ({ ...KG(), latest: { ...KG().latest, url: `https://example.invalid/builds/${MFILE}` } });
+    const r = rig({ platform: 'darwin', node: 'mac', method: 'auto', plan: { ok: true, flow: 'bundle' }, detect: feed, fetchImpl: serving(BYTES) });
+    expect(await r.u.check()).toBe('available');
+    await r.runDrain();
+    const path = join(r.home, 'state', 'beeper-update', MFILE);
+    expect(r.tool).toEqual([
+      { dryRun: true, restartOnly: false, installer: path, sha512: b64(BYTES) },
+      { restartOnly: false, relaunchApp: false, installer: path, sha512: b64(BYTES) },
+    ]);
+    expect(r.edits[0].t).toBe('🔄 mac · Beeper 4.3.229 → 4.3.264 · restarted in 72 s · primary ✓ · secondary ✓');
   });
 });

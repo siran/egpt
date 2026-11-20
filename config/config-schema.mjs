@@ -1208,8 +1208,14 @@ export const CONFIG_SCHEMA = {
                   (an update Beeper has not downloaded itself is fetched first).
         Installing is a controlled Beeper restart: it waits for turns like
         /restart, eGPT stays up, the result is one line in log_to_group.
-        DEFAULT: windows and linux auto. mac: accepted, not implemented yet —
-        treated as none (one log line at boot).
+        DEFAULT: auto on every OS (windows, linux, mac).
+        mac: the feed's zip for this Mac's architecture is unpacked beside
+        Beeper Desktop.app (/Applications, else ~/Applications), the Beeper
+        processes are quit, the bundle is swapped in and they are opened again
+        with the flags they had. macOS 13+ guards app bundles: the process that
+        runs eGPT needs App Management (System Settings → Privacy & Security →
+        App Management); without it the update is refused with that remedy,
+        once per version, before anything quits. Not yet run on a real Mac.
         linux (the docker node): the feed's AppImage is unpacked onto the volume
         as $EGPT_HOME/beeper/<version>/ (the newest two stay), then the Beeper
         processes are killed and the entrypoint relaunches the newest. That needs

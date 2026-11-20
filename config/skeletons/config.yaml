@@ -74,7 +74,7 @@ limbs:
     #   token: "PASTE_YOUR_TOKEN_HERE"
     # use: main                     # OPTIONAL override of the default mouth - see above
     # auto_update:                  # keeping Beeper itself current: auto | manual | none
-    #   windows: { method: manual } # per OS (windows, linux). The default is auto: installs at a quiet moment;
+    #   windows: { method: manual } # per OS (windows, linux, mac). The default is auto: installs at a quiet moment;
     #                               # manual: a log_to_group notice, install on /<handle> update beeper
   # telegram:                       # a Telegram BOT, no Beeper needed. Its token is NOT here: it is the file
   #   main:                         # <EGPT_HOME>/secrets/telegram-main.token (node setup/telegram-token.mjs main)
