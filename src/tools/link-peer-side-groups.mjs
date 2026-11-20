@@ -7,8 +7,7 @@
 //   node src/tools/link-peer-side-groups.mjs <copy of the peer's conversations.yaml> [--peer kg] --apply   # write
 //
 // Kinds: automatic and join (an alias of the chat), split (its own conversation; this node's residents'
-// threads in the parent are copied, as a live opener does). The peer's split: { tunnel } is not carried
-// (an opener does not carry it): the dry run names it. --apply refuses while this node's spine runs.
+// threads in the parent are copied, as a live opener does). --apply refuses while this node's spine runs.
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,14 +20,14 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 
 const KIND_ORDER = { split: 0, automatic: 1, join: 1 };   // a side group's chat may itself be a split
 
-// The peer's side groups: { surface, chatId, kind, origin, transcript, title, mouth, tunnel }.
+// The peer's side groups: { surface, chatId, kind, origin, transcript, title, mouth }.
 export function peerSideGroups(peerState) {
   const out = [];
   for (const [surface, bucket] of Object.entries(peerState?.contacts ?? {})) {
     for (const [chatId, e] of Object.entries(bucket ?? {})) {
       const mouth = e?.mouth_chat ?? null;
       if (e?.aliasOf) out.push({ surface, chatId, kind: e.automatic === true ? 'automatic' : 'join', origin: e.aliasOf, transcript: e.transcript ?? null, title: e.transcript ?? null, mouth });
-      else if (e?.parent_chat) out.push({ surface, chatId, kind: 'split', origin: e.parent_chat, transcript: null, title: e.pushedName || null, mouth, tunnel: e.split?.tunnel ?? null });
+      else if (e?.parent_chat) out.push({ surface, chatId, kind: 'split', origin: e.parent_chat, transcript: null, title: e.pushedName || null, mouth });
     }
   }
   return out.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
@@ -66,9 +65,9 @@ export function liveSpinePid(home = EGPT_HOME) {
   return liveDaemonPid({ pidFileContent, beatAgeMs });
 }
 
-// One group: kind, side id → origin, title, mouth room, the peer's tunnel, outcome; then linkSideGroup's own lines.
+// One group: kind, side id → origin, title, mouth room, outcome; then linkSideGroup's own lines.
 export function formatRow(r, { dry = false } = {}) {
-  const notes = [r.mouth ? `mouth ${r.mouth}` : 'no mouth room', ...(r.tunnel == null ? [] : [`tunnel ${r.tunnel ? 'on' : 'off'} on the peer`])];
+  const notes = [r.mouth ? `mouth ${r.mouth}` : 'no mouth room'];
   const outcome = dry && r.outcome === 'linked' ? 'would link' : r.outcome;
   return [`  ${r.kind.padEnd(9)} ${r.surface}/${r.chatId} → ${r.origin}  "${r.title ?? ''}"  (${notes.join(', ')})  ${outcome}`, ...r.log.map((l) => `      ${l}`)].join('\n');
 }

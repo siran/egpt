@@ -1,7 +1,7 @@
 // A being's mid-turn text (operator 2026-11-11): text the model writes as part of its normal output
 // ("I'll check X…" before a tool use) reaches the chat as soon as it is written, through the reply
-// path and under the final reply's gate — in every mode of the train, a bot's quiet turn and a tunnel
-// included. A segment that is only '…' never posts. The final answer still lands, not doubled.
+// path and under the final reply's gate — in every mode of the train, a bot's quiet turn and a side
+// group's reply included. A segment that is only '…' never posts. The final answer still lands, not doubled.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -41,7 +41,7 @@ function build({ mode = 'mention', train, work }) {
   const bridge = fakeBridge();
   const brain = { async turn(being, ev, onPartial) { return work(onPartial); } };
   const onLog = () => {};
-  const sideGroupFor = async (ev) => (ev.chatId === '!t' ? { chatId: '!split', tunnel: true } : null);
+  const sideGroupFor = async (ev) => (ev.chatId === '!s' ? '!side' : null);
   const spine = createSpine({
     bridge, brain, transcript: { async log() {} }, defaultBeing: 'egpt', peerMouth: MOUTH_HOLDS,
     sender: createSender({ bridge, peerMouth: MOUTH_HOLDS, bodyEmojiOf: () => '🐶', labelOf: () => 'E', onLog }),
@@ -90,14 +90,14 @@ describe('mid-turn text shows when it is written, before the final', () => {
     });
   }
 
-  it('REPRODUCE: a tunnelled turn shows A in the split before B; the origin gets nothing', async () => {
+  it('REPRODUCE: a side-group turn shows A in the side group before B; the origin gets nothing', async () => {
     let atTool = null;
-    const b = build({ train: 'emoji', work: aToolB(() => { atTool = b.shownTexts('!split'); }) });
-    await b.bridge.emit(msg('@e mira X', { chatId: '!t' }));
+    const b = build({ train: 'emoji', work: aToolB(() => { atTool = b.shownTexts('!side'); }) });
+    await b.bridge.emit(msg('@e mira X', { chatId: '!s' }));
     await flush();
     expect(atTool).toContain('Voy a mirar X.');
     expect(atTool).not.toContain('Listo, B.');
-    expect(b.shownTexts('!t')).toBe('');
+    expect(b.shownTexts('!s')).toBe('');
   });
 
   // where the final reply's gate hides a '…' (a quiet turn); an addressed human's '…' is posted by that gate today

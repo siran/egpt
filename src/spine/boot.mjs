@@ -64,6 +64,7 @@ import { createIdentity, surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
+import { createAccumReader } from './accum.mjs';
 import { createGating } from './gating.mjs';
 // createRouter + THE wake vocabulary. wakeTokens is the ONE rule for "which @tokens address this
 // agent" (declared `handles:`, else the map key) — imported, not re-implemented, so the persona
@@ -194,6 +195,18 @@ export function warmTtlByClass(cfg, onLog = () => {}) {
     else if (v != null) onLog(`warm.idle_ttl_by_class.${klass}: ${JSON.stringify(v)} is not a TTL (ms, "15m", "2h", 0 or -1) — that class takes idle_ttl_ms`);
   }
   return { chatbox: t.conversation, ...t };
+}
+
+// split.tunnel (2026-10-31) is gone (operator 2026-11-20: a /split is another thread, so nothing of its parent's is
+// posted in it). config.yaml split.tunnel and a conversations.yaml entry's split: { tunnel } still load: read by
+// nothing. The one boot line that says so, or null when nothing carries the key.
+export function retiredSplitTunnelNote(cfg, state) {
+  let entries = 0;
+  for (const bucket of Object.values(state?.contacts ?? {})) {
+    for (const entry of Object.values(bucket ?? {})) if (entry?.split?.tunnel !== undefined) entries++;
+  }
+  const carried = [...(cfg?.split?.tunnel !== undefined ? ['config.yaml split.tunnel'] : []), ...(entries ? [`split: { tunnel } on ${entries} conversations.yaml entr${entries === 1 ? 'y' : 'ies'}`] : [])];
+  return carried.length ? `split.tunnel is gone (2026-11-20): a split's replies stay in the split, its parent's in the parent. Ignored, safe to delete: ${carried.join(' and ')}` : null;
 }
 
 export function whisperPortOf(cfg) {
@@ -2111,6 +2124,14 @@ export async function boot({
     if (!t) return null;
     return await (io.readFile ?? readFile)(t.path, 'utf8').catch(() => null);
   };
+  // …EXCEPT THE SI+ SIDE GROUP (operator 2026-11-20): it is the SAME conversation replying in another group
+  // (reply_in_side_group), so mode:accum there and in its original reads both transcripts, joined in time
+  // order (src/spine/accum.mjs). A /split (another thread) and a /join room keep the per-surface rule above:
+  // for them, and for a chat with no side group, this answers null and the spine reads readTranscript's text.
+  const readAccum = createAccumReader({
+    contacts, surfaceOf, readFile: io.readFile ?? readFile, stat: io.stat ?? (io.readFile ? null : stat),
+    now, timeZone: transcriptTimeZone,
+  });
 
   // Bridge construction — one instance per DISTINCT RESOLVED TOKEN, not per connection NAME
   // (operator 2026-08-30): dedup by the token VALUE is what collapses "no second connection
@@ -3105,7 +3126,7 @@ export async function boot({
   // --- services (each DI-wired; none closes over another) ---
   const services = {
     identity: createIdentity({ now, timeZone: transcriptTimeZone, loadState: _loadState }),
-    // sideGroupFor: a reply goes to the chat's open /split, else (reply_in_side_group) its SI+ group (commands, below; decide runs once the spine exists).
+    // sideGroupFor: a reply in a reply_in_side_group chat goes to its SI+ group (commands, below; decide runs once the spine exists).
     gating: createGating({ getConfig, loadState: _loadState, seedOf: strangerSeedOf, sideGroupFor: (ev, o) => commands.autoSideGroup?.(ev, o) }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
@@ -3890,6 +3911,10 @@ export async function boot({
     const n = legacyEntryCount(await _loadState());
     if (n) log.line?.(`[loop_guard] deprecated per-conversation guard: on ${n} conversations.yaml entr${n === 1 ? 'y' : 'ies'} — read as loop_guard.inbound for one release; migration 0044 moves them`);
   } catch { /* the registry's own readers report a broken file */ }
+  try {
+    const note = retiredSplitTunnelNote(cfg, await _loadState());
+    if (note) log.line?.(`[boot] ${note}`);
+  } catch { /* the registry's own readers report a broken file */ }
   // OUR OWN FRAME, told apart from a peer's — the guard's third bucket (stop-guard turnKind
   // 'echo'). THE EXISTING definition of "who are we": node-names.mjs fromOtherNode over
   // ownNodeNamesOf, read through getConfig() so a hot reload moves it like everything else. The
@@ -3995,7 +4020,7 @@ export async function boot({
   let asking = null;                  // the tick's pass over them, while it runs (declared here: the spine's first tick is below)
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, egptUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, egptUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, readAccum, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

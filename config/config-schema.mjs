@@ -3908,12 +3908,11 @@ export const CONFIG_SCHEMA = {
     split invites Rodz alone; no secondary → just that person. "invite" (2026-10-31) also invites every
     member of the chat ("/e split invite fabio" in a 1:1 with Fabio: Rodz + Fabio). In the split,
     anyone may call the being it was typed to (its allowed_users there: ['*']; not for access_level all).
-    THE TUNNEL (2026-10-31): while the chat has an open split, a being called in the chat answers on the
-    chat's own thread and rules, but its reply is posted in the split (the most recent one), by its
-    mouth; nothing goes into the chat. The split records it as that being's ("E from [<chat>]"), so the
-    split's own being reads it as the original's, not its own. "/<handle> end" in the split closes it
-    and replies come back to the chat; an open split wins over reply_in_side_group. Not a Telegram topic.
-    Only a split whose tunnel (below) resolves true does this.
+    A split is ANOTHER THREAD (operator 2026-11-20: "split is another thread in the same folder,
+    another group; separate accum"): its replies stay in the split and its own accum reads its own
+    transcript; the chat's being answers in the chat. The 2026-10-31 tunnel, which posted a chat's
+    replies into its open split signed "E from [<chat>]", is gone: split.tunnel (config.yaml) and a
+    conversations.yaml entry's split: { tunnel } are ignored (the boot says so once); delete them.
     The two accounts' phones come from
     beeper.primary.phone / beeper.secondary.phone. On Telegram (2026-10-25) it is a TOPIC of the
     group, tg:<chat>/<thread>, which everyone in the group can open: the group needs Topics on and the
@@ -3931,8 +3930,6 @@ export const CONFIG_SCHEMA = {
                    A template: {group} = the parent chat's title, {handle} = the handle the command
                    was typed to. Unset → a small built-in
                    default.
-      tunnel:      true|false (2026-11-01): does a split take its parent's replies. Its own conversations.yaml
-                   entry's split: { tunnel } wins over this config.yaml split.tunnel; neither set → false.
 
     ALIASES (operator 2026-10-19) — config/commands_alias.yaml, not a config.yaml key (skeleton:
     config/skeletons/commands_alias.yaml). A map of alias → "/<handle> <command> [args]", for ANY
@@ -4014,6 +4011,12 @@ export const CONFIG_SCHEMA = {
     configuring (2026-10-19). Both nodes making one at
     once is fine: two groups, each node links the other's, and each keeps replying in the first it
     holds (its own); a line in either reaches both, as an alias of the chat.
+
+    ONE ACCUM (operator 2026-11-20: "E's accum should grow from original group and the side group; it's
+    a same thread but replying in other group"): a turn woken in the chat or in its side group, in mode
+    accum, is prompted with the lines of BOTH transcripts (transcript.md and transcript-SI+<name>.md)
+    since the being's last turn, in time order, each under its own group's name. A /split is another
+    thread and a /join room (made before 2026-10-25) keeps its own log: each reads only its own.
   `,
 
   aliases: `

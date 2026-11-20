@@ -1,7 +1,7 @@
 // A failed turn is loud (operator 2026-11-04: "if there's a failure it has to be loud, and must not go silent
 // as unresponsiveness"). An engine error, an API error or refusal (the engine's flag), a timeout, an empty or
 // failed result: one failure line, naming it, where the reply would have gone, in every mode and for quiet,
-// emoji, unaddressed, tunnelled and bot-triggered turns alike; the mark comes off. A '…' is no failure.
+// emoji, unaddressed and bot-triggered turns alike; the mark comes off. A '…' is no failure.
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
@@ -36,15 +36,14 @@ function fakeBridge() {
   };
 }
 
-// '!t' replies into a tunnel; '!l' into a side group made only once the reply has something to post.
+// '!l' replies into a side group made only once the reply has something to post.
 function build({ mode = 'on', train, work, turnTimeoutMs = 0 } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
   const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, ...(train ? { dispatch: { thinking_train: train } } : {}) };
   const bridge = fakeBridge();
   const brain = { async turn() { return work(); } };
   const made = [];
-  const sideGroupFor = async (ev, { create } = {}) => (ev.chatId === '!t' ? { chatId: '!split', tunnel: true }
-    : ev.chatId === '!l' ? (create ? '!side' : async () => { made.push('!side'); return '!side'; }) : null);
+  const sideGroupFor = async (ev, { create } = {}) => (ev.chatId === '!l' ? (create ? '!side' : async () => { made.push('!side'); return '!side'; }) : null);
   const timers = [];
   const onLog = () => {};
   const spine = createSpine({
@@ -90,11 +89,10 @@ describe('a failed turn posts its one failure line, naming the failure', () => {
     expect(b.posts()).toEqual([['!g', LINE('API error (safeguards)')]]);
   });
 
-  it("REPRODUCE: a bot's line and a tunnelled turn that fail post it", async () => {
+  it("REPRODUCE: a bot's line that fails posts it", async () => {
     const b = build({ work: async () => SAFEGUARDS });
     await run(b, msg('@e qué hora es allá?', BEING));
-    await run(b, msg('@e qué calor', { chatId: '!t' }));
-    expect(b.posts()).toEqual([['!g', LINE('API error (safeguards)')], ['!split', LINE('API error (safeguards)')]]);
+    expect(b.posts()).toEqual([['!g', LINE('API error (safeguards)')]]);
   });
 
   for (const train of [undefined, 'bubble']) {

@@ -55,7 +55,7 @@ function fakeBridge() {
   };
 }
 
-// `train`: dispatch.thinking_train (unset = the default). '!t' replies into a tunnel, '!s' into a side group.
+// `train`: dispatch.thinking_train (unset = the default). '!s' replies into a side group.
 // `mouth(bridge)`: a peer mouth other than the holder itself (the default). `frames`: the train's frames, on `frameTimers`.
 // `wren`: a second being, `w`, in mention mode; `work` gets the being as its third argument.
 function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, now = () => 1, mouth = null, frames = null, wren = false } = {}) {
@@ -72,7 +72,7 @@ function build({ mode = 'on', train, work, turnTimeoutMs = 0, steers = false, no
   const notes = [];
   const onLog = (s) => notes.push(s);
   const timers = fakeTimers(), frameTimers = fakeTimers();
-  const sideGroupFor = async (ev) => (ev.chatId === '!t' ? { chatId: '!split', tunnel: true } : ev.chatId === '!s' ? '!side' : null);
+  const sideGroupFor = async (ev) => (ev.chatId === '!s' ? '!side' : null);
   const spine = createSpine({
     bridge, brain, transcript, defaultBeing: 'egpt', peerMouth, turnTimeoutMs,
     sender: createSender({ bridge, peerMouth, bodyEmojiOf: () => E, labelOf: () => 'E', onLog, now }),
@@ -342,16 +342,15 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
     expect(b.posts()).toEqual([['!g', 'Mirando. Listo.']]);
   });
 
-  it("REPRODUCE (lock): a bot's line and a tunnelled turn: a bare tool use opens nothing; their first text does (2026-11-11)", async () => {
-    const atTool = [];   // streams open when each turn has used a tool and written nothing
+  it("REPRODUCE (lock): a bot's line: a bare tool use opens nothing; its first text does (2026-11-11)", async () => {
+    const atTool = [];   // streams open when the turn has used a tool and written nothing
     const tool = async (onPartial) => { onPartial('', { tool: true }); await flush(); atTool.push(b.bridge.streams.length); onPartial('Mirando. Hecho'); return { text: 'Mirando. Hecho.' }; };
     const b = build({ mode: 'on', work: tool });
     await b.bridge.emit(msg('@e qué hora es allá?', BEING));
-    await b.bridge.emit(msg('@e qué calor', { chatId: '!t' }));
     await flush();
-    expect(b.brain.calls).toHaveLength(2);
-    expect(atTool).toEqual([0, 1]);   // the 2nd turn sees only the 1st's stream: its own opens on text
-    expect(b.posts()).toEqual([['!g', 'Mirando. Hecho.'], ['!split', 'Mirando. Hecho.']]);
+    expect(b.brain.calls).toHaveLength(1);
+    expect(atTool).toEqual([0]);
+    expect(b.posts()).toEqual([['!g', 'Mirando. Hecho.']]);
     expect(b.reactions()).toEqual([]);
   });
 });
@@ -487,12 +486,11 @@ describe('emoji train: none', () => {
     expect(b.marks(m.msgId)).toEqual(TRAIN);
   });
 
-  it('REPRODUCE: a tunnelled turn and a side-group reply put nothing in the origin; a reply in place does', async () => {
+  it('REPRODUCE: a side-group reply puts nothing in the origin; a reply in place does', async () => {
     const b = build({ mode: 'on', work: answers('Hace calor, sí.') });
-    await b.bridge.emit(msg('@e qué calor', { chatId: '!t' }));
     await b.bridge.emit(msg('@e qué calor', { chatId: '!s' }));
-    expect(b.brain.calls).toHaveLength(2);
-    expect(b.posts().map(([chat]) => chat)).toEqual(['!split', '!side']);
+    expect(b.brain.calls).toHaveLength(1);
+    expect(b.posts().map(([chat]) => chat)).toEqual(['!side']);
     expect(b.reactions()).toEqual([]);
     const m = msg('@e qué calor');
     await b.bridge.emit(m);
@@ -649,13 +647,13 @@ describe('gating.decide — emoji, addressed', () => {
     await gating('on', { thinking_train: 'bubble' }).decide('egpt', ev, {}, { reacts: no });  // bubble: not asked
     expect(asked).toEqual(['no']);
   });
-  it("surfaces: an addressed '…' surfaces with the emoji train, except in auto and a tunnel", async () => {
+  it("surfaces: an addressed '…' surfaces with the emoji train, except in auto and a quiet turn", async () => {
     const g = gating('on');
     expect(g.surfaces({ mode: 'on', mayReply: true, emoji: true, addressed: true }, '…')).toBe(true);
     expect(g.surfaces({ mode: 'on', mayReply: true, emoji: true }, '…')).toBe(false);
     expect(g.surfaces({ mode: 'on', mayReply: true, addressed: true }, '…')).toBe(false);
     expect(g.surfaces({ mode: 'auto', mayReply: true, emoji: true, addressed: true }, '…')).toBe(false);
-    expect(g.surfaces({ mode: 'on', mayReply: true, emoji: true, addressed: true, quiet: true, tunnel: true }, '…')).toBe(false);
+    expect(g.surfaces({ mode: 'on', mayReply: true, emoji: true, addressed: true, quiet: true }, '…')).toBe(false);
   });
 });
 

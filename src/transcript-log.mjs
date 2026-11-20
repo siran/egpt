@@ -13,7 +13,7 @@
 // transcript line is defined in this module, so the one function that reads lines back
 // out of transcript.md keys on THAT definition rather than on a copy of it.
 import { renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
-import { formatDispatchLine, isDayBoundary } from './dispatch-line.mjs';
+import { formatDispatchLine, isDayBoundary, dayBoundary, hhmm } from './dispatch-line.mjs';
 import { VOICE_MARK, VOICE_ARRIVAL_MARK, VOICE_FAILED_MARK } from './incoming-media.mjs';
 
 /**
@@ -211,6 +211,93 @@ export function contextSinceLastTurn(text, { being = null, maxChars = RECENT_CON
   if (i < 0 && pending.length) take(pending);                                   // continuations with no head in the file
   out.reverse();
   return { blocks: out, truncated };
+}
+
+// ── ONE ACCUM FROM SEVERAL TRANSCRIPTS (operator 2026-11-20) ───────────────────────────────────
+// A chat and its SI+ side group are one conversation in two groups, each with its own transcript
+// (conversations-state.accumChatsOf). joinTranscripts puts their lines in TIME ORDER, each line as it
+// stands (its head names the group it was said in), and the text it returns is read like any one
+// transcript: contextSinceLastTurn's boundary is the being's last reply in EITHER file.
+// contextSinceLastTurn parses no clock, on purpose (one file needs none: the boundary is a line, not a
+// time). Putting two files in order needs one, and this is the only place that reads it.
+//
+// A line carries HH:MM and no date (the operator-mandated shape) and a day marker only where the day
+// changed under a running process, so the day of each line is worked back per file from what the file
+// does say, and the clock for the rest:
+//   - after a marker, the marker's day, a day more whenever the time falls back by more than
+//     MIDNIGHT_SLACK (a restart can lose a marker); the lines before a file's first marker count back
+//     from it, a day less whenever the time rises going backward;
+//   - a file with no marker counts back from `at`, when its last line was written (its mtime; the clock
+//     when the caller has none): that line is `at`'s day unless its time is after `at`'s.
+// MIDNIGHT_SLACK is why a late delivery (a line stamped a minute before the one above it) or the
+// repeated hour of a DST change is not a midnight. A gap of a day or more with no marker is the one
+// thing this cannot see.
+// Lines of one file keep their order; between files the earlier time goes first, and on the same
+// minute the being's own reply does, so what the other file said in that minute is read after the
+// boundary: told twice at worst, never lost. A day marker is written again wherever the day changes.
+const MIDNIGHT_SLACK = 120;
+const _CLOCK_END = /\((\d{1,2}):(\d{2})\)(?:\]:)?$/;
+const _dayNumber = (y, m, d) => Date.UTC(y, m - 1, d) / 86_400_000;
+const _dayOf = (ts, timeZone) => _dayNumber(...dayBoundary(ts, timeZone).match(/\d+/g).map(Number));
+const _minuteOf = (ts, timeZone) => { const [h, m] = hhmm(ts, timeZone).split(':').map(Number); return h * 60 + m; };
+
+// One transcript → its entries [{ blocks, minute, day }] in file order, the day markers dropped.
+function _datedEntries(text, { at, timeZone }) {
+  const segs = [{ day: null, entries: [] }];                          // split at the file's own day markers
+  for (const b of stripFrontMatter(String(text ?? '')).split(/\n{2,}/).map((x) => x.trim()).filter(Boolean)) {
+    if (isDayBoundary(b)) { segs.push({ day: _dayNumber(...b.match(/\d+/g).map(Number)), entries: [] }); continue; }
+    const { entries } = segs.at(-1);
+    const head = _ENTRY_HEAD.exec(b);
+    const clock = head && _CLOCK_END.exec(head[0]);
+    if (clock) entries.push({ blocks: [b], minute: Number(clock[1]) * 60 + Number(clock[2]) });
+    else if (entries.length) entries.at(-1).blocks.push(b);           // a headerless block belongs to the entry above it
+    else entries.push({ blocks: [b], minute: null });                 // …or, with none, takes the next one's time
+  }
+  for (const { entries } of segs) for (let i = entries.length - 1; i >= 0; i--) entries[i].minute ??= entries[i + 1]?.minute ?? 0;
+  segs.forEach(({ day, entries }, k) => {
+    if (k > 0) {                                                       // forward from the marker
+      let d = day;
+      entries.forEach((e, i) => { if (i && entries[i - 1].minute - e.minute > MIDNIGHT_SLACK) d++; e.day = d; });
+    } else if (entries.length) {                                       // backward from the next marker, else from `at`
+      let d = segs.length > 1 ? segs[1].day - 1 : _dayOf(at, timeZone) - (entries.at(-1).minute - _minuteOf(at, timeZone) > MIDNIGHT_SLACK ? 1 : 0);
+      for (let i = entries.length - 1; i >= 0; i--) { if (i < entries.length - 1 && entries[i].minute - entries[i + 1].minute > MIDNIGHT_SLACK) d--; entries[i].day = d; }
+    }
+  });
+  return segs.flatMap(({ entries }) => entries);
+}
+
+/**
+ * Several transcripts' lines as ONE text, in time order (see above), for contextSinceLastTurn.
+ *
+ * @param {Array<{text: string|null, at?: number}>} sources  each transcript's text (front matter included) and,
+ *        when known, the ms it was last written. null/empty text is an empty transcript.
+ * @param {{being?: string|string[], now?: number, timeZone?: string|null}} opts
+ *        being — the being's labels, as contextSinceLastTurn takes them (its reply wins a tie);
+ *        now — the ms a source with no `at` was last written; timeZone — the zone the HH:MM were rendered in.
+ * @returns {string}
+ */
+export function joinTranscripts(sources, { being = null, now = Date.now(), timeZone = null } = {}) {
+  const mine = [being].flat().filter(Boolean).length ? beingReplyRe(being) : null;
+  const lists = sources.map((s) => _datedEntries(s?.text, { at: s?.at ?? now, timeZone }));
+  const at = (e) => e.day * 1440 + e.minute;
+  const next = lists.map(() => 0);
+  const out = [];
+  let day = null;
+  for (;;) {
+    let pick = -1;
+    for (let i = 0; i < lists.length; i++) {
+      const e = lists[i][next[i]];
+      if (!e) continue;
+      const p = pick < 0 ? null : lists[pick][next[pick]];
+      if (!p || at(e) < at(p) || (at(e) === at(p) && !!mine && mine.test(e.blocks[0]) && !mine.test(p.blocks[0]))) pick = i;
+    }
+    if (pick < 0) break;
+    const e = lists[pick][next[pick]++];
+    if (day != null && e.day !== day) out.push(dayBoundary(e.day * 86_400_000, null));
+    day = e.day;
+    out.push(...e.blocks);
+  }
+  return out.join('\n\n');
 }
 
 /**

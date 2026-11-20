@@ -68,8 +68,8 @@ export async function superChannelAlive(chatId, { chatRaw, config = {} }) {
 
 // sideGroupFor(ev, { create }) → the chat a reply here goes to instead (a chat id, or a function that
 // makes it, for sender.open to call), false = withhold it, null = in place (commands.autoSideGroup:
-// reply_in_side_group, operator 2026-10-18). { chatId, tunnel: true } = the chat's open /split
-// (2026-10-31): the decision says `tunnel`. Absent → always in place.
+// reply_in_side_group, operator 2026-10-18). Absent → always in place. A /split takes no reply of its
+// parent's: it is another thread (operator 2026-11-20; the 2026-10-31 tunnel is gone).
 // seedOf(ev) → { agents: { <being>: block }, … } a brand-new conversation is seeded with (boot: the stranger rule), or null.
 export function createGating({ getConfig = () => ({}), loadState = null, seedOf = null, sideGroupFor = null } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -82,7 +82,6 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // sent, or any node signed (the bridge's replyToBot/replyToNode) (operator 2026-11-01).
   // `bot`: the line is not a human's (the spine's isHumanTurn). With dispatch.bot_quiet (default on) its
   // turn is `quiet`: no ⏳ train, posted once whole, its '…' never shown, in any mode (operator 2026-10-31).
-  // A tunnelled turn is quiet too (operator 2026-11-01): only real content reaches the split.
   // So is a human's 'on' line that does not address the being (operator 2026-11-02): `unaddressed`.
   // `emoji`: dispatch.thinking_train is not 'bubble' AND the chat's mouth can mark a line here
   // (operator 2026-11-03): no ⏳ in any mode, the line carries 👾/🤔 instead. Else the turn is bubble's.
@@ -105,28 +104,27 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     const onBotPost = ev.kind === 'reaction' && (!!ev.mention?.replyToBot || ev.replyToNode != null);
     let mayReply = !denied && !onBotPost && mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
     // Not asked for a backlog read or the operator's own line in an auto chat: no reply follows either.
-    let replyChatId = null, tunnel = false;
+    let replyChatId = null;
     if (mayReply && sideGroupFor && !ev.backlog && !(mode === 'auto' && ev.isSender)) {
       let at = null;
       // An addressed reply makes the group now; an unaddressed one (on/auto) once it has something to post.
       try { at = await sideGroupFor(ev, { create: addressed }); } catch { at = false; }
       if (at === false) mayReply = false;
-      else if (at?.chatId) { replyChatId = at.chatId; tunnel = at.tunnel === true; }
       else if (at) replyChatId = at;
     }
     const unaddressed = !bot && mode === 'on' && !addressed;
-    const quiet = tunnel || (bot ? c.dispatch?.bot_quiet !== false : unaddressed);
+    const quiet = bot ? c.dispatch?.bot_quiet !== false : unaddressed;
     let emoji = c.dispatch?.thinking_train !== 'bubble' && mayReply && !!reacts;
     if (emoji) { try { emoji = (await reacts()) === true; } catch { emoji = false; } }
     const direct = emoji && !bot && addressed && ev.msgId != null;
-    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(tunnel ? { tunnel } : {}), ...(quiet ? { quiet } : {}), ...(unaddressed ? { unaddressed } : {}), ...(emoji ? { emoji } : {}), ...(direct ? { addressed: true } : {}) };
+    return { mode, receives: receives(mode), mayReply, ...(replyChatId ? { replyChatId } : {}), ...(quiet ? { quiet } : {}), ...(unaddressed ? { unaddressed } : {}), ...(emoji ? { emoji } : {}), ...(direct ? { addressed: true } : {}) };
   }
 
   // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an
   // 'on'-mode '...' silence (E free to post but declining to add noise — recorded,
   // not surfaced). Every other mode is already fully decided by mayReply.
   // With the emoji train a silence to a human who addressed the being is posted (operator 2026-11-03),
-  // except in auto (the operator's own silence) and a tunnel (only real content reaches the split).
+  // except in auto (the operator's own silence).
   // A FAILED turn always surfaces, in every mode (operator 2026-11-04: "if there's a failure it has to be loud"):
   // the engine's flag, or no text at all. Only a '…' is a silence.
   function surfaces(decision, replyText, { failed = false } = {}) {

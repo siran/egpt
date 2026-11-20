@@ -180,7 +180,10 @@ reply is prompted with everything said here since the being's own last turn) ·
 
 `accum` changes only WHAT a turn is prompted with, never WHEN one happens — it
 does not buffer, batch, or flush on a heartbeat. (The 2026-07-01 accum did; same
-word, different mechanism.)
+word, different mechanism.) A chat that replies in its `SI+` side group
+(`reply_in_side_group`) is one conversation in two groups: a turn woken in either
+is prompted with the lines of both since the being's last turn, in time order. A
+`/split` is another thread, and keeps its own.
 
 ### `/agents … access_level` — the confinement tiers
 

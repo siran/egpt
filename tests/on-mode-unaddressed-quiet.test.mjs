@@ -2,7 +2,7 @@
 // Admin 20:56: "why is polite silence not being suppressed?" — every line, even one to another being,
 // left E's "⏳ Thinking…" edited to "✓"). No ⏳ at arrival or later, posted only when whole, its '…'
 // never shown: the bot_quiet path. A line addressing the being (@handle, bare handle, a reply to its
-// post) keeps its ⏳ at arrival. mention/accum, auto, bot_quiet and the tunnel are unchanged.
+// post) keeps its ⏳ at arrival. mention/accum, auto and bot_quiet are unchanged.
 // dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';

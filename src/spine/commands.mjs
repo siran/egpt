@@ -3842,22 +3842,6 @@ export function createCommands({
   // (sideGroupByDefault).
   // A group chat: the bridge's chatType, else (a turn the spine starts) the chat's own record.
   const isGroupChat = async (ev) => (ev.raw ? ev.raw.chatType : (await forkBridge.chatRaw?.(ev.chatId))?.type) === 'group';
-  // THE TUNNEL (operator 2026-10-31): while the chat has an open /split (its own entry, parent_chat
-  // this chat; /end drops it) that tunnels, every reply here goes to the most recent one, through its
-  // mouth. Not a Telegram topic (everyone is already in it), not a group that is gone.
-  // Whether it tunnels (2026-11-01): the entry's split.tunnel, else config.yaml split.tunnel, else no.
-  const tunnelsOf = (entry) => (typeof entry?.split?.tunnel === 'boolean' ? entry.split.tunnel : cfg().split?.tunnel === true);
-  async function openSplitOf(state, surface, ev) {
-    const bucket = state.contacts[surface];
-    const parents = new Set([ev.chatId, getContact(state, surface, ev.chatId)?.jid]);
-    const splits = Object.keys(bucket).filter((id) => !bucket[id]?.aliasOf && parents.has(bucket[id]?.parent_chat) && tunnelsOf(bucket[id]) && !forkBridge.topicParentOf?.(id));
-    for (const id of splits.reverse()) {
-      const alive = forkBridge.chatRaw ? await superChannelAlive(id, { chatRaw: forkBridge.chatRaw, config: cfg() }) : null;
-      if (alive !== false) return id;
-      onLog(`tunnel: ${id} (a split of ${ev.chatName || ev.chatId}) is gone — not replying there`);
-    }
-    return null;
-  }
   const autoCreating = new Map();   // surface+chatId → the create in flight, so one reply makes one group
   async function autoSideGroup(ev, { create = true, late = false } = {}) {
     if (!loadState || !writeState) return null;
@@ -3872,8 +3856,6 @@ export function createCommands({
       const byDefault = !late && sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
       return byDefault ? () => autoSideGroup(ev, { late: true }) : null;
     }
-    const split = await openSplitOf(state, surface, ev);
-    if (split) return { chatId: split, tunnel: true };
     const setting = own.reply_in_side_group != null ? replyInSideGroupOf(own.reply_in_side_group)
       : sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
     if (!setting) return null;
@@ -3917,7 +3899,6 @@ export function createCommands({
     const surface = surfaceOf(ev);
     const chatId = shortChatId(ev.chatId);
     if (shortChatId(c.group) !== chatId) return;
-    if (c.kind === 'tunnel') return;   // a tunnelled reply, not an opener
     if (!SIDE_KINDS.has(c.kind)) { onLog(`side group: ${chatId} names an unknown kind "${c.kind}" — not linked`); return; }
     // Why this node does not link it ('' = it already holds it), or null to link.
     const refusal = (state) => {
