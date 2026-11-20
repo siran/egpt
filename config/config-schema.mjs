@@ -1204,12 +1204,21 @@ export const CONFIG_SCHEMA = {
           manual  checks at boot, every 6 h and on /<handle> update beeper; ONE
                   line per newly downloaded version to log_to_group; installs
                   only on /<handle> update beeper (operator only).
-          auto    as manual, then installs by itself at the next quiet moment.
+          auto    as manual, then installs by itself at the next quiet moment
+                  (an update Beeper has not downloaded itself is fetched first).
         Installing is a controlled Beeper restart: it waits for turns like
         /restart, eGPT stays up, the result is one line in log_to_group.
-        DEFAULT: windows manual. linux / mac: accepted, not implemented yet —
-        treated as none (one log line at boot). Not a connection. beeper: is a
-        restart-only key, so a change applies at the next restart.
+        DEFAULT: windows and linux auto. mac: accepted, not implemented yet —
+        treated as none (one log line at boot).
+        linux (the docker node): the feed's AppImage is unpacked onto the volume
+        as $EGPT_HOME/beeper/<version>/ (the newest two stay), then the Beeper
+        processes are killed and the entrypoint relaunches the newest. That needs
+        an image whose entrypoint launches Beeper from the volume: rebuild it
+        once (docker/aws/build-push.sh); until then the update is refused with
+        that remedy, once per version. Beeper downloads nothing itself there, so
+        there is no "downloaded" notice: manual = install on /<handle> update
+        beeper. Not a connection. beeper: is a restart-only key, so a change
+        applies at the next restart.
 
     THE PORT IS DISCOVERED — there is none to configure (operator 2026-09-07).
     Beeper Desktop's local API binds the FIRST FREE PORT starting at 23373, so

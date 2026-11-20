@@ -102,11 +102,31 @@ if [ ! -f "$EGPT_HOME/config/config.yaml" ]; then
   log "seeded $EGPT_HOME/config/config.yaml - fill in beeper.main.token"
 fi
 
+# The Beeper to launch: the highest version among the image's and the ones unpacked on the
+# volume ($EGPT_HOME/beeper/<version>/, put there by the Beeper update: src/tools/beeper-update.mjs), so a
+# rebuilt image with a newer Beeper wins over an old volume copy; a tie is the image's. Asked on every
+# relaunch, so a Beeper killed for an update comes back on the newest. readInstalledLinux
+# (beeper-update.mjs) is the same rule.
+beeper_bin() {
+  local image=/opt/beeper f v best vbest
+  best=$image/beepertexts
+  vbest=$(sed -n 's/^X-AppImage-Version=//p' "$image/beepertexts.desktop" 2>/dev/null | head -n 1)
+  for f in "$EGPT_HOME"/beeper/*/beepertexts; do
+    [ -x "$f" ] || continue
+    v=${f%/beepertexts}; v=${v##*/}
+    [[ $v =~ ^[0-9]+(\.[0-9]+)*$ ]] || continue
+    if [ -z "$vbest" ] || { [ "$v" != "$vbest" ] && [ "$(printf '%s\n%s\n' "$vbest" "$v" | sort -V | tail -n 1)" = "$v" ]; }; then
+      best=$f vbest=$v
+    fi
+  done
+  echo "$best"
+}
+
 # EGPT_BEEPER=primary,secondary: one Beeper Desktop per account, all on the same screen.
 # The first keeps the default profile, the others use ~/.config/BeeperTexts-<name> (Beeper's own
 # BEEPER_PROFILE naming). Instance i serves its Desktop API on 23373+i, inside egpt's token lookup.
 beeper_run() {  # index profile-dir
-  env BEEPER_USER_DATA_DIR="$2" /opt/beeper/beepertexts --no-sandbox --password-store=basic \
+  env BEEPER_USER_DATA_DIR="$2" "$(beeper_bin)" --no-sandbox --password-store=basic \
     --disable-gpu --pas-port=$((23373 + $1)) &
   local pid=$!
   # Beeper centres every new window on the same spot; give each instance its own.
@@ -137,8 +157,8 @@ if [ "${EGPT_BEEPER:-on}" = off ]; then
   log "Beeper off (EGPT_BEEPER=off)"
 elif [ "${EGPT_BEEPER:-on}" = on ]; then
   # --password-store=basic: no desktop keyring in the container.
-  keep_running beeper /opt/beeper/beepertexts --no-sandbox --password-store=basic \
-    --disable-gpu >/tmp/beeper.log 2>&1 &
+  beeper_single() { "$(beeper_bin)" --no-sandbox --password-store=basic --disable-gpu; }
+  keep_running beeper beeper_single >/tmp/beeper.log 2>&1 &
 else
   start_beepers "$EGPT_BEEPER"
 fi

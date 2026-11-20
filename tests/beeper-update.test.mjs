@@ -10,8 +10,8 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine, startLine,
-  peerUpdating, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
-  runToolDry, runTool,
+  peerUpdating, refusalText, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
+  runToolDry, runTool, readInstalledVersion, readInstalledLinux, runLinuxDry, runLinux, beeperMains, ENTRYPOINT_MARKER,
 } from '../src/tools/beeper-update.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
 import { lifecycleExit } from '../src/spine/ingest.mjs';
@@ -31,9 +31,9 @@ const REVE = () => ({
 });
 
 describe('beeper.auto_update — the method per OS', () => {
-  it('defaults to manual on windows and to none elsewhere, silently', () => {
-    expect(autoUpdateMethod({}, 'win32')).toEqual({ os: 'windows', method: 'manual', note: null });
-    expect(autoUpdateMethod({}, 'linux')).toEqual({ os: 'linux', method: 'none', note: null });
+  it('defaults to auto on windows and linux, to none on mac, silently', () => {
+    expect(autoUpdateMethod({}, 'win32')).toEqual({ os: 'windows', method: 'auto', note: null });
+    expect(autoUpdateMethod({}, 'linux')).toEqual({ os: 'linux', method: 'auto', note: null });
     expect(autoUpdateMethod({ beeper: { primary: { token: 't' } } }, 'darwin')).toEqual({ os: 'mac', method: 'none', note: null });
   });
 
@@ -42,12 +42,12 @@ describe('beeper.auto_update — the method per OS', () => {
       expect(autoUpdateMethod({ beeper: { auto_update: { windows: { method: m } } } }, 'win32').method).toBe(m);
     }
     expect(autoUpdateMethod({ beeper: { auto_update: { windows: { method: ' Auto ' } } } }, 'win32').method).toBe('auto');
+    for (const m of ['manual', 'none']) {
+      expect(autoUpdateMethod({ beeper: { auto_update: { linux: { method: m } } } }, 'linux')).toEqual({ os: 'linux', method: m, note: null });
+    }
   });
 
-  it('linux and mac accept a method but run none, with ONE note to log at boot', () => {
-    const l = autoUpdateMethod({ beeper: { auto_update: { linux: { method: 'manual' } } } }, 'linux');
-    expect(l.method).toBe('none');
-    expect(l.note).toMatch(/not implemented on linux/);
+  it('mac accepts a method but runs none, with ONE note to log at boot', () => {
     const m = autoUpdateMethod({ beeper: { auto_update: { mac: { method: 'auto' } } } }, 'darwin');
     expect(m.method).toBe('none');
     expect(m.note).toMatch(/not implemented on mac/);
@@ -62,9 +62,9 @@ describe('beeper.auto_update — the method per OS', () => {
   it('the tick logs the not-implemented note once, and never checks', async () => {
     const lines = [];
     let detects = 0;
-    const u = createBeeperUpdate({ getConfig: () => ({ beeper: { auto_update: { linux: { method: 'auto' } } } }), platform: 'linux', home: tmp(), detect: async () => { detects += 1; return REVE(); }, onLog: (m) => lines.push(m) });
+    const u = createBeeperUpdate({ getConfig: () => ({ beeper: { auto_update: { mac: { method: 'auto' } } } }), platform: 'darwin', home: tmp(), detect: async () => { detects += 1; return REVE(); }, onLog: (m) => lines.push(m) });
     u.tick(0); u.tick(CHECK_LATER); await flush(); await flush();
-    expect(lines.filter((l) => /not implemented on linux/.test(l))).toHaveLength(1);
+    expect(lines.filter((l) => /not implemented on mac/.test(l))).toHaveLength(1);
     expect(detects).toBe(0);
   });
 });
@@ -147,7 +147,7 @@ describe('detection — the states, from structured facts only', () => {
 function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result = null, log = [], method = 'manual', node = 'kg', home = tmp(), restartPending = () => false, platform = 'win32', runThrows = null, runs = [], fetchImpl = async () => { throw new Error('no network in tests'); } } = {}) {
   const calls = [], posts = [], edits = [], lines = [], tool = [];
   let drained = null;
-  const cfg = { node_name: node, beeper: { auto_update: { windows: { method } } } };
+  const cfg = { node_name: node, beeper: { auto_update: { [platform === 'linux' ? 'linux' : 'windows']: { method } } } };
   const u = createBeeperUpdate({
     getConfig: () => cfg, platform, home, repoRoot: 'C:\\egpt', fetchImpl,
     detect: async () => { calls.push('detect'); return det(); },
@@ -466,9 +466,9 @@ describe('/update beeper — the flow', () => {
     expect(u.busy()).toBe(false);
   });
 
-  it('not implemented off Windows', async () => {
-    const r = rig({ platform: 'linux' });
-    expect(await r.u.update()).toBe('kg · Beeper updates are not implemented on linux yet');
+  it('not implemented on mac', async () => {
+    const r = rig({ platform: 'darwin' });
+    expect(await r.u.update()).toBe('kg · Beeper updates are not implemented on mac yet');
     expect(r.calls).toEqual([]);
   });
 });
@@ -578,6 +578,335 @@ describe('/update beeper — available: eGPT downloads the feed\'s installer its
     expect(argvs[0].slice(-5)).toEqual(['-DryRun', '-Installer', exe, '-Sha512', 'abc=']);
     expect(argvs[1].slice(-5)).toEqual(['-RelaunchApp', '-Installer', exe, '-Sha512', 'abc=']);
     expect(argvs[2]).not.toContain('-Installer');
+  });
+});
+
+// Linux (the docker node): Beeper unpacked from its AppImage — the image's copy in /opt/beeper, updates
+// unpacked onto the volume as $EGPT_HOME/beeper/<version>/. Same service, same states; only the seams differ.
+const desktop = (v) => `[Desktop Entry]\nName=Beeper\nX-AppImage-Version=${v}\n`;
+const exe = (path) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, '', { mode: 0o755 }); };
+// A home with the image's Beeper at <home>/opt-beeper and `volume` versions unpacked under <home>/beeper.
+function linuxHome({ image = '4.3.229', volume = [] } = {}) {
+  const home = tmp(), imageDir = join(home, 'opt-beeper');
+  mkdirSync(imageDir);
+  if (image) writeFileSync(join(imageDir, 'beepertexts.desktop'), desktop(image));
+  for (const v of volume) exe(join(home, 'beeper', v, 'beepertexts'));
+  return { home, imageDir };
+}
+const volumeOf = (home) => readdirSync(join(home, 'beeper')).sort();
+const APPIMAGE = 'Beeper-4.3.334-x86_64.AppImage';
+
+describe('linux — detection: the version the entrypoint WOULD launch', () => {
+  it('the newest unpacked on the volume (by version, not by name), else the image\'s', async () => {
+    expect(await readInstalledLinux(linuxHome({ volume: ['4.3.99', '4.3.100', '4.3.264'] }))).toBe('4.3.264');
+    expect(await readInstalledLinux(linuxHome({ image: '4.3.20', volume: ['4.3.99', '4.3.100'] }))).toBe('4.3.100');
+    expect(await readInstalledLinux(linuxHome({ image: '4.3.229' }))).toBe('4.3.229');
+  });
+
+  it('the image wins when its version is newer than every copy on the volume (a rebuilt image)', async () => {
+    expect(await readInstalledLinux(linuxHome({ image: '4.3.500', volume: ['4.3.264', '4.3.334'] }))).toBe('4.3.500');
+    expect(await readInstalledLinux(linuxHome({ image: '4.3.229', volume: ['4.3.264'] }))).toBe('4.3.264');
+  });
+
+  it('readInstalledVersion on linux is that rule, from the home it is given', async () => {
+    expect(await readInstalledVersion({ platform: 'linux', home: linuxHome({ volume: ['999.0.0'] }).home })).toBe('999.0.0');
+  });
+
+  it('a directory the entrypoint could not launch does not count: no executable, a temp name, a file', async () => {
+    const { home, imageDir } = linuxHome({ volume: ['4.3.264'] });
+    mkdirSync(join(home, 'beeper', '4.3.400'));
+    mkdirSync(join(home, 'beeper', '.extract-abc', 'squashfs-root'), { recursive: true });
+    writeFileSync(join(home, 'beeper', '4.3.500'), '');
+    expect(await readInstalledLinux({ home, imageDir })).toBe('4.3.264');
+  });
+
+  it('nothing anywhere: null', async () => {
+    expect(await readInstalledLinux(linuxHome({ image: null }))).toBe(null);
+  });
+
+  it('detect() on linux asks the feed for platform=linux, reads the volume, and has no pending download', async () => {
+    const { home } = linuxHome({ volume: ['4.3.264'] });
+    const feeds = [];
+    const fetchImpl = async (url) => {
+      const u = new URL(url);
+      if (u.hostname === 'api.beeper.com') { feeds.push(u.searchParams.get('platform')); return { status: 200, json: async () => ({ version: '4.3.334', url: `https://example.invalid/builds/${APPIMAGE}`, sha512: 'c2hh' }) }; }
+      if (u.port === '23373' && u.pathname === '/v1/info') return { status: 200, json: async () => ({ app: { version: '4.3.229' } }) };
+      throw new Error('ECONNREFUSED');
+    };
+    const d = await detect({}, { fetchImpl, platform: 'linux', home });
+    expect(feeds).toEqual(['linux']);
+    expect(d.installed).toBe('4.3.264');
+    expect(d.pending).toBe(null);
+    expect(d.running).toEqual([{ name: null, port: 23373, version: '4.3.229' }]);
+    expect(d.latest).toMatchObject({ version: '4.3.334', url: `https://example.invalid/builds/${APPIMAGE}` });
+    expect(stateOf(d)).toBe('restart-needed');   // the volume's 4.3.264 is newer than the running 4.3.229
+    await detect({}, { fetchImpl, platform: 'win32', installedVersion: async () => '4.3.229', localAppData: tmp() });
+    expect(feeds).toEqual(['linux', 'win32']);   // windows still asks for its own build
+  });
+});
+
+describe('linux — the dry run: does the image launch Beeper from the volume?', () => {
+  const REFUSED = { ok: false, step: 'entrypoint', error: 'this image launches Beeper from /opt/beeper only', remedy: 'rebuild the image (docker/aws/build-push.sh) once' };
+
+  it('an entrypoint without the marker is refused, with the one-time rebuild as the remedy', async () => {
+    const entrypoint = join(tmp(), 'egpt-entrypoint');
+    writeFileSync(entrypoint, '#!/bin/bash\nkeep_running beeper /opt/beeper/beepertexts --no-sandbox\n');
+    expect(await runLinuxDry({ entrypoint })).toEqual(REFUSED);
+    expect(refusalText(REFUSED)).toBe('this image launches Beeper from /opt/beeper only — rebuild the image (docker/aws/build-push.sh) once');
+  });
+
+  it('no entrypoint file at all is refused too', async () => {
+    expect(await runLinuxDry({ entrypoint: join(tmp(), 'absent') })).toEqual(REFUSED);
+  });
+
+  it('an entrypoint with the marker plans the volume flow', async () => {
+    const entrypoint = join(tmp(), 'egpt-entrypoint');
+    writeFileSync(entrypoint, `#!/bin/bash\n${ENTRYPOINT_MARKER} {\n  echo x\n}\n`);
+    expect(await runLinuxDry({ entrypoint })).toEqual({ ok: true, flow: 'volume' });
+  });
+});
+
+describe('linux — docker/entrypoint.sh launches the newest Beeper, on every relaunch', () => {
+  const script = readFileSync(join(ROOT, 'docker', 'entrypoint.sh'), 'utf8');
+
+  it('carries the marker the dry run looks for', () => expect(script).toContain(ENTRYPOINT_MARKER));
+
+  it('/opt/beeper is named once, in beeper_bin; both launch paths ask beeper_bin', () => {
+    expect(script.match(/\/opt\/beeper/g)).toHaveLength(1);
+    expect(script).toMatch(/beeper_run\(\) \{[^}]*"\$\(beeper_bin\)"/);
+    expect(script).toMatch(/keep_running beeper beeper_single/);
+    expect(script).toMatch(/beeper_single\(\) \{[^}]*"\$\(beeper_bin\)"/);
+  });
+
+  // One rule, two implementations (beeper_bin here, readInstalledLinux in beeper-update.mjs): the highest version
+  // among the image's and the volume's launchable copies; a tie is the image's. want: 'image' | a volume version.
+  const RULE = [
+    { why: 'neither', image: null, volume: [], want: 'image' },
+    { why: 'the image alone', image: '4.3.229', volume: [], want: 'image' },
+    { why: 'the volume alone (no image desktop file)', image: null, volume: ['4.3.9'], want: '4.3.9' },
+    { why: 'by version, not by name: 4.3.100 beats 4.3.60 and 4.3.9', image: '4.3.60', volume: ['4.3.9', '4.3.100', '4.3.50'], want: '4.3.100' },
+    { why: 'volume copies older than the image lose', image: '4.3.60', volume: ['4.3.9', '4.3.50'], want: 'image' },
+    { why: 'a rebuilt image newer than the whole volume wins', image: '4.3.500', volume: ['4.3.264', '4.3.334'], want: 'image' },
+    { why: 'a tie is the image\'s', image: '4.3.600', volume: ['4.3.600'], want: 'image' },
+    { why: 'not launchable: no executable, a file, a non-version name, a temp name', image: '4.3.60', volume: ['4.3.100'], junk: true, want: '4.3.100' },
+  ];
+
+  it.skipIf(process.platform === 'win32')('beeper_bin and readInstalledLinux agree on every case of the rule', async () => {
+    const fn = /^beeper_bin\(\) \{[\s\S]*?^\}/m.exec(script)?.[0];
+    expect(fn).toBeTruthy();
+    for (const c of RULE) {
+      const { home, imageDir } = linuxHome(c);
+      if (c.junk) {
+        mkdirSync(join(home, 'beeper', '4.3.900'));                          // no beepertexts
+        writeFileSync(join(home, 'beeper', '4.3.901'), '');                  // a file
+        exe(join(home, 'beeper', 'latest', 'beepertexts'));                  // not a version
+        exe(join(home, 'beeper', '.extract-x', 'squashfs-root', 'beepertexts'));
+      }
+      const bash = spawnSync('bash', ['-c', `${fn.replaceAll('/opt/beeper', imageDir)}\nbeeper_bin`], { env: { PATH: process.env.PATH, EGPT_HOME: home }, encoding: 'utf8' }).stdout.trim();
+      expect(bash, `bash: ${c.why}`).toBe(c.want === 'image' ? join(imageDir, 'beepertexts') : join(home, 'beeper', c.want, 'beepertexts'));
+      expect(await readInstalledLinux({ home, imageDir }), `ts: ${c.why}`).toBe(c.want === 'image' ? c.image : c.want);
+    }
+  });
+});
+
+describe('linux — the install and the restart, through injected seams', () => {
+  // The feed's AppImage at its download place; extract() unpacks a Beeper of version `unpacks`.
+  function install({ image = '4.3.229', volume = [], unpacks = '4.3.334', running, capMs, extractThrows = null } = {}) {
+    const { home, imageDir } = linuxHome({ image, volume });
+    const dl = join(home, 'state', 'beeper-update');
+    const installer = join(dl, APPIMAGE);
+    mkdirSync(dl, { recursive: true });
+    writeFileSync(installer, 'appimage bytes');
+    const events = [];
+    let clock = 0, polls = 0;
+    const seams = {
+      home, imageDir, installer,
+      extract: async (file, cwd) => {
+        events.push(`extract:${file === installer}`);
+        if (extractThrows) throw new Error(extractThrows);
+        exe(join(cwd, 'squashfs-root', 'beepertexts'));
+        writeFileSync(join(cwd, 'squashfs-root', 'beepertexts.desktop'), desktop(unpacks));
+      },
+      mains: async () => [101, 102],
+      kill: (pid) => events.push(`kill:${pid}`),
+      // before the kill: the old version; after it: running(poll), by default the new one from the third answer on
+      running: async () => {
+        if (!events.some((e) => e.startsWith('kill'))) return [{ name: 'primary', port: 23373, version: '4.3.229' }, { name: 'secondary', port: 23374, version: '4.3.229' }];
+        polls += 1;
+        return running ? running(polls) : [{ name: 'primary', port: 23373, version: polls < 3 ? '4.3.229' : unpacks }, { name: 'secondary', port: 23374, version: polls < 3 ? null : unpacks }];
+      },
+      sleep: async (ms) => { clock += ms; },
+      now: () => clock,
+      capMs,
+    };
+    return { seams, events, home };
+  }
+
+  it('unpacks the AppImage onto the volume, kills the Beeper mains, waits for the new version, then prunes to two', async () => {
+    const t = install({ volume: ['4.3.100', '4.3.200', '4.3.264'] });
+    const r = await runLinux(t.seams);
+    expect(r).toEqual({ ok: true, restartSec: 10, connections: [{ name: 'primary', status: 'ok' }, { name: 'secondary', status: 'ok' }] });
+    expect(t.events).toEqual(['extract:true', 'kill:101', 'kill:102']);   // unpacked before anything is killed
+    expect(volumeOf(t.home)).toEqual(['4.3.264', '4.3.334']);             // the newest two; no temp name left
+    expect(readFileSync(join(t.home, 'beeper', '4.3.334', 'beepertexts.desktop'), 'utf8')).toBe(desktop('4.3.334'));
+    expect(readdirSync(join(t.home, 'state', 'beeper-update'))).toEqual([]);   // the AppImage is deleted
+    expect(await readInstalledLinux({ home: t.home, imageDir: t.seams.imageDir })).toBe('4.3.334');
+    expect(resultLine('nu', { from: '4.3.229', to: '4.3.334', result: r })).toBe('🔄 nu · Beeper 4.3.229 → 4.3.334 · restarted in 10 s · primary ✓ · secondary ✓');
+  });
+
+  it('a Beeper that never reports the new version: FAILED at restart after the cap, nothing pruned', async () => {
+    const t = install({ volume: ['4.3.100', '4.3.264'], running: () => [{ name: 'primary', port: 23373, version: '4.3.229' }, { name: 'secondary', port: 23374, version: null }], capMs: 180_000 });
+    const r = await runLinux(t.seams);
+    expect(r).toEqual({
+      ok: false, step: 'restart', error: 'not every Beeper reported 4.3.334 within 3 min', restartSec: 180,
+      connections: [{ name: 'primary', status: 'still 4.3.229' }, { name: 'secondary', status: 'still down' }],
+    });
+    expect(volumeOf(t.home)).toEqual(['4.3.100', '4.3.264', '4.3.334']);   // pruning waits for a good restart
+    expect(resultLine('nu', { from: '4.3.229', to: '4.3.334', result: r })).toBe('🔄 nu · Beeper 4.3.229 → 4.3.334 · FAILED at restart: not every Beeper reported 4.3.334 within 3 min · restarted in 180 s · primary ✗ still 4.3.229 · secondary ✗ still down');
+  });
+
+  it('a failed unpack: FAILED at extract, no process touched, no temp directory, the download kept for a retry', async () => {
+    const t = install({ volume: ['4.3.264'], extractThrows: 'squashfs: no space left on device' });
+    expect(await runLinux(t.seams)).toEqual({ ok: false, step: 'extract', error: 'squashfs: no space left on device' });
+    expect(t.events).toEqual(['extract:true']);
+    expect(volumeOf(t.home)).toEqual(['4.3.264']);
+    expect(readdirSync(join(t.home, 'state', 'beeper-update'))).toEqual([APPIMAGE]);
+  });
+
+  it('an AppImage that unpacks without a version is refused, not installed', async () => {
+    const t = install();
+    const r = await runLinux({ ...t.seams, extract: async (file, cwd) => { exe(join(cwd, 'squashfs-root', 'beepertexts')); } });
+    expect(r).toEqual({ ok: false, step: 'extract', error: `${APPIMAGE} unpacked without an X-AppImage-Version` });
+    expect(t.events).toEqual([]);
+    expect(volumeOf(t.home)).toEqual([]);
+  });
+
+  it('stale .extract-* directories from a crashed unpack are gone before the next one extracts', async () => {
+    const t = install({ volume: ['4.3.264'] });
+    mkdirSync(join(t.home, 'beeper', '.extract-crashed', 'squashfs-root'), { recursive: true });
+    writeFileSync(join(t.home, 'beeper', '.extract-crashed', 'squashfs-root', 'big'), 'x');
+    const seen = [];
+    const r = await runLinux({ ...t.seams, extract: async (file, cwd) => { seen.push(readdirSync(join(t.home, 'beeper')).filter((n) => n.startsWith('.extract-')).length); return t.seams.extract(file, cwd); } });
+    expect(r.ok).toBe(true);
+    expect(seen).toEqual([1]);                                   // only this unpack's own directory
+    expect(volumeOf(t.home)).toEqual(['4.3.264', '4.3.334']);    // and none left behind
+  });
+
+  it('restart only (restart-needed): no unpack; waits for the version the volume already holds', async () => {
+    const t = install({ volume: ['4.3.264'], unpacks: '4.3.264' });
+    const { installer, ...seams } = t.seams;
+    const r = await runLinux({ ...seams, extract: async () => { throw new Error('must not unpack'); } });
+    expect(r.ok).toBe(true);
+    expect(t.events).toEqual(['kill:101', 'kill:102']);
+    expect(volumeOf(t.home)).toEqual(['4.3.264']);
+    expect(readdirSync(join(t.home, 'state', 'beeper-update'))).toEqual([APPIMAGE]);   // not an install: nothing deleted
+  });
+
+  it('beeperMains: the beepertexts main processes of the image and the volume, never their --type= children or anything else', async () => {
+    const proc = tmp();
+    const put = (pid, ...argv) => { mkdirSync(join(proc, String(pid))); writeFileSync(join(proc, String(pid), 'cmdline'), `${argv.join('\0')}\0`); };
+    put(29, '/opt/beeper/beepertexts', '--no-sandbox', '--pas-port=23373');
+    put(35, '/home/egpt/.egpt/beeper/4.3.334/beepertexts', '--no-sandbox', '--pas-port=23374');
+    put(51, '/opt/beeper/beepertexts', '--type=zygote', '--no-sandbox');
+    put(171, '/home/egpt/.egpt/beeper/4.3.334/beepertexts', '--type=gpu-process');
+    put(146, '/opt/beeper/chrome_crashpad_handler', '--monitor-self');
+    put(300, '/usr/bin/other/beepertexts', '--no-sandbox');
+    put(301, 'node', 'egpt-daemon.mjs');
+    mkdirSync(join(proc, 'self'));
+    mkdirSync(join(proc, '400'));   // gone: no cmdline
+    expect((await beeperMains(['/opt/beeper', '/home/egpt/.egpt/beeper'], proc)).sort((a, b) => a - b)).toEqual([29, 35]);
+  });
+});
+
+describe('linux — the same service: states, drain, restart state, lines', () => {
+  const LFILE = 'Beeper-4.3.264-x86_64.AppImage';
+  const FEED = () => ({
+    installed: '4.3.229', pending: null,
+    running: [{ name: 'primary', port: 23373, version: '4.3.229' }, { name: 'secondary', port: 23374, version: '4.3.229' }],
+    latest: { version: '4.3.264', date: null, url: `https://example.invalid/builds/${LFILE}`, sha512: b64(BYTES) },
+  });
+
+  it('auto (the default): the available version is downloaded, then the SAME drain / start line / restart state / ONE result line', async () => {
+    const r = rig({ platform: 'linux', node: 'nu', method: 'auto', detect: FEED, fetchImpl: serving(BYTES) });
+    expect(await r.u.check()).toBe('available');
+    expect(r.posts).toEqual([]);   // no "downloaded" notice: Beeper downloaded nothing of its own
+    expect(r.calls.filter((c) => c === 'drain')).toHaveLength(1);
+    const path = join(r.home, 'state', 'beeper-update', LFILE);
+    expect(readFileSync(path)).toEqual(BYTES);
+    await r.runDrain();
+    expect(r.calls.slice(r.calls.indexOf('drain') + 1)).toEqual(['readLog', 'post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
+    expect(r.tool).toEqual([
+      { dryRun: true, restartOnly: false, installer: path, sha512: b64(BYTES) },
+      { restartOnly: false, relaunchApp: false, installer: path, sha512: b64(BYTES) },
+    ]);
+    expect(r.posts[0]).toMatch(/^🔄 nu · Beeper 4\.3\.229 → 4\.3\.264 · restarting for update… ⟦bu-nu-/);
+    expect(r.edits[0].t).toBe('🔄 nu · Beeper 4.3.229 → 4.3.264 · restarted in 72 s · primary ✓ · secondary ✓');
+    await r.u.check();
+    expect(r.calls.filter((c) => c === 'drain')).toHaveLength(1);   // once per version
+  });
+
+  it('the shared auto rule: an available version is installed by itself on windows too; Beeper\'s own download of it later is still tried', async () => {
+    let d = FEED();
+    const r = rig({ method: 'auto', plan: { ok: false, step: 'permission', error: 'x', remedy: 'y' }, detect: () => d, fetchImpl: serving(BYTES) });
+    await r.u.check();
+    expect(r.posts).toEqual(['kg · Beeper 4.3.264 not installed: needs elevation: y']);   // refused, said once
+    d = { ...REVE(), pending: { version: '4.3.264', adminRequired: false }, latest: { version: '4.3.264' } };
+    const ok = rig({ method: 'auto', home: r.home, detect: () => d });
+    await ok.u.check();
+    expect(ok.calls.filter((c) => c === 'drain')).toHaveLength(1);   // 'downloaded' 4.3.264 is a new attempt, not the refused 'available' one
+  });
+
+  it('manual: the same check installs nothing by itself', async () => {
+    const r = rig({ platform: 'linux', node: 'nu', method: 'manual', detect: FEED });
+    expect(await r.u.check()).toBe('available');
+    expect(r.calls).toEqual(['detect']);
+    expect(r.posts).toEqual([]);
+  });
+
+  it('/update beeper on linux plans and runs; the reply names the flow', async () => {
+    const r = rig({ platform: 'linux', node: 'nu', detect: FEED, fetchImpl: serving(BYTES), plan: { ok: true, flow: 'volume' } });
+    expect(await r.u.update()).toBe('⏳ nu · Beeper 4.3.229 → 4.3.264: restarting Beeper for the update once turns finish (about a minute, volume flow); the result goes to log_to_group');
+  });
+
+  it('the image without the new entrypoint: refused ONCE per version, nothing drained', async () => {
+    const entrypoint = join(tmp(), 'egpt-entrypoint');
+    writeFileSync(entrypoint, '#!/bin/bash\n');
+    const r = rig({ platform: 'linux', node: 'nu', method: 'auto', detect: FEED, fetchImpl: serving(BYTES), plan: await runLinuxDry({ entrypoint }) });
+    await r.u.check();
+    await r.u.check();
+    expect(r.posts).toEqual(['nu · Beeper 4.3.264 not installed: this image launches Beeper from /opt/beeper only — rebuild the image (docker/aws/build-push.sh) once']);
+    expect(r.calls).not.toContain('drain');
+  });
+
+  it('restart-needed on linux: restart only, no download', async () => {
+    const r = rig({ platform: 'linux', node: 'nu', method: 'auto', detect: () => ({ ...FEED(), installed: '4.3.264', latest: { version: '4.3.264' } }), fetchImpl: async () => { throw new Error('must not fetch'); } });
+    expect(await r.u.check()).toBe('restart-needed');
+    await r.runDrain();
+    expect(r.tool).toEqual([{ dryRun: true, restartOnly: true }, { restartOnly: true, relaunchApp: false }]);
+    expect(r.edits[0].t).toBe('🔄 nu · Beeper 4.3.229 → 4.3.264 · restarted in 72 s · primary ✓ · secondary ✓');
+  });
+
+  describe('pending() — what the operator could apply now', () => {
+    it('available / downloaded / restart-needed: { from, to, hint }', async () => {
+      expect(await rig({ platform: 'linux', detect: FEED }).u.pending()).toEqual({ from: '4.3.229', to: '4.3.264', hint: '/e update beeper' });
+      expect(await rig().u.pending()).toEqual({ from: '4.3.176', to: '4.3.209', hint: '/e update beeper' });
+      expect(await rig({ platform: 'linux', detect: () => ({ ...FEED(), installed: '4.3.264', latest: { version: '4.3.264' } }) }).u.pending()).toEqual({ from: '4.3.229', to: '4.3.264', hint: '/e update beeper' });
+    });
+
+    it('up to date, blocked, or method none: null', async () => {
+      expect(await rig({ detect: () => ({ ...REVE(), pending: null, latest: { version: '4.3.176' } }) }).u.pending()).toBe(null);
+      expect(await rig({ detect: () => ({ ...REVE(), pending: { version: '4.3.209', adminRequired: true } }) }).u.pending()).toBe(null);
+      const none = rig({ platform: 'linux', method: 'none', detect: FEED });
+      expect(await none.u.pending()).toBe(null);
+      expect(none.calls).toEqual([]);   // none: no checks
+    });
+
+    it('changes nothing: no drain, no download, no line', async () => {
+      const r = rig({ platform: 'linux', detect: FEED, fetchImpl: async () => { throw new Error('must not fetch'); } });
+      await r.u.pending();
+      expect(r.calls).toEqual(['detect']);
+      expect(r.u.busy()).toBe(false);
+    });
   });
 });
 
