@@ -1098,7 +1098,7 @@ describe('a background wake with NO arrival since boot: the chat is placed befor
 
     const b = hosted();
     const two = await bootWith(KG(), { ...b.extra, state: one.state(), io: one.io });
-    const woke = (s) => s.streams.filter((h) => h.finals.some((f) => f.includes('A background task you started has finished')));
+    const woke = (s) => s.streams.filter((h) => h.finals.some((f) => f.includes('the audit is done')));
     await waitFor(() => woke(two.byConnection.secondary).length + woke(two.byConnection.primary).length > 0, { timeoutMs: 5000 });
 
     expect(woke(two.byConnection.secondary).map((h) => h.chatId)).toEqual([BOTH_AS_SECONDARY]);

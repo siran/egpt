@@ -1447,7 +1447,7 @@ export function createSpine({
   // exist. Quoting from the START is also what removes the delete+repost churn for the common
   // case: E's /reply at the message it is answering is now GENUINELY redundant, so it strips
   // instead of tearing the placeholder down and posting a fresh quote in its place.
-  function openAndRunReply({ to, ev, d, turnKey, pinned = false, trigger = null }) {
+  function openAndRunReply({ to, ev, d, turnKey, pinned = false, trigger = null, answer = null }) {
     // d.replyChatId: the chat's side group (gating.decide; a function when it is made only once the reply
     // has something to post) — the reply goes there, unquoted, and never falls back to ev's chat. The
     // transcript stays keyed to ev.
@@ -1462,7 +1462,7 @@ export function createSpine({
     const ambient = whole(d) || (d.mode === 'on' && !humanTurn(ev));
     const out = sender.open(at ?? ev.chatId, { being: to, replyTo, replyIn: null, replyKey: { msgKey: ev.msgHash, timestamp: ev.msgTs }, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto', ambient, hideSilence: d.mode === 'on', origin: at ? null : ev.chatId });
     const marks = markOf(to, d, ev);
-    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient, marks }));
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, replyTo, turnKey, queued: ahead > 0, pinned, trigger, ambient, marks, answer }));
   }
 
   // THE MARK ON THE LINE A TURN ANSWERS, placed at arrival (turns.receipt). The emoji train (2026-11-03):
@@ -1497,6 +1497,10 @@ export function createSpine({
     // That CLI's own answer is a bare polite silence ('…', live 2026-10-30): there is nothing to send, so
     // no turn is spent sending it — answered, the status left to its pulse as after any finished wake.
     if (summaries.length && reply != null && isDeliberateSilence(reply)) { note(`wake ${being}/${chatId}: ${what} — its own turn answered it with silence — not woken`); return true; }
+    // THE CLI'S OWN ANSWER IS SENT AS IT IS, through the reply path below (`answer`), to the chat the task
+    // ran in — the being is not asked to type it again (live 2026-11-20, every time: the first answer was
+    // discarded and only the re-prompt's resend reached the chat). The re-prompt stays as the fallback.
+    const direct = summaries.length && reply != null && line == null;
     line ??= restarted
       ? `[egpt] Your last reply was written while the bridge restarted and never reached the chat. It was:\n\n${reply}\n\nSend it to the chat now.`
       : lost != null
@@ -1514,6 +1518,11 @@ export function createSpine({
     if (guard) await guardCountNonHuman(ev, channel, true);
     const { key: turnKey, pinned } = await turns.keyOf(being, ev);
     note(`wake ${where}: ${what}`);
+    if (direct) {
+      const sent = await openAndRunReply({ to: being, ev: { ...ev, body: `[egpt] A background task you started has finished: ${what}.`, line: `[egpt] A background task you started has finished: ${what}.` }, d, turnKey, pinned, answer: reply });
+      if (sent) return true;
+      note(`wake ${where}: FALLBACK — the CLI's own answer to ${what} was not delivered (see the turn note above); the being is asked to send it`);
+    }
     return openAndRunReply({ to: being, ev, d, turnKey, pinned });
   }
   // The being's own thread continuing — gated as a reply to it, so mute/off/paused still hold.
@@ -1542,8 +1551,9 @@ export function createSpine({
   // `burst` (the auto-dwell fire): this turn answers a whole accumulated burst, so it prompts
   // with the drained cycle verbatim instead of appending its own trigger line. A PROMPT
   // concern only — it says nothing about the record.
+  // `answer` (wakeOnBackground): the reply is already written, so it takes this same path — gate, FIFO, record, delivery — with no model call.
   // `marks` (markOf): 🤔 as the line goes to the model; off after the reply, before the limbs, and in the finally.
-  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, marks = [] }) {
+  async function runReplyTurn({ to, ev, d, out, replyTo = null, turnKey, queued, burst = false, pinned = false, trigger = null, ambient = false, marks = [], answer = null }) {
     let live = null, opening = null, answered = false;
     try {
       // THIS turn is now the live one on this key, and this is whose message it answers —
@@ -1697,7 +1707,7 @@ export function createSpine({
         return show(partial);
       };
       for (const m of marks) m.started();              // 🤔: the line goes to the model now
-      const reply = await runTurnWithTimeout(to, ev, promptEv, onPartial);
+      const reply = answer != null ? { text: answer } : await runTurnWithTimeout(to, ev, promptEv, onPartial);   // `answer`: already written (a CLI's own turn on a finished task) — delivered, no model call
       answered = true;
       const rawText = reply?.text ?? '';
       const surfaced = gating.surfaces(d, rawText, { failed: isBrainFailureResult(reply) });
