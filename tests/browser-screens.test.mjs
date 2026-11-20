@@ -1,6 +1,6 @@
 // tests/browser-screens.test.mjs — a screen per browser group, shared by link (plans/2611022204-BROWSER-SCREENS.md;
 // operator 2026-11-02, NU Ops #96-#121). Hermetic: fake spawns, fake /proc, a temp EGPT_HOME, the fake chrome-host.
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, writeSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -198,7 +198,7 @@ const STATE = { contacts: { whatsapp: { '!work': { slug: 'Work chat-2601010000' 
 const GROUPS = { work: ['Work chat'], edu: ['Edu chat'], brain: ['Brain chat'] };
 const NAMES = { '!work': 'Work chat', '!edu': 'Edu chat', '!brain': 'Brain chat', '!other': 'Other chat' };
 const URL = 'https://q.trycloudflare.com';
-function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null, xIdle = () => Infinity } = {}) {
+function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null, xIdle = () => Infinity, rssOf = () => null, platform = 'linux', screensOpen = null, linked = null, clock = null } = {}) {
   const browsersFile = join(tempHome(), 'browsers.yaml');   // the real chat-to-group table, read and written as the spine does
   writeFileSync(browsersFile, YAML.stringify({ groups: GROUPS }));
   const tableIO = { path: browsersFile, read: (p, e) => readFile(p, e) };   // no stat cache: tests rewrite within a tick
@@ -208,24 +208,25 @@ function build({ available = true, admin = { chatId: '!admin' }, chromeHost, pro
     available: () => available,
     ensure: async (g) => { ops.push(`screen:${g}`); return { group: g, display: ':101' }; },
     idleMs: (g) => xIdle(g),
+    ...(screensOpen && { open: () => screensOpen }),
     close: (g, o) => { if (screenCloseThrows) throw new Error(screenCloseThrows); ops.push(`screen-close:${g}${o?.keepDisplay ? ':display-kept' : ''}`); return true; },
   };
   let open = false;
   const screenTunnel = {
     open: async (g) => { ops.push(`link:${g}`); const reused = open; open = true; return { url: URL, control: 'CTL', view: 'VIEW', reused }; },
-    close: (g) => { ops.push(`link-close:${g}`); const was = open; open = false; return was; },
-    isOpen: () => open,
+    close: (g) => { ops.push(`link-close:${g}`); const was = linked ? linked.has(g) : open; open = false; return was; },
+    isOpen: (g) => (linked ? linked.has(g) : open),
   };
   const sent = [], logs = [];
   const cmds = createCommands({
     getConfig: () => ({ node_name: 'nu', agents: { n: {} }, chrome: { bin: '/x/chrome', ...chrome } }),
     chromeHost: chromeHost === undefined ? fake.chromeHost : chromeHost,
-    profileHolder, killProcessTree, chromeProcesses, freeMem: () => freeMem * 1024 * 1024, rssOf: () => null,
+    profileHolder, killProcessTree, chromeProcesses, freeMem: () => freeMem * 1024 * 1024, rssOf, platform,
     browserGroups: () => readBrowserGroups(tableIO), assignBrowserGroup: (name, g) => setBrowserGroup(name, g, { path: browsersFile }), profileFolders: () => profiles,
     loadState: async () => STATE, writeState: async () => {},
     send: async (chatId, text) => sent.push({ chatId, text }),
     brains: { resolve: (name) => ({ name, type: 'ccode' }) },
-    browserScreens, screenTunnel, adminChat: async () => admin, onChromeLog: (m) => logs.push(m),
+    ...(clock && { now: clock }), browserScreens, screenTunnel, adminChat: async () => admin, onChromeLog: (m) => logs.push(m),
   });
   const run = (chatId, body) => cmds.run({ chatId, chatName: NAMES[chatId] ?? 'eGPT Admin', surface: 'whatsapp', authorized: true, commandHandle: 'n', body });
   return { cmds, run, sent, ops, logs, table: () => readBrowserGroups(tableIO), ...fake };
@@ -552,5 +553,103 @@ describe('/<handle> browser [all] [<profile>] — shared by default, a named pro
     expect(await w.cmds.isCommand(w.cmds.commandOf(ev))).toBe(false);
     await w.run('!work', '/browser a b c');
     expect(w.sent.at(-1).text).toContain('browser [all] [<profile> [new]] [keep]');
+  });
+});
+
+// /<handle> browsers (alias: browser list) and browser close all (operator 2026-11-20), over the fake daemon's list.
+describe('/<handle> browsers, browser close all', () => {
+  let killed = [];
+  beforeEach(() => { killed = []; });
+  const listing = (rows) => { const w = fakePipeChrome({ listTabs: async () => [] }); return { ...w.chromeHost, list: async () => rows, kill: (g) => killed.push(g) }; };
+  const CHROMES = [{ group: 'work', profileDir: '/p/work', pid: 11, channel: {} }, { group: 'shared', profileDir: '/p/shared', pid: 12, plain: true }];
+  const procs = () => [
+    { pid: 11, cmd: 'chrome --user-data-dir=/p/work --pipe' }, { pid: 111, cmd: 'chrome --type=renderer --user-data-dir=/p/work' },
+    { pid: 12, cmd: 'chrome --user-data-dir=/p/shared' }, { pid: 99, cmd: 'chrome --user-data-dir=/p/other' },
+  ];
+  const rss = { 11: 300 * 1048576, 111: 112 * 1048576, 12: 380 * 1048576, 99: 5 * 1048576 };
+
+  it('nothing open: one line', async () => {
+    const w = build({ chromeHost: listing([]) });
+    await w.run('!work', '/browsers');
+    expect(w.sent).toEqual([{ chatId: '!work', text: 'no browsers open.' }]);
+  });
+
+  it('an eGPT Chrome, a sign-in window and a screen-only group: chats, screen, link, idle, memory', async () => {
+    const t0 = 1_000_000;
+    const w = build({
+      chromeHost: listing(CHROMES), chromeProcesses: procs, rssOf: (pid) => rss[pid] ?? null,
+      screensOpen: [{ group: 'work', display: ':100' }, { group: 'shared', display: ':101' }, { group: 'lab', display: ':102' }],
+      linked: new Set(['work']), xIdle: (g) => (g === 'work' ? 4 * 60_000 : 60_000), clock: () => t0,
+    });
+    await w.run('!work', '/browsers');
+    expect(w.sent.at(-1).text).toBe([
+      'browsers open (3):',
+      '• lab — screen only, no Chrome · screen :102 · idle 1 min',
+      '• shared — sign-in window · chats: every unlisted chat · screen :101 · idle 1 min · 380 MB',
+      '• work — eGPT · chats: Work chat · screen :100, link open · idle 4 min · 412 MB',
+    ].join('\n'));
+  });
+
+  it('memory counts only the profile own Chromes, not a sibling whose path starts the same', async () => {
+    const w = build({
+      chromeHost: listing(CHROMES), rssOf: (pid) => rss[pid] ?? null,
+      chromeProcesses: () => [...procs(), { pid: 13, cmd: 'chrome --user-data-dir=/p/work2' }],
+    });
+    rss[13] = 900 * 1048576;
+    await w.run('!work', '/browsers');
+    expect(w.sent.at(-1).text).toContain('412 MB');
+    delete rss[13];
+  });
+
+  it('win32: no memory column (it cannot be read there)', async () => {
+    const w = build({ chromeHost: listing(CHROMES), chromeProcesses: procs, rssOf: (pid) => rss[pid] ?? null, platform: 'win32' });
+    await w.run('!work', '/browsers');
+    expect(w.sent.at(-1).text).toBe('browsers open (2):\n• shared — sign-in window · chats: every unlisted chat\n• work — eGPT · chats: Work chat');
+  });
+
+  it('memory is omitted when it cannot be read, and the command never fails', async () => {
+    const w = build({ chromeHost: listing(CHROMES), chromeProcesses: () => { throw new Error('no ps'); }, available: false });
+    await w.run('!work', '/browsers');
+    const text = w.sent.at(-1).text;
+    expect(text).toBe('browsers open (2):\n• shared — sign-in window · chats: every unlisted chat\n• work — eGPT · chats: Work chat');
+    expect(text).not.toMatch(/MB|screen|link/);
+  });
+
+  it('`browser list` answers exactly as `browsers`', async () => {
+    const w = build({ chromeHost: listing(CHROMES), chromeProcesses: procs, rssOf: (pid) => rss[pid] ?? null });
+    await w.run('!work', '/browsers');
+    await w.run('!work', '/browser list');
+    expect(w.sent[1].text).toBe(w.sent[0].text);
+    expect(w.sent[0].text).toContain('browsers open (2)');
+  });
+
+  it('close all closes each open browser (Chrome, link, screen) and summarizes in one reply', async () => {
+    const w = build({ chromeHost: listing(CHROMES), screensOpen: [{ group: 'work', display: ':100' }], linked: new Set(['work']) });
+    await w.run('!work', '/browser close ALL');
+    expect(killed).toEqual(['shared', 'work']);
+    expect(w.ops).toEqual(['link-close:shared', 'screen-close:shared', 'link-close:work', 'screen-close:work']);
+    expect(w.sent).toHaveLength(1);
+    expect(w.sent[0].text).toMatch(/^closed 2 browsers: shared \(its Chrome, its screen\); work \(its Chrome, its link, its screen\)\. They start again/);
+  });
+
+  it('close all with nothing open says so and closes nothing', async () => {
+    const w = build({ chromeHost: listing([]) });
+    await w.run('!work', '/browser close all');
+    expect(w.sent).toEqual([{ chatId: '!work', text: 'no browsers open: nothing to close.' }]);
+    expect(killed).toEqual([]);
+  });
+
+  it('close <group> still closes only that group', async () => {
+    const w = build({ chromeHost: listing(CHROMES) });
+    await w.run('!work', '/browser close work');
+    expect(w.ops).toEqual(['link-close:work', 'screen-close:work']);
+    expect(w.sent.at(-1).text).toContain('the work browser');
+  });
+
+  it('a non-owner is refused, as for the rest of /browser', async () => {
+    const w = build();
+    const stranger = (body) => ({ chatId: '!other', chatName: 'Other chat', surface: 'whatsapp', authorized: false, commandBeing: 'n', commandHandle: 'n', body });
+    for (const body of ['/browsers', '/browser list', '/browser close all', '/browser close']) expect(await w.cmds.isCommand(stranger(body))).toBe(false);
+    expect(await w.cmds.isCommand({ ...stranger('/browsers'), authorized: true })).toBe(true);
   });
 });

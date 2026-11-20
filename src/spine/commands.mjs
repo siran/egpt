@@ -53,7 +53,7 @@ import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config
 import { isRestartKey } from './config-swap.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { createCdpClient, createChannelTransport } from '../tools/cdp.mjs';
-import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder, killProcessTree as defaultKillProcessTree, chromeProcesses as defaultChromeProcesses } from '../tools/chrome-launcher.mjs';
+import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder, killProcessTree as defaultKillProcessTree, chromeProcesses as defaultChromeProcesses, cmdUsesProfile } from '../tools/chrome-launcher.mjs';
 import { connectChromeHost } from '../chrome-host.mjs';
 import { linkOf, GRACE_MS, IDLE_MS } from '../tools/screen-tunnel.mjs';
 import { admitLaunch, estimateChromeBytes, BRAIN_GROUP, SHARED_GROUP, isSafeGroupName, chromeConversationOf } from './chrome-pool.mjs';
@@ -590,6 +590,7 @@ export function createCommands({
   chromeProcesses = defaultChromeProcesses,
   freeMem = () => freemem(),
   rssOf = defaultRssOf,
+  platform = process.platform,   // seam: memoryOf is omitted on win32
   onChromeLog = () => {},
   browserGroups = readBrowserGroups,     // config/browsers.yaml's groups, read fresh (rooms-file.readBrowserGroups)
   assignBrowserGroup = setBrowserGroup,  // (chat name, group): `/browser <profile>` records the chat in that table (rooms-file.setBrowserGroup)
@@ -1029,6 +1030,10 @@ export function createCommands({
     const browserMatch = /^\/browser\b[ \t]*(.*)$/i.exec(line);
     if (browserMatch) { await send?.(ev.chatId, await browserCmd(ev, browserMatch[1].trim())); return; }
 
+    // /browsers — the open browsers, one line each (browsersCmd; operator 2026-11-20). `/browser\b` does not match it. Pre-catch-all.
+    const browsersMatch = /^\/browsers\s*$/i.test(line);
+    if (browsersMatch) { await send?.(ev.chatId, await browsersCmd()); return; }
+
     // /rooms — bare: list the saved rooms. Otherwise `/rooms <verb> [<room>]`, routed to the
     // same room() the singular /rooms used to reach. /rooms itself is retired (operator
     // 2026-08-29: "keep only '/agents', '/rooms'") and now answers the plural question below.
@@ -1312,14 +1317,16 @@ export function createCommands({
   // /browser [all|stop|close] [group] — the group's screen, shared by link (browserShow, below).
   async function browserCmd(ev, args) {
     const [verb = '', ...rest] = args.split(/\s+/).filter(Boolean);
-    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all] [<profile> [new]] [keep]', ev)} — this chat's browser and its link; <profile> (default: the chat's, else \`shared\`) puts this chat on that profile for good — \`new\` makes one that does not exist, \`shared\` undoes it. The link: view-only here and control to the admin channel; all: control here; keep: the link stays open however idle the browser is · ${hintOf('browser stop|close [group]', ev)} — stop: close the link; close: close the browser${more}`;
+    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all] [<profile> [new]] [keep]', ev)} — this chat's browser and its link; <profile> (default: the chat's, else \`shared\`) puts this chat on that profile for good — \`new\` makes one that does not exist, \`shared\` undoes it. The link: view-only here and control to the admin channel; all: control here; keep: the link stays open however idle the browser is · ${hintOf('browser stop|close [group|all]', ev)} — stop: close the link; close: close the browser, or every open browser (all) · ${hintOf('browsers', ev)} (or ${hintOf('browser list', ev)}) — the open browsers${more}`;
     const v = verb.toLowerCase();
+    if (v === 'list') return rest.length ? usage() : browsersCmd();   // alias of /browsers (operator 2026-11-20)
     if (v !== 'refresh') {
       const op = ['all', 'stop', 'close'].includes(v) ? v : '';
       const words = op ? rest : [verb, ...rest].filter(Boolean);
       const known = await knownBrowserGroups();
       if (op === 'stop' || op === 'close') {   // these name a GROUP
         if (words.length > 1) return usage();
+        if (op === 'close' && words[0]?.toLowerCase() === 'all') return browserCloseAll();   // the keyword, before any group named "all" (operator 2026-11-20)
         const named = words[0] ? known.find((g) => g.toLowerCase() === words[0].toLowerCase()) : null;
         if (words[0] && !named) return usage(`; groups: ${known.join(', ')}`);
         return op === 'stop' ? browserStop(ev, named) : browserClose(ev, named);
@@ -1522,15 +1529,21 @@ export function createCommands({
   async function browserClose(ev, named) {
     const { group, profileDir, why } = await browserTarget(ev, named);
     if (!profileDir) return `no browser for ${named ? `group "${named}"` : 'this chat'} — ${why}`;
+    const { closed, unclosed } = await closeGroupBrowser(group, profileDir);
+    return closed.length ? `closed the ${group} browser: ${closed.join(', ')}${unclosed}. It starts again on next need.` : `the ${group} browser was not open${unclosed}.`;
+  }
+  // The close itself, one group → { closed: ['its Chrome', …], unclosed } (shared by close and close all).
+  // `hosted`: the daemon listed a Chrome for it, so the daemon is told to kill it even if the spine's table lacks it.
+  async function closeGroupBrowser(group, profileDir, hosted = false) {
     await _reattached;
     const live = _groups.get(profileDir);
-    const tracked = chromeAlive(live) || _signin.has(profileDir);
+    const tracked = chromeAlive(live) || _signin.has(profileDir) || hosted;
     // A Chrome nobody tracks but that holds the profile (a plain sign-in window that outlived a daemon restart): on a
     // container node the operator cannot reach it to close it by hand (operator 2026-11-19). Windows names no pid: kill nothing.
     // SingletonLock can be stale and its pid reused: kill it only if that pid is a Chrome on THIS profile.
     const lockHolder = tracked ? null : profileHolder(profileDir);
     const lockPid = /^pid (\d+)$/.exec(lockHolder ?? '')?.[1];
-    const isOurChrome = lockPid && chromeProcesses().some((p) => String(p.pid) === lockPid && p.cmd.includes(`--user-data-dir=${profileDir}`));
+    const isOurChrome = lockPid && chromeProcesses().some((p) => String(p.pid) === lockPid && cmdUsesProfile(p.cmd, profileDir, platform));
     const holder = lockPid && !isOurChrome ? null : lockHolder;
     const holderPid = isOurChrome ? lockPid : undefined;
     const chrome = tracked || !!holderPid;
@@ -1544,7 +1557,86 @@ export function createCommands({
     const closed = [chrome && 'its Chrome', link && 'its link', screen && 'its screen'].filter(Boolean);
     onChromeLog(`/browser close "${group}": ${closed.join(', ') || 'nothing was open'}`);
     const unclosed = holder && !holderPid ? ` (a Chrome holds the profile; it could not be closed by pid)` : '';
-    return closed.length ? `closed the ${group} browser: ${closed.join(', ')}${unclosed}. It starts again on next need.` : `the ${group} browser was not open${unclosed}.`;
+    return { closed, unclosed };
+  }
+  // WHAT IS OPEN (operator 2026-11-20: "would a /edu browser close close all browsers? how to know which are open from
+  // which groups?"). The daemon is the truth (chromeHost.list: eGPT's pipe Chromes and plain sign-in windows); the spine's own
+  // tables fill in when it cannot answer, and a screen or a link with no Chrome is a row too. → [{ group, profileDir?, pid?, kind: 'egpt'|'signin'|null, display?, link }]
+  async function openBrowsers() {
+    await _reattached;
+    const rows = new Map();
+    const row = (group) => rows.get(group) ?? rows.set(group, { group, kind: null, link: false }).get(group);
+    let hosted = null;
+    try { hosted = chromeHost ? await chromeHost.list() : null; } catch { /* the daemon did not answer: the spine's tables below */ }
+    if (hosted) for (const g of hosted) Object.assign(row(g.group), { profileDir: g.profileDir, pid: g.pid, kind: g.plain ? 'signin' : 'egpt' });
+    else for (const e of _groups.values()) if (chromeAlive(e)) Object.assign(row(e.group), { profileDir: [..._groups].find(([, v]) => v === e)?.[0], pid: e.pid, kind: 'egpt' });
+    for (const [profileDir, h] of _signin) Object.assign(row(h.group), { profileDir, pid: h.pid, kind: 'signin' });
+    if (hasScreens()) {
+      let screens = [];
+      try { screens = browserScreens.open?.() ?? []; } catch { /* no list of screens: the Chromes' own */ }
+      for (const s of screens) row(s.group).display = s.display;
+      for (const g of await knownBrowserGroups()) if (screenTunnel?.isOpen(g)) row(g);
+      for (const r of rows.values()) r.link = !!screenTunnel?.isOpen(r.group);
+    }
+    return [...rows.values()].sort((a, b) => a.group.localeCompare(b.group));
+  }
+  // The chats that use a group, inverted from browsers.yaml (names as listed); shared is also every unlisted chat, brain the brain itself.
+  function chatsOf(group, table) {
+    const names = [].concat(table?.[group] ?? []).map(String);
+    const shown = names.length > 5 ? [...names.slice(0, 5), `+${names.length - 5} more`] : names;
+    if (group === SHARED_GROUP) shown.push('every unlisted chat');
+    if (group === BRAIN_GROUP) shown.push('the brain');
+    return shown.join(', ');
+  }
+  // Memory = RSS of the Chromes whose command line names the profile. Null (omitted) on Windows or when nothing can be read: never fails the command.
+  function memoryOf(profileDir) {
+    if (!profileDir || platform === 'win32') return null;
+    try {
+      let sum = 0, any = false;
+      for (const p of chromeProcesses()) {
+        if (!cmdUsesProfile(p.cmd, profileDir, platform)) continue;
+        const b = rssOf(p.pid);
+        if (b > 0) { sum += b; any = true; }
+      }
+      return any ? Math.round(sum / MB) : null;
+    } catch { return null; }
+  }
+  // Idle: the idle timer's own measure (activityOf: the later of the spine's last use and the last input on the group's X display);
+  // a window the spine does not track has the display's input alone. Omitted when neither is known.
+  function idleMinOf(r) {
+    try {
+      const e = [..._groups.values()].find((x) => x.group === r.group && chromeAlive(x));
+      const at = e ? activityOf(e) : hasScreens() && r.display ? now() - browserScreens.idleMs(r.group) : null;
+      return at == null ? null : Math.max(0, Math.floor((now() - at) / 60_000));
+    } catch { return null; }
+  }
+  // /browsers: one line per open browser, or one line saying none is.
+  async function browsersCmd() {
+    const rows = await openBrowsers();
+    if (!rows.length) return 'no browsers open.';
+    let table = {};
+    try { table = await browserGroups(); } catch { /* names are a nicety */ }
+    const lines = rows.map((r) => {
+      const chats = chatsOf(r.group, table);
+      const screen = [r.display && `screen ${r.display}`, r.link && 'link open'].filter(Boolean).join(', ');
+      const idle = idleMinOf(r);
+      const mb = memoryOf(r.profileDir);
+      const parts = [r.kind === 'signin' ? 'sign-in window' : r.kind === 'egpt' ? 'eGPT' : 'screen only, no Chrome', chats && `chats: ${chats}`, screen, idle != null && `idle ${idle < 1 ? '<1' : idle} min`, mb != null && `${mb} MB`].filter(Boolean);
+      return `• ${r.group} — ${parts.join(' · ')}`;
+    });
+    return `browsers open (${rows.length}):\n${lines.join('\n')}`;
+  }
+  // /browser close all: each open browser closed as close does for one group; one summary.
+  async function browserCloseAll() {
+    const rows = await openBrowsers();
+    if (!rows.length) return 'no browsers open: nothing to close.';
+    const done = [];
+    for (const r of rows) {
+      const dir = r.profileDir ?? groupProfileOf({ key: '', name: r.group, group: r.group }).profileDir;
+      const { closed, unclosed } = dir ? await closeGroupBrowser(r.group, dir, r.kind != null) : { closed: [], unclosed: ' (no usable profile)' };
+      done.push(`${r.group} (${closed.join(', ') || 'was not open'}${unclosed})`);
+    }
+    return `closed ${rows.length} browser${rows.length === 1 ? '' : 's'}: ${done.join('; ')}. They start again on next need.`;
   }
   // The plain window's Chrome exited: the group is eGPT's again.
   function signinDone(dir, h) {

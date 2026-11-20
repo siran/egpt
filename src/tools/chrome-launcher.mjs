@@ -236,6 +236,19 @@ export function profileHolder(userDataDir) {
   try { process.kill(pid, 0); return `pid ${pid}`; } catch (e) { return e.code === 'EPERM' ? `pid ${pid}` : null; }
 }
 
+// Does this Chrome command line run on EXACTLY this --user-data-dir? The one place that is decided (never a substring:
+// /p/work must not match /p/work2). The value is quoted ("--user-data-dir=a b", --user-data-dir="a b") or bare (to whitespace);
+// compared path-normalized: Windows ignores case and \ vs /, Linux/macOS is exact. A trailing slash is ignored.
+export function cmdUsesProfile(cmd, profileDir, platform = process.platform) {
+  if (!cmd || !profileDir) return false;
+  const norm = (p) => { const t = String(p).replace(/[\\/]+$/, ''); return platform === 'win32' ? t.replace(/\\/g, '/').toLowerCase() : t; };
+  const want = norm(profileDir);
+  for (const m of String(cmd).matchAll(/(?:^|\s)(?:"--user-data-dir=([^"]*)"|--user-data-dir=(?:"([^"]*)"|(\S+)))/g)) {
+    if (norm(m[1] ?? m[2] ?? m[3]) === want) return true;
+  }
+  return false;
+}
+
 // Every running chrome.exe as { pid, cmd } (its command line) — the daemon's orphan sweep (src/chrome-host.mjs).
 export function chromeProcesses() {
   if (process.platform === 'win32') {
