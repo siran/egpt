@@ -58,7 +58,7 @@ import {
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
 import { createFloodBan } from '../flood-ban.mjs';
 import { createSendGuard, loopGuardConfig, inboundOverrideOf, legacyEntryCount } from '../loop-guard.mjs';
-import { CLEAN_EXIT_CODE, UPGRADE_FULL_EXIT_CODE } from '../daemon-runtime.mjs';
+import { CLEAN_EXIT_CODE, UPGRADE_EXIT_CODE, UPGRADE_FULL_EXIT_CODE, respawnsOf } from '../daemon-runtime.mjs';
 
 import { createIdentity, surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
@@ -3496,16 +3496,17 @@ export async function boot({
     onLog: (m) => log.line?.(`[beeper-update] ${m}`),
   }) : null;
   // The 6-hourly look at this checkout's upstream (src/tools/egpt-update.mjs): the notice, and under
-  // auto_update.egpt: auto the SAME `/upgrade full` the command runs (the drain waits for turns; no
+  // auto_update.egpt: auto-full / auto the SAME `/upgrade [full]` the command runs (the drain waits for turns; no
   // force). Real node only, beeperless or not: it reads the checkout, not Beeper.
   const egptUpdate = (ingest && selfUpdate) ? createEgptUpdate({
     getConfig,
     home: EGPT_HOME,
-    upgradeFull: () => announceAndExit(UPGRADE_FULL_EXIT_CODE),
+    upgrade: (full) => announceAndExit(full ? UPGRADE_FULL_EXIT_CODE : UPGRADE_EXIT_CODE),
     restartPending: () => restartCode != null,
     supervised: () => process.env.EGPT_SUPERVISED === '1',
+    daemonRespawns: () => respawnsOf(process.env, process.platform),   // the daemon's own check: only then may auto-full end it
     logToGroup: (text) => logToGroup(text),
-    hint: () => commands.hintOf('upgrade full'),   // this node's own handle: /e upgrade full, /don upgrade full
+    hint: (cmd) => commands.hintOf(cmd),   // this node's own handle: /e upgrade full, /don upgrade
     beeperPending: async () => (await beeperUpdate?.pending?.()) ?? null,   // not on every node, not in every version
     onLog: (m) => log.line?.(`[egpt-update] ${m}`),
   }) : null;

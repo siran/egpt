@@ -40,6 +40,7 @@ beforeAll(async () => {
   git(root, 'clone', '-q', remote, mine);
   git(mine, 'checkout', '-q', '-B', 'main');
   commit(mine, 'one');
+  commit(mine, 'egpt-daemon.mjs');   // the daemon entry auto-full reads its import graph from; the upstream's two commits touch none of it
   git(mine, 'push', '-q', '-u', 'origin', 'main');
   git(root, 'clone', '-q', remote, other);
   commit(other, 'two'); commit(other, 'three');
@@ -152,20 +153,21 @@ describe('boot.mjs — the eGPT update check', () => {
     app.stop();
   });
 
-  it('auto: the same look leaves through the /upgrade full exit, once, the sha spent on disk first', async () => {
-    const { app, spy, lines, exits } = await bootNode(config(), { supervised: true });   // no auto_update: the default is auto
+  it('auto-full (the default): the daemon is untouched, so the same look leaves through the plain /upgrade exit, once, the sha spent on disk first', async () => {
+    const { app, spy, lines, exits } = await bootNode(config(), { supervised: true });   // no auto_update: the default is auto-full
     expect(await waitFor(() => exits.length > 0)).toBe(true);
-    expect(exits).toEqual([46]);
+    expect(exits).toEqual([42]);
     expect(JSON.parse(readFileSync(STATE, 'utf8')).autoTried).toMatch(/^[0-9a-f]{40}$/);
-    expect(JSON.parse(readFileSync(SIDECAR, 'utf8'))).toMatchObject({ kind: '/upgrade full' });   // the going-down half, unchanged
+    expect(JSON.parse(readFileSync(SIDECAR, 'utf8'))).toMatchObject({ kind: '/upgrade' });   // the going-down half, unchanged
     expect(await waitFor(() => spy.sent.some((s) => /⬆ pending: eGPT 2 commits .* — at the next quiet moment/.test(s.text))), JSON.stringify(spy.sent)).toBe(true);
     expect(spy.sent.some((s) => /Apply now/.test(s.text))).toBe(false);
-    expect(lines.some((l) => /upgrading \(\/upgrade full\) at the next quiet moment/.test(l))).toBe(true);
+    expect(lines.some((l) => /upgrading \(\/upgrade\) at the next quiet moment/.test(l))).toBe(true);
+    expect(lines.some((l) => /daemon unchanged → spine-only upgrade/.test(l))).toBe(true);
     app.stop();
   });
 
   it('auto without a daemon to respawn the spine: noticed as manual, nothing exits', async () => {
-    const { app, spy, lines, exits } = await bootNode(config());   // no auto_update: auto; EGPT_SUPERVISED unset
+    const { app, spy, lines, exits } = await bootNode(config());   // no auto_update: auto-full; EGPT_SUPERVISED unset
     expect(await waitFor(() => spy.sent.some((s) => /⬆ pending: eGPT 2 commits .* — \/e upgrade full\. Apply now\?/.test(s.text))), JSON.stringify(spy.sent)).toBe(true);
     expect(lines.some((l) => /eGPT 2 new commits on main .* — send \/e upgrade full$/.test(l))).toBe(true);
     expect(exits).toEqual([]);

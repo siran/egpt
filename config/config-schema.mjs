@@ -3550,18 +3550,33 @@ export const CONFIG_SCHEMA = {
 
     KEYS:
       egpt
-        ENUM: auto | manual | none          DEFAULT: auto
-          none    no fetch, no notice.
-          manual  the notice only; the operator sends /<handle> upgrade full.
-          auto    the notice, then /upgrade full by itself at the next quiet
-                  moment: the existing drain (turns in flight finish, a Beeper
-                  update under way finishes first), the daemon renewed too.
-                  ONCE per upstream sha, persisted before the exit
-                  (state/egpt-update.json): a pull that leaves the checkout behind
-                  (a dirty tree, a conflict) is not retried until the upstream
-                  moves, so it never loops the node. Not while a restart is pending.
-                  Only where a daemon respawns the spine (EGPT_SUPERVISED=1): a
-                  spine run by hand would only stop, so there auto is manual.
+        ENUM: auto-full | auto | manual | none   DEFAULT: auto-full
+          none       no fetch, no notice (the off switch).
+          manual     the notice only; the operator sends /<handle> upgrade full.
+          auto       the notice, then plain /upgrade by itself at the next quiet
+                     moment: the spine only, the daemon and its Chromes stay.
+          auto-full  auto, unless necessary: the notice, then plain /upgrade
+                     (spine only) UNLESS the daemon itself changed, then
+                     /upgrade full. After the fetch, the files changed
+                     between HEAD and the upstream (git diff --name-only) are
+                     matched against what the DAEMON loads, found from the code
+                     (src/tools/daemon-graph.mjs: the import graph from
+                     egpt-daemon.mjs, the setup/ scripts it names, and
+                     package.json / package-lock.json when it imports a
+                     package). A hit: /upgrade full (the daemon renewed too);
+                     none: /upgrade, spine only. One log line says which and why.
+                     Where nothing respawns the daemon (EGPT_DAEMON_RESPAWNS=1
+                     or the container entrypoint, the daemon's own check: a
+                     Windows service or task is not assumed to), a hit is NOT run
+                     full: it upgrades the spine only and posts one line that
+                     /upgrade full is still needed by hand.
+          auto and auto-full both: the existing drain (turns in flight finish, a
+          Beeper update under way finishes first). ONCE per upstream sha,
+          persisted before the exit (state/egpt-update.json): a pull that leaves
+          the checkout behind (a dirty tree, a conflict) is not retried until the
+          upstream moves, so it never loops the node. Not while a restart is
+          pending. Only where a daemon respawns the spine (EGPT_SUPERVISED=1): a
+          spine run by hand would only stop, so there they are manual.
         A checkout AHEAD of its upstream (diverged: ff-only would fail) gets the
         notice with that said, and no auto. No upstream, a detached HEAD, or a
         failed fetch: a daemon-log line, nothing posted.
@@ -3570,7 +3585,7 @@ export const CONFIG_SCHEMA = {
         When something is pending at boot (eGPT commits and/or a Beeper update),
         ONE follow-up line after "✅ egpt back up!" / "✅ egpt started" (the same
         chat(s)): what is pending, the command to type for each, "Apply now?".
-        Under auto, the item says it applies at the next quiet moment instead.
+        Under auto / auto-full, the item says it applies at the next quiet moment instead.
         Nothing pending: no line. The fetch never delays the back-up line.
     EGPT_SELF_UPDATE=off in the spine's environment: neither this check nor
     Beeper's exists (the test suite sets it, so no test touches the host).

@@ -20,6 +20,8 @@ export const STANDDOWN_EXIT_CODE = 45;
 export const UPGRADE_FULL_EXIT_CODE = 46;
 // The container's entrypoint, whose keep_running respawns a daemon that exits.
 export const CONTAINER_ENTRYPOINT = '/usr/local/bin/egpt-entrypoint';
+// Does anything bring the daemon back when it exits? (the daemon's own check, and the spine's: auto-full in egpt-update.mjs)
+export const respawnsOf = (env, platform, exists = nodeExistsSync) => env?.EGPT_DAEMON_RESPAWNS === '1' || (platform === 'linux' && exists(CONTAINER_ENTRYPOINT));
 export const CLEAN_EXIT_CODE = 0;
 const HOLD_LOG_MS = 60_000;   // while a daemon waits for the profile, it says who holds it this often
 
@@ -161,7 +163,7 @@ export function createDaemonRuntime(opts = {}) {
   // before it exported that); a Windows service or task is not assumed to. A process shared by
   // several profiles (startProfileDaemons) never ends for one of them.
   const daemonRespawns = opts.daemonRespawns
-    ?? (processObj.env?.EGPT_DAEMON_RESPAWNS === '1' || (platform === 'linux' && existsSync(CONTAINER_ENTRYPOINT)));
+    ?? respawnsOf(processObj.env, platform, existsSync);
   const sharedProcess = opts.sharedProcess ?? false;
   // The singleton's own file, written by the DAEMON, one per session. Distinct from
   // state/spine.pid, which the spine writes and which is shared by whichever spine holds the

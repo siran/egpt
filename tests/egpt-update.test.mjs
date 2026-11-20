@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { daemonGraph, daemonChanges } from '../src/tools/daemon-graph.mjs';
 import { createEgptUpdate, egptMethod, noticeLine, askLine } from '../src/tools/egpt-update.mjs';
 import { CHECK_EVERY_MS } from '../src/tools/beeper-update.mjs';
 import { createSpine } from '../src/spine/spine.mjs';
@@ -22,7 +23,7 @@ const NOTICE = '⬆ nu · eGPT 3 new commits on main (b14257d3 → 1a2b3c4d): fe
 
 // The facts git would answer, by command. `unknown` / `fetchFails` make that step fail with git's words.
 function fakeGit(over = {}) {
-  const s = { branch: 'main', upstream: 'origin/main', from: FROM, to: TO, behind: 3, ahead: 0, subjects: ['feat: one', 'fix: two', 'docs: three', 'chore: four'], unknown: null, fetchFails: null, boom: null, calls: [], ...over };
+  const s = { branch: 'main', upstream: 'origin/main', from: FROM, to: TO, behind: 3, ahead: 0, changed: ['src/daemon-runtime.mjs', 'src/spine/boot.mjs'], subjects: ['feat: one', 'fix: two', 'docs: three', 'chore: four'], unknown: null, fetchFails: null, boom: null, calls: [], ...over };
   const git = async (args) => {
     const cmd = args.join(' ');
     s.calls.push(cmd);
@@ -32,6 +33,7 @@ function fakeGit(over = {}) {
     if (cmd === 'rev-parse HEAD @{u}') return `${s.from}\n${s.to}`;
     if (cmd === 'rev-list --count HEAD..@{u}') return String(s.behind);
     if (cmd === 'rev-list --count @{u}..HEAD') return String(s.ahead);
+    if (cmd === 'diff --name-only HEAD..@{u}') return s.changed.join('\n');
     if (args[0] === 'log') return s.subjects.slice(0, Math.min(s.behind, Number(args[args.indexOf('-n') + 1]))).join('\n');
     throw new Error(`unexpected git ${cmd}`);
   };
@@ -40,7 +42,7 @@ function fakeGit(over = {}) {
 
 // One node: a fake git, a real throwaway home, a clock. `again()` is the same node after a restart.
 // beeperMethod: Beeper's own auto_update method on this node's OS (its default is auto where installs are implemented), so a test says which it means.
-function node({ cfg = {}, git = {}, beeper = null, beeperMethod = 'manual', restartPending = false, supervised = true, platform = 'linux', home = tmp() } = {}) {
+function node({ cfg = {}, git = {}, beeper = null, beeperMethod = 'manual', restartPending = false, supervised = true, respawns = true, graph = { files: new Set(['egpt-daemon.mjs', 'src/daemon-runtime.mjs']), packages: true }, platform = 'linux', home = tmp() } = {}) {
   const g = fakeGit(git);
   const t = { cfg, clock: 0, pending: restartPending, beeper, said: [], log: [], exits: [], g, home };
   const make = () => createEgptUpdate({
@@ -49,11 +51,13 @@ function node({ cfg = {}, git = {}, beeper = null, beeperMethod = 'manual', rest
     platform,
     git: g.git,
     // the state file as it is AT the moment of the exit: autoTried must already be on disk
-    upgradeFull: async () => { t.exits.push(JSON.parse(readFileSync(join(home, 'state', 'egpt-update.json'), 'utf8'))); },
+    upgrade: async (full) => { t.exits.push({ ...JSON.parse(readFileSync(join(home, 'state', 'egpt-update.json'), 'utf8')), full }); },
+    daemonRespawns: () => respawns,
+    daemonFiles: async () => graph,
     restartPending: () => t.pending,
     supervised: () => supervised,
     logToGroup: async (text) => { t.said.push(text); return true; },
-    hint: () => '/n upgrade full',
+    hint: (cmd) => `/n ${cmd}`,
     beeperPending: async () => (typeof t.beeper === 'function' ? t.beeper() : t.beeper),
     now: () => t.clock,
     onLog: (m) => t.log.push(m),
@@ -62,19 +66,20 @@ function node({ cfg = {}, git = {}, beeper = null, beeperMethod = 'manual', rest
   t.again = () => { t.u = make(); return t.u; };
   return t;
 }
+const full = { auto_update: { egpt: 'auto-full' } };
 const auto = { auto_update: { egpt: 'auto' } };
 const manual = { auto_update: { egpt: 'manual' } };
 const none = { auto_update: { egpt: 'none' } };
 
 describe('auto_update.egpt — the method', () => {
-  it('defaults to auto; reads auto | manual | none case-blind; anything else is none, said once', () => {
-    expect(egptMethod({})).toEqual({ method: 'auto', note: null });
-    expect(egptMethod({ auto_update: {} })).toEqual({ method: 'auto', note: null });
-    for (const m of ['auto', 'manual', 'none']) expect(egptMethod({ auto_update: { egpt: m } }).method).toBe(m);
+  it('defaults to auto-full; reads auto-full | auto | manual | none case-blind; anything else is none, said once', () => {
+    expect(egptMethod({})).toEqual({ method: 'auto-full', note: null });
+    expect(egptMethod({ auto_update: {} })).toEqual({ method: 'auto-full', note: null });
+    for (const m of ['auto-full', 'auto', 'manual', 'none']) expect(egptMethod({ auto_update: { egpt: m } }).method).toBe(m);
     expect(egptMethod({ auto_update: { egpt: ' Manual ' } }).method).toBe('manual');
     const bad = egptMethod({ auto_update: { egpt: 'sometimes' } });
     expect(bad.method).toBe('none');
-    expect(bad.note).toMatch(/auto_update\.egpt "sometimes" is not auto \| manual \| none/);
+    expect(bad.note).toMatch(/auto_update\.egpt "sometimes" is not auto-full \| auto \| manual \| none/);
   });
 
   it('is a registered, documented top-level key, its leaves resolvable', () => {
@@ -114,21 +119,22 @@ describe('the notice — ONE line per upstream sha', () => {
 
   it('the notice line itself', () => {
     const r = { branch: 'main', upstream: 'origin/main', from: FROM, to: TO, behind: 1, ahead: 0, subjects: ['a'] };
-    expect(noticeLine('nu', { ...r, how: 'auto' }, '/n upgrade full')).toBe('⬆ nu · eGPT 1 new commit on main (b14257d3 → 1a2b3c4d): a — upgrading (/upgrade full) at the next quiet moment');
+    expect(noticeLine('nu', { ...r, how: 'auto-full' }, '/n upgrade full')).toBe('⬆ nu · eGPT 1 new commit on main (b14257d3 → 1a2b3c4d): a — upgrading (/upgrade full) at the next quiet moment');
+    expect(noticeLine('nu', { ...r, how: 'auto' }, '/n upgrade')).toBe('⬆ nu · eGPT 1 new commit on main (b14257d3 → 1a2b3c4d): a — upgrading (/upgrade) at the next quiet moment');
     expect(noticeLine('nu', { ...r, how: 'manual' }, '/n upgrade full')).toBe('⬆ nu · eGPT 1 new commit on main (b14257d3 → 1a2b3c4d): a — send /n upgrade full');
   });
 });
 
 describe('auto — /upgrade full once per upstream sha, through the existing exit', () => {
   it('says so in the notice, and exits once, the state already on disk', async () => {
-    const n = node({ cfg: auto });
+    const n = node({ cfg: full });
     await n.u.check();
     expect(n.said).toEqual([`${NOTICE} — upgrading (/upgrade full) at the next quiet moment`]);
-    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO }]);
+    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO, full: true }]);
   });
 
   it('never loops: the pull left it behind, so the next look and the next boot do not exit again', async () => {
-    const n = node({ cfg: auto });
+    const n = node({ cfg: full });
     await n.u.check();
     n.clock += CHECK_EVERY_MS;
     await n.u.check();
@@ -139,7 +145,7 @@ describe('auto — /upgrade full once per upstream sha, through the existing exi
   });
 
   it('a newer upstream sha is tried once more', async () => {
-    const n = node({ cfg: auto });
+    const n = node({ cfg: full });
     await n.u.check();
     n.g.s.to = TO2;
     await n.u.check();
@@ -148,7 +154,7 @@ describe('auto — /upgrade full once per upstream sha, through the existing exi
   });
 
   it('a restart already pending: no exit, and the sha is not spent', async () => {
-    const n = node({ cfg: auto, restartPending: true });
+    const n = node({ cfg: full, restartPending: true });
     await n.u.check();
     expect(n.exits).toEqual([]);
     expect(n.said).toHaveLength(1);   // still noticed
@@ -160,14 +166,14 @@ describe('auto — /upgrade full once per upstream sha, through the existing exi
   it('turned on after the sha was noticed under manual: it applies then', async () => {
     const n = node({ cfg: manual });
     await n.u.check();
-    n.cfg = auto;
+    n.cfg = full;
     await n.u.check();
     expect(n.said).toHaveLength(1);
     expect(n.exits).toHaveLength(1);
   });
 
   it('auto with no daemon to respawn the spine: noticed as manual, never exits', async () => {
-    const n = node({ cfg: auto, supervised: false });
+    const n = node({ cfg: full, supervised: false });
     await n.u.check();
     expect(n.exits).toEqual([]);
     expect(n.said).toHaveLength(1);
@@ -186,16 +192,134 @@ describe('auto — /upgrade full once per upstream sha, through the existing exi
   });
 
   it('a diverged checkout (ahead of its upstream): the notice says so, auto does not fire', async () => {
-    const n = node({ cfg: auto, git: { ahead: 2 } });
+    const n = node({ cfg: full, git: { ahead: 2 } });
     await n.u.check();
     expect(n.said).toEqual([`${NOTICE} — not upgrading: this checkout has 2 commits origin/main lacks, so /upgrade (git pull --ff-only) would fail`]);
     expect(n.exits).toEqual([]);
   });
 });
 
+describe('the modes — what each applies', () => {
+  it('auto-full is the default (no auto_update at all)', async () => {
+    const n = node({});
+    await n.u.check();
+    expect(n.exits.map((e) => e.full)).toEqual([true]);
+  });
+
+  it('auto: plain /upgrade, whatever changed; the notice says so', async () => {
+    const n = node({ cfg: auto });   // changed includes a daemon file
+    await n.u.check();
+    expect(n.said).toEqual([`${NOTICE} — upgrading (/upgrade) at the next quiet moment`]);
+    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO, full: false }]);
+    expect(n.log).toEqual([n.said[0]]);   // the notice only: auto does not look at the daemon's files
+  });
+
+  it('auto without a daemon (unsupervised): manual, hinting plain /upgrade', async () => {
+    const n = node({ cfg: auto, supervised: false });
+    await n.u.check();
+    expect(n.exits).toEqual([]);
+    expect(n.said[0]).toMatch(/ — send \/n upgrade$/);
+  });
+
+  it('manual still hints /upgrade full, and never reads the graph', async () => {
+    const n = node({ cfg: manual, graph: null });
+    await n.u.check();
+    expect(n.said[0]).toMatch(/ — send \/n upgrade full$/);
+  });
+});
+
+describe('auto-full = auto, unless the daemon itself changed', () => {
+  it('a changed file in the daemon graph: /upgrade full, one log line naming it', async () => {
+    const n = node({ cfg: full, git: { changed: ['README.md', 'src/daemon-runtime.mjs'] } });
+    await n.u.check();
+    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO, full: true }]);
+    expect(n.said).toEqual([`${NOTICE} — upgrading (/upgrade full) at the next quiet moment`]);
+    expect(n.log).toEqual([n.said[0], 'daemon files changed: src/daemon-runtime.mjs → full']);
+  });
+
+  it('only files outside the graph: plain /upgrade, spine only', async () => {
+    const n = node({ cfg: full, git: { changed: ['src/spine/boot.mjs', 'tests/x.test.mjs'] } });
+    await n.u.check();
+    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO, full: false }]);
+    expect(n.said).toEqual([`${NOTICE} — upgrading (/upgrade) at the next quiet moment`]);
+    expect(n.log).toEqual([n.said[0], 'daemon unchanged → spine-only upgrade']);
+  });
+
+  it('package.json counts when the daemon imports a package, and not when it imports none', async () => {
+    const yes = node({ cfg: full, git: { changed: ['package-lock.json'] } });
+    await yes.u.check();
+    expect(yes.exits.map((e) => e.full)).toEqual([true]);
+    const no = node({ cfg: full, git: { changed: ['package.json'] }, graph: { files: new Set(['egpt-daemon.mjs']), packages: false } });
+    await no.u.check();
+    expect(no.exits.map((e) => e.full)).toEqual([false]);
+  });
+
+  it('full needed but nothing respawns the daemon: spine-only, and ONE line says /upgrade full is still needed by hand', async () => {
+    const n = node({ cfg: full, respawns: false });
+    await n.u.check();
+    expect(n.exits).toEqual([{ noticed: TO, autoTried: TO, full: false }]);
+    expect(n.said).toHaveLength(2);
+    expect(n.said[0]).toMatch(/ — upgrading \(\/upgrade\) at the next quiet moment$/);
+    expect(n.said[1]).toBe('⬆ nu · daemon files changed: src/daemon-runtime.mjs → /upgrade full needed, but nothing respawns the daemon here (EGPT_DAEMON_RESPAWNS unset): spine-only upgrade now, send /n upgrade full by hand to renew the daemon');
+    await n.again().check();   // the same sha: nothing more is said
+    expect(n.said).toHaveLength(2);
+  });
+
+  it('no respawn but the daemon is unchanged: plain, and no "still needed" line', async () => {
+    const n = node({ cfg: full, respawns: false, git: { changed: ['src/spine/boot.mjs'] } });
+    await n.u.check();
+    expect(n.exits.map((e) => e.full)).toEqual([false]);
+    expect(n.said).toHaveLength(1);
+  });
+
+  it('the safeguards hold in auto-full: once per sha, a pending restart, diverged, unsupervised', async () => {
+    const a = node({ cfg: full, git: { changed: ['src/spine/boot.mjs'] } });
+    await a.u.check(); a.clock += CHECK_EVERY_MS; await a.u.check(); await a.again().check();
+    expect(a.exits).toHaveLength(1);
+    const b = node({ cfg: full, restartPending: true });
+    await b.u.check();
+    expect(b.exits).toEqual([]);
+    const c = node({ cfg: full, git: { ahead: 1 } });
+    await c.u.check();
+    expect(c.exits).toEqual([]);
+    const d = node({ cfg: full, supervised: false });
+    await d.u.check();
+    expect(d.exits).toEqual([]);
+    expect(d.said[0]).toMatch(/ — send \/n upgrade full$/);
+  });
+});
+
+describe('daemonGraph — the daemon\'s files from its imports, not a list', () => {
+  const tree = {
+    'egpt-daemon.mjs': "import { run } from './src/rt.mjs';",
+    'src/rt.mjs': "import { a } from './lib/a.mjs';\nconst m = await import('./dyn.mjs');\nconst args = ['tool.ps1'];\nimport 'node:fs';",
+    'src/lib/a.mjs': "export * from '../shared.mjs';",
+    'src/dyn.mjs': 'export const x = 1;',
+    'src/shared.mjs': "import YAML from 'yaml';",
+    'src/unrelated.mjs': 'export const y = 1;',
+    'setup/tool.ps1': '# script',
+  };
+  const read = async (p) => { if (!(p in tree)) throw new Error('ENOENT'); return tree[p]; };
+
+  it('follows static, re-export and dynamic imports, names the scripts, notes a package import', async () => {
+    const g = await daemonGraph('/x', { read });
+    expect([...g.files].sort()).toEqual(['egpt-daemon.mjs', 'setup/tool.ps1', 'src/dyn.mjs', 'src/lib/a.mjs', 'src/rt.mjs', 'src/shared.mjs']);
+    expect(g.packages).toBe(true);
+    expect(daemonChanges(['src/unrelated.mjs', 'src/dyn.mjs', 'setup/tool.ps1', 'package.json'], g)).toEqual(['src/dyn.mjs', 'setup/tool.ps1', 'package.json']);
+  });
+
+  it('the real checkout: the daemon entry, its runtime and the setup scripts it runs are in; the spine is not', async () => {
+    const g = await daemonGraph(process.cwd());
+    for (const f of ['egpt-daemon.mjs', 'src/daemon-runtime.mjs', 'src/cli-host.mjs', 'setup/beeper-window.ps1']) expect(g.files.has(f), f).toBe(true);
+    expect(g.files.has('src/spine/boot.mjs')).toBe(false);
+    expect(g.files.has('egpt-spine.mjs')).toBe(false);
+  });
+});
+
+
 describe('when the state is unknown, it is a log line and nothing else', () => {
   it('no upstream / detached HEAD: git\'s words in the log, nothing posted, nothing fetched', async () => {
-    const n = node({ cfg: auto, git: { unknown: 'fatal: no upstream configured for branch \'main\'' } });
+    const n = node({ cfg: full, git: { unknown: 'fatal: no upstream configured for branch \'main\'' } });
     expect(await n.u.check()).toBeNull();
     expect(n.log).toEqual(['state unknown — fatal: no upstream configured for branch \'main\'']);
     expect(n.said).toEqual([]);
@@ -204,7 +328,7 @@ describe('when the state is unknown, it is a log line and nothing else', () => {
   });
 
   it('a failed fetch: the log only, and the stale remote refs are not trusted', async () => {
-    const n = node({ cfg: auto, git: { fetchFails: 'fatal: unable to access the remote' } });
+    const n = node({ cfg: full, git: { fetchFails: 'fatal: unable to access the remote' } });
     expect(await n.u.check()).toBeNull();
     expect(n.log).toEqual(['fetch failed — fatal: unable to access the remote']);
     expect(n.said).toEqual([]);
@@ -242,7 +366,7 @@ describe('tick — at boot, then every 6 h, the method read fresh', () => {
   it('an invalid method is said once, never acted on', async () => {
     const n = node({ cfg: { auto_update: { egpt: 'sometimes' } } });
     await n.u.tick(0); await n.u.tick(CHECK_EVERY_MS);
-    expect(n.log.filter((l) => /not auto \| manual \| none/.test(l))).toHaveLength(1);
+    expect(n.log.filter((l) => /not auto-full \| auto \| manual \| none/.test(l))).toHaveLength(1);
     expect(n.g.s.calls).toEqual([]);
   });
 });
@@ -267,18 +391,18 @@ describe('ask_on_boot — one line of what is pending', () => {
   });
 
   it('under auto, eGPT says the next quiet moment instead of asking', async () => {
-    const n = node({ cfg: auto });
+    const n = node({ cfg: full });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — at the next quiet moment');
     expect(n.exits).toHaveLength(1);   // and it was the same look that started it
   });
 
   it('under auto with a Beeper update still to ask for: only that is asked', async () => {
-    const n = node({ cfg: auto, beeper: BEEPER, beeperMethod: 'manual' });
+    const n = node({ cfg: full, beeper: BEEPER, beeperMethod: 'manual' });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — at the next quiet moment · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?');
   });
 
   it('a Beeper under its own auto method applies by itself too: nothing is asked', async () => {
-    const n = node({ cfg: auto, beeper: BEEPER, beeperMethod: 'auto' });
+    const n = node({ cfg: full, beeper: BEEPER, beeperMethod: 'auto' });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — at the next quiet moment · Beeper 4.3.229 → 4.3.334 — at the next quiet moment');
   });
 
@@ -288,7 +412,7 @@ describe('ask_on_boot — one line of what is pending', () => {
   });
 
   it('auto already tried this sha and the pull left it behind: it is asked for again, by hand', async () => {
-    const n = node({ cfg: auto });
+    const n = node({ cfg: full });
     await n.u.check();
     expect(await ask(n, n.again())).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full. Apply now?');
     expect(n.exits).toHaveLength(1);
