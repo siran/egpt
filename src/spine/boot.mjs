@@ -31,6 +31,7 @@ import { peerSpineFrom, createMouthReceiver, speakThroughPeer, startPeerStream, 
 // of "which of MY chats is that ONE real chat" and both transports ask it.
 import { crossAccountChatKey, LISTENING_REACTION, _msgTimestampMs } from '../bridges/beeper.mjs';
 import { createBeeperUpdate, holdLine } from '../tools/beeper-update.mjs';
+import { createEgptUpdate } from '../tools/egpt-update.mjs';
 import { createSandboxPinReleaser } from './sandbox-pins.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { mergeAudit } from './audit-merge.mjs';
@@ -57,7 +58,7 @@ import {
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
 import { createFloodBan } from '../flood-ban.mjs';
 import { createSendGuard, loopGuardConfig, inboundOverrideOf, legacyEntryCount } from '../loop-guard.mjs';
-import { CLEAN_EXIT_CODE } from '../daemon-runtime.mjs';
+import { CLEAN_EXIT_CODE, UPGRADE_FULL_EXIT_CODE } from '../daemon-runtime.mjs';
 
 import { createIdentity, surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
@@ -3464,6 +3465,20 @@ export async function boot({
     ownNames: () => ownNodeNamesOf(getConfig()),
     onLog: (m) => log.line?.(`[beeper-update] ${m}`),
   }) : null;
+  // The 6-hourly look at this checkout's upstream (src/tools/egpt-update.mjs): the notice, and under
+  // auto_update.egpt: auto the SAME `/upgrade full` the command runs (the drain waits for turns; no
+  // force). Real node only, beeperless or not: it reads the checkout, not Beeper.
+  const egptUpdate = ingest ? createEgptUpdate({
+    getConfig,
+    home: EGPT_HOME,
+    upgradeFull: () => announceAndExit(UPGRADE_FULL_EXIT_CODE),
+    restartPending: () => restartCode != null,
+    supervised: () => process.env.EGPT_SUPERVISED === '1',
+    logToGroup: (text) => logToGroup(text),
+    hint: () => commands.hintOf('upgrade full'),   // this node's own handle: /e upgrade full, /don upgrade full
+    beeperPending: async () => (await beeperUpdate?.pending?.()) ?? null,   // not on every node, not in every version
+    onLog: (m) => log.line?.(`[egpt-update] ${m}`),
+  }) : null;
   const browserScreens = createBrowserScreens({ egptHome: EGPT_HOME, log: (m) => log.line?.(`[chrome] ${m}`) });
   const commands = createCommands({
     getConfig,
@@ -3977,7 +3992,7 @@ export async function boot({
   let asking = null;                  // the tick's pass over them, while it runs (declared here: the spine's first tick is below)
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, egptUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -4077,13 +4092,18 @@ export async function boot({
       // `outcome` (daemon-runtime.mjs addOutcome, 2026-11-03): what /upgrade or /rewind did.
       try { await sayLifecycle(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.outcome ? ` — ${sc.kind}: ${sc.outcome}` : ''}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
-      return;
+      return sc.chatId;
     }
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
     try { await sayLifecycle(announceChatId(), `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
-  })();
+    return announceChatId();
+  })()
+    // ask_on_boot (src/tools/egpt-update.mjs): what is pending (eGPT commits, a Beeper update), as ONE
+    // follow-up line to the same chat(s), after the line above — which never waits for the fetch.
+    .then(async (chatId) => { const ask = await egptUpdate?.askOnBoot(); if (ask) await sayLifecycle(chatId, ask); })
+    .catch((e) => log.line?.(`[announce] ${e?.message ?? e}`));
 
   // ONCE AT BOOT — the second of the drain's two moments (the other is after every turn). What a
   // being handed out while the spine was down would otherwise sit in its outbox until it happened

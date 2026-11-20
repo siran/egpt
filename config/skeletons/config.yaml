@@ -487,6 +487,7 @@ networks:
 # --- Everyday knobs (defaults shown) -----------------------------------------
 # turn_timeout_ms: 0             # opt-in per-turn timeout (ms; > 0): the turn fails and its session is evicted. 0/absent = no limit (default)
 # auto_restart_on_config_change: false   # true = editing this file auto-triggers /restart (full drain+respawn) so the edit applies; keyed on content (no-op saves + mid-write/malformed files never restart). Default false.
+# auto_update: { egpt: auto, ask_on_boot: true }   # keeping eGPT itself current (Beeper's own: limbs.beeper.auto_update). egpt: every 6 h + at boot the checkout's upstream is fetched, ONE log_to_group line per new upstream sha; auto (default) then runs /upgrade full at the next quiet moment (once per sha), manual only notices, none does nothing. ask_on_boot (default true): at boot, one line after "✅ egpt back up!" of what is pending (eGPT and/or Beeper) and the command for each
 # default_time_zone: "America/New_York"                       # timezone-less heartbeat times
 # warm:                           # eviction is memory-based, built in: reserve max(15% of memory, 500 MB), Linux PSI > 10. All optional:
 #   max: 20                       # a backstop on live sessions; unset = no cap (default)

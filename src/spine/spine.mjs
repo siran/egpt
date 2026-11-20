@@ -180,6 +180,7 @@ export function createSpine({
   backgroundOutcome = null,            // optional ({ being, chatId, taskId }) => { status, message } | null — how a finished background task ended, as its session's CLI said it (boot: the pool's); the chat's status marks it. Null ⇒ not known (◦)
   background = null,                   // optional registry (src/spine/background.mjs): pending voice notes at the ingestion point, agents mirrored on the tick
   beeperUpdate = null,                 // optional (src/tools/beeper-update.mjs): its 6-hourly Beeper check rides the tick
+  egptUpdate = null,                   // optional (src/tools/egpt-update.mjs): its 6-hourly look at the checkout's upstream rides the tick
   sandboxPins = null,                  // optional (src/spine/sandbox-pins.mjs): releasing pins whose conversations.yaml sandbox_pin is gone rides the tick
   warmPool = null,                     // optional (src/warm-sessions.mjs): its memory-pressure eviction rides the tick
   remindClosed = null,                 // optional (ev) => Promise — closed_chats' reminder (src/spine/closed-chats.mjs remind)
@@ -1848,6 +1849,7 @@ export function createSpine({
     liveness.tick();
     background?.sync();
     beeperUpdate?.tick(clock.now());
+    egptUpdate?.tick(clock.now());
     sandboxPins?.tick(clock.now());
     ingestAsk?.tick?.(clock.now());
     warmPool?.tick();

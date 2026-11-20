@@ -139,6 +139,9 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                for its supervisor to respawn it:
                                                the container does, a Windows
                                                service is not assumed to
+                                               (the node also notices new commits
+                                               itself and, by default, runs this
+                                               `full` form at a quiet moment: `auto_update`)
 /<handle> rewind <ref>                         git checkout <ref>, reinstall,
                                                respawn
 /<handle> update beeper                        install the Beeper update this
@@ -441,6 +444,7 @@ default; commented blocks are optional overrides.
 | `closed_chats` | `<surface>: { <chat id>: { message? } }`, ids as in conversations.yaml: no being answers there (mode `off`, applies live). `message` is posted there once (again when it changes) and to a line that names a being, at most once a day. Remove the chat to reopen it. |
 | `stop_phrase` | Kill phrase (default `EGPT STOP`): the whole message, from an allowed user, in any chat → the node writes `EGPT_HOME/STOP` and stops. `""` = off. |
 | `turn_timeout_ms` | Opt-in per-turn timeout (ms): a turn running longer fails and its session is evicted. 0/absent = no limit (default). |
+| `auto_update` | Keeping eGPT itself current. `egpt:` `auto` (default), `manual` or `none`: at boot and every 6 h the node fetches its checkout's upstream and, with new commits, posts ONE line per upstream sha to `log_to_group` (`⬆ nu · eGPT 3 new commits on main (b14257d3 → 1a2b3c4d): … — send /n upgrade full`). `auto` then runs `/upgrade full` by itself at the next quiet moment (turns in flight finish first, a Beeper update under way finishes first), once per upstream sha, so a pull that leaves the checkout behind never loops the node; `manual` only notices; `none` does nothing. A checkout ahead of its upstream (diverged), without one, or on a detached HEAD never upgrades by itself. `ask_on_boot:` `true` (default) or `false`: when eGPT commits and/or a Beeper update are pending at boot, one line after `✅ egpt back up!` says what and the command for each (`⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?`); under `auto` it says they apply at the next quiet moment instead. Beeper's own method stays in `limbs.beeper.auto_update.<os>.method`. Read at each look: an edit needs no restart. |
 | `compaction` | After a quiet `cooling_ms`, if the warm session grew past `ratio` of the context window, native-`/compact` it in place (transcript.md keeps the full record). A compact that SUCCEEDS then arms the identity re-feed, exactly as `/agents refresh` does, so the being gets its identity back on its next turn — `/compact` rewrites the context, and the kickoff feed can be summarised out of it. A compact that fails arms nothing. |
 | `heartbeats` | Declarative timers — see §3. |
 | `transcription_service` | Voice-note transcription — see §4. |
