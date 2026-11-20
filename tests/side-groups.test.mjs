@@ -888,6 +888,41 @@ describe('two nodes on the shared accounts: one creates, the other links', () =>
     expect(chatsOf(b)).toEqual([SIDE]);                         // the peer replies in the linked group
   });
 
+  describe('the other node links a group by where it came from (reply_in_side_group: on only for reply_in_side_group groups)', () => {
+    const linked = async (kind) => {
+      const h = harness({ config: cfg({ node_role: 'secondary' }), state: seedState() });
+      const b = buildSpine(h, { node: 'do' });
+      const canary = { group: SIDE, origin: ORIGIN, kind, transcript: `SI+${TITLE}` };
+      h.rodzGot(SIDE, OPENER(canary)[0]);
+      await say(b.spine, ...OPENER(canary));
+      return h.getState().contacts.whatsapp;
+    };
+
+    it('REPRODUCE: a /side group (canary kind side) is linked as an alias of the chat; its chat keeps reply_in_side_group unset', async () => {
+      const c = await linked('side');
+      expect(c[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true, side: true, mouth_chat: SEC(SIDE) });
+      expect(c[ORIGIN].reply_in_side_group).toBeUndefined();
+    });
+
+    it('a reply_in_side_group group (kind automatic) still switches reply_in_side_group on for the chat (regression lock)', async () => {
+      const c = await linked('automatic');
+      expect(c[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true });
+      expect(c[SIDE].side).toBeUndefined();
+      expect(c[ORIGIN].reply_in_side_group).toBe('on');
+    });
+
+    it('the creator marks the group it made: /side → entry side: true and canary kind side; reply_in_side_group → neither', async () => {
+      const viaSide = harness();
+      await say(buildSpine(viaSide).spine, '/e side hola', { chatType: 'group' });
+      expect(viaSide.getState().contacts.whatsapp[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true, side: true });
+      expect(viaSide.calls.post[0].canary).toMatchObject({ group: SIDE, origin: ORIGIN, kind: 'side' });
+      const viaSetting = harness({ state: seedState({ entry: AUTOMATIC }) });
+      await say(buildSpine(viaSetting).spine, ASK);
+      expect(viaSetting.getState().contacts.whatsapp[SIDE].side).toBeUndefined();
+      expect(viaSetting.calls.post[0].canary.kind).toBe('automatic');
+    });
+  });
+
   it('a /join or /split opener posted before 2026-10-19 (its canary names the group alone) links nothing on the other node', async () => {
     const h = harness({ config: cfg({ node_role: 'secondary' }), state: seedState({ entry: AUTOMATIC }) });
     const b = buildSpine(h, { node: 'do' });

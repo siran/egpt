@@ -3965,7 +3965,7 @@ export function createCommands({
     }
     if (!create) return () => autoSideGroup(ev);
     const key = `${surface}\u0000${ev.chatId}`;
-    if (!autoCreating.has(key)) autoCreating.set(key, openAutoSideGroup(ev, surface, setting).finally(() => autoCreating.delete(key)));
+    if (!autoCreating.has(key)) autoCreating.set(key, openAutoSideGroup(ev, surface, setting, once).finally(() => autoCreating.delete(key)));
     return (await autoCreating.get(key)) ?? false;
   }
   // /<handle> side <prompt>: ONE turn of the chat's being, in the chat's own thread, whose reply goes to its
@@ -3990,15 +3990,17 @@ export function createCommands({
     await send?.(ev.chatId, `↪ replying in ${(room && await forkBridge.chatTitle?.(room)) || sidePrefixed(ev.chatName || ev.chatId)}`);
     return ran;
   }
-  async function openAutoSideGroup(ev, surface, setting) {
+  // `once` (/side): the group is marked `side: true` on its entry and its opener's canary says kind 'side' (not
+  // 'automatic'), so the other node links it as an alias without switching the chat to reply_in_side_group.
+  async function openAutoSideGroup(ev, surface, setting, once = false) {
     const plan = await sideGroupPlan(ev, 'automatic', { everyone: true });
     if (!plan) return null;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     const title = setting === true ? sidePrefixed(cTitle) : setting;
-    const aliased = await createAliasedSideGroup(ev, surface, title, plan, 'automatic', { automatic: true });
+    const aliased = await createAliasedSideGroup(ev, surface, title, plan, 'automatic', { automatic: true, ...(once ? { side: true } : {}) });
     if (!aliased) return null;
     onLog(`automatic: ${cTitle} -> ${aliased.chatId} "${title}" (invited ${plan.participantIDs.join(', ')})`);
-    await postOpener({ verb: 'automatic', newChatId: aliased.chatId, openerText: openerOf(null, AUTO_OPENER, cTitle), origin: aliased.primaryJid, kind: 'automatic', transcript: aliased.transcript });
+    await postOpener({ verb: 'automatic', newChatId: aliased.chatId, openerText: openerOf(null, AUTO_OPENER, cTitle), origin: aliased.primaryJid, kind: once ? 'side' : 'automatic', transcript: aliased.transcript });
     return aliased.chatId;
   }
   // The other node's half: a side group's opener names it, its origin and its kind (ev.canary, beside the
@@ -4011,7 +4013,7 @@ export function createCommands({
   // switches reply_in_side_group on for this node's own entry of the origin when that entry says
   // nothing (operator 2026-10-19: only the creating node is configured), in the same write — unless
   // this node's default already covers it (sideGroupByDefault; the origin is taken as a group).
-  const SIDE_KINDS = new Set(['join', 'split', 'automatic']);
+  const SIDE_KINDS = new Set(['join', 'split', 'automatic', 'side']);
   async function linkSideGroup(ev) {
     const c = ev?.canary;
     if (!c?.origin || ev.fromNode == null || !loadState || !writeState) return;
@@ -4041,7 +4043,7 @@ export function createCommands({
         as = `a fork in ${split.slug} (parent ${c.origin}; copied threads for ${split.copied.join(', ') || '(none)'})`;
       } else {
         const { jid } = getContact(state, surface, c.origin);
-        state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : {}) });
+        state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : c.kind === 'side' ? { automatic: true, side: true } : {}) });
         as = `an alias of ${jid}`;
         const originEntry = getContact(state, surface, jid)?.entry;
         if (c.kind === 'automatic' && originEntry?.reply_in_side_group == null && !sideGroupByDefault(originEntry, { surface, group: true }, cfg())) {
