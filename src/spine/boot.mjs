@@ -83,7 +83,7 @@ import { fanoutInbound } from './bridge-fanout.mjs';
 // relay_channel, so not a conversation at all) and whether a frame was committed by ANOTHER
 // node's spine. Both derive from the SAME agents block / node identity every other gate reads.
 import { fromOtherNode, isRelayChannelChat, ownNodeNamesOf } from './node-names.mjs';
-import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, INGEST_EXPIRED, mentionAsk, mentionExpired, askTtlMs, minutesLeft, withCountdown, withDeadline, answerOf } from './ingest.mjs';
+import { createIngest, lifecycleExit, lifecycleForce, isShellConnectMarker, toLine, createIngestAsks, INGEST_ASK, INGEST_EXPIRED, mentionAsk, mentionExpired, mentionQuote, askTtlMs, minutesLeft, withCountdown, withDeadline, answerOf } from './ingest.mjs';
 import { savedEntry, withMediaLines } from '../bridges/limb-intake.mjs';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
 import { reactionEmoji } from '../dispatch-line.mjs';
@@ -4191,7 +4191,7 @@ export async function boot({
     const out = outbound(null, chatId);
     let id = null;
     await out.say(async (on, room) => {
-      const r = await act(on, room);
+      const r = await act(on, room, on === out.bridge);
       if (!r || r.blocked) return false;
       id = (await r.confirmedId) ?? null;
       if (id != null && on !== out.bridge) {
@@ -4223,12 +4223,16 @@ export async function boot({
     const sender = ev.fromBeing;
     const kept = JSON.parse(JSON.stringify(ev));
     for (const { being, target } of asked) {
-      const question = mentionAsk(sender, being);
+      // The question quotes the sentence that names the being, and answers under the being's own post (operator 2026-11-20).
+      // That post's id (ev.msgId) is the chat's own connection's, so a local mouth's copy is not replied to by it.
+      const agent = Object.entries(cfg.agents ?? {}).find(([k]) => k.toLowerCase() === being)?.[1];
+      const quote = mentionQuote(ev.body, [being, ...(agent?.handles ?? [])]);
+      const question = mentionAsk(sender, being, quote);
       const expiresAt = ingestAsks.deadline();
       const shown = askShown(question, expiresAt, ev.chatId);
-      const id = await ingestPost(ev.chatId, (on, room) => on.send?.(room, shown.text, { systemLine: true }));
+      const id = await ingestPost(ev.chatId, (on, room, own) => on.send?.(room, shown.text, { systemLine: true, ...(own && ev.msgId != null ? { replyTo: String(ev.msgId) } : {}) }));
       if (id == null) { log.line?.(`[ingest] @${being} ${ev.chatId}: the question has no posted message an allowed user can answer — not asked`); continue; }
-      await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target, ...askClock(expiresAt, shown.minutes, id, question, mentionExpired(sender, being)) });
+      await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], being, ev: kept, target, ...askClock(expiresAt, shown.minutes, id, question, mentionExpired(sender, being, quote)) });
       log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from whoever may wake it (the Operator or its allowed_users lists)${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
     }
   }

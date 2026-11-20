@@ -32,6 +32,7 @@
 import { readdir as fsReaddir, readFile as fsReadFile, unlink as fsUnlink, mkdir as fsMkdir, writeFile as fsWriteFile, rename as fsRename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { hhmm } from '../dispatch-line.mjs';
+import { BEING_STAMP } from '../bridges/persona-wrap.mjs';
 
 export function createIngest({ dir, handle, intervalMs = 1000, io = {}, onLog = () => {} } = {}) {
   if (!dir) throw new Error('createIngest: dir is required');
@@ -98,9 +99,37 @@ export function toLine(content) {
 export const INGEST_ASK = 'received message, dispatch? reply yes / no';
 // The question for a being's mention allowed_users turned away (spine classify → boot askMention): the
 // being that said it, the being it names. The glyph keeps the first name from opening the line as an address.
-export const mentionAsk = (sender, being) => `❓ ${sender} → ${being}: pass it on? reply yes / no`;
+// The line is quoted (operator 2026-11-20): without what was said the chat cannot decide yes or no.
+export const mentionAsk = (sender, being, quote = '') => `❓ ${sender} → ${being}: ${quote ? `"${quote}" ` : ''}pass it on? reply yes / no`;
 // What a question is edited to when it runs out. The glyph leads for the same reason: a being name never opens the line.
-export const mentionExpired = (sender, being) => `⌛ ${sender} → ${being}: expired, not passed on`;
+// It quotes the same sentence, so the edited post still says what was not passed on.
+export const mentionExpired = (sender, being, quote = '') => `⌛ ${sender} → ${being}: ${quote ? `"${quote}" ` : ''}expired, not passed on`;
+
+// THE SENTENCE OF A BEING'S LINE THAT NAMES A BEING (operator 2026-11-20), for the question to quote. `names` are the
+// handles the being answers to; `@name` is looked for first, then the bare name (the router takes it as an address too).
+// The sentence around the first hit, whitespace collapsed, Markdown emphasis dropped, cut to `max` with … on the side
+// that was cut; no hit → the start of the line. The being's own stamp ("🐦 Lark:") is not part of what was said.
+export function mentionQuote(text, names, max = 140) {
+  const flat = (t) => t.replace(/[*~`]+|(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '').replace(/\s+/g, ' ').trim();   // snake_case keeps its _
+  const body = flat(String(text ?? '').replace(BEING_STAMP, ''));
+  const alt = [...new Set((names ?? []).map((n) => String(n).toLowerCase()).filter(Boolean))].sort((a, b) => b.length - a.length)
+    .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const glued = '(?![\\p{L}\\p{N}_])';
+  const find = (t) => alt ? (new RegExp(`(?:^|\\s)@(?:${alt})${glued}`, 'iu').exec(t) ?? new RegExp(`(?:^|[\\s(¿¡"'])(?:${alt})${glued}`, 'iu').exec(t)) : null;
+  const hit = find(body);
+  let s = body, at = 0;
+  if (hit) {
+    at = hit.index + hit[0].search(/\S/);
+    const from = body.slice(0, at).search(/[^.!?…]*$/u);
+    const end = body.slice(at).search(/[.!?…](?=\s|$)/u);
+    s = body.slice(from, end < 0 ? body.length : at + end + 1).trim();
+    at -= from + (body.slice(from, at).length - body.slice(from, at).trimStart().length);
+  }
+  if (s.length <= max) return s;
+  if (!hit) return `${s.slice(0, max).trimEnd()}…`;
+  const start = Math.max(0, Math.min(at - Math.floor(max / 2), s.length - max));
+  return `${start > 0 ? '…' : ''}${s.slice(start, start + max).trim()}${start + max < s.length ? '…' : ''}`;
+}
 export const INGEST_EXPIRED = '⌛ expired, not dispatched';
 
 // HOW LONG A QUESTION STAYS OPEN: ingest.ttl_ms, default 10 minutes; 0 or less = never (the answer is waited for forever).

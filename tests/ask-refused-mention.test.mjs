@@ -25,7 +25,7 @@ import { createIdentity } from '../src/spine/identity.mjs';
 import { createRouter } from '../src/spine/router.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createStopGuard } from '../src/stop-guard.mjs';
-import { mentionAsk, mentionExpired, withCountdown } from '../src/spine/ingest.mjs';
+import { mentionAsk, mentionExpired, mentionQuote, withCountdown } from '../src/spine/ingest.mjs';
 import { editAction } from '../src/dispatch-line.mjs';
 import { encodeNodeSignature } from '../src/node-signature.mjs';
 import { emptyState, ensureContact, recordThread } from '../src/conversations-state.mjs';
@@ -72,6 +72,52 @@ const person = (body, userId = '77', extra = {}) => ({ body, from: { chatId: 'tg
 const echo = (body, fromBeing = 'lark', extra = {}) => ({ body, from: { chatId: 'tg:42', chatName: 'Plan', network: 'telegram', userId: '99', senderName: 'NodeA', isSender: true, authorized: true, msgKey: '500', msgTs: 1000, atEStart: false, atEAnywhere: true, fromNode: 'nodeA', fromBeing, recorded: true, ...extra } });
 const ran = (brain) => brain.calls.map((c) => c.being);
 const LINE = '🐦 Lark: @finch can you check the plan?';
+
+// The question quotes what was said (operator 2026-11-20): the sentence that names the being, cut to a short line.
+describe('mentionQuote: the sentence of the line that names the being', () => {
+  const names = ['finch', 'fin'];
+  it('a mention in the middle of a sentence gives that sentence, not its neighbours', () => {
+    expect(mentionQuote('Plan is ready. Could @finch check the plan? Then we ship.', names)).toBe('Could @finch check the plan?');
+  });
+  it('a mention at the start, bare or with @, gives the first sentence; the being\'s own stamp is dropped', () => {
+    expect(mentionQuote('🐦 Lark: @finch can you check the plan? Thanks.', names)).toBe('@finch can you check the plan?');
+    expect(mentionQuote('Finch, check the plan. Thanks.', names)).toBe('Finch, check the plan.');
+  });
+  it('matches case-insensitively and by any handle, never inside a longer word', () => {
+    expect(mentionQuote('ok @FIN look at this', names)).toBe('ok @FIN look at this');
+    expect(mentionQuote('Finches are birds. @fin hola', names)).toBe('@fin hola');
+  });
+  it('Markdown emphasis and extra whitespace are dropped', () => {
+    expect(mentionQuote('**Done.**\n\n  Please   _@finch_ review `the` plan', names)).toBe('Please @finch review the plan');
+    expect(mentionQuote('@finch check soporte_v2 and allowed_users', names)).toBe('@finch check soporte_v2 and allowed_users');
+  });
+  it('a long sentence is cut around the mention with … on the cut sides', () => {
+    const long = `${'word '.repeat(40)}@finch please look ${'more '.repeat(40)}end.`;
+    const q = mentionQuote(long, names);
+    expect(q.length).toBeLessThanOrEqual(142);
+    expect(q).toContain('@finch');
+    expect(q.startsWith('…')).toBe(true);
+    expect(q.endsWith('…')).toBe(true);
+    const head = mentionQuote(`@finch ${'x '.repeat(100)}`, names);
+    expect(head.startsWith('@finch')).toBe(true);
+    expect(head.endsWith('…')).toBe(true);
+  });
+  it('no mention found falls back to the start of the line, cut with …', () => {
+    expect(mentionQuote('nothing to see here', names)).toBe('nothing to see here');
+    const q = mentionQuote(`🐦 Lark: ${'abc '.repeat(80)}`, names);
+    expect(q.startsWith('abc abc')).toBe(true);
+    expect(q.endsWith('…')).toBe(true);
+    expect(q.length).toBeLessThanOrEqual(141);
+    expect(mentionQuote('', names)).toBe('');
+  });
+  it('the question text: the quote sits before the ask, the countdown and the expiry keep working', () => {
+    const quote = 'Could @finch check the plan?';
+    expect(mentionAsk('lark', 'finch', quote)).toBe('❓ lark → finch: "Could @finch check the plan?" pass it on? reply yes / no');
+    expect(mentionAsk('lark', 'finch')).toBe('❓ lark → finch: pass it on? reply yes / no');
+    expect(withCountdown(mentionAsk('lark', 'finch', quote), 600_000)).toBe('❓ lark → finch: "Could @finch check the plan?" pass it on? reply yes / no · ⏳ 10 min');
+    expect(mentionExpired('lark', 'finch', quote)).toBe('⌛ lark → finch: "Could @finch check the plan?" expired, not passed on');
+  });
+});
 
 describe('the spine asks when a being\'s own line names a being allowed_users turned away', () => {
   it('the chat is asked once about that being; nothing runs', async () => {
@@ -469,8 +515,10 @@ describe('a Telegram node: Lark\'s post names Finch, whose list the bot is not o
   it('the topic is asked, nobody runs; the question names who said it and to whom, and is not itself echoed', async () => {
     const n = await bootNode(SCRIPT);
     const q = await larkNamesFinch(n);
-    expect(q.body).toMatchObject({ chat_id: String(GROUP), message_thread_id: 77, text: withCountdown(mentionAsk('lark', 'finch'), 600_000) });
-    expect(q.body.text).toBe('❓ lark → finch: pass it on? reply yes / no · ⏳ 10 min');
+    expect(q.body).toMatchObject({ chat_id: String(GROUP), message_thread_id: 77, text: withCountdown(mentionAsk('lark', 'finch', '@finch can you check the plan?'), 600_000) });
+    expect(q.body.text).toBe('❓ lark → finch: "@finch can you check the plan?" pass it on? reply yes / no · ⏳ 10 min');
+    // it answers under the being's own post (operator 2026-11-20), the id the limb handed the spine as the line's msgId
+    expect(q.body.reply_parameters?.message_id).toBeGreaterThan(0);
     await settle();
     expect(n.of('finch')).toEqual([]);
     expect(n.of('lark')).toHaveLength(1);
@@ -647,7 +695,8 @@ describe('a Telegram node: the open question expires', () => {
     return { files, readFile: async (p) => { if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return files.get(p); }, writeFile: async (p, d) => { files.set(p, String(d)); }, rename: async (a, b) => { files.set(b, files.get(a)); files.delete(a); }, mkdir: async () => {} };
   };
   const stored = (io) => JSON.parse(io.files.get(asksPath) ?? 'null');
-  const ASK = mentionAsk('lark', 'finch');
+  const QUOTE = '@finch can you check the plan?';   // the sentence of SCRIPT's lark line that names finch
+  const ASK = mentionAsk('lark', 'finch', QUOTE);
 
   it('the post counts down once a minute, edited in place: an edit only when the shown value changes', async () => {
     const clock = fakeClock();
@@ -676,8 +725,8 @@ describe('a Telegram node: the open question expires', () => {
     const q = await larkNamesFinch(n);
     expect(stored(io)).toHaveLength(1);
     clock.advance(10 * MIN); await n.pulse();
-    expect(n.edits(q).at(-1)).toBe('⌛ lark → finch: expired, not passed on');
-    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(n.edits(q).at(-1)).toBe('⌛ lark → finch: "@finch can you check the plan?" expired, not passed on');
+    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch', QUOTE));
     expect(n.api.of('editMessageText').at(-1).body).toMatchObject({ message_id: q.id });
     expect(stored(io)).toEqual([]);
     expect(n.lines.some((l) => /\[ingest\] @finch tg:-1001234\/77: expired \(#501\) — lark's line not passed on$/.test(l))).toBe(true);
@@ -701,7 +750,7 @@ describe('a Telegram node: the open question expires', () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(n.of('finch')).toEqual([]);
     await n.pulse();
-    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(n.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch', QUOTE));
     n.app.stop();
   });
 
@@ -711,7 +760,7 @@ describe('a Telegram node: the open question expires', () => {
     const first = await bootNode(SCRIPT, { now: clock.now, io });
     const q = await larkNamesFinch(first);
     first.app.stop();
-    expect(stored(io)[0]).toMatchObject({ expiresAt: T0 + 10 * MIN, shown: 10, post: { id: String(q.id), text: ASK, expired: mentionExpired('lark', 'finch') } });
+    expect(stored(io)[0]).toMatchObject({ expiresAt: T0 + 10 * MIN, shown: 10, post: { id: String(q.id), text: ASK, expired: mentionExpired('lark', 'finch', QUOTE) } });
 
     clock.advance(7 * MIN);
     const second = await bootNode(SCRIPT, { now: clock.now, io });
@@ -720,7 +769,7 @@ describe('a Telegram node: the open question expires', () => {
     expect(second.edits(q)).toEqual([`${ASK} · ⏳ 3 min`]);
     expect(second.api.of('editMessageText')[0].body).toMatchObject({ message_id: q.id });   // the post the first boot made
     clock.advance(3 * MIN); await second.pulse();
-    expect(second.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(second.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch', QUOTE));
     expect(stored(io)).toEqual([]);
     second.app.stop();
   });
@@ -776,7 +825,7 @@ describe('a Telegram node: the open question expires', () => {
     const q = await larkNamesFinch(a);
     expect(q.body.text).toBe(`${ASK} · ⏳ 3 min`);
     clock.advance(3 * MIN); await a.pulse();
-    expect(a.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch'));
+    expect(a.edits(q).at(-1)).toBe(mentionExpired('lark', 'finch', QUOTE));
     a.app.stop();
 
     const io = memIo();
@@ -803,7 +852,7 @@ describe('a Telegram node: the open question expires', () => {
     expect(n.lines.some((l) => /the post #501 would not take an edit/.test(l))).toBe(true);
     clock.advance(10 * MIN); await n.pulse();
     expect(n.edits(q)).toHaveLength(1);
-    expect(n.api.of('sendMessage').at(-1).body.text).toBe(mentionExpired('lark', 'finch'));
+    expect(n.api.of('sendMessage').at(-1).body.text).toBe(mentionExpired('lark', 'finch', QUOTE));
     n.app.stop();
   });
 });
