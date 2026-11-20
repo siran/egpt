@@ -148,7 +148,7 @@ describe('boot — the daemon holds the sessions across a spine restart', () => 
     claude.finishBg();                                 // …and the audit finishes while nobody listens
 
     const two = await d.spine();
-    await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('A background task you started has finished: audit — completed'))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('the audit is done'))).toBe(true), { timeout: 5000 });
     expect(two.spy.streams[0].chatId).toBe(CHAT);
 
     await two.say('e, sigues ahí?');
@@ -212,6 +212,8 @@ describe('boot — a held session spawned before --strict-mcp-config (deploy of 
     expect(d.lines.some((l) => /strictMcpConfig\) — reopen deferred: 1 background task/.test(l))).toBe(true);
 
     d.spawns[0].child.finishBg();
+    await vi.waitFor(() => expect(finals(two.spy).some((f) => f.includes('the audit is done'))).toBe(true), { timeout: 5000 });   // the CLI's own answer, sent
+    await two.say('e, otra vez');                      // the next turn reopens
     await vi.waitFor(() => expect(d.spawns).toHaveLength(2), { timeout: 5000 });
     expect(d.spawns[0].child.killed).toBe(true);
     expect(d.spawns[1].args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--resume', 'sess-1']));

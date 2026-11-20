@@ -147,14 +147,13 @@ describe('spine — a background task\'s result wakes the being', () => {
     expect(b.sender.placeholders).toHaveLength(1);
     const ph = b.sender.placeholders[0];
     expect(ph.chatId).toBe(CHAT);
-    expect(ph.finished.text).toMatch(/^checked: /);
-    expect(ph.finished.text).not.toContain('the audit found');   // the chat gets the wake turn's reply
-    expect(b.logged).toEqual([{ chatId: CHAT, reply: ph.finished.text }]);
-    // The CLI's own turn ran to its end — never interrupted — and its answer is what the being sends.
-    expect(cli.lines.some((o) => o.type === 'control_request')).toBe(false);
-    const wake = cli.lines.at(-1).message.content[0].text;
-    expect(wake).toContain('Run the audit — completed');
-    expect(wake).toContain('the audit found 3 issues');
+    // The CLI's own answer IS what the chat gets, once; the being is not re-prompted to resend it.
+    expect(ph.finished).toEqual({ text: 'the audit found 3 issues', surface: true });
+    expect(b.logged).toEqual([{ chatId: CHAT, reply: 'the audit found 3 issues' }]);
+    expect(cli.lines.some((o) => o.type === 'control_request')).toBe(false);   // the CLI's own turn ran to its end, never interrupted
+    expect(cli.lines.map((o) => o.message?.content?.[0]?.text ?? '').some((t) => /never reached the chat/.test(t))).toBe(false);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(b.sender.placeholders).toHaveLength(1);   // no duplicate
   });
 
   it('the wake prompt names the finished task and asks for a verified report; the gate sees an addressed turn', async () => {
@@ -170,18 +169,28 @@ describe('spine — a background task\'s result wakes the being', () => {
     expect(b.sender.placeholders[0].finished).toEqual({ text: 'report-1', surface: true });
   });
 
-  it('with the CLI\'s own answer on it (ED, live 2026-10-30): the being is handed that answer to send — the task named, no restart claimed', async () => {
+  it('with the CLI\'s own answer on it (live 2026-11-20): posted once to the originating chat, no re-prompt, no model call', async () => {
     const brain = stubBrain();
     const b = build({ brain, mode: 'mention' });
+    expect(await b.spine.wakeOnBackground({ ...DONE, reply: 'The audit passed: 0 issues.' })).toBe(true);
+    expect(brain.calls).toHaveLength(0);
+    expect(b.sender.placeholders).toHaveLength(1);
+    expect(b.sender.placeholders[0].chatId).toBe(CHAT);
+    expect(b.sender.placeholders[0].finished).toEqual({ text: 'The audit passed: 0 issues.', surface: true });
+    expect(b.logged).toEqual([{ chatId: CHAT, reply: 'The audit passed: 0 issues.' }]);
+  });
+
+  it('FALLBACK: the answer could not be delivered → logged loudly, and the being is handed it to send', async () => {
+    const brain = stubBrain();
+    const b = build({ brain, mode: 'mention' });
+    const open = b.sender.open;
+    let n = 0;
+    b.sender.open = (chatId, opts) => { const o = open(chatId, opts); if (n++ === 0) o.finish = async () => { throw new Error('bridge down'); }; return o; };
     await b.spine.wakeOnBackground({ ...DONE, reply: 'The audit passed: 0 issues.' });
+    expect(b.notes.some((m) => /FALLBACK/.test(m))).toBe(true);
     expect(brain.calls).toHaveLength(1);
-    const line = brain.calls[0].ev.line;
-    expect(line).toContain('Run the audit — completed');
-    expect(line).toContain('The audit passed: 0 issues.');
-    expect(line).toMatch(/never reached the chat/);
-    expect(line).toMatch(/Send it to the chat now/);
-    expect(line).not.toMatch(/restart/);
-    expect(b.sender.placeholders[0].finished).toEqual({ text: 'report-1', surface: true });
+    expect(brain.calls[0].ev.line).toMatch(/never reached the chat/);
+    expect(brain.calls[0].ev.line).toContain('The audit passed: 0 issues.');
   });
 
   it('the CLI\'s own answer is a bare polite silence (live 2026-10-30, 3×): the being is NOT woken — answered, nothing to send', async () => {
