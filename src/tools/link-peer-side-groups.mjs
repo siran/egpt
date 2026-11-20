@@ -18,7 +18,7 @@ import { liveDaemonPid } from '../daemon-singleton.mjs';
 import { readConfigSync } from './config-io.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 
-const KIND_ORDER = { split: 0, automatic: 1, join: 1 };   // a side group's chat may itself be a split
+const KIND_ORDER = { split: 0, automatic: 1, side: 1, join: 1 };   // a side group's chat may itself be a split
 
 // The peer's side groups: { surface, chatId, kind, origin, transcript, title, mouth }.
 export function peerSideGroups(peerState) {
@@ -26,7 +26,7 @@ export function peerSideGroups(peerState) {
   for (const [surface, bucket] of Object.entries(peerState?.contacts ?? {})) {
     for (const [chatId, e] of Object.entries(bucket ?? {})) {
       const mouth = e?.mouth_chat ?? null;
-      if (e?.aliasOf) out.push({ surface, chatId, kind: e.automatic === true ? 'automatic' : 'join', origin: e.aliasOf, transcript: e.transcript ?? null, title: e.transcript ?? null, mouth });
+      if (e?.aliasOf) out.push({ surface, chatId, kind: e.automatic === true ? (e.side === true ? 'side' : 'automatic') : 'join', origin: e.aliasOf, transcript: e.transcript ?? null, title: e.transcript ?? null, mouth });
       else if (e?.parent_chat) out.push({ surface, chatId, kind: 'split', origin: e.parent_chat, transcript: null, title: e.pushedName || null, mouth });
     }
   }

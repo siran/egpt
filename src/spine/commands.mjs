@@ -269,7 +269,7 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 
 // The commands anyone in a chat may run (operator 2026-10-19): config.yaml public_commands, or the
 // chat's own conversations.yaml list, which replaces it. Everything else is the node's allowed users'.
-const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end'];
+const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end', 'side'];
 // Bare /agents: a non-operator gets agentsPublic where public_commands lists agents.
 const AGENTS_BARE_CMD = /^\/agents\s*$/i;
 // /<handle> super <message> (operator 2026-11-04): a turn of the chat's superintendent, agents.super.
@@ -1130,6 +1130,10 @@ export function createCommands({
     if (sendMatch) { await sendToOriginal(ev); return; }
     const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
     if (endMatch) { return await end(ev); }   // end() returns its outcome string (archived / no-op) for the audit line
+
+    // /side <prompt> — one turn of this chat's being, its reply in the chat's SI+ group (sideTurn).
+    const sideMatch = /^\/side\b[ \t]*([\s\S]*)$/i.exec(line);
+    if (sideMatch) return await sideTurn(ev, sideMatch[1].trim());
 
     // /super <message> — a turn of this chat's S (agents.super), answered here: its own thread in this chat.
     const superMatch = /^\/super\b[ \t]*([\s\S]*)$/i.exec(line);
@@ -3934,7 +3938,8 @@ export function createCommands({
   // A group chat: the bridge's chatType, else (a turn the spine starts) the chat's own record.
   const isGroupChat = async (ev) => (ev.raw ? ev.raw.chatType : (await forkBridge.chatRaw?.(ev.chatId))?.type) === 'group';
   const autoCreating = new Map();   // surface+chatId → the create in flight, so one reply makes one group
-  async function autoSideGroup(ev, { create = true, late = false } = {}) {
+  const autoRoomOf = (state, surface, chatId) => Object.keys(state.contacts[surface]).find((id) => state.contacts[surface][id]?.aliasOf === chatId && state.contacts[surface][id].automatic === true) ?? null;
+  async function autoSideGroup(ev, { create = true, late = false, once = false } = {}) {
     if (!loadState || !writeState) return null;
     const surface = surfaceOf(ev);
     let state;
@@ -3947,10 +3952,11 @@ export function createCommands({
       const byDefault = !late && sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
       return byDefault ? () => autoSideGroup(ev, { late: true }) : null;
     }
-    const setting = own.reply_in_side_group != null ? replyInSideGroupOf(own.reply_in_side_group)
-      : sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev);
+    // `once` (/side): this one reply goes to the side group whatever the chat's setting; a title it names still stands.
+    const setting = (own.reply_in_side_group != null ? replyInSideGroupOf(own.reply_in_side_group)
+      : sideGroupByDefault(own, { surface, group: true }, cfg()) && await isGroupChat(ev)) || once;
     if (!setting) return null;
-    const room = Object.keys(state.contacts[surface]).find((id) => state.contacts[surface][id]?.aliasOf === ev.chatId && state.contacts[surface][id].automatic === true) ?? null;
+    const room = autoRoomOf(state, surface, ev.chatId);
     if (room) {
       const alive = forkBridge.chatRaw ? await superChannelAlive(room, { chatRaw: forkBridge.chatRaw, config: cfg() }) : null;
       if (alive !== false) return room;
@@ -3959,18 +3965,42 @@ export function createCommands({
     }
     if (!create) return () => autoSideGroup(ev);
     const key = `${surface}\u0000${ev.chatId}`;
-    if (!autoCreating.has(key)) autoCreating.set(key, openAutoSideGroup(ev, surface, setting).finally(() => autoCreating.delete(key)));
+    if (!autoCreating.has(key)) autoCreating.set(key, openAutoSideGroup(ev, surface, setting, once).finally(() => autoCreating.delete(key)));
     return (await autoCreating.get(key)) ?? false;
   }
-  async function openAutoSideGroup(ev, surface, setting) {
+  // /<handle> side <prompt>: ONE turn of the chat's being, in the chat's own thread, whose reply goes to its
+  // automatic side group (autoSideGroup with `once`; made there when the chat has none). The chat gets one
+  // line naming the group. The prompt line is on the chat's record as typed (ingestion); the being is
+  // prompted with the prompt alone (`trigger`).
+  async function sideTurn(ev, prompt) {
+    const refuse = async (why) => { await send?.(ev.chatId, `/side: ${why}`); return `refused — ${why}`; };
+    if (!prompt) { await send?.(ev.chatId, `usage: ${hintOf('side <prompt>', ev)}`); return; }
+    const surface = surfaceOf(ev);
+    if (surface === 'telegram') return refuse(`Telegram has no side groups — use ${hintOf('split', ev)}`);
+    const own = (await loadState())?.contacts?.[surface]?.[ev.chatId];
+    if (!own) return refuse('this chat has no record here yet');
+    if (own.aliasOf) return refuse('this is a side group already — a reply here stays here');
+    if (own.parent_chat) return refuse('this is a /split, another thread — it has no side group');
+    if (!(await isGroupChat(ev))) return refuse('side groups are for group chats');
+    if (!senderMayWake(await loadState(), surface, ev.chatId, ev, ev.commandBeing)) return refuse(`you may not wake ${ev.commandBeing} here`);
+    const head = ev.line != null && ev.line.endsWith(prompt) ? ev.line.slice(0, ev.line.length - prompt.length).replace(/\/\S+[ \t]+\S+[ \t]+$/, '') : '';
+    const ran = await commandTurn({ being: ev.commandBeing, ev, trigger: head + prompt, side: true });
+    if (!ran) return refuse(`no turn — the side group could not be made, or ${ev.commandBeing} is quiet in this chat`);
+    const room = autoRoomOf(await loadState(), surface, ev.chatId);
+    await send?.(ev.chatId, `↪ replying in ${(room && await forkBridge.chatTitle?.(room)) || sidePrefixed(ev.chatName || ev.chatId)}`);
+    return ran;
+  }
+  // `once` (/side): the group is marked `side: true` on its entry and its opener's canary says kind 'side' (not
+  // 'automatic'), so the other node links it as an alias without switching the chat to reply_in_side_group.
+  async function openAutoSideGroup(ev, surface, setting, once = false) {
     const plan = await sideGroupPlan(ev, 'automatic', { everyone: true });
     if (!plan) return null;
     const cTitle = ev.chatName || (await forkBridge.chatTitle(ev.chatId)) || ev.chatId;
     const title = setting === true ? sidePrefixed(cTitle) : setting;
-    const aliased = await createAliasedSideGroup(ev, surface, title, plan, 'automatic', { automatic: true });
+    const aliased = await createAliasedSideGroup(ev, surface, title, plan, 'automatic', { automatic: true, ...(once ? { side: true } : {}) });
     if (!aliased) return null;
     onLog(`automatic: ${cTitle} -> ${aliased.chatId} "${title}" (invited ${plan.participantIDs.join(', ')})`);
-    await postOpener({ verb: 'automatic', newChatId: aliased.chatId, openerText: openerOf(null, AUTO_OPENER, cTitle), origin: aliased.primaryJid, kind: 'automatic', transcript: aliased.transcript });
+    await postOpener({ verb: 'automatic', newChatId: aliased.chatId, openerText: openerOf(null, AUTO_OPENER, cTitle), origin: aliased.primaryJid, kind: once ? 'side' : 'automatic', transcript: aliased.transcript });
     return aliased.chatId;
   }
   // The other node's half: a side group's opener names it, its origin and its kind (ev.canary, beside the
@@ -3983,7 +4013,7 @@ export function createCommands({
   // switches reply_in_side_group on for this node's own entry of the origin when that entry says
   // nothing (operator 2026-10-19: only the creating node is configured), in the same write — unless
   // this node's default already covers it (sideGroupByDefault; the origin is taken as a group).
-  const SIDE_KINDS = new Set(['join', 'split', 'automatic']);
+  const SIDE_KINDS = new Set(['join', 'split', 'automatic', 'side']);
   async function linkSideGroup(ev) {
     const c = ev?.canary;
     if (!c?.origin || ev.fromNode == null || !loadState || !writeState) return;
@@ -4013,7 +4043,7 @@ export function createCommands({
         as = `a fork in ${split.slug} (parent ${c.origin}; copied threads for ${split.copied.join(', ') || '(none)'})`;
       } else {
         const { jid } = getContact(state, surface, c.origin);
-        state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : {}) });
+        state = aliasContact(state, surface, chatId, jid, { transcript: c.transcript ?? sanitizeSlug(ev.chatName || chatId), ...(c.kind === 'automatic' ? { automatic: true } : c.kind === 'side' ? { automatic: true, side: true } : {}) });
         as = `an alias of ${jid}`;
         const originEntry = getContact(state, surface, jid)?.entry;
         if (c.kind === 'automatic' && originEntry?.reply_in_side_group == null && !sideGroupByDefault(originEntry, { surface, group: true }, cfg())) {

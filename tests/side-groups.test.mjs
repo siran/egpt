@@ -78,6 +78,7 @@ function harness({ config = cfg(), state, chatRaw = async () => LIVE, created = 
   const calls = { create: [], post: [], archive: [], edit: [], resolve: [], byTitle: [], awaitMouth: [], lost: [] };
   const mouthWaiters = [];
   const rodzSaw = [];
+  let turnHook = null;   // the spine's commandTurn (buildSpine binds it), as boot late-binds it for /side
   const forkBridge = {
     editMessage: async (chatId, msgId, text) => { calls.edit.push({ chatId, msgId, text }); return true; },
     createGroup: async (opts, o = {}) => { calls.create.push({ ...opts, via: o.via ?? null }); return { success: true, chatID: created[calls.create.length - 1] }; },
@@ -112,10 +113,11 @@ function harness({ config = cfg(), state, chatRaw = async () => LIVE, created = 
     writeState: async (s) => { st = s; },
     forkBridge,
     reportUndelivered: async (o) => { calls.lost.push(o); return true; },
+    commandTurn: async (o) => turnHook?.(o) ?? null,
     onLog: (m) => logs.push(m),
   });
   // rodzGot: Rodz's account received `text` in its own room for `chatId` (the other node's half).
-  return { cmds, sent, logs, calls, config, getState: () => st, setState: (s) => { st = s; }, rodzGot: (chatId, text) => rodzSaw.push({ chatID: SEC(chatId), text }) };
+  return { cmds, sent, logs, calls, config, bindTurn: (f) => { turnHook = f; }, getState: () => st, setState: (s) => { st = s; }, rodzGot: (chatId, text) => rodzSaw.push({ chatID: SEC(chatId), text }) };
 }
 
 // Lola: a member of the group, not the operator, not on any allowed_users list.
@@ -389,7 +391,7 @@ const fakeTimers = () => {
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
 function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 'ok', partials = [], timers = null, transcript = { async log() {} }, train = null } = {}) {
-  const brain = { calls: [], async turn(being, ev, onPartial) { this.calls.push({ being, chatId: ev.chatId }); for (const p of partials) onPartial?.(...(Array.isArray(p) ? p : [p])); return { text: typeof reply === 'function' ? reply() : reply }; } };
+  const brain = { calls: [], lines: [], async turn(being, ev, onPartial) { this.calls.push({ being, chatId: ev.chatId }); this.lines.push(ev.line ?? ev.body); for (const p of partials) onPartial?.(...(Array.isArray(p) ? p : [p])); return { text: typeof reply === 'function' ? reply() : reply }; } };
   const bridge = streamingBridge();
   const notes = [];
   const config = { ...h.config, dispatch: { auto_default_mode: mode, ...(train ? { thinking_train: train } : {}) } };
@@ -403,6 +405,7 @@ function buildSpine(h, { mode = 'on', node = 'kg', actions = undefined, reply = 
     isSelfChat: () => false, clock: { now: () => 1000 }, turnTimeoutMs: 0,
     ...(timers ? { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout } : {}),
   });
+  h.bindTurn?.((o) => spine.commandTurn(o));
   // Every message the being's replies opened, in order: the chat it went to and what it quotes.
   const opened = () => [...bridge.streams.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null })), ...bridge.sent.map((s) => ({ chatId: s.chat, replyTo: s.opts?.replyTo ?? null }))];
   return { spine, brain, bridge, opened, notes };
@@ -885,6 +888,41 @@ describe('two nodes on the shared accounts: one creates, the other links', () =>
     expect(chatsOf(b)).toEqual([SIDE]);                         // the peer replies in the linked group
   });
 
+  describe('the other node links a group by where it came from (reply_in_side_group: on only for reply_in_side_group groups)', () => {
+    const linked = async (kind) => {
+      const h = harness({ config: cfg({ node_role: 'secondary' }), state: seedState() });
+      const b = buildSpine(h, { node: 'do' });
+      const canary = { group: SIDE, origin: ORIGIN, kind, transcript: `SI+${TITLE}` };
+      h.rodzGot(SIDE, OPENER(canary)[0]);
+      await say(b.spine, ...OPENER(canary));
+      return h.getState().contacts.whatsapp;
+    };
+
+    it('REPRODUCE: a /side group (canary kind side) is linked as an alias of the chat; its chat keeps reply_in_side_group unset', async () => {
+      const c = await linked('side');
+      expect(c[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true, side: true, mouth_chat: SEC(SIDE) });
+      expect(c[ORIGIN].reply_in_side_group).toBeUndefined();
+    });
+
+    it('a reply_in_side_group group (kind automatic) still switches reply_in_side_group on for the chat (regression lock)', async () => {
+      const c = await linked('automatic');
+      expect(c[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true });
+      expect(c[SIDE].side).toBeUndefined();
+      expect(c[ORIGIN].reply_in_side_group).toBe('on');
+    });
+
+    it('the creator marks the group it made: /side → entry side: true and canary kind side; reply_in_side_group → neither', async () => {
+      const viaSide = harness();
+      await say(buildSpine(viaSide).spine, '/e side hola', { chatType: 'group' });
+      expect(viaSide.getState().contacts.whatsapp[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true, side: true });
+      expect(viaSide.calls.post[0].canary).toMatchObject({ group: SIDE, origin: ORIGIN, kind: 'side' });
+      const viaSetting = harness({ state: seedState({ entry: AUTOMATIC }) });
+      await say(buildSpine(viaSetting).spine, ASK);
+      expect(viaSetting.getState().contacts.whatsapp[SIDE].side).toBeUndefined();
+      expect(viaSetting.calls.post[0].canary.kind).toBe('automatic');
+    });
+  });
+
   it('a /join or /split opener posted before 2026-10-19 (its canary names the group alone) links nothing on the other node', async () => {
     const h = harness({ config: cfg({ node_role: 'secondary' }), state: seedState({ entry: AUTOMATIC }) });
     const b = buildSpine(h, { node: 'do' });
@@ -962,5 +1000,162 @@ describe('no loop: the side group\'s own output wakes nobody', () => {
     await say(b.spine, `🐶 E: aquí estoy${SIG}`, { chatId: SIDE, chatName: `SI+${TITLE}`, userId: RODZ_USER_ID, isSender: true });
     expect(b.brain.calls).toEqual([]);
     expect(b.opened()).toHaveLength(before);
+  });
+});
+
+// ── /<handle> side <prompt> (operator 2026-11-20: "it is not another thread, it's the same thread, it just
+// replies in another channel"): one turn of the chat's being, in the chat's own thread, its reply in the
+// chat's SI+ group — made by the reply_in_side_group path (autoSideGroup) when the chat has none.
+describe('/<handle> side <prompt>: one reply in the side group, same thread', () => {
+  const GROUP = { chatType: 'group' };
+  const SIDE_ASK = '/e side hola a todos';
+  const log = () => { const rows = []; return { rows, async log(ev, reply) { rows.push({ chatId: ev.chatId, text: reply ? `reply:${typeof reply === 'string' ? reply : reply.text}` : (ev.line ?? ev.body) }); } }; };
+  const pointers = (h) => h.sent.filter((s) => s.chatId === ORIGIN && /SI\+/.test(s.text));
+
+  it('REPRODUCE: the turn runs in the chat\'s own thread, its reply goes to the SI+ group made now, the chat itself stays in place', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(b.brain.calls).toEqual([{ being: 'e', chatId: ORIGIN }]);        // the chat's id: its folder, its thread
+    expect(b.brain.lines[0]).toContain('hola a todos');
+    expect(b.brain.lines[0]).toMatch(/: hola a todos$/);                       // the prompt, not the command
+    expect(h.calls.create.map((c) => [c.via, c.title, c.participantIDs])).toEqual([['primary', `SI+${TITLE}`, [RODZ_USER_ID, LOLA, PEPE]]]);
+    expect(h.getState().contacts.whatsapp[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true });
+    expect(h.getState().contacts.whatsapp[ORIGIN].reply_in_side_group).toBeUndefined();   // the chat's own setting is untouched
+    expect(chatsOf(b)).toEqual([SIDE]);
+  });
+
+  it('the origin gets ONE short line naming the side group', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(pointers(h)).toHaveLength(1);
+    expect(pointers(h)[0].text).toContain(`SI+${TITLE}`);
+    expect(pointers(h)[0].text).not.toContain('\n');
+    expect(h.sent.filter((s) => s.chatId === ORIGIN)).toHaveLength(1);
+  });
+
+  it('the prompt line is recorded in the ORIGINAL chat, and the reply is recorded as a reply_in_side_group reply is', async () => {
+    const t = log();
+    const h = harness();
+    const b = buildSpine(h, { transcript: t, reply: 'listo' });
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(t.rows.find((r) => r.text.includes('/e side hola a todos'))).toMatchObject({ chatId: ORIGIN });
+    const t2 = log();
+    const h2 = harness({ state: seedState({ entry: AUTOMATIC }) });
+    await say(buildSpine(h2, { transcript: t2, reply: 'listo' }).spine, ASK, GROUP);
+    const side = t.rows.find((r) => r.text === 'reply:listo');
+    expect(side).toBeTruthy();
+    expect(side.chatId).toBe(t2.rows.find((r) => r.text === 'reply:listo').chatId);
+  });
+
+  it('later lines reply in place; a second /side reuses the group', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, GROUP);
+    await say(b.spine, 'e, y ahora?', GROUP);
+    await say(b.spine, '/e side otra', GROUP);
+    expect(chatsOf(b)).toEqual([SIDE, ORIGIN, SIDE]);
+    expect(h.calls.create).toHaveLength(1);
+  });
+
+  it('a chat with reply_in_side_group on and its group: the same group, nothing new', async () => {
+    const h = harness({ state: seedState({ entry: AUTOMATIC }) });
+    const b = buildSpine(h);
+    await say(b.spine, ASK, GROUP);
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(h.calls.create).toHaveLength(1);
+    expect(chatsOf(b)).toEqual([SIDE, SIDE]);
+  });
+
+  it('an empty prompt: the usage, no turn, nothing made', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, '/e side', GROUP);
+    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringContaining('usage: /e side <prompt>') }]);
+    expect(b.brain.calls).toEqual([]);
+    expect(h.calls.create).toEqual([]);
+  });
+
+  it('a 1:1 is refused with its reason (side groups are for group chats)', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, { chatType: 'private' });
+    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/\/side.*group chat/) }]);
+    expect(b.brain.calls).toEqual([]);
+    expect(h.calls.create).toEqual([]);
+  });
+
+  it('the side group itself: refused, a reply there is already in the side group', async () => {
+    const st = aliasContact(seedState(), 'whatsapp', SIDE, ORIGIN, { transcript: `SI+${TITLE}`, automatic: true });
+    const h = harness({ state: st });
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, { ...GROUP, chatId: SIDE, chatName: `SI+${TITLE}` });
+    expect(h.sent).toEqual([{ chatId: SIDE, text: expect.stringMatching(/\/side.*side group/) }]);
+    expect(b.brain.calls).toEqual([]);
+    expect(h.calls.create).toEqual([]);
+  });
+
+  it('a /split is another thread: refused', async () => {
+    const h = harness({ state: seedState({ entry: { parent_chat: 'otro' } }) });
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/\/side.*\/split/) }]);
+    expect(b.brain.calls).toEqual([]);
+    expect(h.calls.create).toEqual([]);
+  });
+
+  it('Telegram: refused with "use /split" (reply_in_side_group is never Telegram)', async () => {
+    const h = harness();
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, { ...GROUP, network: 'telegram' });
+    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/Telegram.*\/e split/) }]);
+    expect(b.brain.calls).toEqual([]);
+    expect(h.calls.create).toEqual([]);
+  });
+
+  it('the side group cannot be made: said loudly in the chat, no reply anywhere', async () => {
+    const h = harness({ created: [] });
+    const b = buildSpine(h);
+    await say(b.spine, SIDE_ASK, GROUP);
+    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/\/side.*side group could not be made/) }]);
+    expect(b.opened()).toEqual([]);
+    expect(b.brain.calls).toEqual([]);
+  });
+
+  describe('gates: the same as a normal turn by that sender', () => {
+    it('side is public by default: a member who may wake the being runs it', async () => {
+      const h = harness();
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, GROUP);
+      expect(b.brain.calls).toHaveLength(1);
+    });
+
+    it('public_commands without side (the chat\'s own list): the line is ordinary text, no side turn', async () => {
+      const h = harness({ state: seedState({ entry: { public_commands: ['split'] } }) });
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, GROUP);
+      expect(h.calls.create).toEqual([]);
+      expect(chatsOf(b)).not.toContain(SIDE);
+    });
+
+    it('mute: no turn, no group', async () => {
+      const h = harness({ state: patchBeing(seedState(), 'whatsapp', ORIGIN, 'e', { mode: 'mute' }) });
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, GROUP);
+      expect(b.brain.calls).toEqual([]);
+      expect(h.calls.create).toEqual([]);
+      expect(chatsOf(b)).toEqual([]);
+    });
+
+    it('a sender the being\'s allowed_users leaves out: no turn, no group', async () => {
+      const closed = { e: { handles: ['e'], conversation_defaults: { allowed_users: [] } } };
+      const h = harness({ config: cfg({ extra: { agents: closed } }) });
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, GROUP);
+      expect(b.brain.calls).toEqual([]);
+      expect(h.calls.create).toEqual([]);
+      expect(h.sent.some((s) => /\/side/.test(s.text))).toBe(true);
+    });
   });
 });
