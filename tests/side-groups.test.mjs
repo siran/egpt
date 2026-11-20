@@ -1077,13 +1077,55 @@ describe('/<handle> side <prompt>: one reply in the side group, same thread', ()
     expect(h.calls.create).toEqual([]);
   });
 
-  it('a 1:1 is refused with its reason (side groups are for group chats)', async () => {
-    const h = harness();
-    const b = buildSpine(h);
-    await say(b.spine, SIDE_ASK, { chatType: 'private' });
-    expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/\/side.*group chat/) }]);
-    expect(b.brain.calls).toEqual([]);
-    expect(h.calls.create).toEqual([]);
+  // A 1:1 (operator 2026-11-20: "make /e side work also in 1:1, inviting the person, Rodz and me"): the chat's
+  // other person is read from the primary's roster of it (chatRaw), as a group's members are. The primary that
+  // makes the group is the operator, a member as its creator.
+  describe('in a 1:1: the person and Rodz are invited by the primary', () => {
+    const SINGLE = { chatType: 'single' };
+    const DM = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: LOLA, phoneNumber: `+${LOLA_DIGITS}` }] } };
+
+    it('REPRODUCE: creates "SI+<person>" with [Rodz, the person] on the primary, the reply there, one pointer in the 1:1, same thread', async () => {
+      const h = harness({ chatRaw: async () => DM });
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, SINGLE);
+      expect(h.calls.create).toEqual([{ accountID: 'whatsapp', participantIDs: [RODZ_USER_ID, LOLA], type: 'group', title: `SI+${TITLE}`, via: 'primary' }]);
+      expect(h.getState().contacts.whatsapp[SIDE]).toMatchObject({ aliasOf: ORIGIN, automatic: true, side: true });
+      expect(h.calls.post[0].canary).toMatchObject({ group: SIDE, origin: ORIGIN, kind: 'side' });
+      expect(b.brain.calls).toEqual([{ being: 'e', chatId: ORIGIN }]);
+      expect(chatsOf(b)).toEqual([SIDE]);
+      expect(pointers(h)).toHaveLength(1);
+      expect(h.sent.filter((s) => s.chatId === ORIGIN)).toHaveLength(1);
+    });
+
+    it('a second /side in the same 1:1 reuses the group; plain lines reply in place', async () => {
+      const h = harness({ chatRaw: async () => DM });
+      const b = buildSpine(h);
+      await say(b.spine, SIDE_ASK, SINGLE);
+      await say(b.spine, 'e, y ahora?', SINGLE);
+      await say(b.spine, '/e side otra', SINGLE);
+      expect(chatsOf(b)).toEqual([SIDE, ORIGIN, SIDE]);
+      expect(h.calls.create).toHaveLength(1);
+    });
+
+    it('the reply_in_side_group node default stays group-only: a 1:1 still replies in place', async () => {
+      const h = harness({ config: cfg({ extra: { reply_in_side_group: 'on' } }), chatRaw: async () => ({ ...DM, type: 'single' }) });
+      const b = buildSpine(h);
+      await say(b.spine, ASK, SINGLE);
+      expect(h.calls.create).toEqual([]);
+      expect(chatsOf(b)).toEqual([ORIGIN]);
+    });
+
+    it('no other person resolvable (roster unreadable, or only us): refused with the reason, nothing made', async () => {
+      const alone = { participants: { items: [{ id: AN_ID, phoneNumber: AN, isSelf: true }, { id: RODZ_USER_ID, phoneNumber: RODZ }] } };
+      for (const chatRaw of [async () => null, async () => alone]) {
+        const h = harness({ chatRaw });
+        const b = buildSpine(h);
+        await say(b.spine, SIDE_ASK, SINGLE);
+        expect(h.sent).toEqual([{ chatId: ORIGIN, text: expect.stringMatching(/\/side.*other person/) }]);
+        expect(b.brain.calls).toEqual([]);
+        expect(h.calls.create).toEqual([]);
+      }
+    });
   });
 
   it('the side group itself: refused, a reply there is already in the side group', async () => {

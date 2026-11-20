@@ -177,8 +177,9 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                chat's own thread, answered in the
                                                chat's SI+ side group (made as
                                                reply_in_side_group makes it); the
-                                               chat gets one line naming it. Group
-                                               chats only; not in a side group, a
+                                               chat gets one line naming it. In a
+                                               1:1 it invites the person + Rodz.
+                                               Not in a side group, a
                                                /split or on Telegram. Public
 ```
 
