@@ -3981,7 +3981,8 @@ export function createCommands({
     if (!own) return refuse('this chat has no record here yet');
     if (own.aliasOf) return refuse('this is a side group already — a reply here stays here');
     if (own.parent_chat) return refuse('this is a /split, another thread — it has no side group');
-    if (!(await isGroupChat(ev))) return refuse('side groups are for group chats');
+    // A 1:1: the group invites the chat's other person (the roster, as a group's members) + Rodz; the primary that makes it is a member already.
+    if (!(await isGroupChat(ev)) && !(await membersOf(ev.chatId, '/side'))?.length) return refuse('I cannot tell who the other person in this chat is — no side group');
     if (!senderMayWake(await loadState(), surface, ev.chatId, ev, ev.commandBeing)) return refuse(`you may not wake ${ev.commandBeing} here`);
     const head = ev.line != null && ev.line.endsWith(prompt) ? ev.line.slice(0, ev.line.length - prompt.length).replace(/\/\S+[ \t]+\S+[ \t]+$/, '') : '';
     const ran = await commandTurn({ being: ev.commandBeing, ev, trigger: head + prompt, side: true });
