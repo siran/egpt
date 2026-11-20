@@ -149,13 +149,16 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                restarts Beeper (eGPT stays up),
                                                one result line in log_to_group;
                                                else the one-line Beeper state
-/<handle> browser [group]                      this chat's (or [group]'s) browser,
-                                               opened on its own screen, and a
-                                               link: VIEW-only in the chat,
-                                               CONTROL to admin_channel (both
-                                               when typed there; refused while
-                                               admin_channel is unset). See below
-/<handle> browser all [group]                  the CONTROL link in the chat:
+/<handle> browser [<profile> [new]] [keep]     this chat's browser, opened on its
+                                               own screen (its profile: the one
+                                               it was put on, else shared; a
+                                               <profile> puts it there for
+                                               good), and a link: VIEW-only
+                                               in the chat, CONTROL to
+                                               admin_channel (both when typed
+                                               there; refused while admin_channel
+                                               is unset). See below
+/<handle> browser all [<profile> [new]] [keep] the CONTROL link in the chat:
                                                anyone with it drives
 /<handle> browser stop [group]                 close the link now; the browser
                                                stays
@@ -396,7 +399,7 @@ for sign-in. When it exits, the chat you typed the command in gets one line:
 "browser <group> is back — signed-in session will be used". eGPT uses no stealth
 and solves no captchas. You pass the check yourself.
 
-### `/<handle> browser [all|stop|close] [group]` — see a group's browser, or share it
+### `/<handle> browser [all] [<profile> [new]] [keep]`, `stop|close [group]` — see a group's browser, or share it
 
 On a container node (nu, EDW: Linux, no physical desktop) every browser group has
 its own virtual screen (`:100` and up, one per group, kept in
@@ -404,7 +407,7 @@ its own virtual screen (`:100` and up, one per group, kept in
 there. `:99` keeps Beeper and stays the operator's. The command is the node's own,
 like `/status`: no being turn.
 
-`/<handle> browser [group]` (owners only) opens this chat's (or [group]'s) browser
+`/<handle> browser` (owners only) opens this chat's browser
 if it is not up and answers with a link to its screen through a temporary
 Cloudflare tunnel (`*.trycloudflare.com`). The chat gets the VIEW-only link; the
 CONTROL link goes to `admin_channel`, never into the chat. Typed in the admin
@@ -413,12 +416,39 @@ says so and opens nothing. `/<handle> browser all` puts the CONTROL link in the
 chat: anyone with it can drive, together. Asking again while the link is open
 gives the same link; each new link has new passwords, so an old one is dead.
 
-The link has no time limit while someone watches. It closes 2 minutes after the
-last viewer leaves, or after 10 minutes if nobody opens it; `/<handle> browser
-stop` closes it now. `/<handle> browser close` closes the browser itself: its
-Chrome, its link and its screen; the next need starts them again. Nothing closes
-on memory. On a desktop node (Windows) the browser opens as a normal window on
-that PC and the answer says so: no screen, no link.
+The link closes 2 minutes after the last viewer leaves, or after 10 minutes if
+nobody opens it; `/<handle> browser stop` closes it now. A viewer left on a tab
+does not hold it open: after `chrome.idle_minutes` (default 30; `0` or `keep` =
+never) with no browser use through the spine (a being's browser tool, `/tabs`,
+`/open`, `/<handle> browser` again) and no human input in the browser (a click or
+a key through the link: the X display's idle time, `xprintidle` in the image),
+the link and its VNC close, the browser stays, and the chat the link was shared
+in gets one line: `browser <group> screen closed after N min idle`. If the
+probe cannot answer, the screen counts as active (never closed because the probe
+broke) and the log says so once. A group with an open link is not evicted on
+memory; with the link closed it is again. `keep` on the command (`/<handle> browser keep`, `browser all keep`) holds
+that link past the idle timer until `/<handle> browser close` (or `stop`); a
+spine restart forgets it. `/<handle> browser close` closes the browser itself: its
+Chrome, its link and its screen; the next need starts them again. On a desktop
+node (Windows) the browser opens as a normal window on that PC and the answer
+says so: no screen, no link.
+
+A browser group is a profile: group `work` runs on `~/.egpt/chrome/profiles/work`
+(`brain` = `chrome.profile_dir`), and `config/browsers.yaml` lists which chats
+belong to which group. A chat not listed is in `shared` (created on first use; no
+`new` needed). `/<handle> browser [all] <profile>` (`/edu browser lola`) puts THIS
+chat on that profile and writes the chat into `browsers.yaml` under that group
+(leaving any other), so the next bare `/edu browser [all]` uses it: its saved
+passwords, tabs, sessions. The name is a plain dir name (no paths, no `..`) of a
+profile this node knows (`brain`, `shared`, a `browsers.yaml` group, or a folder
+under `profiles/`); an unknown name is refused, `<profile> new` makes it (empty,
+signed in to nothing). Other chats naming the same profile share that one Chrome.
+A profile held by another group's Chrome (or the brain's own dir) is refused,
+nothing recorded. The `brain` group is fixed: its chats cannot leave it and no
+other chat joins it. To undo: `/<handle> browser shared` puts the chat back in
+`shared`. (Naming a group no longer views another group's browser; `stop` and
+`close` still name a GROUP.) The spine edits `browsers.yaml` for this, keeping
+its comments and other keys.
 
 On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
 [url]` (default `brain`, Google sign-in). It closes the Chrome processes on that

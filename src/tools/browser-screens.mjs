@@ -16,7 +16,7 @@
 //
 // A desktop node (Windows, or no Xvfb/x11vnc/websockify/noVNC here) has no screens: `available()` is false and the
 // group's Chrome opens as a normal window on that machine (plan decision 8).
-import { spawn as nodeSpawn } from 'node:child_process';
+import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { join, delimiter, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -56,14 +56,21 @@ const readOr = (p, fallback) => { try { return readFileSync(p, 'utf8'); } catch 
 const procTcp = () => ['/proc/net/tcp', '/proc/net/tcp6'].map((p) => readOr(p, ''));
 const procArgv = (pid) => readOr(`/proc/${pid}/cmdline`, '').split('\0').filter(Boolean);
 const onPath = (bin) => String(process.env.PATH ?? '').split(delimiter).some((d) => d && existsSync(join(d, bin)));
+// Milliseconds since the last X input on a display: xprintidle (XScreenSaverQueryInfo). VNC clients inject real X events, so a
+// viewer's click or key resets it. Throws when the probe cannot answer: the caller decides what that means.
+const xprintidle = (display) => {
+  const ms = Number.parseInt(execFileSync('xprintidle', { env: { ...process.env, DISPLAY: display }, encoding: 'utf8', timeout: 5000 }), 10);
+  if (!Number.isFinite(ms) || ms < 0) throw new Error(`xprintidle gave no idle time on ${display}`);
+  return ms;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * @param {object} o
  * @param {string} o.egptHome
- * Seams (tests): platform, spawn, argvOf(pid) → argv[], kill(pid), tcp() → /proc/net/tcp texts, has(bin), exists(path).
+ * Seams (tests): platform, spawn, argvOf(pid) → argv[], kill(pid), tcp() → /proc/net/tcp texts, xIdle(display) → ms, has(bin), exists(path).
  */
-export function createBrowserScreens({ egptHome, platform = process.platform, spawn = nodeSpawn, argvOf = procArgv, kill = (pid) => process.kill(pid), tcp = procTcp, has = onPath, exists = existsSync, startWaitMs = START_WAIT_MS, log = () => {} }) {
+export function createBrowserScreens({ egptHome, platform = process.platform, spawn = nodeSpawn, argvOf = procArgv, kill = (pid) => process.kill(pid), tcp = procTcp, xIdle = xprintidle, has = onPath, exists = existsSync, startWaitMs = START_WAIT_MS, log = () => {} }) {
   const statePath = join(egptHome, 'state', 'browser-screens.json');
   const dirOf = (group) => join(egptHome, 'state', 'browser-screens', group);
   const pwPath = (group) => join(dirOf(group), 'passwd');
@@ -143,15 +150,22 @@ export function createBrowserScreens({ egptHome, platform = process.platform, sp
       if (!ensuring.has(group)) ensuring.set(group, bringUp(group).finally(() => ensuring.delete(group)));
       return ensuring.get(group);
     },
+    // The group's X input idle ms (the idle timer: a viewer's click or typing counts as use). Throws: no screen, or no answer.
+    idleMs(group) {
+      const n = read()[group]?.display;
+      if (!Number.isInteger(n)) throw new Error(`no screen for ${group}`);
+      return xIdle(`:${n}`);
+    },
     // /browser close: stop its noVNC, x11vnc and Xvfb (a Chrome still on it goes with its X server). The number stays.
-    // → whether anything was running.
-    close(group) {
+    // `keepDisplay` (the idle timer): only the viewing side stops, the Xvfb and the Chrome on it stay. → whether anything was running.
+    close(group, { keepDisplay = false } = {}) {
       const all = read();
       const s = all[group];
       if (!s) return false;
       const d = `:${s.display}`, { rfbPort } = portsOf(s.display);
       let any = false;
       for (const [k, bin, needle] of [['web', 'websockify', `localhost:${rfbPort}`], ['vnc', 'x11vnc', rfbPort], ['xvfb', 'Xvfb', d]]) {
+        if (keepDisplay && k === 'xvfb') continue;
         if (running(s[k], bin, needle)) { try { kill(s[k]); any = true; } catch (e) { log(`browser screen ${group}: could not stop ${bin} pid ${s[k]} — ${e?.message ?? e}`); } }
         delete s[k];
       }

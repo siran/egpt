@@ -27,7 +27,7 @@ FROM node:${NODE_VERSION}-bookworm-slim
 # Electron runtime libs, virtual display, VNC, and tools egpt shells out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git tini procps lsof unzip gnupg jq \
-      xvfb x11vnc openbox xdotool imagemagick \
+      xvfb x11vnc openbox xdotool xprintidle imagemagick \
       libgtk-3-0 libnss3 libxss1 libasound2 libgbm1 libxshmfence1 libdrm2 \
       libsecret-1-0 libnotify4 libatspi2.0-0 libx11-xcb1 libxtst6 xdg-utils \
       fonts-noto-core fonts-noto-color-emoji \

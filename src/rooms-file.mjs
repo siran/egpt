@@ -74,6 +74,22 @@ const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 // so it is read fresh on every call and an edit needs no restart. Consumer: chrome-pool.chromeConversationOf.
 const BROWSERS = { file: 'browsers.yaml', root: 'groups' };
 export const readBrowserGroups = (deps = {}) => readRoomsFile({ reg: BROWSERS, ...deps });
+// /<handle> browser <profile>: the chat joins that group (group name = profile dir name) and leaves any other, so
+// browsers.yaml stays the one chat→group table. Edited through the Document API: comments, colors and uploads survive.
+export async function setBrowserGroup(chatName, group, { path = registryPath(BROWSERS), read = readFile, write = writeFile, ensureDir = mkdir } = {}) {
+  await ensureDir(dirname(path), { recursive: true });
+  let text = '';
+  try { text = await read(path, 'utf8'); } catch { /* new file */ }
+  const doc = YAML.parseDocument(text || `${BROWSERS.root}:\n`);
+  if (!YAML.isMap(doc.get(BROWSERS.root))) doc.set(BROWSERS.root, doc.createNode({}));
+  const name = sanitizeSlug(chatName);
+  for (const { value: seq } of doc.get(BROWSERS.root).items) {
+    if (YAML.isSeq(seq)) seq.items = seq.items.filter((m) => sanitizeSlug(String(YAML.isScalar(m) ? m.value : m)) !== name);
+  }
+  const members = doc.getIn([BROWSERS.root, group]);
+  if (YAML.isSeq(members)) members.add(chatName); else doc.setIn([BROWSERS.root, group], [chatName]);
+  await write(path, String(doc), 'utf8');
+}
 // Its optional `colors: { <group>: "#RRGGBB" }` (chrome-launcher.groupColor). {} when absent. Never throws.
 export async function readBrowserColors({ path = registryPath(BROWSERS), read = readFile } = {}) {
   try { const c = YAML.parse(await read(path, 'utf8'))?.colors; return isPlainObject(c) ? c : {}; } catch { return {}; }

@@ -63,7 +63,7 @@ import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature, decodeChatCanary } from '../node-signature.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
-import { readRoomConfig, readBrowserGroups, readBrowserColors } from '../rooms-file.mjs';
+import { readRoomConfig, readBrowserGroups, setBrowserGroup, readBrowserColors } from '../rooms-file.mjs';
 import { hhmm, dayBoundary } from '../dispatch-line.mjs';
 import { statCache } from '../stat-cache.mjs';
 
@@ -79,6 +79,8 @@ export const CHROME_BRAIN_PROFILE = resolveBrainProfile();
 // (per-Chrome cost floor) and chrome.memory_margin_mb (free-memory margin a launch must leave).
 const CHROME_LAUNCH_ESTIMATE_MB = 500;
 const CHROME_MEMORY_MARGIN_MB = 1024;
+const BROWSER_IDLE_MINUTES = 30;   // chrome.idle_minutes: a screen link closes after this long with no browser use; 0 / "keep" = never
+const IDLE_SWEEP_MS = 30_000;
 const MB = 1024 * 1024;
 
 // Default per-pid RSS reader (injected seam; faked in tests). Best-effort working set in bytes, or
@@ -590,6 +592,7 @@ export function createCommands({
   rssOf = defaultRssOf,
   onChromeLog = () => {},
   browserGroups = readBrowserGroups,     // config/browsers.yaml's groups, read fresh (rooms-file.readBrowserGroups)
+  assignBrowserGroup = setBrowserGroup,  // (chat name, group): `/browser <profile>` records the chat in that table (rooms-file.setBrowserGroup)
   profileFolders = defaultProfileFolders,   // the folder names under the profiles root
   browserColors = readBrowserColors,     // its optional colors: map, read at each launch
   // A SCREEN PER BROWSER GROUP (plans/2611022204-BROWSER-SCREENS.md): browserScreens starts the group's virtual
@@ -1212,12 +1215,18 @@ export function createCommands({
   // already holds → no browser + one log line. Never throws.
   // Resolves { group, profileDir, client, pid, launched, running, why? }.
   function ensureChrome(conversation, opts) { return _reattached.then(() => ensureGroupChrome(conversation, opts)); }
-  // A conversation's group and profile dir; no usable profile → profileDir null + why, logged.
+  // A conversation's group and profile dir; no usable profile → profileDir null + why, logged. One profile, one Chrome
+  // (Chrome's SingletonLock): a profile another group's Chrome (or sign-in window) holds is refused.
   function groupProfileOf(conversation) {
     const group = conversation ? conversation.group : BRAIN_GROUP;
     const profileDir = chromeProfileOf(cfg(), conversation);
-    if (profileDir && (group === BRAIN_GROUP || profileDir !== chromeProfileOf(cfg()))) return { group, profileDir };
-    const why = conversation?.why || `browser group "${group}" ${profileDir ? 'is the brain profile dir' : 'is unusable'}`;
+    let why = conversation?.why;
+    if (profileDir && (group === BRAIN_GROUP || profileDir !== chromeProfileOf(cfg()))) {
+      const heldBy = chromeAlive(_groups.get(profileDir)) ? _groups.get(profileDir).group : _signin.get(profileDir)?.group;
+      if (heldBy && heldBy !== group) why = `the "${basename(profileDir)}" profile is open in group "${heldBy}"'s browser — one profile, one Chrome; close that browser first`;
+      else return { group, profileDir };
+    }
+    why ||= `browser group "${group}" ${profileDir ? 'is the brain profile dir' : 'is unusable'}`;
     onChromeLog(`no browser for "${conversation?.name ?? ''}": ${why}`);
     return { group, profileDir: null, why };
   }
@@ -1299,19 +1308,30 @@ export function createCommands({
   // /browser [all|stop|close] [group] — the group's screen, shared by link (browserShow, below).
   async function browserCmd(ev, args) {
     const [verb = '', ...rest] = args.split(/\s+/).filter(Boolean);
-    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all|stop|close] [group]', ev)} — its link: view-only here and control to the admin channel; all: control here; stop: close the link; close: close the browser${more}`;
+    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all] [<profile> [new]] [keep]', ev)} — this chat's browser and its link; <profile> (default: the chat's, else \`shared\`) puts this chat on that profile for good — \`new\` makes one that does not exist, \`shared\` undoes it. The link: view-only here and control to the admin channel; all: control here; keep: the link stays open however idle the browser is · ${hintOf('browser stop|close [group]', ev)} — stop: close the link; close: close the browser${more}`;
     const v = verb.toLowerCase();
     if (v !== 'refresh') {
       const op = ['all', 'stop', 'close'].includes(v) ? v : '';
       const words = op ? rest : [verb, ...rest].filter(Boolean);
-      if (words.length > 1) return usage();
-      let named = null;
-      if (words[0]) {
-        const known = await knownBrowserGroups();
-        named = known.find((g) => g.toLowerCase() === words[0].toLowerCase());
-        if (!named) return usage(`; groups: ${known.join(', ')}`);
+      const known = await knownBrowserGroups();
+      if (op === 'stop' || op === 'close') {   // these name a GROUP
+        if (words.length > 1) return usage();
+        const named = words[0] ? known.find((g) => g.toLowerCase() === words[0].toLowerCase()) : null;
+        if (words[0] && !named) return usage(`; groups: ${known.join(', ')}`);
+        return op === 'stop' ? browserStop(ev, named) : browserClose(ev, named);
       }
-      return op === 'stop' ? browserStop(ev, named) : op === 'close' ? browserClose(ev, named) : browserShow(ev, named, op === 'all');
+      // [<profile> [new]] [keep]: the profile this chat is put on (a known one, or `new`)
+      const keep = words.at(-1)?.toLowerCase() === 'keep' && !!words.pop();
+      const isNew = words.length === 2 && words[1].toLowerCase() === 'new' && !!words.pop();
+      if (words.length > 1) return usage();
+      let profile = null;
+      if (words[0]) {
+        profile = known.find((g) => g.toLowerCase() === words[0].toLowerCase());
+        if (!profile && !isNew) return `no profile "${words[0]}" — ${hintOf(`browser ${words[0]} new`, ev)} makes it; profiles: ${known.join(', ')}`;
+        profile ??= words[0];
+        if (!isSafeGroupName(profile)) return usage();
+      }
+      return browserShow(ev, profile, op === 'all', keep);
     }
     if (rest.length > 2) return usage();
     let group = null;
@@ -1378,8 +1398,64 @@ export function createCommands({
   // A container node shows each group's Chrome on its own virtual screen (browserScreens) and shares it through a
   // quick tunnel (screenTunnel); a desktop node (Windows, no Xvfb) has neither — the Chrome is a window on that PC.
   // Nothing here closes on memory (operator #121: "don't close anything automatically"); only the link closes
-  // itself, on its viewers (screen-tunnel.mjs).
+  // itself, on its viewers (screen-tunnel.mjs) or on idleness (the idle timer, below).
   const hasScreens = () => !!browserScreens?.available();
+  // THE IDLE TIMER (operator 2026-11-19: "a browser inactivity timer, with an option to keep on"). A viewer left on a
+  // static tab is not activity: the signal is the group's lastUsedAt, which every spine browser use already stamps
+  // (ensureChrome: a being's tool, /tabs, /open, /browser…), or human input on its X display (activityOf). Past chrome.idle_minutes the link and the VNC close (the
+  // Chrome and its Xvfb stay) and, with no link, the group is evictable again. `keep` (per launch) skips it; a link
+  // shared before a spine restart is swept too, but its chat is forgotten (no line, a log).
+  const _keep = new Set();       // groups whose link was launched with keep: until /browser close or stop
+  const _linkChat = new Map();   // group → the chat its link was shared in (where the idle line goes)
+  let _sweep = null;
+  const idleMinutes = () => {
+    const v = cfg()?.chrome?.idle_minutes;
+    if (v == null) return BROWSER_IDLE_MINUTES;
+    return String(v).toLowerCase() === 'keep' ? 0 : Number(v) >= 0 ? Number(v) : BROWSER_IDLE_MINUTES;
+  };
+  // Activity = the later of the spine's last browser use and the last human input on the group's X display (a click or a key
+  // through VNC is real X input; operator 2026-11-20: "click counts, and typing in browser"). A probe that cannot answer
+  // counts as active — a broken probe never closes a screen — and says so once per group, until it answers again.
+  const _probeFailed = new Set();
+  function activityOf(e) {
+    try {
+      const ms = browserScreens.idleMs(e.group);
+      _probeFailed.delete(e.group);
+      return Math.max(e.lastUsedAt, now() - ms);
+    } catch (err) {
+      if (!_probeFailed.has(e.group)) onChromeLog(`"${e.group}" X idle probe failed — ${err?.message ?? err}; treating the screen as ACTIVE: the idle timer will not close it until the probe works (docker needs xprintidle)`);
+      _probeFailed.add(e.group);
+      return now();
+    }
+  }
+  const linked = () => [..._groups.values()].filter((e) => chromeAlive(e) && screenTunnel?.isOpen(e.group));
+  function idleSweeping() {
+    if (_sweep) return;
+    _sweep = setInterval(() => {
+      const idle = idleMinutes();
+      for (const e of linked()) {
+        if (!idle || _keep.has(e.group) || now() - activityOf(e) < idle * 60_000) continue;
+        idleClose(e.group, idle);
+      }
+      if (!linked().length) { clearInterval(_sweep); _sweep = null; }
+    }, IDLE_SWEEP_MS);
+    _sweep.unref?.();
+  }
+  function idleClose(group, idle) {
+    const chatId = _linkChat.get(group);
+    _linkChat.delete(group);
+    const say = (text) => { if (chatId) Promise.resolve(send?.(chatId, text)).catch((e) => onChromeLog(`"${group}" idle line not posted — ${e?.message ?? e}`)); };
+    try {
+      screenTunnel.close(group);
+      browserScreens.close(group, { keepDisplay: true });
+    } catch (e) {
+      onChromeLog(`"${group}" screen did not close after ${idle} min idle — ${e?.message ?? e}`);
+      say(`browser ${group} screen did not close after ${idle} min idle — ${e?.message ?? e}`);
+      return;
+    }
+    onChromeLog(`"${group}" screen closed after ${idle} min idle (link and VNC; the Chrome stays)`);
+    say(`browser ${group} screen closed after ${idle} min idle`);
+  }
   // The display a group's Chrome opens on: its screen's, started on first need; null on a desktop node.
   const displayOf = async (group) => (hasScreens() ? (await browserScreens.ensure(group)).display : null);
   // A daemon started before browser screens ignores `display`: the Chrome opened on :99 (chrome-host.mjs).
@@ -1396,16 +1472,25 @@ export function createCommands({
     try { t = await screenTunnel.open(group); }
     catch (e) { onChromeLog(`"${group}" link not opened — ${e?.message ?? e}`); return `no link for ${group} — ${e?.message ?? e}`; }
     const view = linkOf(t.url, t.view, true), control = linkOf(t.url, t.control, false);
-    const life = `It closes ${GRACE_MS / 60_000} min after the last viewer leaves (${IDLE_MS / 60_000} min if nobody opens it); ${hintOf('browser stop', ev)} closes it now.`;
+    _linkChat.set(group, ev.chatId);
+    idleSweeping();
+    const idle = idleMinutes();
+    const life = `It closes ${GRACE_MS / 60_000} min after the last viewer leaves (${IDLE_MS / 60_000} min if nobody opens it)${_keep.has(group) ? '; kept open until browser close' : idle ? `, and after ${idle} min with no browser use (add keep to hold it)` : ''}; ${hintOf('browser stop', ev)} closes it now.`;
     if (all) return `${group} browser — anyone with this link can drive it: ${control}\n${life}`;
     if (shortChatId(admin.chatId) === shortChatId(ev.chatId)) return `${group} browser, view only: ${view}\ncontrol: ${control}\n${life}`;
     await send?.(admin.chatId, `${group} browser, control (asked in ${ev.chatName || ev.chatId}): ${control}`);
     return `${group} browser, view only: ${view}\nThe control link is in the admin channel. ${life}`;
   }
-  // /browser [all] [group]: the group's Chrome up (eGPT's, unless a sign-in window holds it) on its screen, and its link.
-  async function browserShow(ev, named, all) {
-    const whose = named ? `group "${named}"` : 'this chat';
-    const { conversation, group, profileDir, why } = await browserTarget(ev, named);
+  // /browser [all] [<profile>] [keep]: this chat's group's Chrome up (eGPT's, unless a sign-in window holds it) on its
+  // screen, and its link. <profile> (a group name = a profile dir) first moves the chat to that group in browsers.yaml, once
+  // the browser is up: the next bare /browser finds it. `keep`: the idle timer leaves the link be.
+  async function browserShow(ev, profile, all, keep) {
+    const whose = 'this chat';
+    const base = await browserConversationOf(surfaceOf(ev), ev.chatId);
+    if (profile && (base.group === BRAIN_GROUP || profile === BRAIN_GROUP) && profile !== base.group) return `no browser for ${whose} — the "${BRAIN_GROUP}" group is fixed: its chats cannot leave it and no other chat can join`;
+    if (profile && !base.name) return `no browser for ${whose} — ${base.why || 'its name is unknown, so it cannot be recorded in browsers.yaml'}`;
+    const conversation = profile ? { ...base, group: profile, why: undefined } : base;
+    const { group, profileDir, why } = groupProfileOf(conversation);
     if (!profileDir) return `no browser for ${whose} — ${why}`;
     if (!chromeHost) return `no browser for ${whose} — ${NO_CHROME_HOST}`;
     await _reattached;
@@ -1414,13 +1499,18 @@ export function createCommands({
     if (!all) { const admin = await adminChat(); if (!admin?.chatId) return noAdmin(ev, admin); }   // refused before anything starts
     try { await browserScreens.ensure(group); }   // a Chrome already up keeps its screen; a stopped screen starts again
     catch (e) { return `no screen for ${group} — ${e?.message ?? e}`; }
-    return (await up()) ?? shareLinks(ev, group, all);
+    const refused = await up();
+    if (refused) return refused;
+    if (profile && profile !== base.group) await assignBrowserGroup(base.name, profile);
+    keep ? _keep.add(group) : _keep.delete(group);
+    return shareLinks(ev, group, all);
   }
   // /browser stop [group]: close the link now; the browser and its screen stay.
   async function browserStop(ev, named) {
     const { group, profileDir, why } = await browserTarget(ev, named);
     if (!profileDir) return `no browser for ${named ? `group "${named}"` : 'this chat'} — ${why}`;
     if (!hasScreens()) return `no link to close: the "${group}" browser is a normal window on ${cfg().node_name ?? 'this PC'}.`;
+    _keep.delete(group); _linkChat.delete(group);
     return screenTunnel.close(group) ? `closed the ${group} link; the browser stays.` : `no ${group} link is open.`;
   }
   // /browser close [group]: its Chrome (eGPT's or the sign-in one), its link and its screen (operator #121: "we also
@@ -1444,6 +1534,7 @@ export function createCommands({
     else if (holderPid) killProcessTree(Number(holderPid));
     // Its X server goes only once Chrome has written its profile and let go of it (as /browser refresh waits).
     for (let i = 0; chrome && hasScreens() && profileHolder(profileDir) && i < 40; i++) await new Promise((r) => setTimeout(r, 250));
+    _keep.delete(group); _linkChat.delete(group);
     const link = hasScreens() && screenTunnel.close(group);
     const screen = hasScreens() && browserScreens.close(group);
     const closed = [chrome && 'its Chrome', link && 'its link', screen && 'its screen'].filter(Boolean);
