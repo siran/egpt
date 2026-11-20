@@ -1,6 +1,7 @@
 // beeper-update.mjs — keeping Beeper Desktop current: detection, the log_to_group notice, and
 // `/update beeper`. The install itself is platform-specific: beeper-update.ps1 beside this file on
-// Windows; on Linux (the docker node) the feed's AppImage unpacked onto the volume (runLinux).
+// Windows; on Linux (the docker node) the feed's AppImage unpacked onto the volume (runLinux); on a
+// Mac the feed's zip swapped in for the app bundle (runMac).
 //
 // config: beeper.auto_update.<windows|linux|mac>.method = auto | manual | none (config-schema.mjs).
 // A controlled Beeper restart, the spine stays up (operator 2026-10-19): drain like /restart without
@@ -8,7 +9,8 @@
 // ear verdict) → the install tool runs → the state clears (redial now, held calls go) → ONE line.
 import { readFile, writeFile, mkdir, rename, rm, readdir, mkdtemp, chmod, access } from 'node:fs/promises';
 import { openSync, closeSync, mkdirSync, createReadStream, createWriteStream, constants as fsConstants } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
@@ -24,11 +26,12 @@ const DOWNLOAD_CAP_MS = 20 * 60_000;          // longest the installer download 
 export const CLOSE_TRY_SEC = 30;              // the open app: WM_CLOSE, then this long for it to quit
 export const CLOSE_WAIT_SEC = 570;            // it only hid: this much longer for the operator's tray Quit
 const OS_OF = { win32: 'windows', linux: 'linux', darwin: 'mac' };
-const DEFAULT_METHOD = { windows: 'auto', linux: 'auto' };
-const IMPLEMENTED = ['windows', 'linux'];     // the OSes that can install a Beeper update
+const DEFAULT_METHOD = { windows: 'auto', linux: 'auto', mac: 'auto' };
+const IMPLEMENTED = ['windows', 'linux', 'mac'];   // the OSes that can install a Beeper update
 const APPLICABLE = ['downloaded', 'restart-needed', 'available'];   // the states /update beeper acts on
 const PORTS = Array.from({ length: 10 }, (_, i) => 23373 + i);   // boot's DISCOVERY_PORTS
 const FEED = 'https://api.beeper.com/desktop/update-feed.json';
+const BUNDLE_ID = 'com.automattic.beeper.desktop';
 const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\4005ec12-b235-5981-b49e-4005d478a398';
 
 // { os, method, note }: the method this node runs; note = the one boot log line when it differs from what is configured.
@@ -75,9 +78,11 @@ async function getJson(fetchImpl, url, { token = null, timeoutMs = 750 } = {}) {
   } catch { return { status: 0, json: null }; } finally { clearTimeout(t); }
 }
 
-// The registry's DisplayVersion of the per-user install; on Linux the version the entrypoint would launch.
+// The registry's DisplayVersion of the per-user install; on Linux the version the entrypoint would launch;
+// on a Mac the app bundle's.
 export function readInstalledVersion({ platform = process.platform, home } = {}) {
   if (platform === 'linux') return readInstalledLinux({ home });
+  if (platform === 'darwin') return readInstalledMac();
   if (platform !== 'win32') return Promise.resolve(null);
   return new Promise((resolve) => execFile('reg', ['query', UNINSTALL_KEY, '/v', 'DisplayVersion'], { windowsHide: true, timeout: 10_000 }, (err, stdout) => {
     resolve(err ? null : (/DisplayVersion\s+REG_SZ\s+(\S+)/.exec(String(stdout)) ?? [])[1] ?? null);
@@ -108,9 +113,9 @@ export async function readRunning(cfg, { fetchImpl = fetch } = {}) {
   ];
 }
 
-// The update feed's JSON (204 = nothing newer).
-export async function readLatest(installed, { fetchImpl = fetch, platform = 'win32' } = {}) {
-  const q = new URLSearchParams({ bundleID: 'com.automattic.beeper.desktop', version: installed ?? '0.0.0', platform, arch: 'x64', channel: 'stable' });
+// The update feed's JSON (204 = nothing newer). A Mac gets its own architecture's zip; everywhere else x64.
+export async function readLatest(installed, { fetchImpl = fetch, platform = 'win32', arch = process.arch } = {}) {
+  const q = new URLSearchParams({ bundleID: BUNDLE_ID, version: installed ?? '0.0.0', platform, arch: platform === 'darwin' && arch === 'arm64' ? 'arm64' : 'x64', channel: 'stable' });
   const r = await getJson(fetchImpl, `${FEED}?${q}`, { timeoutMs: 10_000 });
   if (r.status === 204) return { version: installed, date: null };
   return r.json?.version ? { version: r.json.version, date: r.json.pub_date ?? null, url: r.json.url ?? null, sha512: r.json.sha512 ?? null } : null;
@@ -145,9 +150,9 @@ export async function fetchInstaller({ url, sha512 }, { dir, fetchImpl = fetch, 
   }
 }
 
-export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData, platform = process.platform, home } = {}) {
+export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData, platform = process.platform, arch, home } = {}) {
   const installed = await installedVersion({ platform, home });
-  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform })]);
+  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform, arch })]);
   return { installed, pending, running, latest };
 }
 
@@ -351,6 +356,134 @@ export async function runLinux({
   } catch (e) { return { ok: false, step, error: e?.message ?? String(e) }; }
 }
 
+// ── Mac: the feed's zip swapped in for the app bundle ──────────────────────────────────────────────
+// Beeper Desktop.app in /Applications or ~/Applications. An update = the zip unpacked (ditto) into a hidden
+// folder beside the app, the Beeper main processes quit, the bundle swapped in by rename, the same mains opened
+// again. macOS 13+ guards app bundles (App Management): the dry run writes one probe file into the bundle and
+// removes it, so a node without that permission is refused before anything quits.
+const APP_NAME = 'Beeper Desktop.app';
+const STAGE_PREFIX = '.beeper-update-';            // an unpack in progress, beside the app
+const QUIT_CAP_MS = 60_000;                        // longest the mains have to quit before SIGKILL
+const QUIT_POLL_MS = 1_000;
+const appCandidates = (home = homedir()) => ['/Applications', join(home, 'Applications')].map((d) => join(d, APP_NAME));
+const execFileP = (file, args, timeout = 5 * 60_000) => new Promise((resolve, reject) => execFile(file, args, { timeout }, (err, stdout, stderr) => {
+  if (err) reject(new Error(`${file} ${args[0]}: ${String(stderr).trim() || err.message}`));
+  else resolve(String(stdout));
+}));
+
+const plistValue = (xml, key) => (new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(xml) ?? [])[1] ?? null;
+// { id, version } from an app bundle's Info.plist (electron-builder writes it as XML).
+async function bundleInfo(app) {
+  const xml = await readFile(join(app, 'Contents', 'Info.plist'), 'utf8').catch(() => '');
+  return { id: plistValue(xml, 'CFBundleIdentifier'), version: plistValue(xml, 'CFBundleShortVersionString') };
+}
+
+// The first candidate that is Beeper's bundle → { app, version } | null.
+export async function findMacApp({ candidates = appCandidates() } = {}) {
+  for (const app of candidates) {
+    const i = await bundleInfo(app);
+    if (i.id === BUNDLE_ID && i.version) return { app, version: i.version };
+  }
+  return null;
+}
+export const readInstalledMac = async (o) => (await findMacApp(o))?.version ?? null;
+
+// The dry run: the app found, its folder and bundle writable by this process → { ok, flow } | { ok: false, step, error, remedy }.
+export async function runMacDry({ candidates = appCandidates(), io = { access, writeFile, rm } } = {}) {
+  const found = await findMacApp({ candidates });
+  if (!found) return { ok: false, step: 'find-app', error: `no ${APP_NAME} of ${BUNDLE_ID} in ${candidates.map(dirname).join(' or ')}`, remedy: 'install Beeper Desktop there' };
+  const probe = join(found.app, 'Contents', '.egpt-update-probe');
+  try {
+    await io.access(dirname(found.app), fsConstants.W_OK);
+    await io.writeFile(probe, '');
+    await io.rm(probe, { force: true });
+  } catch (e) {
+    return { ok: false, step: 'bundle', error: `${found.app} is not writable by this process (${e?.code ?? e?.message ?? e})`, remedy: 'give the app that runs eGPT App Management (System Settings → Privacy & Security → App Management)' };
+  }
+  return { ok: true, flow: 'bundle' };
+}
+
+// The Beeper main processes of app: `ps` lines starting with its Contents/MacOS/ executable (the helpers live
+// under Contents/Frameworks/), never --type= → [{ pid, args }], args = the main's own flags, kept for the reopen.
+// A flag value holding " -" would split in two: ps joins argv with spaces.
+export async function macMains(app, { ps = () => execFileP('ps', ['-axww', '-o', 'pid=,args=']) } = {}) {
+  const exe = `${join(app, 'Contents', 'MacOS')}/`;
+  return String(await ps()).split('\n').map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter((m) => m && m[2].startsWith(exe) && !/\s--type=/.test(m[2])).map(([, pid, cmd]) => {
+    const rest = cmd.slice(exe.length), at = rest.search(/\s-/);
+    return { pid: Number(pid), args: at < 0 ? [] : rest.slice(at + 1).split(/\s+(?=-)/).filter((a) => !a.startsWith('-psn_')) };
+  });
+}
+
+// `open` arguments that bring each quit main back: a plain one as the app itself, one with flags as a new instance with them.
+export const reopenArgs = (app, quit) => [...new Map(quit.map((m) => [m.args.join('\0'), m.args.length ? ['-n', '-g', '-a', app, '--args', ...m.args] : ['-g', '-a', app]])).values()];
+
+// The real run, the .ps1's result shape: unzip the installer beside the app (none = restart only), quit the Beeper
+// mains (SIGTERM, SIGKILL after the cap), swap the bundle, open them again, wait until every Beeper that was
+// answering /v1/info reports the new version. The old bundle and the zip go once it is swapped in.
+export async function runMac({
+  installer = null, running, candidates = appCandidates(),
+  unzip = (zip, dir) => execFileP('ditto', ['-x', '-k', zip, dir]), mains = macMains, kill = (pid, sig) => process.kill(pid, sig),
+  alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }, open = (args) => execFileP('open', args),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, capMs = RESTART_CAP_MS, quitCapMs = QUIT_CAP_MS,
+} = {}) {
+  let step = 'find-app', app = null, stage = null;
+  try {
+    const found = await findMacApp({ candidates });
+    if (!found) throw new Error(`no ${APP_NAME} of ${BUNDLE_ID} to update`);
+    app = found.app;
+    let to = found.version, fresh = null;
+    if (installer) {
+      step = 'extract';
+      const parent = dirname(app);
+      for (const n of (await readdir(parent)).filter((n) => n.startsWith(STAGE_PREFIX))) await rm(join(parent, n), { recursive: true, force: true });
+      stage = await mkdtemp(join(parent, STAGE_PREFIX));
+      await unzip(installer, stage);
+      fresh = join(stage, APP_NAME);
+      const i = await bundleInfo(fresh);
+      if (i.id !== BUNDLE_ID || !i.version) throw new Error(`${basename(installer)} unpacked without ${APP_NAME} of ${BUNDLE_ID}`);
+      to = i.version;
+    }
+    step = 'quit';
+    const before = (await running()).filter((r) => r.port);
+    const t0 = now();
+    const quit = await mains(app);
+    for (const m of quit) kill(m.pid, 'SIGTERM');
+    while (quit.some((m) => alive(m.pid)) && now() - t0 < quitCapMs) await sleep(QUIT_POLL_MS);
+    for (const m of quit) if (alive(m.pid)) kill(m.pid, 'SIGKILL');
+    if (fresh) {
+      step = 'swap';
+      const old = join(stage, `old-${APP_NAME}`);
+      try {
+        await rename(app, old);
+        try { await rename(fresh, app); } catch (e) { await rename(old, app); throw e; }
+      } catch (e) {
+        for (const args of reopenArgs(app, quit)) await open(args).catch(() => {});   // the old one back, as it was
+        throw e;
+      }
+      await rm(installer, { force: true });
+    }
+    step = 'restart';
+    for (const args of reopenArgs(app, quit)) await open(args);
+    let connections;
+    for (;;) {
+      const live = await running();
+      connections = before.map((b) => {
+        const v = live.find((r) => r.port === b.port)?.version;
+        return { name: b.name ?? `:${b.port}`, status: v === to ? 'ok' : `still ${v ?? 'down'}` };
+      });
+      if (connections.every((c) => c.status === 'ok') || now() - t0 >= capMs) break;
+      await sleep(POLL_MS);
+    }
+    const restartSec = Math.round((now() - t0) / 1000);
+    if (!connections.every((c) => c.status === 'ok')) return { ok: false, step, error: `not every Beeper reported ${to} within ${capMs / 60_000} min`, restartSec, connections };
+    return { ok: true, restartSec, connections };
+  } catch (e) { return { ok: false, step, error: e?.message ?? String(e) }; }
+  finally {
+    // the stage holds the unzipped app, or the old one once swapped; never removed while the app itself is missing
+    if (stage && (await bundleInfo(app)).id === BUNDLE_ID) await rm(stage, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // ── the service ──────────────────────────────────────────────────────────────────────────────
 export function createBeeperUpdate({
   getConfig = () => ({}),
@@ -358,8 +491,11 @@ export function createBeeperUpdate({
   home = EGPT_HOME,
   repoRoot = process.cwd(),
   detect: detectFn = (cfg) => detect(cfg, { platform, home }),
-  dryRun = (o) => (platform === 'linux' ? runLinuxDry() : runToolDry({ repoRoot, home, ...o })),
-  run = (o) => (platform === 'linux' ? runLinux({ home, running: () => readRunning(getConfig() ?? {}, { fetchImpl }), ...o }) : runTool({ repoRoot, home, ...o })),
+  dryRun = (o) => (platform === 'linux' ? runLinuxDry() : platform === 'darwin' ? runMacDry() : runToolDry({ repoRoot, home, ...o })),
+  run = (o) => {
+    const running = () => readRunning(getConfig() ?? {}, { fetchImpl });
+    return platform === 'linux' ? runLinux({ home, running, ...o }) : platform === 'darwin' ? runMac({ running, ...o }) : runTool({ repoRoot, home, ...o });
+  },
   drain = null,                       // (fn) => void — boot: the /restart drain, which calls fn instead of exiting
   restartPending = () => false,       // a /restart or /upgrade is draining: it goes first
   beeperRestart = async () => {},     // (on) => sets/clears every bridge's "Beeper restarting for update" state
