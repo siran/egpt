@@ -30,7 +30,8 @@ afterAll(async () => {
 const TOKEN = 'TOK-primary';
 const SELF_DM = '!self-dm';
 const ADMIN_ROOM = '!egpt-admin-room';
-const CHATS_BY_NAME = { 'eGPT Admin': ADMIN_ROOM };
+const LOGS_ROOM = '!egpt-logs-room';
+const CHATS_BY_NAME = { 'eGPT Admin': ADMIN_ROOM, 'eGPT Logs': LOGS_ROOM };
 const NOTICE = '🗜️ kg · E in Fiona Ejemplar compacted its context (was 480k tokens). The full history stays in its transcript.md.';
 
 function fakeTransport() {
@@ -194,5 +195,53 @@ describe('the per-command audit goes to config.yaml\'s log_to_group (generalized
     await t.app.logToGroup(AUDIT);
     expect(t.built.flatMap((b) => b.sent).length).toBe(before);
     expect(t.lines.join('\n')).toMatch(/log_to_group "No Such Group" names no chat on this node - notice not sent/);
+  });
+});
+
+// The compaction notice is a LOG-type notice. Operator An, 2026-11-20: "please put eGPT Logs in its
+// channel, so eGPT Admin stays clean" ... "configure log_channel it's in config.yaml" (the key is
+// log_to_group; there is no log_channel). boot's logChannelKey picks log_to_group when it is set, else
+// admin_channel, and noticeToAdmin (compaction's pre-warning AND its "compacted" line ride it) passes
+// that key to the SAME noticeToChannel. The browser link, the captcha notice and a `silent:` beat stay
+// on admin_channel; the last is locked here with both keys set.
+describe('the compaction notice goes to log_to_group, and to admin_channel only when that is unset', () => {
+  it('REPRODUCE: both set: the notice lands in eGPT Logs and NOTHING in eGPT Admin', async () => {
+    const t = await bootWith(config({ admin_channel: 'eGPT Admin', log_to_group: 'eGPT Logs' }));
+    await t.app.noticeToAdmin(NOTICE, 'egpt');
+    const hits = t.sentTo(LOGS_ROOM);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].text).toContain(NOTICE);
+    expect(t.sentTo(ADMIN_ROOM)).toHaveLength(0);
+  });
+
+  it('only admin_channel set (or log_to_group blank): it lands in admin_channel, as before', async () => {
+    for (const cfg of [config({ admin_channel: 'eGPT Admin' }), config({ admin_channel: 'eGPT Admin', log_to_group: '   ' })]) {
+      const t = await bootWith(cfg);
+      await t.app.noticeToAdmin(NOTICE, 'egpt');
+      expect(t.sentTo(ADMIN_ROOM)).toHaveLength(1);
+      expect(t.sentTo(LOGS_ROOM)).toHaveLength(0);
+    }
+  });
+
+  it('only log_to_group set: it lands there', async () => {
+    const t = await bootWith(config({ log_to_group: 'eGPT Logs' }));
+    await t.app.noticeToAdmin(NOTICE, 'egpt');
+    expect(t.sentTo(LOGS_ROOM)).toHaveLength(1);
+    expect(t.sentTo(ADMIN_ROOM)).toHaveLength(0);
+  });
+
+  it('log_to_group set but naming no chat: fail-closed on log_to_group, never diverted to admin_channel', async () => {
+    const t = await bootWith(config({ admin_channel: 'eGPT Admin', log_to_group: 'No Such Group' }));
+    const before = t.built.flatMap((b) => b.sent).length;
+    await t.app.noticeToAdmin(NOTICE, 'egpt');
+    expect(t.built.flatMap((b) => b.sent).length).toBe(before);
+    expect(t.lines.join('\n')).toMatch(/log_to_group "No Such Group" names no chat on this node - notice not sent/);
+  });
+
+  it('LOCK: a silent: heartbeat stays on admin_channel with both keys set (operator 2026-09-30)', async () => {
+    const t = await bootWith(config({ admin_channel: 'eGPT Admin', log_to_group: 'eGPT Logs' }));
+    await t.app.dispatchHeartbeatPost({ ns: 'whatsapp/primes', text: 'el primo es 1637', silent: true });
+    expect(t.sentTo(ADMIN_ROOM)).toHaveLength(1);
+    expect(t.sentTo(LOGS_ROOM)).toHaveLength(0);
   });
 });

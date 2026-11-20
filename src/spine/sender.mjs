@@ -416,7 +416,7 @@ const QUOTE_MEMO_MAX = 200;
 
 // publicOf(being) / noticeAdmin({ being, chatId, text }) (2026-10-15): a PUBLIC being
 // (agents.<name>.public) takes the plain branch below, and its error lines go to noticeAdmin
-// (boot: the admin channel) instead of the chat.
+// (boot: the log channel, log_to_group else admin_channel) instead of the chat.
 export function createSender({ bridge, bridgeOf = null, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', peerMouth = null, publicOf = () => false, noticeAdmin = async () => {}, onUndeliverable = () => {}, onLog = () => {}, now = () => Date.now() } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');

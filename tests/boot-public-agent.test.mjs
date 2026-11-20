@@ -1,7 +1,7 @@
 // boot-public-agent.test.mjs — agents.<name>.public wired end to end through boot (2026-10-15): the
 // lead's chat gets the reply text alone (no placeholder, no stamp, no 🏰), and a failed turn says
-// nothing there; it is noticed in admin_channel through noticeToChannel. A being without the flag
-// is locked: placeholder, stamp and signature as before.
+// nothing there; it is noticed in log_to_group (admin_channel when that is unset; 2026-11-20) through
+// noticeToChannel. A being without the flag is locked: placeholder, stamp and signature as before.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 const _PRIVATE_HOME = vi.hoisted(() => {
@@ -29,13 +29,15 @@ afterAll(async () => {
 
 const CHAT = '!lead:beeper.com';
 const ADMIN = '!admin:beeper.com';
-const CONFIG = (isPublic) => () => ({
+const LOGS = '!logs:beeper.com';
+const CONFIG = (isPublic, extra = {}) => () => ({
   node_name: 'kg',
   user_name: 'John',
   bridge_signature_close: '🏰',
   admin_channel: ADMIN,
   beeper: { use: 'main', main: { account: 'you@example.com', token: 'TOK' } },
   agents: { egpt: { configuration: 'egpt', name: 'Contoso', body_emoji: '🐶', handles: ['e'], default: true, ...(isPublic ? { public: true } : {}) } },
+  ...extra,
 });
 
 function memIo() {
@@ -78,12 +80,12 @@ function seedOn() {
   return ens.state;
 }
 
-async function run({ isPublic, turn, body = 'hola, quiero información' }) {
+async function run({ isPublic, turn, body = 'hola, quiero información', config = {} }) {
   const { start, built } = fakeTransport();
   let convState = seedOn();
   const lines = [];
   const app = await boot({
-    readConfig: CONFIG(isPublic),
+    readConfig: CONFIG(isPublic, config),
     startBridge: start,
     makeSession: (opts) => ({ opts, sessionId: 'sess-1', turn, close() {} }),
     probeEndpoint: async () => ({ ok: false, status: 0 }),
@@ -115,6 +117,16 @@ describe('boot — a public being', () => {
     const admin = spy.sent.find((s) => s.chatId === ADMIN).text;
     expect(admin).toContain(`egpt in ${CHAT}: model error:`);   // a thrown turn's failure, as a failed result's (2026-11-04)
     expect(admin).toContain('API Error: 529 overloaded');
+    app.stop();
+  });
+
+  // Operator An, 2026-11-20: "please put eGPT Logs in its channel, so eGPT Admin stays clean".
+  it('with log_to_group set, the error goes to the log channel and admin_channel hears nothing', async () => {
+    const { app, spy } = await run({ isPublic: true, config: { log_to_group: LOGS }, turn: async () => { throw new Error('API Error: 529 overloaded'); } });
+    await vi.waitFor(() => expect(spy.sent.some((s) => s.chatId === LOGS)).toBe(true), { timeout: 3000 });
+    expect(spy.sent.find((s) => s.chatId === LOGS).text).toContain(`egpt in ${CHAT}: model error:`);
+    expect(spy.sent.filter((s) => s.chatId === ADMIN)).toEqual([]);
+    expect(spy.sent.filter((s) => s.chatId === CHAT)).toEqual([]);
     app.stop();
   });
 
