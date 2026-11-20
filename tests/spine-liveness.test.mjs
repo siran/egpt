@@ -236,7 +236,7 @@ describe('liveness — a running turn', () => {
     await flush();
     for (let t = 30 * sec; t <= 11 * min; t += 30 * sec) { at(t); b.spine.tick(); }
     await flush();
-    expect(mouth.sent.map((s) => [s.chat, s.text])).toEqual([['mouth-room', '⚙️ background work (1):\n• Run the audit · since 12:00'], ['mouth-room', '⚙️ background work (1):\n• Run the audit · since 12:00']]);
+    expect(mouth.sent.map((s) => [s.chat, s.text])).toEqual([['mouth-room', '⚙️ background work (1):\n• running: Run the audit · <1 min'], ['mouth-room', '⚙️ background work (1):\n• running: Run the audit · 10 min']]);
     expect(mouth.sent.map((s) => s.opts.persona)).toEqual(['egpt', 'egpt']);
     expect(mouth.streams).toHaveLength(1);                            // the reply's own: a status is no stream
     expect(b.bridge.streams).toEqual([]);
@@ -312,17 +312,19 @@ describe('liveness — background work is POSTED, never edited', () => {
   it("(b) the dispatching turn's end POSTS the chat's status: one send, a reply to its own message, as its being, the task timed", async () => {
     const b = build();
     await dispatchBackground(b, 1 * min + 4 * sec);
-    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Run the audit · since 12:00']);
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• running: Run the audit · 1 min']);
     expect(b.bridge.sent[0]).toMatchObject({ chat: CHAT, opts: { bodyEmoji: '🐶', label: 'E', persona: 'egpt', replyTo: b.bridge.streams[0].confirmedId } });
     expect(b.bridge.streams).toHaveLength(1);                         // the turn's own placeholder: a status is no stream
     expect(b.notes.join('\n')).toContain('egpt/chat-A@g.us — background task(s) Run the audit still running, status posted');
   });
 
 
-  it("a running task shows when it STARTED in the node's clock (default_time_zone), not an elapsed time that freezes at post time", async () => {
-    const b = build({ timeZone: 'America/New_York' });   // T0 = 12:00 UTC = 08:00 there (EDT)
+  // operator 2026-11-20: "instead of 'since 12:17' better to show elapsed time" — the clock time it started is gone, whatever the zone.
+  it('a running task shows how long it has run as of the post, not the clock time it started', async () => {
+    const b = build({ timeZone: 'America/New_York' });   // T0 = 12:00 UTC = 08:00 there (EDT): neither shows
     await dispatchBackground(b, 1 * min + 4 * sec);
-    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Run the audit · since 08:00']);
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• running: Run the audit · 1 min']);
+    expect(posts(b)[0]).not.toMatch(/since|08:00|12:00/);
   });
   // operator 2026-11-01: "por qué los mensajes se están viendo así? … se van así" — a background Bash described
   // by its whole command was posted as a heredoc, line by line. Its session keeps it one line (warm-cli-session).
@@ -336,7 +338,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     b.brain.calls[0].release('started it');
     await done;
     await flush();
-    expect(posts(b)).toEqual(["⚙️ background work (1):\n• cd /srv/e4; python3 - <<'PY'… · since 12:00"]);
+    expect(posts(b)).toEqual(["⚙️ background work (1):\n• running: cd /srv/e4; python3 - <<'PY'… · <1 min"]);
     session.close();
   });
 
@@ -350,14 +352,14 @@ describe('liveness — background work is POSTED, never edited', () => {
     expect(posts(b)).toHaveLength(1);
     at(2 * min + 30 * sec); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['⚙️ background work (3):\n• E — Run the audit · since 12:00\n• leo — Crawl the site · since 12:02\n• leo — Lint the repo · since 12:02']);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (3):\n• running: E — Run the audit · 3 min\n• running: leo — Crawl the site · <1 min\n• running: leo — Lint the repo · <1 min']);
     b.brain.tasks = b.brain.tasks.filter((t) => t.description !== 'Lint the repo');              // one finishes…
     b.brain.tasks.push({ description: 'Queue 07: Factuwin office test', since: T0 + 2 * min + 40 * sec });  // …one appears, same pulse
     await ticks(b, 2 * min + 45 * sec, 4 * min + 15 * sec);
     expect(posts(b)).toHaveLength(2);                                 // held: 2 min after the last post
     at(4 * min + 30 * sec); b.spine.tick();
     await flush();
-    expect(posts(b).slice(2)).toEqual(['⚙️ background work (3):\n• E — Run the audit · since 12:00\n• leo — Crawl the site · since 12:02\n• E — Queue 07: Factuwin office test · since 12:02\n✓ leo — Lint the repo · 25s']);
+    expect(posts(b).slice(2)).toEqual(['⚙️ background work (3):\n• running: E — Run the audit · 5 min\n• running: leo — Crawl the site · 2 min\n• running: E — Queue 07: Factuwin office test · 2 min\n✓ done: leo — Lint the repo · <1 min']);
   });
 
   it('(b) liveness.every_ms paces the check: a change is posted at the next pulse of that cadence', async () => {
@@ -369,7 +371,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     expect(posts(b)).toHaveLength(1);                                 // not on the 15 s default
     at(140 * sec); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['⚙️ background work (2):\n• Run the audit · since 12:00\n• Crawl the site · since 12:02']);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (2):\n• running: Run the audit · 2 min\n• running: Crawl the site · <1 min']);
   });
 
   it('(b) nothing changed: posted again every liveness.background_every_ms — 10 min by default — never in between, each a reply to the same message', async () => {
@@ -378,9 +380,9 @@ describe('liveness — background work is POSTED, never edited', () => {
     await dispatchBackground(b);
     await ticks(b, 15 * sec, 25 * min);
     expect(posts(b)).toEqual([
-      '⚙️ background work (1):\n• Run the audit · since 12:00',
-      '⚙️ background work (1):\n• Run the audit · since 12:00',
-      '⚙️ background work (1):\n• Run the audit · since 12:00',
+      '⚙️ background work (1):\n• running: Run the audit · <1 min',
+      '⚙️ background work (1):\n• running: Run the audit · 10 min',
+      '⚙️ background work (1):\n• running: Run the audit · 20 min',
     ]);
     expect(b.bridge.sent.map((s) => s.opts.replyTo)).toEqual(Array(3).fill(b.bridge.streams[0].confirmedId));
     expect(b.bridge.sent.map((s) => s.opts.replyTo)).not.toContain('m1');   // never the human's trigger
@@ -406,7 +408,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     expect(posts(b)).toHaveLength(1);                                 // one quiet pulse: a wake may be on its way
     at(2 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ Run the audit · 1m00s']);
+    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ done: Run the audit · 1 min']);
     await ticks(b, 3 * min, 30 * min);
     expect(posts(b)).toHaveLength(2);
     b.spine.wakeOnBackground({ being: 'egpt', surface: 'whatsapp', chatId: CHAT, summaries: ['x'] });
@@ -427,7 +429,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     await woke;
     at(4 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ Run the audit · 1m00s']);
+    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ done: Run the audit · 1 min']);
   });
 
   it('(c) nothing is edited and the spine records none of it: every status is ONE send; the record holds the turn only', async () => {
@@ -453,7 +455,7 @@ describe('liveness — background work is POSTED, never edited', () => {
     b.brain.calls[0].release('started it');
     await done;
     await flush();
-    expect(b.bridge.sent).toMatchObject([{ text: '⚙️ background work (1):\n• Run the audit · since 12:00', opts: { replyTo: null } }]);
+    expect(b.bridge.sent).toMatchObject([{ text: '⚙️ background work (1):\n• running: Run the audit · <1 min', opts: { replyTo: null } }]);
   });
 
   it("(i) work launched by an earlier turn with no status yet: the status replies to the MOST RECENT turn's message", async () => {
@@ -511,10 +513,10 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
   it("two beings with background work in one chat → ONE status, posted as the being whose turn opened it, each task labelled by its being", async () => {
     const b = build({ livenessBackgroundChangeMs: NO_HOLD });
     await twoBeings(b);
-    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Run the audit · since 12:00']);   // E's turn, as E: its own work needs no label; leo's turn ending posts nothing
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• running: Run the audit · <1 min']);   // E's turn, as E: its own work needs no label; leo's turn ending posts nothing
     at(15 * sec); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['⚙️ background work (2):\n• E — Run the audit · since 12:00\n• leo — Crawl the site · since 12:00']);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (2):\n• running: E — Run the audit · <1 min\n• running: leo — Crawl the site · <1 min']);
     expect(b.bridge.sent.map((s) => [s.opts.persona, s.opts.replyTo])).toEqual(Array(2).fill(['egpt', b.bridge.streams[0].confirmedId]));
   });
 
@@ -534,9 +536,9 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     b.brain.tasks = [];
     await ticks(b, 15 * min + 15 * sec, 16 * min);
     expect(posts(b)).toEqual([
-      '⚙️ background work (2):\n• E — Queue 07: Factuwin office test · since 12:02\n• leo — Lint the repo · since 12:07',
-      '⚙️ background work (2):\n• E — Queue 07: Factuwin office test · since 12:02\n• leo — Crawl the site · since 12:11\n✓ leo — Lint the repo · 8m00s',
-      '✓ background work done:\n✓ E — Queue 07: Factuwin office test · 12m19s\n✓ leo — Crawl the site · 3m25s',
+      '⚙️ background work (2):\n• running: E — Queue 07: Factuwin office test · 4 min\n• running: leo — Lint the repo · <1 min',
+      '⚙️ background work (2):\n• running: E — Queue 07: Factuwin office test · 12 min\n• running: leo — Crawl the site · 3 min\n✓ done: leo — Lint the repo · 8 min',
+      '✓ background work done:\n✓ done: E — Queue 07: Factuwin office test · 12 min\n✓ done: leo — Crawl the site · 3 min',
     ]);
     expect(b.notes.join('\n')).toContain('background task(s) E — Queue 07: Factuwin office test; leo — Lint the repo still running, status posted');   // the log line stays one line
   });
@@ -557,7 +559,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     await flush();
     at(3 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['⚙️ background work (1):\n• Queue 08: Factuwin home test · since 12:02\n✓ Queue 07: Factuwin office test · 1m00s']);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (1):\n• running: Queue 08: Factuwin home test · 1 min\n✓ done: Queue 07: Factuwin office test · 1 min']);
     b.brain.tasks = [];
     const last = wake(b, 'egpt', 'Queue 08: Factuwin home test — completed');
     await flush();
@@ -566,7 +568,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     at(4 * min); b.spine.tick();                                      // one quiet pulse
     at(5 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(2)).toEqual(['✓ background work done:\n✓ Queue 08: Factuwin home test · 2m00s']);
+    expect(posts(b).slice(2)).toEqual(['✓ background work done:\n✓ done: Queue 08: Factuwin home test · 2 min']);
     expect(b.bridge.streams.map((s) => s.init)).toEqual([THINKING, THINKING, THINKING]);   // the turn and the two wakes: nothing edited for the status
   });
 
@@ -581,7 +583,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     await woke;
     at(1 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(2)).toEqual(['⚙️ background work (1):\n• leo — Crawl the site · since 12:00\n✓ E — Run the audit · 1m00s']);   // still E's: leo's work is labelled
+    expect(posts(b).slice(2)).toEqual(['⚙️ background work (1):\n• running: leo — Crawl the site · 1 min\n✓ done: E — Run the audit · 1 min']);   // still E's: leo's work is labelled
     b.brain.tasks = [];
     const woke2 = wake(b, 'leo', 'Crawl the site — completed');
     await flush();
@@ -590,7 +592,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     at(2 * min); b.spine.tick();
     at(3 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(3)).toEqual(['✓ background work done:\n✓ leo — Crawl the site · 1m55s']);
+    expect(posts(b).slice(3)).toEqual(['✓ background work done:\n✓ done: leo — Crawl the site · 2 min']);
     expect(b.bridge.sent.every((s) => s.opts.persona === 'egpt')).toBe(true);
   });
 
@@ -605,7 +607,7 @@ describe('liveness — ONE background status per chat, kept across wakes', () =>
     at(1 * min); b.spine.tick();
     at(2 * min); b.spine.tick();
     await flush();
-    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ Run the audit · 1m00s']);
+    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ done: Run the audit · 1 min']);
   });
 
   it("/standdown: the chat's line is posted as its status was, naming every being's stopped work; nothing follows it", async () => {
@@ -649,7 +651,7 @@ describe('liveness — a finished task is marked as its session\'s CLI said it e
     const asked = [];
     const b = await auditAndLint({ b2: FAILED }, asked);
     await finish(b, ['b2'], 1 * min);
-    expect(posts(b).slice(1)).toEqual(['⚙️ background work (1):\n• E — Run the audit · since 12:00\n✗ leo — Lint the repo · 40s — Background command "npm run lint" failed (exit code 1)']);
+    expect(posts(b).slice(1)).toEqual(['⚙️ background work (1):\n• running: E — Run the audit · 1 min\n✗ failed: leo — Lint the repo · 1 min — Background command "npm run lint" failed (exit code 1)']);
     expect(asked).toEqual([{ being: 'leo', chatId: CHAT, taskId: 'b2' }]);
     await ticks(b, 1 * min + 15 * sec, 2 * min);
     expect(asked).toHaveLength(1);
@@ -659,24 +661,24 @@ describe('liveness — a finished task is marked as its session\'s CLI said it e
     const b = await auditAndLint({ b1: { status: 'completed', message: null }, b2: FAILED });
     await finish(b, ['b1', 'b2'], 1 * min);                           // one quiet pulse
     await finish(b, [], 2 * min);
-    expect(posts(b).slice(1)).toEqual(['⚠️ background work ended:\n✓ E — Run the audit · 1m00s\n✗ leo — Lint the repo · 40s — Background command "npm run lint" failed (exit code 1)']);
+    expect(posts(b).slice(1)).toEqual(['⚠️ background work ended:\n✓ done: E — Run the audit · 1 min\n✗ failed: leo — Lint the repo · 1 min — Background command "npm run lint" failed (exit code 1)']);
     const ok = await auditAndLint({ b1: { status: 'completed', message: null }, b2: { status: 'completed', message: null } });
     await finish(ok, ['b1', 'b2'], 3 * min);
     await finish(ok, [], 4 * min);
-    expect(posts(ok).slice(1)).toEqual(['✓ background work done:\n✓ E — Run the audit · 3m00s\n✓ leo — Lint the repo · 2m40s']);
+    expect(posts(ok).slice(1)).toEqual(['✓ background work done:\n✓ done: E — Run the audit · 3 min\n✓ done: leo — Lint the repo · 3 min']);
   });
 
   it('a stopped task is ⏹ "stopped" — no error, no ⚠️, and not "done"', async () => {
     const b = await auditAndLint({ b1: { status: 'completed', message: null }, b2: { status: 'stopped', message: 'Lint the repo' } });
     await finish(b, ['b1', 'b2'], 1 * min);
     await finish(b, [], 2 * min);
-    expect(posts(b).slice(1)).toEqual(['background work ended:\n✓ E — Run the audit · 1m00s\n⏹ leo — Lint the repo · 40s — stopped']);
+    expect(posts(b).slice(1)).toEqual(['background work ended:\n✓ done: E — Run the audit · 1 min\n⏹ stopped: leo — Lint the repo · 1 min']);
   });
 
   it('how it ended is not known (its session is gone, or none wired) → ◦, never a ✓ it cannot see', async () => {
     const b = await auditAndLint({ b1: { status: 'completed', message: null } });
     await finish(b, ['b2'], 1 * min);
-    expect(posts(b).at(-1)).toBe('⚙️ background work (1):\n• E — Run the audit · since 12:00\n◦ leo — Lint the repo · 40s');
+    expect(posts(b).at(-1)).toBe('⚙️ background work (1):\n• running: E — Run the audit · 1 min\n◦ ended: leo — Lint the repo · 1 min');
     const none = build({ backgroundOutcome: null });
     const done = none.bridge.emit(mention('@e run the audit in the background'));
     await flush();
@@ -687,7 +689,7 @@ describe('liveness — a finished task is marked as its session\'s CLI said it e
     await flush();
     await finish(none, ['b1'], 3 * min);
     await finish(none, [], 4 * min);
-    expect(posts(none)).toEqual(['⚙️ background work (1):\n• Run the audit · since 12:02', 'background work ended:\n◦ Run the audit · 1m00s']);
+    expect(posts(none)).toEqual(['⚙️ background work (1):\n• running: Run the audit · <1 min', 'background work ended:\n◦ ended: Run the audit · 1 min']);
   });
 });
 
@@ -714,7 +716,7 @@ describe('liveness — a task a background agent launched is listed under it', (
 
   it('THE LIVE CASE: the agent\'s two Bash tasks are listed under it, └, each timed; the count is every running task', async () => {
     const b = await launched([AGENT, QUEUE, WAIT]);
-    expect(posts(b)).toEqual(['⚙️ background work (3):\n• Factuwin tests on AWS Windows · since 10:48\n  └ Queue menu calibration job · since 11:51\n  └ Wait for E2-a job completion · since 11:59']);
+    expect(posts(b)).toEqual(['⚙️ background work (3):\n• running: Factuwin tests on AWS Windows · 1 h 12 min\n  └ running: Queue menu calibration job · 9 min\n  └ running: Wait for E2-a job completion · 1 min']);
   });
 
   it('a finished task stays under its running agent, marked as its CLI said it ended', async () => {
@@ -722,8 +724,8 @@ describe('liveness — a task a background agent launched is listed under it', (
     await finish(b, [QUEUE.taskId], 1 * min);
     await finish(b, [WAIT.taskId], 2 * min);
     expect(posts(b).slice(1)).toEqual([
-      '⚙️ background work (2):\n• Factuwin tests on AWS Windows · since 10:48\n  └ Wait for E2-a job completion · since 11:59\n  └ ✓ Queue menu calibration job · 10m00s',
-      '⚙️ background work (1):\n• Factuwin tests on AWS Windows · since 10:48\n  └ ✗ Wait for E2-a job completion · 2m40s — job E2-a: exit code 2',
+      '⚙️ background work (2):\n• running: Factuwin tests on AWS Windows · 1 h 13 min\n  └ running: Wait for E2-a job completion · 2 min\n  └ ✓ done: Queue menu calibration job · 10 min',
+      '⚙️ background work (1):\n• running: Factuwin tests on AWS Windows · 1 h 14 min\n  └ ✗ failed: Wait for E2-a job completion · 3 min — job E2-a: exit code 2',
     ]);
   });
 
@@ -731,7 +733,7 @@ describe('liveness — a task a background agent launched is listed under it', (
     const b = await launched([AGENT, QUEUE, WAIT]);
     await finish(b, [AGENT.taskId, QUEUE.taskId, WAIT.taskId], 3 * min);   // one quiet pulse
     await finish(b, [], 3 * min + 15 * sec);
-    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ Factuwin tests on AWS Windows · 1h15m\n  └ ✓ Queue menu calibration job · 12m00s\n  └ ✓ Wait for E2-a job completion · 3m40s']);
+    expect(posts(b).slice(1)).toEqual(['✓ background work done:\n✓ done: Factuwin tests on AWS Windows · 1 h 15 min\n  └ ✓ done: Queue menu calibration job · 12 min\n  └ ✓ done: Wait for E2-a job completion · 4 min']);
   });
 
   it('a task whose agent is not in the post stands on its own: an agent not listed at all, or one that finished in an earlier post', async () => {
@@ -740,9 +742,9 @@ describe('liveness — a task a background agent launched is listed under it', (
     await finish(b, [AGENT.taskId], 1 * min);                         // the agent ends in this post: its tasks still under it
     await finish(b, [QUEUE.taskId], 2 * min);                         // …and is gone from the next one
     expect(posts(b)).toEqual([
-      '⚙️ background work (4):\n• Factuwin tests on AWS Windows · since 10:48\n  └ Queue menu calibration job · since 11:51\n  └ Wait for E2-a job completion · since 11:59\n• Tail the build log · since 11:55',
-      '⚙️ background work (3):\n• Tail the build log · since 11:55\n✓ Factuwin tests on AWS Windows · 1h13m\n  └ Queue menu calibration job · since 11:51\n  └ Wait for E2-a job completion · since 11:59',
-      '⚙️ background work (2):\n• Wait for E2-a job completion · since 11:59\n• Tail the build log · since 11:55\n✓ Queue menu calibration job · 11m00s',
+      '⚙️ background work (4):\n• running: Factuwin tests on AWS Windows · 1 h 12 min\n  └ running: Queue menu calibration job · 9 min\n  └ running: Wait for E2-a job completion · 1 min\n• running: Tail the build log · 5 min',
+      '⚙️ background work (3):\n• running: Tail the build log · 6 min\n✓ done: Factuwin tests on AWS Windows · 1 h 13 min\n  └ running: Queue menu calibration job · 10 min\n  └ running: Wait for E2-a job completion · 2 min',
+      '⚙️ background work (2):\n• running: Wait for E2-a job completion · 3 min\n• running: Tail the build log · 7 min\n✓ done: Queue menu calibration job · 11 min',
     ]);
   });
 
@@ -753,8 +755,8 @@ describe('liveness — a task a background agent launched is listed under it', (
     const b = await launched([UPLOAD, LINT, AGENT, BUILD]);
     await finish(b, [UPLOAD.taskId], 1 * min);
     expect(posts(b)).toEqual([
-      '⚙️ background work (4):\n• leo — Lint the repo · since 11:59\n• E — Factuwin tests on AWS Windows · since 10:48\n  └ E — Build the installer · since 11:30\n    └ E — Upload to S3 · since 11:58',
-      '⚙️ background work (3):\n• leo — Lint the repo · since 11:59\n• E — Factuwin tests on AWS Windows · since 10:48\n  └ E — Build the installer · since 11:30\n    └ ✓ E — Upload to S3 · 3m00s',
+      '⚙️ background work (4):\n• running: leo — Lint the repo · 1 min\n• running: E — Factuwin tests on AWS Windows · 1 h 12 min\n  └ running: E — Build the installer · 30 min\n    └ running: E — Upload to S3 · 2 min',
+      '⚙️ background work (3):\n• running: leo — Lint the repo · 2 min\n• running: E — Factuwin tests on AWS Windows · 1 h 13 min\n  └ running: E — Build the installer · 31 min\n    └ ✓ done: E — Upload to S3 · 3 min',
     ]);
   });
 
@@ -764,7 +766,7 @@ describe('liveness — a task a background agent launched is listed under it', (
     const b = await launched([AGENT, WATCH, INBOX]);
     await finish(b, [AGENT.taskId], 1 * min);                         // the watchers run on: one quiet pulse…
     await finish(b, [], 1 * min + 15 * sec);                          // …and the last post
-    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Factuwin tests on AWS Windows · since 10:48', '✓ background work done:\n✓ Factuwin tests on AWS Windows · 1h13m']);
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• running: Factuwin tests on AWS Windows · 1 h 12 min', '✓ background work done:\n✓ done: Factuwin tests on AWS Windows · 1 h 13 min']);
     const quiet = await launched([INBOX]);
     await ticks(quiet, 2 * min, 3 * min);
     expect(posts(quiet)).toEqual([]);                                 // a turn leaving only ambient tasks posts nothing
@@ -803,13 +805,13 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     for (const [s, change] of burst) { b.brain.tasks = change(b.brain.tasks); await ticks(b, (s + 5) * sec, (s + 5) * sec); }   // each in its own pulse
     await ticks(b, 135 * sec, 5 * min);
     expect(posts(b)).toEqual([
-      '⚙️ background work (1):\n• Run the audit · since 12:00',
-      '⚙️ background work (5):\n• Run the audit · since 12:00\n• Step 3 · since 12:00\n• Step 4 · since 12:01\n• Step 5 · since 12:01\n• Step 6 · since 12:01\n✓ Step 1 · 50s\n✓ Step 2 · 1m05s',
+      '⚙️ background work (1):\n• running: Run the audit · <1 min',
+      '⚙️ background work (5):\n• running: Run the audit · 2 min\n• running: Step 3 · 1 min\n• running: Step 4 · 1 min\n• running: Step 5 · <1 min\n• running: Step 6 · <1 min\n✓ done: Step 1 · 1 min\n✓ done: Step 2 · 1 min',
     ]);
     b.brain.tasks = [...b.brain.tasks, step(7, 5 * min + 10 * sec)];   // past the hold: the next pulse
     await ticks(b, 5 * min + 15 * sec, 5 * min + 15 * sec);
     expect(posts(b)).toHaveLength(3);
-    expect(posts(b)[2]).toMatch(/\n• Step 7 · since 12:05$/);
+    expect(posts(b)[2]).toMatch(/\n• running: Step 7 · <1 min$/);
   });
 
   it('the last post is not held, and a new turn\'s first status is posted at once, however soon after', async () => {
@@ -818,7 +820,7 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     await ticks(b, 15 * sec, 30 * sec);                               // a change: held
     b.brain.tasks = [];
     await ticks(b, 45 * sec, 60 * sec);                               // one quiet pulse, then the last post — at 1 min, not 2
-    expect(posts(b)).toEqual(['⚙️ background work (1):\n• Run the audit · since 12:00', '✓ background work done:\n✓ Run the audit · 45s\n✓ Step 1 · 35s']);
+    expect(posts(b)).toEqual(['⚙️ background work (1):\n• running: Run the audit · <1 min', '✓ background work done:\n✓ done: Run the audit · 1 min\n✓ done: Step 1 · 1 min']);
     const done = b.bridge.emit(mention('@e and the crawl', 'm2'));
     await flush();
     b.brain.tasks = [{ description: 'Crawl the site', since: T0 + 70 * sec }];
@@ -826,7 +828,7 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     b.brain.calls[1].release('crawl started');
     await done;
     await flush();
-    expect(posts(b).slice(2)).toEqual(['⚙️ background work (1):\n• Crawl the site · since 12:01']);
+    expect(posts(b).slice(2)).toEqual(['⚙️ background work (1):\n• running: Crawl the site · <1 min']);
   });
 
   it('liveness.background_change_ms sets the hold, read each pulse', async () => {
@@ -845,19 +847,19 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
 
   it('5 shell commands at one level are ONE line — • N background commands · the oldest\'s time; the agents stay listed; the count is every task', async () => {
     const b = await launched([AUDIT, CRAWL, sh(1, -5 * min), sh(2, -4 * min), sh(3, -3 * min), sh(4, -2 * min), sh(5, -1 * min)]);
-    expect(posts(b)).toEqual(['⚙️ background work (7):\n• Run the audit · since 11:50\n• Crawl the site · since 11:59\n• 5 background commands · since 11:55']);
+    expect(posts(b)).toEqual(['⚙️ background work (7):\n• running: Run the audit · 10 min\n• running: Crawl the site · 1 min\n• running: 5 background commands · 5 min']);
   });
 
   it('even 1 or 2 shell commands are their count, never the command; tasks of no known kind (an adopted task from an older cli-host) are listed as before', async () => {
     const b = await launched([AUDIT, sh(1, -2 * min), sh(2, -1 * min), step(1, -3 * min), step(2, -2 * min), step(3, -1 * min)]);
-    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n• 2 background commands · since 11:58\n• Step 1 · since 11:57\n• Step 2 · since 11:58\n• Step 3 · since 11:59']);
+    expect(posts(b)).toEqual(['⚙️ background work (6):\n• running: Run the audit · 10 min\n• running: 2 background commands · 2 min\n• running: Step 1 · 3 min\n• running: Step 2 · 2 min\n• running: Step 3 · 1 min']);
     const one = await launched([AUDIT, sh(1, -1 * min, 'a1')]);
-    expect(posts(one)).toEqual(['⚙️ background work (2):\n• Run the audit · since 11:50\n  └ 1 background command · since 11:59']);
+    expect(posts(one)).toEqual(['⚙️ background work (2):\n• running: Run the audit · 10 min\n  └ running: 1 background command · 1 min']);
   });
 
   it('under an agent its shell commands roll up the same way, counted per level', async () => {
     const b = await launched([AUDIT, sh(1, -3 * min, 'a1'), sh(2, -2 * min, 'a1'), sh(3, -1 * min, 'a1'), sh(4, -2 * min), sh(5, -1 * min)]);
-    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n  └ 3 background commands · since 11:57\n• 2 background commands · since 11:58']);
+    expect(posts(b)).toEqual(['⚙️ background work (6):\n• running: Run the audit · 10 min\n  └ running: 3 background commands · 3 min\n• running: 2 background commands · 2 min']);
   });
 
   it('while work runs, a failed command is listed with the CLI\'s message and the rest wait for the last post — ✓ N commands, ⏹ N commands', async () => {
@@ -868,9 +870,9 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     b.brain.tasks = [];
     await ticks(b, 2 * min + 15 * sec, 3 * min);
     expect(posts(b)).toEqual([
-      '⚙️ background work (8):\n• Run the audit · since 11:50\n• 7 background commands · since 11:59',
-      '⚙️ background work (1):\n• Run the audit · since 11:50\n✗ checkpoint 4 · 19s — exit code 1',
-      'background work ended:\n✓ 3 commands\n⏹ 3 commands — stopped\n✓ Run the audit · 12m15s',
+      '⚙️ background work (8):\n• running: Run the audit · 10 min\n• running: 7 background commands · <1 min',
+      '⚙️ background work (1):\n• running: Run the audit · 12 min\n✗ failed: checkpoint 4 · <1 min — exit code 1',
+      'background work ended:\n✓ done: 3 commands\n⏹ stopped: 3 commands\n✓ done: Run the audit · 12 min',
     ]);
   });
 
@@ -886,7 +888,7 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
   it('two beings\' commands roll up each under its own label', async () => {
     const leo = (n) => ({ ...sh(n, -n * sec), being: 'leo' });
     const b = await launched([AUDIT, sh(1, -1 * sec), sh(2, -2 * sec), sh(3, -3 * sec), leo(4), leo(5), leo(6)]);
-    expect(posts(b)).toEqual(['⚙️ background work (7):\n• E — Run the audit · since 11:50\n• E — 3 background commands · since 11:59\n• leo — 3 background commands · since 11:59']);
+    expect(posts(b)).toEqual(['⚙️ background work (7):\n• running: E — Run the audit · 10 min\n• running: E — 3 background commands · <1 min\n• running: leo — 3 background commands · <1 min']);
   });
 
   it('the CLI\'s task_type reaches the status: a background_tasks_changed of 2 agents and 5 shell commands, through the session', async () => {
@@ -905,7 +907,7 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     b.brain.calls[0].release('started them');
     await done;
     await flush();
-    expect(posts(b)).toEqual(['⚙️ background work (7):\n• FHEPS-to-Move fact sheet research · since 12:00\n• Ask ChatGPT about FHEPS ETP route · since 12:00\n• 5 background commands · since 12:00']);
+    expect(posts(b)).toEqual(['⚙️ background work (7):\n• running: FHEPS-to-Move fact sheet research · <1 min\n• running: Ask ChatGPT about FHEPS ETP route · <1 min\n• running: 5 background commands · <1 min']);
     session.close();
   });
 });

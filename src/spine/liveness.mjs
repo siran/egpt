@@ -16,7 +16,7 @@
 //     probably too much :)"), else every liveness.background_every_ms while work runs; the tasks finished since
 //     the last post are listed as each ended, the CLI's own verdict, never the being's words (operator 2026-10-31,
 //     2026-10-31: "si termina en error (muy raro) debería mostrar una X y el mensaje de error? esto debe ser
-//     estructural, no pongas al SI a determinar el error cuando falla el proceso"): ✓ completed, ✗ failed
+//     estructural, no pongas al SI a determinar el error cuando falla el proceso"): ✓ done:, ✗ failed:
 //     with the CLI's message, ⏹ stopped, ◦ not known — no success it cannot see. The first is posted when
 //     a turn ends leaving work running, as that turn's being, a reply to its own message, as is every
 //     later one. A finished task's wake answers in its own placeholder. Once the chat has no work left
@@ -33,7 +33,6 @@
 //     needed; no answer → one line to the logging group. Nothing is evicted or killed here.
 import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
 import { elapsed } from './sender.mjs';
-import { hhmm } from '../dispatch-line.mjs';
 
 export const LIVENESS_EVERY_MS = 15_000;       // every live message's pulse (operator 2026-10-16); config liveness.every_ms overrides (read each tick)
 export const LIVENESS_BACKGROUND_EVERY_MS = 10 * 60_000;   // a chat's unchanged background status, posted again (operator 2026-10-30); config liveness.background_every_ms overrides (read each tick)
@@ -43,7 +42,13 @@ export const ASK_ANSWER_MS = 30 * 60_000;      // an ask with no answer by then 
 
 const STILL_THINKING = `${LIVE_FRAME_MARK} still thinking…`;
 // A finished task's mark, by how its session's CLI said it ended; none known → ◦.
-const ENDED = { completed: '✓', failed: '✗', stopped: '⏹' };
+const ENDED = { completed: '✓ done:', failed: '✗ failed:', stopped: '⏹ stopped:' };
+// A status line's duration in plain whole minutes (operator 2026-11-20: "4s is confusing next to a check"). Not sender's
+// `elapsed`: that one is the ⏳ counter's, and stop-guard matches its shape.
+const mins = (ms) => {
+  const m = Math.round(Math.max(0, ms) / 60_000);
+  return m < 1 ? '<1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+};
 const SHELL = 'local_bash';
 // A shell command that ended and did not fail: held back from a status while work still runs.
 const quiet = (x) => x.taskType === SHELL && x.outcome?.status !== 'failed';
@@ -58,7 +63,7 @@ export function workOf(tasks, being, labelOf) {
 // `allBackground`: () => [{ being, surface, chatId, taskId, taskType?, parentTaskId?, ambient?, description, since }] — every live background task,
 // in the chat a finished one would wake (boot: the pool's). `outcomeOf`: ({ being, chatId, taskId }) =>
 // { status, message } | null — how a finished one ended, as its session's CLI said it (boot: the pool's).
-export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, timeZone = null, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
+export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
   const turns = new Set();     // { out, being, ev, chat, auto, since, last, status }
   const bg = new Map();        // chatId → { being, ev, chat, auto, reply, last, posted, changed, seen, done, quiet, asks }; `being` posts it
   const chatNames = new Map(); // chatId → the chat's name, for the logging-group line
@@ -76,9 +81,10 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     .then(() => sender.post(s.chat, text, { being: s.being, auto: s.auto, ...s.reply }))
     .catch((err) => note(`liveness: could not post a status — ${err?.message ?? err}`));
   // …and after a finished one, what the CLI said of its failure, or that it was stopped.
-  const why = (o) => (o?.status === 'failed' && o.message ? ` — ${o.message}` : o?.status === 'stopped' ? ' — stopped' : '');
+  const why = (o) => (o?.status === 'failed' && o.message ? ` — ${o.message}` : '');
   // The chat's status: its running tasks •, those finished since the last post marked as each ended (ENDED),
-  // each running one with when it started (since HH:MM, the node's clock: a posted line never ticks) and each ended one with how long it took, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
+  // each running one with how long it has run, as of the post (operator 2026-11-20: elapsed, not "since 12:17" — an unchanged
+  // status is posted again every 10 min, so the newest is never far behind), and each ended one with how long it took, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
   // the listed agent that launched it, └ (operator 2026-10-31). The count is every running task, nested ones included.
   // The last says "done" only if all of it completed (operator 2026-10-31).
   function post(s, running, t) {
@@ -91,8 +97,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     const parentOf = (x) => (x.parentTaskId ? listed.find((p) => p.being === x.being && p.taskId === x.parentTaskId) : undefined);
     const line = (x, depth) => {
       const i = listed.indexOf(x);
-      const mark = live.has(x) ? (depth ? '' : '• ') : `${ENDED[x.outcome?.status] ?? '◦'} `;
-      const time = live.has(x) ? ` · since ${hhmm(x.since, timeZone)}` : x.rolled ? '' : ` · ${elapsed(x.ended - x.since)}`;
+      const mark = live.has(x) ? (depth ? 'running: ' : '• running: ') : `${ENDED[x.outcome?.status] ?? '◦ ended:'} `;
+      const time = live.has(x) ? ` · ${mins(t - x.since)}` : x.rolled ? '' : ` · ${mins(x.ended - x.since)}`;
       const under = listed.filter((c) => parentOf(c) === x).map((c) => line(c, depth + 1)).join('');
       return `\n${depth ? `${'  '.repeat(depth)}└ ` : ''}${mark}${what[i]}${time}${why(x.outcome)}${under}`;
     };
