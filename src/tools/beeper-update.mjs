@@ -1,12 +1,13 @@
 // beeper-update.mjs — keeping Beeper Desktop current: detection, the log_to_group notice, and
-// `/update beeper`. The install itself is beeper-update.ps1 beside this file (Windows only so far).
+// `/update beeper`. The install itself is platform-specific: beeper-update.ps1 beside this file on
+// Windows; on Linux (the docker node) the feed's AppImage unpacked onto the volume (runLinux).
 //
 // config: beeper.auto_update.<windows|linux|mac>.method = auto | manual | none (config-schema.mjs).
 // A controlled Beeper restart, the spine stays up (operator 2026-10-19): drain like /restart without
 // exiting → every bridge enters its "Beeper restarting for update" state (calls wait, no redial, no
-// ear verdict) → the .ps1 runs as a child → the state clears (redial now, held calls go) → ONE line.
-import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
-import { openSync, closeSync, mkdirSync, createReadStream, createWriteStream } from 'node:fs';
+// ear verdict) → the install tool runs → the state clears (redial now, held calls go) → ONE line.
+import { readFile, writeFile, mkdir, rename, rm, readdir, mkdtemp, chmod, access } from 'node:fs/promises';
+import { openSync, closeSync, mkdirSync, createReadStream, createWriteStream, constants as fsConstants } from 'node:fs';
 import { join, basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -23,7 +24,9 @@ const DOWNLOAD_CAP_MS = 20 * 60_000;          // longest the installer download 
 export const CLOSE_TRY_SEC = 30;              // the open app: WM_CLOSE, then this long for it to quit
 export const CLOSE_WAIT_SEC = 570;            // it only hid: this much longer for the operator's tray Quit
 const OS_OF = { win32: 'windows', linux: 'linux', darwin: 'mac' };
-const DEFAULT_METHOD = { windows: 'manual' };
+const DEFAULT_METHOD = { windows: 'auto', linux: 'auto' };
+const IMPLEMENTED = ['windows', 'linux'];     // the OSes that can install a Beeper update
+const APPLICABLE = ['downloaded', 'restart-needed', 'available'];   // the states /update beeper acts on
 const PORTS = Array.from({ length: 10 }, (_, i) => 23373 + i);   // boot's DISCOVERY_PORTS
 const FEED = 'https://api.beeper.com/desktop/update-feed.json';
 const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\4005ec12-b235-5981-b49e-4005d478a398';
@@ -34,7 +37,7 @@ export function autoUpdateMethod(cfg, platform = process.platform) {
   const raw = beeperBlockOf(cfg)?.auto_update?.[os]?.method;
   const method = raw == null ? (DEFAULT_METHOD[os] ?? 'none') : String(raw).trim().toLowerCase();
   if (!AUTO_UPDATE_METHODS.includes(method)) return { os, method: 'none', note: `beeper.auto_update.${os}.method "${raw}" is not auto | manual | none — treated as none` };
-  if (os !== 'windows' && method !== 'none') return { os, method: 'none', note: `beeper.auto_update.${os}.method is ${method}: Beeper updates are not implemented on ${os} yet — treated as none` };
+  if (!IMPLEMENTED.includes(os) && method !== 'none') return { os, method: 'none', note: `beeper.auto_update.${os}.method is ${method}: Beeper updates are not implemented on ${os} yet — treated as none` };
   return { os, method, note: null };
 }
 
@@ -72,9 +75,10 @@ async function getJson(fetchImpl, url, { token = null, timeoutMs = 750 } = {}) {
   } catch { return { status: 0, json: null }; } finally { clearTimeout(t); }
 }
 
-// The registry's DisplayVersion of the per-user install.
-export function readInstalledVersion() {
-  if (process.platform !== 'win32') return Promise.resolve(null);
+// The registry's DisplayVersion of the per-user install; on Linux the version the entrypoint would launch.
+export function readInstalledVersion({ platform = process.platform, home } = {}) {
+  if (platform === 'linux') return readInstalledLinux({ home });
+  if (platform !== 'win32') return Promise.resolve(null);
   return new Promise((resolve) => execFile('reg', ['query', UNINSTALL_KEY, '/v', 'DisplayVersion'], { windowsHide: true, timeout: 10_000 }, (err, stdout) => {
     resolve(err ? null : (/DisplayVersion\s+REG_SZ\s+(\S+)/.exec(String(stdout)) ?? [])[1] ?? null);
   }));
@@ -105,8 +109,8 @@ export async function readRunning(cfg, { fetchImpl = fetch } = {}) {
 }
 
 // The update feed's JSON (204 = nothing newer).
-export async function readLatest(installed, { fetchImpl = fetch } = {}) {
-  const q = new URLSearchParams({ bundleID: 'com.automattic.beeper.desktop', version: installed ?? '0.0.0', platform: 'win32', arch: 'x64', channel: 'stable' });
+export async function readLatest(installed, { fetchImpl = fetch, platform = 'win32' } = {}) {
+  const q = new URLSearchParams({ bundleID: 'com.automattic.beeper.desktop', version: installed ?? '0.0.0', platform, arch: 'x64', channel: 'stable' });
   const r = await getJson(fetchImpl, `${FEED}?${q}`, { timeoutMs: 10_000 });
   if (r.status === 204) return { version: installed, date: null };
   return r.json?.version ? { version: r.json.version, date: r.json.pub_date ?? null, url: r.json.url ?? null, sha512: r.json.sha512 ?? null } : null;
@@ -141,9 +145,9 @@ export async function fetchInstaller({ url, sha512 }, { dir, fetchImpl = fetch, 
   }
 }
 
-export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData } = {}) {
-  const installed = await installedVersion();
-  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl })]);
+export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData, platform = process.platform, home } = {}) {
+  const installed = await installedVersion({ platform, home });
+  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform })]);
   return { installed, pending, running, latest };
 }
 
@@ -245,15 +249,117 @@ export function runTool({ repoRoot, home = EGPT_HOME, restartOnly = false, close
   });
 }
 
+// ── Linux: the AppImage unpacked onto the volume ─────────────────────────────────────────────────
+// The image ships Beeper in /opt/beeper (read-only). docker/entrypoint.sh's beeper_bin launches the
+// newest $EGPT_HOME/beeper/<version>/beepertexts instead when it is newer than the image's, on every
+// keep_running relaunch. So an update = the feed's AppImage unpacked there, then the Beeper main processes killed.
+export const ENTRYPOINT_MARKER = 'beeper_bin()';   // in the entrypoint that launches from the volume
+const ENTRYPOINT = '/usr/local/bin/egpt-entrypoint';
+const IMAGE_DIR = '/opt/beeper';
+const KEEP_VERSIONS = 2;                           // on the volume after an update: the new one and the one before
+const RESTART_CAP_MS = 3 * 60_000;                 // longest the restarted Beepers have to report the new version
+const POLL_MS = 5_000;
+const EXTRACT_PREFIX = '.extract-';                // an unpack in progress, beside the versions
+
+// The versions unpacked on the volume that the entrypoint could launch, newest first.
+async function volumeVersions(home) {
+  const dir = join(home, 'beeper');
+  const names = (await readdir(dir).catch(() => [])).filter((v) => /^\d+(\.\d+)*$/.test(v));
+  const ok = await Promise.all(names.map((v) => access(join(dir, v, 'beepertexts'), fsConstants.X_OK).then(() => v, () => null)));
+  return ok.filter(Boolean).sort((a, b) => cmpVersion(b, a));
+}
+
+const desktopVersion = async (dir) => (/^X-AppImage-Version=(\S+)/m.exec(await readFile(join(dir, 'beepertexts.desktop'), 'utf8').catch(() => '')) ?? [])[1] ?? null;
+
+// The version the entrypoint (beeper_bin) would launch: the highest of the volume's and the image's own; a tie is the image's.
+export async function readInstalledLinux({ home = EGPT_HOME, imageDir = IMAGE_DIR } = {}) {
+  const volume = (await volumeVersions(home))[0] ?? null, image = await desktopVersion(imageDir);
+  return newer(volume, image) || !image ? volume : image;
+}
+
+// The dry run: does the image's entrypoint launch Beeper from the volume? → { ok, flow } | { ok: false, step, error, remedy }.
+export async function runLinuxDry({ entrypoint = ENTRYPOINT } = {}) {
+  if ((await readFile(entrypoint, 'utf8').catch(() => '')).includes(ENTRYPOINT_MARKER)) return { ok: true, flow: 'volume' };
+  return { ok: false, step: 'entrypoint', error: 'this image launches Beeper from /opt/beeper only', remedy: 'rebuild the image (docker/aws/build-push.sh) once' };
+}
+
+// `<appImage> --appimage-extract` in cwd → cwd/squashfs-root (no FUSE needed; it lists every file, so stdout is dropped).
+const extractAppImage = (appImage, cwd) => new Promise((resolve, reject) => {
+  const child = nodeSpawn(appImage, ['--appimage-extract'], { cwd, stdio: ['ignore', 'ignore', 'pipe'], timeout: 5 * 60_000 });
+  let err = '';
+  child.stderr.on('data', (b) => { err = (err + b).slice(-500); });
+  child.on('error', reject);
+  child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${basename(appImage)} --appimage-extract exited ${code}: ${err.trim()}`))));
+});
+
+// The Beeper main processes under dirs: argv[0] a beepertexts there, no --type= (the children go with their main).
+export async function beeperMains(dirs, procDir = '/proc') {
+  const found = await Promise.all((await readdir(procDir)).filter((p) => /^\d+$/.test(p)).map(async (p) => {
+    const argv = String(await readFile(join(procDir, p, 'cmdline'), 'utf8').catch(() => '')).split('\0');
+    return basename(argv[0]) === 'beepertexts' && dirs.some((d) => argv[0].startsWith(`${d}/`)) && !argv.some((a) => a.startsWith('--type=')) ? Number(p) : null;
+  }));
+  return found.filter(Boolean);
+}
+
+// The AppImage unpacked as $EGPT_HOME/beeper/<its version> (temp directory beside it, one rename), then deleted → the version.
+// An unpack that crashed leaves its temp directory (~500 MB): removed first.
+async function unpack(installer, { home, extract }) {
+  const root = join(home, 'beeper');
+  await mkdir(root, { recursive: true });
+  for (const n of (await readdir(root)).filter((n) => n.startsWith(EXTRACT_PREFIX))) await rm(join(root, n), { recursive: true, force: true });
+  const work = await mkdtemp(join(root, EXTRACT_PREFIX));
+  try {
+    await chmod(installer, 0o755);
+    await extract(installer, work);
+    const version = await desktopVersion(join(work, 'squashfs-root'));
+    if (!version) throw new Error(`${basename(installer)} unpacked without an X-AppImage-Version`);
+    await rename(join(work, 'squashfs-root'), join(root, version));
+    await rm(installer, { force: true });
+    return version;
+  } finally { await rm(work, { recursive: true, force: true }); }
+}
+
+// The real run, the .ps1's result shape: unpack the AppImage (installer; none = restart only), kill the Beeper main
+// processes so keep_running relaunches them on the newest, wait until every Beeper that was answering /v1/info
+// reports that version, then keep only the newest two on the volume. running() = readRunning's [{ name, port, version }].
+export async function runLinux({
+  home = EGPT_HOME, installer = null, running, imageDir = IMAGE_DIR,
+  extract = extractAppImage, mains = () => beeperMains([imageDir, join(home, 'beeper')]), kill = (pid) => process.kill(pid, 'SIGTERM'),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, capMs = RESTART_CAP_MS,
+} = {}) {
+  let step = 'extract';
+  try {
+    const to = installer ? await unpack(installer, { home, extract }) : await readInstalledLinux({ home, imageDir });
+    step = 'restart';
+    const before = (await running()).filter((r) => r.port);
+    const t0 = now();
+    for (const pid of await mains()) kill(pid);
+    let connections;
+    for (;;) {
+      const live = await running();
+      connections = before.map((b) => {
+        const v = live.find((r) => r.port === b.port)?.version;
+        return { name: b.name ?? `:${b.port}`, status: v === to ? 'ok' : `still ${v ?? 'down'}` };
+      });
+      if (connections.every((c) => c.status === 'ok') || now() - t0 >= capMs) break;
+      await sleep(POLL_MS);
+    }
+    const restartSec = Math.round((now() - t0) / 1000);
+    if (!connections.every((c) => c.status === 'ok')) return { ok: false, step, error: `not every Beeper reported ${to} within ${capMs / 60_000} min`, restartSec, connections };
+    for (const v of (await volumeVersions(home)).slice(KEEP_VERSIONS)) await rm(join(home, 'beeper', v), { recursive: true, force: true });
+    return { ok: true, restartSec, connections };
+  } catch (e) { return { ok: false, step, error: e?.message ?? String(e) }; }
+}
+
 // ── the service ──────────────────────────────────────────────────────────────────────────────
 export function createBeeperUpdate({
   getConfig = () => ({}),
   platform = process.platform,
   home = EGPT_HOME,
   repoRoot = process.cwd(),
-  detect: detectFn = (cfg) => detect(cfg),
-  dryRun = (o) => runToolDry({ repoRoot, home, ...o }),
-  run = (o) => runTool({ repoRoot, home, ...o }),
+  detect: detectFn = (cfg) => detect(cfg, { platform, home }),
+  dryRun = (o) => (platform === 'linux' ? runLinuxDry() : runToolDry({ repoRoot, home, ...o })),
+  run = (o) => (platform === 'linux' ? runLinux({ home, running: () => readRunning(getConfig() ?? {}, { fetchImpl }), ...o }) : runTool({ repoRoot, home, ...o })),
   drain = null,                       // (fn) => void — boot: the /restart drain, which calls fn instead of exiting
   restartPending = () => false,       // a /restart or /upgrade is draining: it goes first
   beeperRestart = async () => {},     // (on) => sets/clears every bridge's "Beeper restarting for update" state
@@ -311,6 +417,12 @@ export function createBeeperUpdate({
     } catch (e) { return { ok: false, step: 'tool', error: e?.message ?? String(e) }; }
   }
 
+  // What applying does: a restart (a running Beeper is older than the install) or an install, from → to.
+  const stepOf = (d, state) => {
+    const restartOnly = state === 'restart-needed';
+    return { restartOnly, from: restartOnly ? oldestRunning(d) : d.installed, to: restartOnly ? d.installed : state === 'available' ? d.latest.version : d.pending.version };
+  };
+
   // Once the drain finds nothing in flight: peer check, the start line, the app, the restart, the result.
   async function apply({ from, to, restartOnly, appOpen = false, own = {} }) {
     try {
@@ -339,15 +451,13 @@ export function createBeeperUpdate({
   // progress(text): a line before the reply (the download starting).
   async function start(progress = () => {}) {
     const m = autoUpdateMethod(cfg(), platform);
-    if (m.os !== 'windows') return { started: false, text: `${node()} · Beeper updates are not implemented on ${m.os} yet` };
+    if (!IMPLEMENTED.includes(m.os)) return { started: false, text: `${node()} · Beeper updates are not implemented on ${m.os} yet` };
     if (busy || downloading) return { started: false, text: busyText() };
     if (restartPending()) return { started: false, text: `${node()} · a restart is pending — send ${hint()} after it` };
     const d = await detectFn(cfg());
     const state = stateOf(d);
-    if (!['downloaded', 'restart-needed', 'available'].includes(state)) return { started: false, text: `${statusLine(node(), d, state, hint())}${state === 'blocked' ? ` — run ${updateCmd} (it asks for administrator)` : ''}` };
-    const restartOnly = state === 'restart-needed';
-    const from = restartOnly ? oldestRunning(d) : d.installed;
-    const to = restartOnly ? d.installed : state === 'available' ? d.latest.version : d.pending.version;
+    if (!APPLICABLE.includes(state)) return { started: false, text: `${statusLine(node(), d, state, hint())}${state === 'blocked' ? ` — run ${updateCmd} (it asks for administrator)` : ''}` };
+    const { restartOnly, from, to } = stepOf(d, state);
     let own = {};   // available: eGPT's own download, as -Installer/-Sha512
     if (state === 'available') {
       downloading = true;
@@ -389,6 +499,16 @@ export function createBeeperUpdate({
     return true;
   }
 
+  // What the operator could apply now: { from, to, hint } (hint = the command), else null. Changes nothing.
+  async function pending() {
+    if (autoUpdateMethod(cfg(), platform).method === 'none') return null;
+    const d = await detectFn(cfg());
+    const state = stateOf(d);
+    if (!APPLICABLE.includes(state)) return null;
+    const { from, to } = stepOf(d, state);
+    return { from, to, hint: hint() };
+  }
+
   // At boot, every 6 h: ONE notice per newly downloaded version; auto installs it.
   async function check() {
     const m = autoUpdateMethod(cfg(), platform);
@@ -401,7 +521,7 @@ export function createBeeperUpdate({
       await save();
       await say(noticeLine(node(), d, state, { method: m.method, hint: hint(), updateCmd }));
     }
-    const key = state === 'downloaded' ? d.pending.version : state === 'restart-needed' ? `restart-${d.installed}` : null;
+    const key = state === 'downloaded' ? d.pending.version : state === 'restart-needed' ? `restart-${d.installed}` : state === 'available' ? `available-${d.latest.version}` : null;
     if (m.method === 'auto' && key && st.autoTried !== key && !busy) {
       st.autoTried = key;
       await save();
@@ -420,7 +540,7 @@ export function createBeeperUpdate({
   }
 
   return {
-    tick, check, hold,
+    tick, check, hold, pending,
     update: async (progress) => (await start(progress)).text,
     busy: () => !!busy,
     idle: () => busy?.done ?? Promise.resolve(),
