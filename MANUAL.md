@@ -166,6 +166,11 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
 /<handle> browser close [group]                close the browser: its Chrome
                                                (eGPT's or a sign-in window), its
                                                link and its screen
+/<handle> browser close all                    close every open browser, as
+                                               close does for one group; one
+                                               reply lists what was closed
+/<handle> browsers                             one line per OPEN browser (also
+/<handle> browser list                         `browser list`); see below
 /<handle> browser refresh [group] [url]        close this chat's (or [group]'s)
                                                browser and open a normal Chrome
                                                window on its profile, to sign in
@@ -440,6 +445,27 @@ spine restart forgets it. `/<handle> browser close` closes the browser itself: i
 Chrome, its link and its screen; the next need starts them again. On a desktop
 node (Windows) the browser opens as a normal window on that PC and the answer
 says so: no screen, no link.
+
+`/<handle> browsers` (alias `/<handle> browser list`, owners only) answers which
+browsers are open on this node and for whom, one line each, or `no browsers
+open.`. Each line: the group; the chats that use it (the names `browsers.yaml`
+lists for it; `shared` is also every unlisted chat, `brain` the brain itself);
+`eGPT` (its Chrome, driven by the spine) or `sign-in window` (a plain Chrome from
+`browser refresh`), or `screen only, no Chrome`; on a container node its screen
+(`screen :100`) and `link open`; `idle N min`, the idle timer's own measure above
+(the spine's last use or the last click or key on its screen); and the Chrome's
+memory (the sum of its processes' RSS), left out on Windows or when it cannot be
+read. For example:
+
+```
+browsers open (2):
+• work — eGPT · chats: Work chat, Support · screen :100, link open · idle 4 min · 412 MB
+• shared — sign-in window · chats: every unlisted chat · screen :101 · idle 1 min · 380 MB
+```
+
+`/<handle> browser close all` closes every browser in that list, each exactly as
+`browser close <group>` does (Chrome, link, screen), and answers with one line
+naming what was closed. `all` is the keyword: it is not read as a group name.
 
 A browser group is a profile: group `work` runs on `~/.egpt/chrome/profiles/work`
 (`brain` = `chrome.profile_dir`), and `config/browsers.yaml` lists which chats

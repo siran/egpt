@@ -173,6 +173,8 @@ export function createBrowserScreens({ egptHome, platform = process.platform, sp
       if (any) log(`browser screen ${group}: closed ${d}`);
       return any;
     },
+    // The groups whose screen is up now (their Xvfb runs) → [{ group, display: ':100' }]: /browsers (operator 2026-11-20).
+    open: () => Object.entries(read()).filter(([, s]) => Number.isInteger(s?.display) && running(s.xvfb, 'Xvfb', `:${s.display}`)).map(([group, s]) => ({ group, display: `:${s.display}` })),
     // The screen's ports, when it has a number (no process is started).
     portsOf: (group) => { const n = read()[group]?.display; return Number.isInteger(n) ? portsOf(n) : null; },
     // Viewers = established sessions on its x11vnc port (not the noVNC one: cloudflared keeps keep-alives open there).
