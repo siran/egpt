@@ -1210,6 +1210,7 @@ export const CONFIG_SCHEMA = {
         DEFAULT: windows manual. linux / mac: accepted, not implemented yet —
         treated as none (one log line at boot). Not a connection. beeper: is a
         restart-only key, so a change applies at the next restart.
+        eGPT's own update method is the top-level auto_update.egpt (auto_update).
 
     THE PORT IS DISCOVERED — there is none to configure (operator 2026-09-07).
     Beeper Desktop's local API binds the FIRST FREE PORT starting at 23373, so
@@ -3507,6 +3508,38 @@ export const CONFIG_SCHEMA = {
     captures the new content as its boot hash.
     Only operator-triggered writes touch config.yaml (/config set, /radio
     disable); nothing automatic does, so there is no restart loop.
+  `,
+
+  auto_update: `
+    Keeping eGPT itself current (src/tools/egpt-update.mjs), beside the Beeper
+    check. At boot and every 6 h the node fetches its checkout's upstream (the
+    current branch's own: what /upgrade's git pull --ff-only takes) and, with new
+    commits, posts ONE line per upstream sha to log_to_group. Read at each look,
+    so an edit applies without a restart. Beeper's own method is NOT here: it
+    stays in limbs.beeper.auto_update.<os>.method (see beeper).
+
+    KEYS:
+      egpt
+        ENUM: auto | manual | none          DEFAULT: auto
+          none    no fetch, no notice.
+          manual  the notice only; the operator sends /<handle> upgrade full.
+          auto    the notice, then /upgrade full by itself at the next quiet
+                  moment: the existing drain (turns in flight finish, a Beeper
+                  update under way finishes first), the daemon renewed too.
+                  ONCE per upstream sha, persisted before the exit
+                  (state/egpt-update.json): a pull that leaves the checkout behind
+                  (a dirty tree, a conflict) is not retried until the upstream
+                  moves, so it never loops the node. Not while a restart is pending.
+        A checkout AHEAD of its upstream (diverged: ff-only would fail) gets the
+        notice with that said, and no auto. No upstream, a detached HEAD, or a
+        failed fetch: a daemon-log line, nothing posted.
+      ask_on_boot
+        ENUM: true | false                  DEFAULT: true
+        When something is pending at boot (eGPT commits and/or a Beeper update),
+        ONE follow-up line after "✅ egpt back up!" / "✅ egpt started" (the same
+        chat(s)): what is pending, the command to type for each, "Apply now?".
+        Under auto, the item says it applies at the next quiet moment instead.
+        Nothing pending: no line. The fetch never delays the back-up line.
   `,
 
   media_flood: `
