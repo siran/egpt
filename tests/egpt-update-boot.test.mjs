@@ -3,7 +3,10 @@
 // upstream, the ask_on_boot line follows the "back up" line to the same chat, and under auto the
 // existing /upgrade full leaves through the node's `exit` seam (46), once. The checkout is a throwaway
 // clone two commits behind a local bare remote (no network); the process works from inside it.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+// Beeper's own check rides the same tick and, by default, reads /opt/beeper, probes the Desktop ports and
+// fetches the update feed: the config says `none` for it, and fetch is a recorder that refuses, so a test
+// that reaches the network or the real Beeper fails instead of doing it.
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { promises as fs, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
@@ -15,6 +18,11 @@ const SIDECAR = join(tmpHome, 'state', 'restart-announce.json');
 const STATE = join(tmpHome, 'state', 'egpt-update.json');
 const SELF_CHAT = '!self:beeper.com';
 const startCwd = process.cwd();
+const realFetch = globalThis.fetch;
+const supervisedWas = process.env.EGPT_SUPERVISED;
+const selfUpdateWas = process.env.EGPT_SELF_UPDATE;
+process.env.EGPT_SELF_UPDATE = 'on';   // the suite's default is off (tests/setup-egpt-home.mjs); this boot is fenced in above and below
+const fetched = [];
 
 let boot, emptyState;
 
@@ -37,10 +45,20 @@ beforeAll(async () => {
   commit(other, 'two'); commit(other, 'three');
   git(other, 'push', '-q', 'origin', 'main');
   process.chdir(mine);   // the checkout the node looks at: process.cwd(), as boot's own shortSha reads it
+  globalThis.fetch = async (url) => { fetched.push(String(url)); throw new Error(`no network in this test: ${url}`); };
 }, 120_000);   // importing boot.mjs alone can take 15-20 s on a loaded box
+
+// Every boot's whisper watcher pings the local resident whisper-server (:8089); that is not this test's concern.
+afterEach(() => {
+  const reached = fetched.splice(0).filter((u) => !u.startsWith('http://127.0.0.1:8089'));
+  expect(reached, 'a boot reached for the network or the real Beeper').toEqual([]);
+});
 
 afterAll(async () => {
   process.chdir(startCwd);
+  globalThis.fetch = realFetch;
+  if (supervisedWas === undefined) delete process.env.EGPT_SUPERVISED; else process.env.EGPT_SUPERVISED = supervisedWas;
+  if (selfUpdateWas === undefined) delete process.env.EGPT_SELF_UPDATE; else process.env.EGPT_SELF_UPDATE = selfUpdateWas;
   delete process.env.EGPT_HOME;
   try { await fs.rm(tmpHome, { recursive: true, force: true }); } catch {}
 });
@@ -89,10 +107,14 @@ const config = (autoUpdate) => ({
   node_name: 'kg',
   networks: { whatsapp: { chat_ids: [SELF_CHAT], allowed_users: ['u-1'] } },
   agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
+  // Beeper's own method, said: none on every OS (its default is auto), so its check never looks at the host
+  limbs: { beeper: { auto_update: { windows: { method: 'none' }, linux: { method: 'none' }, mac: { method: 'none' } } } },
   ...(autoUpdate ? { auto_update: autoUpdate } : {}),
 });
 
-async function bootNode(cfg) {
+// supervised: a daemon respawns this spine (EGPT_SUPERVISED=1, read by boot when it looks): auto needs it.
+async function bootNode(cfg, { supervised = false } = {}) {
+  if (supervised) process.env.EGPT_SUPERVISED = '1'; else delete process.env.EGPT_SUPERVISED;
   const { start, spy } = fakeStart();
   const lines = [], exits = [];
   let state = emptyState();
@@ -126,11 +148,12 @@ describe('boot.mjs — the eGPT update check', () => {
     expect(spy.sent.filter((s) => /⬆ pending/.test(s.text)).map((s) => s.chatId)).toEqual([SELF_CHAT]);
     expect(lines.some((l) => /^\[egpt-update\] ⬆ kg · eGPT 2 new commits on main .*: add three; add two — send \/e upgrade full$/.test(l)), lines.join('\n')).toBe(true);
     expect(exits).toEqual([]);   // manual applies nothing
+    expect(lines.filter((l) => /\[beeper-update\]/.test(l))).toEqual([]);   // Beeper's check looked at nothing
     app.stop();
   });
 
   it('auto: the same look leaves through the /upgrade full exit, once, the sha spent on disk first', async () => {
-    const { app, spy, lines, exits } = await bootNode(config());   // no auto_update: the default is auto
+    const { app, spy, lines, exits } = await bootNode(config(), { supervised: true });   // no auto_update: the default is auto
     expect(await waitFor(() => exits.length > 0)).toBe(true);
     expect(exits).toEqual([46]);
     expect(JSON.parse(readFileSync(STATE, 'utf8')).autoTried).toMatch(/^[0-9a-f]{40}$/);
@@ -141,13 +164,22 @@ describe('boot.mjs — the eGPT update check', () => {
     app.stop();
   });
 
+  it('auto without a daemon to respawn the spine: noticed as manual, nothing exits', async () => {
+    const { app, spy, lines, exits } = await bootNode(config());   // no auto_update: auto; EGPT_SUPERVISED unset
+    expect(await waitFor(() => spy.sent.some((s) => /⬆ pending: eGPT 2 commits .* — \/e upgrade full\. Apply now\?/.test(s.text))), JSON.stringify(spy.sent)).toBe(true);
+    expect(lines.some((l) => /eGPT 2 new commits on main .* — send \/e upgrade full$/.test(l))).toBe(true);
+    expect(exits).toEqual([]);
+    app.stop();
+  });
+
   it('none: nothing is fetched, said or exited', async () => {
-    const { app, spy, exits } = await bootNode(config({ egpt: 'none' }));
+    const { app, spy, lines, exits } = await bootNode(config({ egpt: 'none' }));
     expect(await waitFor(() => spy.sent.some((s) => /egpt back up!/.test(s.text)))).toBe(true);
     await new Promise((r) => setTimeout(r, 1500));   // past the first tick
     expect(spy.sent.some((s) => /pending|eGPT \d/.test(s.text))).toBe(false);
     expect(exits).toEqual([]);
     expect(existsSync(STATE)).toBe(false);
+    expect(lines.filter((l) => /\[egpt-update\]|\[beeper-update\]/.test(l))).toEqual([]);
     app.stop();
   });
 

@@ -16,6 +16,7 @@ const tmp = () => mkdtempSync(join(tmpdir(), 'egpt-egpt-update-'));
 const FROM = `b14257d3${'a'.repeat(32)}`;
 const TO = `1a2b3c4d${'e'.repeat(32)}`;
 const TO2 = `9f8e7d6c${'b'.repeat(32)}`;
+const OS_OF = { win32: 'windows', linux: 'linux', darwin: 'mac' };
 const BEEPER = { from: '4.3.229', to: '4.3.334', hint: '/n update beeper' };
 const NOTICE = '⬆ nu · eGPT 3 new commits on main (b14257d3 → 1a2b3c4d): feat: one; fix: two; docs: three';
 
@@ -38,11 +39,12 @@ function fakeGit(over = {}) {
 }
 
 // One node: a fake git, a real throwaway home, a clock. `again()` is the same node after a restart.
-function node({ cfg = {}, git = {}, beeper = null, restartPending = false, supervised = true, platform = 'linux', home = tmp() } = {}) {
+// beeperMethod: Beeper's own auto_update method on this node's OS (its default is auto where installs are implemented), so a test says which it means.
+function node({ cfg = {}, git = {}, beeper = null, beeperMethod = 'manual', restartPending = false, supervised = true, platform = 'linux', home = tmp() } = {}) {
   const g = fakeGit(git);
   const t = { cfg, clock: 0, pending: restartPending, beeper, said: [], log: [], exits: [], g, home };
   const make = () => createEgptUpdate({
-    getConfig: () => ({ node_name: 'nu', ...t.cfg }),
+    getConfig: () => ({ node_name: 'nu', limbs: { beeper: { auto_update: { [OS_OF[platform]]: { method: beeperMethod } } } }, ...t.cfg }),
     home,
     platform,
     git: g.git,
@@ -255,12 +257,12 @@ describe('ask_on_boot — one line of what is pending', () => {
   });
 
   it('eGPT and Beeper both: each with its own command, ONE question', async () => {
-    const n = node({ cfg: manual, beeper: BEEPER });
+    const n = node({ cfg: manual, beeper: BEEPER, beeperMethod: 'manual' });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?');
   });
 
   it('Beeper alone', async () => {
-    const n = node({ cfg: manual, git: { behind: 0 }, beeper: BEEPER });
+    const n = node({ cfg: manual, git: { behind: 0 }, beeper: BEEPER, beeperMethod: 'manual' });
     expect(await ask(n)).toBe('⬆ pending: Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?');
   });
 
@@ -271,13 +273,18 @@ describe('ask_on_boot — one line of what is pending', () => {
   });
 
   it('under auto with a Beeper update still to ask for: only that is asked', async () => {
-    const n = node({ cfg: auto, beeper: BEEPER });
+    const n = node({ cfg: auto, beeper: BEEPER, beeperMethod: 'manual' });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — at the next quiet moment · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?');
   });
 
-  it('a Beeper under its own auto method applies by itself too', async () => {
-    const n = node({ cfg: { ...auto, limbs: { beeper: { auto_update: { windows: { method: 'auto' } } } } }, beeper: BEEPER, platform: 'win32' });
+  it('a Beeper under its own auto method applies by itself too: nothing is asked', async () => {
+    const n = node({ cfg: auto, beeper: BEEPER, beeperMethod: 'auto' });
     expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — at the next quiet moment · Beeper 4.3.229 → 4.3.334 — at the next quiet moment');
+  });
+
+  it('eGPT manual, Beeper auto: only eGPT is asked for', async () => {
+    const n = node({ cfg: manual, beeper: BEEPER, beeperMethod: 'auto' });
+    expect(await ask(n)).toBe('⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full · Beeper 4.3.229 → 4.3.334 — at the next quiet moment. Apply now?');
   });
 
   it('auto already tried this sha and the pull left it behind: it is asked for again, by hand', async () => {
@@ -305,7 +312,7 @@ describe('ask_on_boot — one line of what is pending', () => {
   });
 
   it('egpt none: no eGPT item, the Beeper one stays', async () => {
-    const n = node({ cfg: none, beeper: BEEPER });
+    const n = node({ cfg: none, beeper: BEEPER, beeperMethod: 'manual' });
     expect(await ask(n)).toBe('⬆ pending: Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?');
     expect(n.g.s.calls).toEqual([]);
   });
@@ -333,9 +340,22 @@ describe('ask_on_boot — one line of what is pending', () => {
     expect(n.said).toHaveLength(1);
   });
 
-  it('ask_on_boot false does not wait for anything', async () => {
-    const n = node({ cfg: { auto_update: { ask_on_boot: false } }, beeper: BEEPER });
+  it('asks Beeper only after the boot look: a node whose spine never ticks reaches for nothing', async () => {
+    let asked = 0;
+    const n = node({ cfg: manual, beeper: () => { asked += 1; return BEEPER; }, beeperMethod: 'manual' });
+    const line = n.u.askOnBoot();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(asked).toBe(0);
+    await n.u.tick(0);
+    expect(await line).toMatch(/Beeper 4\.3\.229 → 4\.3\.334 — \/n update beeper\. Apply now\?$/);
+    expect(asked).toBe(1);
+  });
+
+  it('ask_on_boot false does not wait for anything, nor ask Beeper', async () => {
+    let asked = 0;
+    const n = node({ cfg: { auto_update: { ask_on_boot: false } }, beeper: () => { asked += 1; return BEEPER; } });
     expect(await n.u.askOnBoot()).toBeNull();
+    expect(asked).toBe(0);
   });
 
   it('the line itself', () => {

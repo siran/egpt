@@ -3446,9 +3446,12 @@ export async function boot({
   // What this node is handling, in state/background.json (src/spine/background.mjs). Real-node only (tests: backgroundFile).
   const background = (ingest || backgroundFile) ? createBackgroundRegistry({ path: backgroundFile ?? join(EGPT_HOME, 'state', 'background.json'), node: node_name, liveAgents: liveBackground, now, onLog: (m) => log.line?.(`[background] ${m}`) }) : null;
   await background?.load();
+  // EGPT_SELF_UPDATE=off: neither update service exists — the test suite sets it (tests/setup-egpt-home.mjs),
+  // or every ingest boot would probe the real Beeper, fetch the real checkout, and could restart them.
+  const selfUpdate = process.env.EGPT_SELF_UPDATE !== 'off';
   // /update beeper + the 6-hourly Beeper check (src/tools/beeper-update.mjs). Real node only: it reads
   // the local Beeper installs and the update feed. Drains like /restart; the spine stays up.
-  beeperUpdate = (ingest && !beeperless) ? createBeeperUpdate({
+  beeperUpdate = (ingest && !beeperless && selfUpdate) ? createBeeperUpdate({
     getConfig,
     home: EGPT_HOME,
     drain: (fn) => spine.drainForRestart(fn, { purpose: 'restarting Beeper for the update' }),
@@ -3468,7 +3471,7 @@ export async function boot({
   // The 6-hourly look at this checkout's upstream (src/tools/egpt-update.mjs): the notice, and under
   // auto_update.egpt: auto the SAME `/upgrade full` the command runs (the drain waits for turns; no
   // force). Real node only, beeperless or not: it reads the checkout, not Beeper.
-  const egptUpdate = ingest ? createEgptUpdate({
+  const egptUpdate = (ingest && selfUpdate) ? createEgptUpdate({
     getConfig,
     home: EGPT_HOME,
     upgradeFull: () => announceAndExit(UPGRADE_FULL_EXIT_CODE),

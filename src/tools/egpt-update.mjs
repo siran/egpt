@@ -134,10 +134,12 @@ export function createEgptUpdate({
   }
 
   // Boot, after the "back up" line: ONE line of what is pending (eGPT and/or Beeper), or null. It waits
-  // for the boot look, which the spine's first tick makes: nothing here fetches on its own.
+  // for the boot look, which the spine's first tick makes, and asks Beeper only after it: nothing here
+  // reaches out on its own (a node whose spine never ticks reads no install and fetches no feed).
   async function askOnBoot() {
     if (String(cfg().auto_update?.ask_on_boot ?? true).trim().toLowerCase() === 'false') return null;
-    const [r, b] = await Promise.all([bootLook, beeperPending().catch((e) => { onLog(`beeper pending: ${e?.message ?? e}`); return null; })]);
+    const r = await bootLook;
+    const b = await beeperPending().catch((e) => { onLog(`beeper pending: ${e?.message ?? e}`); return null; });
     const items = [];
     if (r?.behind) {
       const what = `eGPT ${plural(r.behind, 'commit')} (${short(r.from)} → ${short(r.to)})`;

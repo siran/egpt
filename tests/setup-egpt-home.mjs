@@ -40,3 +40,9 @@ if (process.env.EGPT_HOME && existsSync(join(process.env.EGPT_HOME, 'config', 'c
 }
 
 process.env.EGPT_HOME ||= join(homedir(), '.egpt-test-home');
+
+// 2026-11-20: Beeper's update defaults to auto on every OS, and eGPT's own look fetches the checkout. A boot
+// test with ingest on would build both against the HOST: probe the Desktop ports, fetch the feed and the repo,
+// and once the image launches Beeper from the volume, kill the live Beeper for an update. Off for the suite;
+// a test of them builds them on its own fakes, or sets this to on for a boot it has fenced in.
+process.env.EGPT_SELF_UPDATE ||= 'off';

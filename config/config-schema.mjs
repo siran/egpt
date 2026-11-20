@@ -3539,6 +3539,8 @@ export const CONFIG_SCHEMA = {
                   (state/egpt-update.json): a pull that leaves the checkout behind
                   (a dirty tree, a conflict) is not retried until the upstream
                   moves, so it never loops the node. Not while a restart is pending.
+                  Only where a daemon respawns the spine (EGPT_SUPERVISED=1): a
+                  spine run by hand would only stop, so there auto is manual.
         A checkout AHEAD of its upstream (diverged: ff-only would fail) gets the
         notice with that said, and no auto. No upstream, a detached HEAD, or a
         failed fetch: a daemon-log line, nothing posted.
@@ -3549,6 +3551,8 @@ export const CONFIG_SCHEMA = {
         chat(s)): what is pending, the command to type for each, "Apply now?".
         Under auto, the item says it applies at the next quiet moment instead.
         Nothing pending: no line. The fetch never delays the back-up line.
+    EGPT_SELF_UPDATE=off in the spine's environment: neither this check nor
+    Beeper's exists (the test suite sets it, so no test touches the host).
   `,
 
   media_flood: `
