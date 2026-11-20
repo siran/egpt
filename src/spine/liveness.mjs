@@ -25,7 +25,8 @@
 //     is posted instead. A task a listed agent launched is listed under it, └, as deep as they go (operator 2026-10-31,
 //     2026-10-31: "are you listing parent and child process in the same level? in that case why not nest?");
 //     one whose agent is not in the post stands on its own. A level's shell commands (the CLI's local_bash),
-//     more than ROLL_UP_OVER of one being, running or ended alike, are one line; a failed one stays listed.
+//     of one being, running or ended alike, are one line: their count, never the command (operator 2026-11-20:
+//     "no need to show noisy command; keep it tidy"); a failed one stays listed.
 //     The CLI's ambient tasks (watchers — "not activity", its own doc) are in no status and keep none going.
 //   · background running ASK_AFTER_MS: the being is asked through the wake path whether it is still
 //     needed; no answer → one line to the logging group. Nothing is evicted or killed here.
@@ -43,7 +44,6 @@ const STILL_THINKING = `${LIVE_FRAME_MARK} still thinking…`;
 // A finished task's mark, by how its session's CLI said it ended; none known → ◦.
 const ENDED = { completed: '✓', failed: '✗', stopped: '⏹' };
 const SHELL = 'local_bash';
-const ROLL_UP_OVER = 2;
 
 // A chat's background work as its status says it: each task labelled by its being, unless all of it is
 // `being`'s own — the being the line is posted as, whose stamp already says whose it is.
@@ -100,7 +100,7 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   }
 
   // A level's shell commands — same parent in the post, same being, all running or all ended the same way, not
-  // failed — more than ROLL_UP_OVER: one line where the first was, timed by the oldest. `live` gains a running one.
+  // failed — however many: one line where the first was, timed by the oldest. `live` gains a running one.
   function rollUp(listed, live) {
     const parentOf = (x) => (x.parentTaskId ? listed.find((p) => p.being === x.being && p.taskId === x.parentTaskId) : undefined);
     const groupOf = (x) => (x.taskType === SHELL && x.outcome?.status !== 'failed' ? `${x.being}\0${parentOf(x)?.taskId ?? ''}\0${live.has(x) ? '•' : x.outcome?.status}` : null);
@@ -108,9 +108,9 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     for (const x of listed) if (groupOf(x)) groups.set(groupOf(x), [...(groups.get(groupOf(x)) ?? []), x]);
     return listed.flatMap((x) => {
       const g = groups.get(groupOf(x));
-      if (!g || g.length <= ROLL_UP_OVER) return [x];
+      if (!g) return [x];
       if (g[0] !== x) return [];
-      const one = { being: x.being, parentTaskId: parentOf(x)?.taskId, description: `${g.length} ${live.has(x) ? 'background commands' : 'commands'}`, since: Math.min(...g.map((y) => y.since)), outcome: x.outcome, rolled: true };
+      const one = { being: x.being, parentTaskId: parentOf(x)?.taskId, description: `${g.length} ${live.has(x) ? 'background ' : ''}command${g.length === 1 ? '' : 's'}`, since: Math.min(...g.map((y) => y.since)), outcome: x.outcome, rolled: true };
       if (live.has(x)) live.add(one);
       return [one];
     });

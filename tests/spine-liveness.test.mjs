@@ -848,14 +848,16 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     expect(posts(b)).toEqual(['⚙️ background work (7):\n• Run the audit · since 11:50\n• Crawl the site · since 11:59\n• 5 background commands · since 11:55']);
   });
 
-  it('2 shell commands, or any number of no known kind (an adopted task from an older cli-host), are listed as before', async () => {
+  it('even 1 or 2 shell commands are their count, never the command; tasks of no known kind (an adopted task from an older cli-host) are listed as before', async () => {
     const b = await launched([AUDIT, sh(1, -2 * min), sh(2, -1 * min), step(1, -3 * min), step(2, -2 * min), step(3, -1 * min)]);
-    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n• checkpoint 1 · since 11:58\n• checkpoint 2 · since 11:59\n• Step 1 · since 11:57\n• Step 2 · since 11:58\n• Step 3 · since 11:59']);
+    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n• 2 background commands · since 11:58\n• Step 1 · since 11:57\n• Step 2 · since 11:58\n• Step 3 · since 11:59']);
+    const one = await launched([AUDIT, sh(1, -1 * min, 'a1')]);
+    expect(posts(one)).toEqual(['⚙️ background work (2):\n• Run the audit · since 11:50\n  └ 1 background command · since 11:59']);
   });
 
   it('under an agent its shell commands roll up the same way, counted per level', async () => {
     const b = await launched([AUDIT, sh(1, -3 * min, 'a1'), sh(2, -2 * min, 'a1'), sh(3, -1 * min, 'a1'), sh(4, -2 * min), sh(5, -1 * min)]);
-    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n  └ 3 background commands · since 11:57\n• checkpoint 4 · since 11:58\n• checkpoint 5 · since 11:59']);
+    expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n  └ 3 background commands · since 11:57\n• 2 background commands · since 11:58']);
   });
 
   it('finished commands roll up by how they ended — ✓ N commands, ⏹ N commands; a failed one stays listed with the CLI\'s message', async () => {
