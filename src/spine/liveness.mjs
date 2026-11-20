@@ -26,7 +26,8 @@
 //     2026-10-31: "are you listing parent and child process in the same level? in that case why not nest?");
 //     one whose agent is not in the post stands on its own. A level's shell commands (the CLI's local_bash),
 //     of one being, running or ended alike, are one line: their count, never the command (operator 2026-11-20:
-//     "no need to show noisy command; keep it tidy"); a failed one stays listed.
+//     "no need to show noisy command; keep it tidy"); a failed one stays listed. One that ended well waits for
+//     the last post, and a shell command starting or ending is no reason to post (operator 2026-11-20).
 //     The CLI's ambient tasks (watchers — "not activity", its own doc) are in no status and keep none going.
 //   · background running ASK_AFTER_MS: the being is asked through the wake path whether it is still
 //     needed; no answer → one line to the logging group. Nothing is evicted or killed here.
@@ -44,6 +45,8 @@ const STILL_THINKING = `${LIVE_FRAME_MARK} still thinking…`;
 // A finished task's mark, by how its session's CLI said it ended; none known → ◦.
 const ENDED = { completed: '✓', failed: '✗', stopped: '⏹' };
 const SHELL = 'local_bash';
+// A shell command that ended and did not fail: held back from a status while work still runs.
+const quiet = (x) => x.taskType === SHELL && x.outcome?.status !== 'failed';
 
 // A chat's background work as its status says it: each task labelled by its being, unless all of it is
 // `being`'s own — the being the line is posted as, whose stamp already says whose it is.
@@ -80,7 +83,10 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   // The last says "done" only if all of it completed (operator 2026-10-31).
   function post(s, running, t) {
     const live = new Set(running);
-    const listed = rollUp([...running, ...s.done], live);
+    // While work runs, a shell command that ended well is not news (operator 2026-11-20: "why does it show a
+    // checkmark if it's not done"): it waits for the last post.
+    const held = running.length ? s.done.filter(quiet) : [];
+    const listed = rollUp([...running, ...s.done.filter((x) => !held.includes(x))], live);
     const what = workOf(listed, s.being, labelOf);
     const parentOf = (x) => (x.parentTaskId ? listed.find((p) => p.being === x.being && p.taskId === x.parentTaskId) : undefined);
     const line = (x, depth) => {
@@ -95,7 +101,7 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     const head = running.length ? `⚙️ background work (${running.length}):` : ok ? '✓ background work done:' : `${failed ? '⚠️ ' : ''}background work ended:`;
     s.posted = t;
     s.changed = false;
-    s.done = [];
+    s.done = held;
     return say(s, `${head}${lines.join('')}`);
   }
 
@@ -164,8 +170,15 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
       const tasks = all.filter((x) => x.chatId === chatId);
       const live = new Set(tasks.map(keyOf));
       // gone from the list: how it ended is read now — the CLI said it before it dropped the task
-      for (const [k, x] of s.seen) if (!live.has(k)) { s.seen.delete(k); s.done.push({ ...x, ended: t, outcome: outcomeOf?.({ being: x.being, chatId, taskId: x.taskId }) ?? null }); s.changed = true; }
-      for (const x of tasks) if (!s.seen.has(keyOf(x))) { s.seen.set(keyOf(x), kept(x, t)); s.changed = true; }
+      for (const [k, x] of s.seen) {
+        if (live.has(k)) continue;
+        const ended = { ...x, ended: t, outcome: outcomeOf?.({ being: x.being, chatId, taskId: x.taskId }) ?? null };
+        s.seen.delete(k);
+        s.done.push(ended);
+        if (!quiet(ended)) s.changed = true;
+      }
+      // a shell command starting is not a change worth a post either
+      for (const x of tasks) if (!s.seen.has(keyOf(x))) { s.seen.set(keyOf(x), kept(x, t)); if (x.taskType !== SHELL) s.changed = true; }
       if (!tasks.length) {
         // one quiet pulse: a wake may be on its way — and none while a turn runs here: it may start more
         if (!s.quiet || [...turns].some((x) => x.ev.chatId === chatId)) { s.quiet = true; continue; }

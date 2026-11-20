@@ -860,15 +860,27 @@ describe('liveness — changes are coalesced, shell commands rolled up', () => {
     expect(posts(b)).toEqual(['⚙️ background work (6):\n• Run the audit · since 11:50\n  └ 3 background commands · since 11:57\n• 2 background commands · since 11:58']);
   });
 
-  it('finished commands roll up by how they ended — ✓ N commands, ⏹ N commands; a failed one stays listed with the CLI\'s message', async () => {
+  it('while work runs, a failed command is listed with the CLI\'s message and the rest wait for the last post — ✓ N commands, ⏹ N commands', async () => {
     const ended = { b4: { status: 'failed', message: 'exit code 1' }, b5: { status: 'stopped' }, b6: { status: 'stopped' }, b7: { status: 'stopped' } };
     const b = await launched([AUDIT, ...[1, 2, 3, 4, 5, 6, 7].map((n) => sh(n, -n * sec))], { backgroundOutcome: (t) => ended[t.taskId] ?? { status: 'completed', message: null } });
     b.brain.tasks = [AUDIT];
     await ticks(b, 15 * sec, 2 * min);
+    b.brain.tasks = [];
+    await ticks(b, 2 * min + 15 * sec, 3 * min);
     expect(posts(b)).toEqual([
       '⚙️ background work (8):\n• Run the audit · since 11:50\n• 7 background commands · since 11:59',
-      '⚙️ background work (1):\n• Run the audit · since 11:50\n✓ 3 commands\n✗ checkpoint 4 · 19s — exit code 1\n⏹ 3 commands — stopped',
+      '⚙️ background work (1):\n• Run the audit · since 11:50\n✗ checkpoint 4 · 19s — exit code 1',
+      'background work ended:\n✓ 3 commands\n⏹ 3 commands — stopped\n✓ Run the audit · 12m15s',
     ]);
+  });
+
+  it('a shell command that starts or ends well is no reason to post', async () => {
+    const b = await launched([AUDIT, sh(1, -1 * sec)]);
+    b.brain.tasks = [AUDIT, sh(2, 0)];
+    await ticks(b, 15 * sec, 2 * min);
+    b.brain.tasks = [AUDIT];
+    await ticks(b, 2 * min + 15 * sec, 4 * min);
+    expect(posts(b)).toHaveLength(1);
   });
 
   it('two beings\' commands roll up each under its own label', async () => {
