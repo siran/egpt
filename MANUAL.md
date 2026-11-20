@@ -56,7 +56,7 @@ that being (`/e agents compact`). A chat whose conversations.yaml entry sets
 commands included (`[]` = by none).
 
 Anyone else in a chat runs only the commands `public_commands` names: the root
-key in config.yaml (default `[split, send, end]`), or the chat's own
+key in config.yaml (default `[split, send, end, side]`), or the chat's own
 conversations.yaml entry, which replaces it (`[]` = none). A listed `agents`
 opens only the bare list; its verbs stay authorized-only.
 
@@ -172,6 +172,13 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                below)
 /<handle> super <message>                      a turn of this chat's superintendent
                                                S, answered here (see below)
+/<handle> side <prompt>                        ONE turn of the chat's being, in the
+                                               chat's own thread, answered in the
+                                               chat's SI+ side group (made as
+                                               reply_in_side_group makes it); the
+                                               chat gets one line naming it. Group
+                                               chats only; not in a side group, a
+                                               /split or on Telegram. Public
 ```
 
 **Reply modes** (`/agents … auto <mode>`): `on` (receive every burst, reply per

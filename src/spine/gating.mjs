@@ -77,6 +77,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // The single per-target decision. ONE conversations.yaml read resolves the being's mode here. `mention` is passed
   // explicitly by the loop (it's the ROUTED being's mention — a sibling routed by its own @name
   // is mentioned for ITS gate, not @e's); default to ev.mention for direct callers.
+  // `side`: this one turn replies in the chat's side group (/side), whatever reply_in_side_group says.
   // `denied` is the router's allowed_users answer for this target (router.resolve): a denied
   // sender is recorded but runs no turn, in any mode. So is a reaction to a bot's post — one this account
   // sent, or any node signed (the bridge's replyToBot/replyToNode) (operator 2026-11-01).
@@ -87,7 +88,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
   // (operator 2026-11-03): no ⏳ in any mode, the line carries 👾/🤔 instead. Else the turn is bubble's.
   // `reacts`: () => Promise<boolean>, the spine's answer for this chat (turns.canMark), asked only then.
   // `addressed`, with it: a human's line addresses the being (a wake is no line).
-  async function decide(being, ev, mention = ev.mention, { denied = false, bot = false, reacts = null } = {}) {
+  async function decide(being, ev, mention = ev.mention, { denied = false, bot = false, reacts = null, side = false } = {}) {
     const c = cfg();
     let state = null;
     if (loadState) { try { state = await loadState(); } catch { state = null; } }
@@ -108,7 +109,7 @@ export function createGating({ getConfig = () => ({}), loadState = null, seedOf 
     if (mayReply && sideGroupFor && !ev.backlog && !(mode === 'auto' && ev.isSender)) {
       let at = null;
       // An addressed reply makes the group now; an unaddressed one (on/auto) once it has something to post.
-      try { at = await sideGroupFor(ev, { create: addressed }); } catch { at = false; }
+      try { at = await sideGroupFor(ev, { create: addressed, once: side }); } catch { at = false; }
       if (at === false) mayReply = false;
       else if (at) replyChatId = at;
     }

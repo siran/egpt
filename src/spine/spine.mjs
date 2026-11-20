@@ -1530,11 +1530,13 @@ export function createSpine({
 
   // A COMMAND'S TURN (/<handle> super, commands.mjs): the being answers the command's own line in its chat,
   // through the reply path. The command decided who may; classify counted it for the loop guard.
-  async function commandTurn({ being, ev }) {
-    const d = await gating.decide(being, ev, COMMAND_MENTION, { bot: !humanTurn(ev), reacts: marksHere(being, ev) });
+  // `trigger`: the line the being is prompted with, when it is not the command's own (/side: the prompt).
+  // `side`: its reply goes to the chat's side group (gating.decide).
+  async function commandTurn({ being, ev, trigger = null, side = false }) {
+    const d = await gating.decide(being, ev, COMMAND_MENTION, { bot: !humanTurn(ev), reacts: marksHere(being, ev), side });
     if (!d.mayReply) { note(`command ${being}/${ev.chatId}: mode ${d.mode} — no turn`); return null; }
     const { key: turnKey, pinned } = await turns.keyOf(being, ev);
-    return { turn: openAndRunReply({ to: being, ev, d, turnKey, pinned }) };
+    return { turn: openAndRunReply({ to: being, ev, d, turnKey, pinned, trigger }) };
   }
   const COMMAND_MENTION = { atEStart: true, atEAnywhere: true };
 

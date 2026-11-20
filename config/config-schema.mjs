@@ -3623,7 +3623,7 @@ export const CONFIG_SCHEMA = {
     the node's allowed users' only (Self DM, networks.<surface>.allowed_users, the owner).
     Command words, with or without the '/'. A node-signed line is never admitted (it runs
     /super only, agents.super).
-      config.yaml, root key:           DEFAULT [split, send, end] (join retired 2026-10-25)
+      config.yaml, root key:           DEFAULT [split, send, end, side] (join retired 2026-10-25)
       conversations.yaml, a chat's own entry: REPLACES the root list there; [] = none.
     A listed agents opens only the bare /agents list (agents_list); its verbs stay
     allowed-users only. Each command's own rules still apply (/end only in a side group).
@@ -4046,6 +4046,17 @@ export const CONFIG_SCHEMA = {
     accum, is prompted with the lines of BOTH transcripts (transcript.md and transcript-SI+<name>.md)
     since the being's last turn, in time order, each under its own group's name. A /split is another
     thread and a /join room (made before 2026-10-25) keeps its own log: each reads only its own.
+
+    ONE MESSAGE'S WORTH, /side (operator 2026-11-20) — "/<handle> side <prompt>" ("it is not another thread, it's the same thread, it
+    just replies in another channel"): the per-message form of reply_in_side_group. <prompt> runs as one
+    ordinary turn of the chat's being, in the chat's own thread (same context and session), and that one
+    reply goes to the chat's SI+ side group, made as reply_in_side_group makes it when the chat has none
+    (same title rule, creator account and members; an alias of the chat). The chat keeps its setting: later
+    lines reply in place unless reply_in_side_group is on. It gets ONE line naming the group. The prompt line is
+    on the chat's own transcript as typed; the reply is recorded as reply_in_side_group records it.
+    Same gates as a normal turn by that sender (reply mode, allowed_users); public by default (public_commands).
+    Refused, with the reason: no prompt (usage), a 1:1, a side group, a /split, Telegram (use /split), a side
+    group that cannot be made. An alias is a commands_alias.yaml line, e.g. q: /e side.
   `,
 
   aliases: `
