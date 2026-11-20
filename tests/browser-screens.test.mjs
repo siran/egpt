@@ -198,7 +198,7 @@ const STATE = { contacts: { whatsapp: { '!work': { slug: 'Work chat-2601010000' 
 const GROUPS = { work: ['Work chat'], edu: ['Edu chat'], brain: ['Brain chat'] };
 const NAMES = { '!work': 'Work chat', '!edu': 'Edu chat', '!brain': 'Brain chat', '!other': 'Other chat' };
 const URL = 'https://q.trycloudflare.com';
-function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null, xIdle = () => Infinity, rssOf = () => null, screensOpen = null, linked = null, clock = null } = {}) {
+function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null, xIdle = () => Infinity, rssOf = () => null, platform = 'linux', screensOpen = null, linked = null, clock = null } = {}) {
   const browsersFile = join(tempHome(), 'browsers.yaml');   // the real chat-to-group table, read and written as the spine does
   writeFileSync(browsersFile, YAML.stringify({ groups: GROUPS }));
   const tableIO = { path: browsersFile, read: (p, e) => readFile(p, e) };   // no stat cache: tests rewrite within a tick
@@ -221,7 +221,7 @@ function build({ available = true, admin = { chatId: '!admin' }, chromeHost, pro
   const cmds = createCommands({
     getConfig: () => ({ node_name: 'nu', agents: { n: {} }, chrome: { bin: '/x/chrome', ...chrome } }),
     chromeHost: chromeHost === undefined ? fake.chromeHost : chromeHost,
-    profileHolder, killProcessTree, chromeProcesses, freeMem: () => freeMem * 1024 * 1024, rssOf,
+    profileHolder, killProcessTree, chromeProcesses, freeMem: () => freeMem * 1024 * 1024, rssOf, platform,
     browserGroups: () => readBrowserGroups(tableIO), assignBrowserGroup: (name, g) => setBrowserGroup(name, g, { path: browsersFile }), profileFolders: () => profiles,
     loadState: async () => STATE, writeState: async () => {},
     send: async (chatId, text) => sent.push({ chatId, text }),
@@ -588,6 +588,23 @@ describe('/<handle> browsers, browser close all', () => {
       '• shared — sign-in window · chats: every unlisted chat · screen :101 · idle 1 min · 380 MB',
       '• work — eGPT · chats: Work chat · screen :100, link open · idle 4 min · 412 MB',
     ].join('\n'));
+  });
+
+  it('memory counts only the profile own Chromes, not a sibling whose path starts the same', async () => {
+    const w = build({
+      chromeHost: listing(CHROMES), rssOf: (pid) => rss[pid] ?? null,
+      chromeProcesses: () => [...procs(), { pid: 13, cmd: 'chrome --user-data-dir=/p/work2' }],
+    });
+    rss[13] = 900 * 1048576;
+    await w.run('!work', '/browsers');
+    expect(w.sent.at(-1).text).toContain('412 MB');
+    delete rss[13];
+  });
+
+  it('win32: no memory column (it cannot be read there)', async () => {
+    const w = build({ chromeHost: listing(CHROMES), chromeProcesses: procs, rssOf: (pid) => rss[pid] ?? null, platform: 'win32' });
+    await w.run('!work', '/browsers');
+    expect(w.sent.at(-1).text).toBe('browsers open (2):\n• shared — sign-in window · chats: every unlisted chat\n• work — eGPT · chats: Work chat');
   });
 
   it('memory is omitted when it cannot be read, and the command never fails', async () => {

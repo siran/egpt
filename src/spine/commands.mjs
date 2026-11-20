@@ -53,7 +53,7 @@ import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config
 import { isRestartKey } from './config-swap.mjs';
 import { resolveConfigKey } from '../../config/config-schema.mjs';
 import { createCdpClient, createChannelTransport } from '../tools/cdp.mjs';
-import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder, killProcessTree as defaultKillProcessTree, chromeProcesses as defaultChromeProcesses } from '../tools/chrome-launcher.mjs';
+import { resolveBrainProfile, chromePipeArgs, chromePlainArgs, stampGroupProfile, profileHolder as defaultProfileHolder, killProcessTree as defaultKillProcessTree, chromeProcesses as defaultChromeProcesses, cmdUsesProfile } from '../tools/chrome-launcher.mjs';
 import { connectChromeHost } from '../chrome-host.mjs';
 import { linkOf, GRACE_MS, IDLE_MS } from '../tools/screen-tunnel.mjs';
 import { admitLaunch, estimateChromeBytes, BRAIN_GROUP, SHARED_GROUP, isSafeGroupName, chromeConversationOf } from './chrome-pool.mjs';
@@ -590,6 +590,7 @@ export function createCommands({
   chromeProcesses = defaultChromeProcesses,
   freeMem = () => freemem(),
   rssOf = defaultRssOf,
+  platform = process.platform,   // seam: memoryOf is omitted on win32
   onChromeLog = () => {},
   browserGroups = readBrowserGroups,     // config/browsers.yaml's groups, read fresh (rooms-file.readBrowserGroups)
   assignBrowserGroup = setBrowserGroup,  // (chat name, group): `/browser <profile>` records the chat in that table (rooms-file.setBrowserGroup)
@@ -1542,7 +1543,7 @@ export function createCommands({
     // SingletonLock can be stale and its pid reused: kill it only if that pid is a Chrome on THIS profile.
     const lockHolder = tracked ? null : profileHolder(profileDir);
     const lockPid = /^pid (\d+)$/.exec(lockHolder ?? '')?.[1];
-    const isOurChrome = lockPid && chromeProcesses().some((p) => String(p.pid) === lockPid && p.cmd.includes(`--user-data-dir=${profileDir}`));
+    const isOurChrome = lockPid && chromeProcesses().some((p) => String(p.pid) === lockPid && cmdUsesProfile(p.cmd, profileDir, platform));
     const holder = lockPid && !isOurChrome ? null : lockHolder;
     const holderPid = isOurChrome ? lockPid : undefined;
     const chrome = tracked || !!holderPid;
@@ -1589,11 +1590,11 @@ export function createCommands({
   }
   // Memory = RSS of the Chromes whose command line names the profile. Null (omitted) on Windows or when nothing can be read: never fails the command.
   function memoryOf(profileDir) {
-    if (!profileDir || process.platform === 'win32') return null;
+    if (!profileDir || platform === 'win32') return null;
     try {
       let sum = 0, any = false;
       for (const p of chromeProcesses()) {
-        if (!p.cmd.includes(`--user-data-dir=${profileDir}`)) continue;
+        if (!cmdUsesProfile(p.cmd, profileDir, platform)) continue;
         const b = rssOf(p.pid);
         if (b > 0) { sum += b; any = true; }
       }
