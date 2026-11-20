@@ -196,6 +196,18 @@ export function warmTtlByClass(cfg, onLog = () => {}) {
   return { chatbox: t.conversation, ...t };
 }
 
+// split.tunnel (2026-10-31) is gone (operator 2026-11-20: a /split is another thread, so nothing of its parent's is
+// posted in it). config.yaml split.tunnel and a conversations.yaml entry's split: { tunnel } still load: read by
+// nothing. The one boot line that says so, or null when nothing carries the key.
+export function retiredSplitTunnelNote(cfg, state) {
+  let entries = 0;
+  for (const bucket of Object.values(state?.contacts ?? {})) {
+    for (const entry of Object.values(bucket ?? {})) if (entry?.split?.tunnel !== undefined) entries++;
+  }
+  const carried = [...(cfg?.split?.tunnel !== undefined ? ['config.yaml split.tunnel'] : []), ...(entries ? [`split: { tunnel } on ${entries} conversations.yaml entr${entries === 1 ? 'y' : 'ies'}`] : [])];
+  return carried.length ? `split.tunnel is gone (2026-11-20): a split's replies stay in the split, its parent's in the parent. Ignored, safe to delete: ${carried.join(' and ')}` : null;
+}
+
 export function whisperPortOf(cfg) {
   const profile = activeTxProfile(cfg);
   for (const [name, eng] of Object.entries(profile)) {
@@ -3105,7 +3117,7 @@ export async function boot({
   // --- services (each DI-wired; none closes over another) ---
   const services = {
     identity: createIdentity({ now, timeZone: transcriptTimeZone, loadState: _loadState }),
-    // sideGroupFor: a reply goes to the chat's open /split, else (reply_in_side_group) its SI+ group (commands, below; decide runs once the spine exists).
+    // sideGroupFor: a reply in a reply_in_side_group chat goes to its SI+ group (commands, below; decide runs once the spine exists).
     gating: createGating({ getConfig, loadState: _loadState, seedOf: strangerSeedOf, sideGroupFor: (ev, o) => commands.autoSideGroup?.(ev, o) }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02) —
     // the ONE registry, and since 2026-07-25 the ONLY source of off-node reach (a relay agent's
@@ -3889,6 +3901,10 @@ export async function boot({
   try {
     const n = legacyEntryCount(await _loadState());
     if (n) log.line?.(`[loop_guard] deprecated per-conversation guard: on ${n} conversations.yaml entr${n === 1 ? 'y' : 'ies'} — read as loop_guard.inbound for one release; migration 0044 moves them`);
+  } catch { /* the registry's own readers report a broken file */ }
+  try {
+    const note = retiredSplitTunnelNote(cfg, await _loadState());
+    if (note) log.line?.(`[boot] ${note}`);
   } catch { /* the registry's own readers report a broken file */ }
   // OUR OWN FRAME, told apart from a peer's — the guard's third bucket (stop-guard turnKind
   // 'echo'). THE EXISTING definition of "who are we": node-names.mjs fromOtherNode over

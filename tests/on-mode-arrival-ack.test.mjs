@@ -2,7 +2,7 @@
 // the human saw no sign the line was received (operator 2026-11-03: "we agreed to react as soon as sent.
 // then reaction is removed. polite silence then can be kept, or the response"). The bridge's ✍️ goes on
 // the line at arrival and comes off when the turn ends, whatever its outcome. Not on an addressed line
-// (its ⏳ is the receipt), a bot's line, a tunnelled or side-group reply, or a reaction.
+// (its ⏳ is the receipt), a bot's line, a side-group reply, or a reaction.
 // dispatch.thinking_train: bubble — this file's subject is the ⏳ bubble (the emoji train: tests/emoji-thinking-train.test.mjs).
 import { describe, it, expect } from 'vitest';
 import { createRouter } from '../src/spine/router.mjs';
@@ -39,7 +39,7 @@ function fakeBridge({ reactThrows = false } = {}) {
   };
 }
 
-// `sideGroupFor`: the chats whose reply goes elsewhere ('!t' the tunnel, '!s' a side group).
+// `sideGroupFor`: the chats whose reply goes elsewhere ('!s' a side group).
 function build({ mode = 'on', work, reactThrows = false, turnTimeoutMs = 0 } = {}) {
   const agents = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true, mode } };
   const config = { conversation_defaults: { allowed_users: ['u-1'] }, agents, dispatch: { thinking_train: 'bubble' } };
@@ -48,7 +48,7 @@ function build({ mode = 'on', work, reactThrows = false, turnTimeoutMs = 0 } = {
   const transcript = { entries: [], async log(ev, r) { this.entries.push({ ev, reply: r }); } };
   const notes = [];
   const onLog = (s) => notes.push(s);
-  const sideGroupFor = async (ev) => (ev.chatId === '!t' ? { chatId: '!split', tunnel: true } : ev.chatId === '!s' ? '!side' : null);
+  const sideGroupFor = async (ev) => (ev.chatId === '!s' ? '!side' : null);
   const spine = createSpine({
     bridge, brain, transcript, defaultBeing: 'egpt', peerMouth: MOUTH_HOLDS, turnTimeoutMs,
     sender: createSender({ bridge, bodyEmojiOf: () => E, labelOf: () => 'E', onLog }),
@@ -164,12 +164,11 @@ describe('no ✍️', () => {
     expect(b.marks()).toEqual([ON(m.msgId), OFF(m.msgId)]);
   });
 
-  it('REPRODUCE: a tunnelled turn and a side-group reply put no ✍️ in the origin; a reply in place does', async () => {
+  it('REPRODUCE: a side-group reply puts no ✍️ in the origin; a reply in place does', async () => {
     const b = build({ work: answers('Hace calor, sí.') });
-    await b.bridge.emit(msg('qué calor hace hoy', { chatId: '!t' }));
     await b.bridge.emit(msg('qué calor hace hoy', { chatId: '!s' }));
-    expect(b.brain.calls).toHaveLength(2);
-    expect(b.bridge.events.filter(([op]) => op === 'post').map(([, chat]) => chat)).toEqual(['!split', '!side']);
+    expect(b.brain.calls).toHaveLength(1);
+    expect(b.bridge.events.filter(([op]) => op === 'post').map(([, chat]) => chat)).toEqual(['!side']);
     const m = msg('qué calor hace hoy');
     await b.bridge.emit(m);
     await flush();

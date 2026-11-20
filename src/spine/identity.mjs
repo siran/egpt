@@ -28,7 +28,6 @@ import { formatDispatchLine } from '../dispatch-line.mjs';
 // before the envelope is built, and "the InboundEvent is built ONCE and consumed by all paths"
 // (C7.6e, spine.mjs:50) is the contract that keeps ev.body and ev.line from disagreeing.
 import { decodeNodeSignature, decodeBeingSignature, hasNodeSignature, renderNodeSignature, decodeChatCanary } from '../node-signature.mjs';
-import { shortChatId } from '../bridges/chat-id.mjs';
 
 // Beeper tags each message with its origin NETWORK; map it to the conversation
 // SURFACE (the slugDir bucket) and the dispatch-line NODE (the entry-point tag).
@@ -112,9 +111,6 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       const ts = f.ts ?? now();
       const senderName = f.senderName ?? f.firstName ?? null;
       const canary = typeof rawBody === 'string' ? decodeChatCanary(rawBody) : null;
-      // A reply another chat's being tunnelled in here (2026-10-31) is recorded under that being's name.
-      const tunnelled = signed && canary?.kind === 'tunnel' && !!canary.speaker && shortChatId(canary.group) === shortChatId(f.chatId);
-      const speaker = tunnelled ? canary.speaker.replace(/[@\s]+/g, ' ').trim() : senderName;
       const ev = {
         surface, node,
         chatId: f.chatId, chatName: f.chatName,
@@ -204,7 +200,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       // A voice note's outcome line answers its arrival: `[re #<id>]`, never the id again.
       const outcome = ev.voiceLine === 'outcome' && ev.msgId != null;
       ev.line = formatLine({
-        senderName: speaker, chatName: f.chatName, node: ev.via ?? node, body, ts, msgId: outcome ? null : ev.msgId,   // the line's entry point: the box when it carried the line
+        senderName, chatName: f.chatName, node: ev.via ?? node, body, ts, msgId: outcome ? null : ev.msgId,   // the line's entry point: the box when it carried the line
         // a reply reference rides only a real message line (a reaction/edit stage-
         // direction references its own target in the body, no `↩#` tag)
         replyToId: kind !== 'text' ? null : outcome ? ev.msgId : ev.replyToId,

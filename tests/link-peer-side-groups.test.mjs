@@ -30,7 +30,8 @@ const RODZ = '+15550100002';
 const AN_ID = '@anaprueba:beeper.local';
 const MOUTH = { [AUTO]: 'rodzAuto000000000001', [SPLIT]: 'rodzSplit00000000001' };
 
-// kg's state, as the copy of its conversations.yaml reads back: an automatic group and a /split of MUESTRA.
+// kg's state, as the copy of its conversations.yaml reads back: an automatic group and a /split of MUESTRA (its entry
+// still carries the retired split: { tunnel }: read by nothing).
 function peerState() {
   let st = ensureContact({ contacts: {} }, 'whatsapp', ORIGIN, { pushedName: 'MUESTRA' }).state;
   st = recordThread(st, 'whatsapp', ORIGIN, 'kg-thread', '2026-10-01T00:00:00Z', 'e');
@@ -77,9 +78,9 @@ async function viaLiveOpeners(cfg) {
 beforeEach(() => { rmSync(HOME, { recursive: true, force: true }); });
 
 describe('link-peer-side-groups: the replay is linkSideGroup', () => {
-  it('reads the peer\'s side groups: splits first, each with its origin, title, mouth room and tunnel', () => {
+  it('reads the peer\'s side groups: splits first, each with its origin, title and mouth room', () => {
     expect(peerSideGroups(peerState())).toEqual([
-      { surface: 'whatsapp', chatId: SPLIT, kind: 'split', origin: ORIGIN, transcript: null, title: SPLIT_TITLE, mouth: MOUTH[SPLIT], tunnel: false },
+      { surface: 'whatsapp', chatId: SPLIT, kind: 'split', origin: ORIGIN, transcript: null, title: SPLIT_TITLE, mouth: MOUTH[SPLIT] },
       { surface: 'whatsapp', chatId: AUTO, kind: 'automatic', origin: ORIGIN, transcript: AUTO_TITLE, title: AUTO_TITLE, mouth: MOUTH[AUTO] },
     ]);
   });
@@ -125,7 +126,7 @@ describe('link-peer-side-groups: the replay is linkSideGroup', () => {
     expect(rows.map((r) => r.outcome)).toEqual(['linked', 'linked']);
     expect(readdirSync(folder)).toEqual([]);
     const line = formatRow(rows[0], { dry: true });
-    expect(line).toContain(`split     whatsapp/${SPLIT} → ${ORIGIN}  "${SPLIT_TITLE}"  (mouth ${MOUTH[SPLIT]}, tunnel off on the peer)  would link`);
+    expect(line).toContain(`split     whatsapp/${SPLIT} → ${ORIGIN}  "${SPLIT_TITLE}"  (mouth ${MOUTH[SPLIT]})  would link`);
   });
 });
 

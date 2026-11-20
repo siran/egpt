@@ -52,10 +52,6 @@ contacts:
       # config.yaml's default; unset → config.yaml reply_in_side_group (group chats only)
       #reply_in_side_group: on
 
-      # on a /split's own entry: while it is open, replies to its parent_chat are posted here
-      # (config-schema split); default config.yaml split.tunnel, else false
-      #split: { tunnel: true }
-
       # who takes a quote-reply to this node's bot when the quoted post names no being
       # (config-schema reply_default); unset → such a reply addresses nobody
       #reply_default: egpt
