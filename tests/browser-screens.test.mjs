@@ -1,12 +1,15 @@
 // tests/browser-screens.test.mjs — a screen per browser group, shared by link (plans/2611022204-BROWSER-SCREENS.md;
 // operator 2026-11-02, NU Ops #96-#121). Hermetic: fake spawns, fake /proc, a temp EGPT_HOME, the fake chrome-host.
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, writeSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { createBrowserScreens, allocateDisplay, sessionsOn, portsOf } from '../src/tools/browser-screens.mjs';
 import { createScreenTunnel, linkOf } from '../src/tools/screen-tunnel.mjs';
-import { createCommands } from '../src/spine/commands.mjs';
+import { createCommands, CHROME_BRAIN_PROFILE } from '../src/spine/commands.mjs';
+import { readBrowserGroups, setBrowserGroup } from '../src/rooms-file.mjs';
+import * as YAML from 'yaml';
 import { fakePipeChrome } from './fake-pipe-chrome.mjs';
 
 const homes = [];
@@ -80,6 +83,17 @@ describe('a display per group, kept', () => {
     expect([...os.procs.values()].map((a) => a[0])).toEqual(['Xvfb']);
     await screens.ensure('work');
     expect([...os.procs.values()].map((a) => a[0]).sort()).toEqual(['Xvfb', 'websockify', 'x11vnc']);
+  });
+
+  it('idleMs: xprintidle on the group\'s display (ms since the last X input); a broken probe throws, never a made-up number', async () => {
+    const seen = [];
+    const { screens } = (() => { const os = fakeOs(); return { screens: createBrowserScreens({ egptHome: tempHome(), platform: 'linux', ...os, xIdle: (d) => { seen.push(d); if (d !== ':100') throw new Error('xprintidle: not found'); return 4200; } }) }; })();
+    expect(() => screens.idleMs('brain')).toThrow(/no screen/);
+    await screens.ensure('brain');
+    await screens.ensure('work');
+    expect(screens.idleMs('brain')).toBe(4200);
+    expect(seen).toEqual([':100']);
+    expect(() => screens.idleMs('work')).toThrow(/xprintidle/);
   });
 
   it('viewers = established sessions on the x11vnc port only (not noVNC\'s)', () => {
@@ -180,16 +194,20 @@ describe('the link (a quick tunnel per group)', () => {
 });
 
 // /<handle> browser [all|stop|close] [group] and /browser refresh, over fake screens and a fake tunnel.
-const STATE = { contacts: { whatsapp: { '!work': { slug: 'Work chat-2601010000' }, '!edu': { slug: 'Edu chat-2601010000' }, '!brain': { slug: 'Brain chat-2601010000' }, '!admin': { slug: 'eGPT Admin-2601010000' } } } };
+const STATE = { contacts: { whatsapp: { '!work': { slug: 'Work chat-2601010000' }, '!edu': { slug: 'Edu chat-2601010000' }, '!brain': { slug: 'Brain chat-2601010000' }, '!admin': { slug: 'eGPT Admin-2601010000' }, '!other': { slug: 'Other chat-2601010000' } } } };
 const GROUPS = { work: ['Work chat'], edu: ['Edu chat'], brain: ['Brain chat'] };
-const NAMES = { '!work': 'Work chat', '!edu': 'Edu chat', '!brain': 'Brain chat' };
+const NAMES = { '!work': 'Work chat', '!edu': 'Edu chat', '!brain': 'Brain chat', '!other': 'Other chat' };
 const URL = 'https://q.trycloudflare.com';
-function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null } = {}) {
+function build({ available = true, admin = { chatId: '!admin' }, chromeHost, profileHolder = () => null, killProcessTree = () => {}, chromeProcesses = () => [], chrome = {}, profiles = [], freeMem = 8192, screenCloseThrows = null, xIdle = () => Infinity } = {}) {
+  const browsersFile = join(tempHome(), 'browsers.yaml');   // the real chat-to-group table, read and written as the spine does
+  writeFileSync(browsersFile, YAML.stringify({ groups: GROUPS }));
+  const tableIO = { path: browsersFile, read: (p, e) => readFile(p, e) };   // no stat cache: tests rewrite within a tick
   const fake = fakePipeChrome({ listTabs: async () => [] });
   const ops = [];
   const browserScreens = {
     available: () => available,
     ensure: async (g) => { ops.push(`screen:${g}`); return { group: g, display: ':101' }; },
+    idleMs: (g) => xIdle(g),
     close: (g, o) => { if (screenCloseThrows) throw new Error(screenCloseThrows); ops.push(`screen-close:${g}${o?.keepDisplay ? ':display-kept' : ''}`); return true; },
   };
   let open = false;
@@ -203,14 +221,14 @@ function build({ available = true, admin = { chatId: '!admin' }, chromeHost, pro
     getConfig: () => ({ node_name: 'nu', agents: { n: {} }, chrome: { bin: '/x/chrome', ...chrome } }),
     chromeHost: chromeHost === undefined ? fake.chromeHost : chromeHost,
     profileHolder, killProcessTree, chromeProcesses, freeMem: () => freeMem * 1024 * 1024, rssOf: () => null,
-    browserGroups: async () => GROUPS, profileFolders: () => profiles,
+    browserGroups: () => readBrowserGroups(tableIO), assignBrowserGroup: (name, g) => setBrowserGroup(name, g, { path: browsersFile }), profileFolders: () => profiles,
     loadState: async () => STATE, writeState: async () => {},
     send: async (chatId, text) => sent.push({ chatId, text }),
     brains: { resolve: (name) => ({ name, type: 'ccode' }) },
     browserScreens, screenTunnel, adminChat: async () => admin, onChromeLog: (m) => logs.push(m),
   });
   const run = (chatId, body) => cmds.run({ chatId, chatName: NAMES[chatId] ?? 'eGPT Admin', surface: 'whatsapp', authorized: true, commandHandle: 'n', body });
-  return { cmds, run, sent, ops, logs, ...fake };
+  return { cmds, run, sent, ops, logs, table: () => readBrowserGroups(tableIO), ...fake };
 }
 const VIEW_LINK = `${URL}/vnc.html?autoconnect=1&resize=scale&view_only=1&password=VIEW`;
 const CONTROL_LINK = `${URL}/vnc.html?autoconnect=1&resize=scale&view_only=0&password=CTL`;
@@ -362,6 +380,30 @@ describe('/<handle> browser — the idle timer closes a screen, `keep` holds it'
     expect(w.ops).toContain('link-close:work');
   });
 
+  // OPERATOR 2026-11-20: "click counts, and typing in browser": the X display's input idle time (xprintidle).
+  it('human input on the group\'s X display (a click, a key through VNC) starts the count over', async () => {
+    clock();
+    let lastInput = Date.now();
+    const w = build({ xIdle: () => Date.now() - lastInput });
+    await w.run('!work', '/browser');
+    vi.advanceTimersByTime(25 * MIN);
+    lastInput = Date.now();                     // someone clicks in the viewer: no spine call at all
+    vi.advanceTimersByTime(25 * MIN);
+    expect(w.ops).not.toContain('link-close:work');
+    vi.advanceTimersByTime(6 * MIN);
+    expect(w.ops).toContain('link-close:work');
+  });
+
+  it('a probe that fails fails SAFE: the screen stays open, and the failure is logged ONCE, loudly', async () => {
+    clock();
+    const w = build({ xIdle: () => { throw new Error('xprintidle: not found'); } });
+    await w.run('!work', '/browser');
+    vi.advanceTimersByTime(3 * 60 * MIN);
+    expect(w.ops).not.toContain('link-close:work');
+    expect(w.logs.filter((l) => /xprintidle: not found/.test(l))).toHaveLength(1);
+    expect(w.logs.join('\n')).toMatch(/work.*idle probe.*active/i);
+  });
+
   it('the group is evictable again once the link closes (a watched one is pinned)', async () => {
     clock();
     const w = build({ freeMem: 0 });
@@ -413,32 +455,59 @@ describe('/<handle> browser — the idle timer closes a screen, `keep` holds it'
   });
 });
 
-// CHANGE 2 — `/<handle> browser [all] [<profile> [new]]` (operator: "groups launch a default profile (group name) unless
-// launched like '/edu browser [all] [<profile name>]'").
-describe('/<handle> browser [all] [<profile>]', () => {
-  it('no profile: the group\'s own, as today', async () => {
-    const w = build({ profiles: ['lola'] });
-    await w.run('!work', '/browser');
-    expect(w.calls[0]).toMatchObject({ group: 'work', profileDir: expect.stringMatching(/[\\/]work$/) });
+// OPERATOR 2026-11-20: "name defaults to 'shared'; if a name is given it is used, and the group joins the
+// groups-per-browser table, so the next '/edu browser [all]' goes to the group's profile". Group name = profile dir
+// name; the table is config/browsers.yaml.
+describe('/<handle> browser [all] [<profile>] — shared by default, a named profile is remembered', () => {
+  const dirOf = (name) => expect.stringMatching(new RegExp(`[\\\\/]${name}$`));
+  const members = async (w, g) => (await w.table())[g] ?? [];
+
+  it('no profile, chat not in the table: `shared`, created on first use without `new`', async () => {
+    const w = build();
+    await w.run('!other', '/browser');
+    expect(w.calls[0]).toMatchObject({ group: 'shared', profileDir: dirOf('shared') });
+    expect(await w.table()).toEqual(GROUPS);      // nothing recorded for a bare command
   });
 
-  it('a known profile: the group\'s Chrome launches on it (the group, its screen and its link stay the group\'s)', async () => {
+  it('no profile, chat in the table: its group, as before', async () => {
+    const w = build();
+    await w.run('!work', '/browser');
+    expect(w.calls[0]).toMatchObject({ group: 'work', profileDir: dirOf('work') });
+  });
+
+  it('a named profile is used AND recorded: the chat leaves its old group, and the next bare /browser uses it', async () => {
     const w = build({ profiles: ['lola'] });
     await w.run('!work', '/browser all lola');
-    expect(w.calls[0]).toMatchObject({ group: 'work', profileDir: expect.stringMatching(/[\\/]lola$/), display: ':101' });
-    expect(w.ops.at(-1)).toBe('link:work');
-    expect(w.sent.at(-1).text).toContain('work browser — anyone with this link can drive it');
+    expect(w.calls[0]).toMatchObject({ group: 'lola', profileDir: dirOf('lola'), display: ':101' });
+    expect(w.ops.at(-1)).toBe('link:lola');
+    expect(await members(w, 'lola')).toEqual(['Work chat']);
+    expect(await members(w, 'work')).toEqual([]);
+    await w.run('!work', '/browser close');
+    await w.run('!work', '/browser all');
+    expect(w.calls.at(-1)).toMatchObject({ group: 'lola', profileDir: dirOf('lola') });
   });
 
-  it('an unknown profile is refused unless `new` — and says so; nothing starts', async () => {
+  it('`/browser shared` un-assigns: the chat is in `shared` again', async () => {
+    const w = build();
+    await w.run('!work', '/browser lola new');
+    await w.run('!work', '/browser close');
+    await w.run('!work', '/browser shared');
+    expect(w.calls.at(-1)).toMatchObject({ group: 'shared', profileDir: dirOf('shared') });
+    expect(await members(w, 'lola')).toEqual([]);
+    expect(await members(w, 'shared')).toEqual(['Work chat']);
+  });
+
+  it('an unknown non-default profile is refused unless `new`; nothing starts, nothing is recorded', async () => {
     const w = build({ profiles: ['lola'] });
     await w.run('!work', '/browser nope');
     expect(w.sent.at(-1).text).toContain('no profile "nope"');
     expect(w.sent.at(-1).text).toContain('browser nope new');
     expect(w.calls).toEqual([]);
     expect(w.ops).toEqual([]);
+    expect(await w.table()).toEqual(GROUPS);
     await w.run('!work', '/browser nope new');
-    expect(w.calls[0]).toMatchObject({ group: 'work', profileDir: expect.stringMatching(/[\\/]nope$/) });
+    expect(w.calls[0]).toMatchObject({ group: 'nope', profileDir: dirOf('nope') });
+    expect(await members(w, 'nope')).toEqual(['Work chat']);
   });
 
   it('the profile obeys isSafeGroupName: no paths, no traversal, even with `new`', async () => {
@@ -448,34 +517,33 @@ describe('/<handle> browser [all] [<profile>]', () => {
       expect(w.sent.at(-1).text).toMatch(/^usage:/);
     }
     expect(w.calls).toEqual([]);
+    expect(await w.table()).toEqual(GROUPS);
   });
 
-  it('one profile, one Chrome: refused while another group\'s Chrome holds it', async () => {
+  it('a profile another group holds is refused and not recorded (the brain Chrome\'s dir)', async () => {
+    const w = build({ chrome: { profile_dir: join(dirname(CHROME_BRAIN_PROFILE), 'lola') }, profiles: ['lola'] });
+    await w.run('!work', '/browser lola');
+    expect(w.sent.at(-1).text).toMatch(/no browser for this chat — .*brain profile dir/);
+    expect(w.calls).toEqual([]);
+    expect(await members(w, 'work')).toEqual(['Work chat']);
+  });
+
+  it('a chat joining a group whose Chrome is running shares it: one Chrome per profile, not a second launch', async () => {
     const w = build();
     await w.run('!work', '/browser');
     await w.run('!edu', '/browser work');
-    expect(w.sent.at(-1).text).toMatch(/no browser for this chat — .*"work".*group "work"/);
     expect(w.calls).toHaveLength(1);
+    expect(await members(w, 'work')).toEqual(['Work chat', 'Edu chat']);
   });
 
-  it('one Chrome per group: a different profile while the group runs is refused; a later use finds the running one', async () => {
-    const w = build({ profiles: ['lola'] });
-    await w.run('!work', '/browser lola');
-    await w.run('!work', '/browser');          // no profile named: the running one, not a second launch
-    await w.run('!work', '/tabs');
-    expect(w.calls).toHaveLength(1);
-    await w.run('!work', '/browser new1 new');
-    expect(w.sent.at(-1).text).toMatch(/running on profile "lola".*browser close/);
-    expect(w.calls).toHaveLength(1);
-  });
-
-  it('the brain group\'s profile is fixed; the brain profile is the brain group\'s alone', async () => {
+  it('the brain group is fixed: its chats cannot leave, nobody can join', async () => {
     const w = build({ profiles: ['lola'] });
     await w.run('!brain', '/browser lola');
     expect(w.sent.at(-1).text).toMatch(/brain.*fixed/);
     await w.run('!work', '/browser brain');
-    expect(w.sent.at(-1).text).toMatch(/no browser for this chat/);
+    expect(w.sent.at(-1).text).toMatch(/brain.*fixed/);
     expect(w.calls).toEqual([]);
+    expect(await w.table()).toEqual(GROUPS);
   });
 
   it('stays operator-only; usage names the profile', async () => {

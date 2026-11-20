@@ -63,7 +63,7 @@ import { uploadNote, radioNoteFilename, pickSpeaker } from '../radio-relay.mjs';
 import { stripNodeSignature, stripRenderedNodeSignature, decodeChatCanary } from '../node-signature.mjs';
 import { bodyForMessageId } from '../transcript-log.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
-import { readRoomConfig, readBrowserGroups, readBrowserColors } from '../rooms-file.mjs';
+import { readRoomConfig, readBrowserGroups, setBrowserGroup, readBrowserColors } from '../rooms-file.mjs';
 import { hhmm, dayBoundary } from '../dispatch-line.mjs';
 import { statCache } from '../stat-cache.mjs';
 
@@ -115,14 +115,11 @@ function defaultRssOf(pid) {
 // { key, name, group }; group name = profile dir name. Group `brain` → the legacy value above (where
 // Gmail / ClassDojo / AWS are signed in). Any other group → <profiles-root>/<group>, profiles-root
 // being the parent of CHROME_BRAIN_PROFILE (.egpt/chrome/profiles/). No group, or one that is not a
-// safe path segment → null: no browser, never a fallback to brain. `conversation.profile` (`/<handle> browser <profile>`)
-// names the profile dir instead of the group's: the group name is the default.
+// safe path segment → null: no browser, never a fallback to brain.
 export const chromeProfileOf = (c, conversation) => {
   const legacy = c?.chrome?.profile_dir || CHROME_BRAIN_PROFILE;
-  if (!conversation) return legacy;
-  const name = conversation.profile ?? conversation.group;
-  if (name === BRAIN_GROUP) return legacy;
-  return isSafeGroupName(name) ? join(dirname(CHROME_BRAIN_PROFILE), name) : null;
+  if (!conversation || conversation.group === BRAIN_GROUP) return legacy;
+  return isSafeGroupName(conversation.group) ? join(dirname(CHROME_BRAIN_PROFILE), conversation.group) : null;
 };
 // The profile /login reads a saved password from: the conversation's group profile. The
 // login.chrome_profile_path override is the BRAIN's only; no group → null, nothing read.
@@ -595,6 +592,7 @@ export function createCommands({
   rssOf = defaultRssOf,
   onChromeLog = () => {},
   browserGroups = readBrowserGroups,     // config/browsers.yaml's groups, read fresh (rooms-file.readBrowserGroups)
+  assignBrowserGroup = setBrowserGroup,  // (chat name, group): `/browser <profile>` records the chat in that table (rooms-file.setBrowserGroup)
   profileFolders = defaultProfileFolders,   // the folder names under the profiles root
   browserColors = readBrowserColors,     // its optional colors: map, read at each launch
   // A SCREEN PER BROWSER GROUP (plans/2611022204-BROWSER-SCREENS.md): browserScreens starts the group's virtual
@@ -1217,19 +1215,15 @@ export function createCommands({
   // already holds → no browser + one log line. Never throws.
   // Resolves { group, profileDir, client, pid, launched, running, why? }.
   function ensureChrome(conversation, opts) { return _reattached.then(() => ensureGroupChrome(conversation, opts)); }
-  // A conversation's group and profile dir; no usable profile → profileDir null + why, logged. One Chrome per group, one
-  // group per profile (Chrome's SingletonLock): a group already running keeps its profile unless one is named (then
-  // refused if different), and a profile another group's Chrome (or sign-in window) holds is refused.
+  // A conversation's group and profile dir; no usable profile → profileDir null + why, logged. One profile, one Chrome
+  // (Chrome's SingletonLock): a profile another group's Chrome (or sign-in window) holds is refused.
   function groupProfileOf(conversation) {
     const group = conversation ? conversation.group : BRAIN_GROUP;
     const profileDir = chromeProfileOf(cfg(), conversation);
     let why = conversation?.why;
     if (profileDir && (group === BRAIN_GROUP || profileDir !== chromeProfileOf(cfg()))) {
-      const own = [..._groups].find(([, e]) => e.group === group && chromeAlive(e));
-      if (own && !conversation?.profile) return { group, profileDir: own[0] };
       const heldBy = chromeAlive(_groups.get(profileDir)) ? _groups.get(profileDir).group : _signin.get(profileDir)?.group;
-      if (own && own[0] !== profileDir) why = `the "${group}" browser is running on profile "${basename(own[0])}" — \`browser close\` it first to launch it on "${basename(profileDir)}"`;
-      else if (heldBy && heldBy !== group) why = `the "${basename(profileDir)}" profile is open in group "${heldBy}"'s browser — one profile, one Chrome; close that browser first`;
+      if (heldBy && heldBy !== group) why = `the "${basename(profileDir)}" profile is open in group "${heldBy}"'s browser — one profile, one Chrome; close that browser first`;
       else return { group, profileDir };
     }
     why ||= `browser group "${group}" ${profileDir ? 'is the brain profile dir' : 'is unusable'}`;
@@ -1314,7 +1308,7 @@ export function createCommands({
   // /browser [all|stop|close] [group] — the group's screen, shared by link (browserShow, below).
   async function browserCmd(ev, args) {
     const [verb = '', ...rest] = args.split(/\s+/).filter(Boolean);
-    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all] [<profile> [new]] [keep]', ev)} — this chat's browser on its own profile (the group's name unless <profile> is named; \`new\` makes a profile that does not exist) and its link: view-only here and control to the admin channel; all: control here; keep: the link stays open however idle the browser is · ${hintOf('browser stop|close [group]', ev)} — stop: close the link; close: close the browser${more}`;
+    const usage = (more = '') => `usage: ${hintOf('browser refresh [group] [url]', ev)} — close my browser for this chat (or [group]) and open a normal Chrome window on its profile, for you to sign in or pass a check · ${hintOf('browser [all] [<profile> [new]] [keep]', ev)} — this chat's browser and its link; <profile> (default: the chat's, else \`shared\`) puts this chat on that profile for good — \`new\` makes one that does not exist, \`shared\` undoes it. The link: view-only here and control to the admin channel; all: control here; keep: the link stays open however idle the browser is · ${hintOf('browser stop|close [group]', ev)} — stop: close the link; close: close the browser${more}`;
     const v = verb.toLowerCase();
     if (v !== 'refresh') {
       const op = ['all', 'stop', 'close'].includes(v) ? v : '';
@@ -1326,7 +1320,7 @@ export function createCommands({
         if (words[0] && !named) return usage(`; groups: ${known.join(', ')}`);
         return op === 'stop' ? browserStop(ev, named) : browserClose(ev, named);
       }
-      // [<profile> [new]] [keep]: the profile dir this chat's group launches on (a known one, or `new`)
+      // [<profile> [new]] [keep]: the profile this chat is put on (a known one, or `new`)
       const keep = words.at(-1)?.toLowerCase() === 'keep' && !!words.pop();
       const isNew = words.length === 2 && words[1].toLowerCase() === 'new' && !!words.pop();
       if (words.length > 1) return usage();
@@ -1408,7 +1402,7 @@ export function createCommands({
   const hasScreens = () => !!browserScreens?.available();
   // THE IDLE TIMER (operator 2026-11-19: "a browser inactivity timer, with an option to keep on"). A viewer left on a
   // static tab is not activity: the signal is the group's lastUsedAt, which every spine browser use already stamps
-  // (ensureChrome: a being's tool, /tabs, /open, /browser…). Past chrome.idle_minutes the link and the VNC close (the
+  // (ensureChrome: a being's tool, /tabs, /open, /browser…), or human input on its X display (activityOf). Past chrome.idle_minutes the link and the VNC close (the
   // Chrome and its Xvfb stay) and, with no link, the group is evictable again. `keep` (per launch) skips it; a link
   // shared before a spine restart is swept too, but its chat is forgotten (no line, a log).
   const _keep = new Set();       // groups whose link was launched with keep: until /browser close or stop
@@ -1419,13 +1413,28 @@ export function createCommands({
     if (v == null) return BROWSER_IDLE_MINUTES;
     return String(v).toLowerCase() === 'keep' ? 0 : Number(v) >= 0 ? Number(v) : BROWSER_IDLE_MINUTES;
   };
+  // Activity = the later of the spine's last browser use and the last human input on the group's X display (a click or a key
+  // through VNC is real X input; operator 2026-11-20: "click counts, and typing in browser"). A probe that cannot answer
+  // counts as active — a broken probe never closes a screen — and says so once per group, until it answers again.
+  const _probeFailed = new Set();
+  function activityOf(e) {
+    try {
+      const ms = browserScreens.idleMs(e.group);
+      _probeFailed.delete(e.group);
+      return Math.max(e.lastUsedAt, now() - ms);
+    } catch (err) {
+      if (!_probeFailed.has(e.group)) onChromeLog(`"${e.group}" X idle probe failed — ${err?.message ?? err}; treating the screen as ACTIVE: the idle timer will not close it until the probe works (docker needs xprintidle)`);
+      _probeFailed.add(e.group);
+      return now();
+    }
+  }
   const linked = () => [..._groups.values()].filter((e) => chromeAlive(e) && screenTunnel?.isOpen(e.group));
   function idleSweeping() {
     if (_sweep) return;
     _sweep = setInterval(() => {
       const idle = idleMinutes();
       for (const e of linked()) {
-        if (!idle || _keep.has(e.group) || now() - e.lastUsedAt < idle * 60_000) continue;
+        if (!idle || _keep.has(e.group) || now() - activityOf(e) < idle * 60_000) continue;
         idleClose(e.group, idle);
       }
       if (!linked().length) { clearInterval(_sweep); _sweep = null; }
@@ -1473,12 +1482,14 @@ export function createCommands({
     return `${group} browser, view only: ${view}\nThe control link is in the admin channel. ${life}`;
   }
   // /browser [all] [<profile>] [keep]: this chat's group's Chrome up (eGPT's, unless a sign-in window holds it) on its
-  // screen — on <profile> when named, else the group's own — and its link. `keep`: the idle timer leaves the link be.
+  // screen, and its link. <profile> (a group name = a profile dir) first moves the chat to that group in browsers.yaml, once
+  // the browser is up: the next bare /browser finds it. `keep`: the idle timer leaves the link be.
   async function browserShow(ev, profile, all, keep) {
     const whose = 'this chat';
     const base = await browserConversationOf(surfaceOf(ev), ev.chatId);
-    if (profile && base.group === BRAIN_GROUP && profile !== BRAIN_GROUP) return `no browser for ${whose} — the "${BRAIN_GROUP}" group's profile is fixed: a profile can be named only for other groups`;
-    const conversation = profile ? { ...base, profile } : base;
+    if (profile && (base.group === BRAIN_GROUP || profile === BRAIN_GROUP) && profile !== base.group) return `no browser for ${whose} — the "${BRAIN_GROUP}" group is fixed: its chats cannot leave it and no other chat can join`;
+    if (profile && !base.name) return `no browser for ${whose} — ${base.why || 'its name is unknown, so it cannot be recorded in browsers.yaml'}`;
+    const conversation = profile ? { ...base, group: profile, why: undefined } : base;
     const { group, profileDir, why } = groupProfileOf(conversation);
     if (!profileDir) return `no browser for ${whose} — ${why}`;
     if (!chromeHost) return `no browser for ${whose} — ${NO_CHROME_HOST}`;
@@ -1490,6 +1501,7 @@ export function createCommands({
     catch (e) { return `no screen for ${group} — ${e?.message ?? e}`; }
     const refused = await up();
     if (refused) return refused;
+    if (profile && profile !== base.group) await assignBrowserGroup(base.name, profile);
     keep ? _keep.add(group) : _keep.delete(group);
     return shareLinks(ev, group, all);
   }

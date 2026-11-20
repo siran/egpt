@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   readRoomsFile, readRoomConfig, setRoomConfigBlock, setRoomConfigKey, removeRoomRow,
-  roomsFilePath, agentsFilePath, readBrowserGroups, browserUploadsOn,
+  roomsFilePath, agentsFilePath, readBrowserGroups, setBrowserGroup, browserUploadsOn,
   mergeRoomBeings, persistRoomBeings, mergeAgentBeings, persistAgentBeings,
 } from '../src/rooms-file.mjs';
 
@@ -215,6 +215,34 @@ describe('config/browsers.yaml — the browser-group map, same reader as rooms.y
 
   it('an unparseable file reads as no groups, like the other registries', async () => {
     expect(await readBrowserGroups(mkIO('groups: [ unclosed'))).toEqual({});
+  });
+});
+
+describe('config/browsers.yaml — setBrowserGroup (/browser <profile> records the chat)', () => {
+  const TEXT = `# operator comment
+groups:
+  brain: [ "eGPT Admin" ]
+  perrito: [ "perrito traduciones", "Work chat" ]   # keep me
+
+colors:
+  brain: "#1a73e8"
+`;
+  it('moves the chat to the group (one group only), keeps the other rows, comments, colors', async () => {
+    const io = mkIO(TEXT);
+    await setBrowserGroup('Work chat', 'lola', io);
+    expect(await readBrowserGroups(io)).toEqual({ brain: ['eGPT Admin'], perrito: ['perrito traduciones'], lola: ['Work chat'] });
+    expect(io.store.text).toContain('# operator comment');
+    expect(io.store.text).toContain('# keep me');
+    expect(io.store.text).toContain('colors:');
+    await setBrowserGroup('Work chat', 'perrito', io);
+    expect((await readBrowserGroups(io)).perrito).toEqual(['perrito traduciones', 'Work chat']);
+    expect((await readBrowserGroups(io)).lola).toEqual([]);
+  });
+  it('creates the file when absent; the same group twice adds the chat once', async () => {
+    const io = mkIO(null);
+    await setBrowserGroup('Work chat', 'shared', io);
+    await setBrowserGroup('Work chat', 'shared', io);
+    expect(await readBrowserGroups(io)).toEqual({ shared: ['Work chat'] });
   });
 });
 

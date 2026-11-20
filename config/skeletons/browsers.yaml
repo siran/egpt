@@ -1,4 +1,4 @@
-# config/browsers.yaml — WHICH CHROME EACH CHAT USES. Operator-only: copy to ~/.egpt/config/.
+# config/browsers.yaml — WHICH CHROME EACH CHAT USES. Copy to ~/.egpt/config/.
 #
 # Groups of chats, by chat NAME (the same on every node). One Chrome profile per group, and a
 # being drives only its own group's Chrome, so what is signed in to one group is invisible to the
@@ -6,8 +6,10 @@
 #   brain        → chrome.profile_dir (config.yaml), the profile holding Gmail / ClassDojo / AWS
 #   any other    → ~/.egpt/chrome/profiles/<group>
 # Any chat not listed → `shared` (its own, initially empty profile).
+# `/<handle> browser <profile>` in a chat edits this file: it moves that chat to <profile>'s list (comments and
+# other keys are kept), so the chat's next `/<handle> browser` uses it; `browser shared` puts it back.
 # A chat listed in two groups, or a group name that is not a plain dir name, gets NO browser.
-# Read fresh on every lookup: an edit needs no restart.
+# Read fresh on every lookup: an edit needs no restart. `brain` is yours alone: the spine never moves a chat in or out of it.
 #
 # Each group's Chrome is named after the group: the profile name, and the title of the window Chrome
 # opens at startup (--window-name; a window restored from the last session keeps its saved title).

@@ -150,8 +150,10 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                one result line in log_to_group;
                                                else the one-line Beeper state
 /<handle> browser [<profile> [new]] [keep]     this chat's browser, opened on its
-                                               own screen (on <profile>, else the
-                                               group's own), and a link: VIEW-only
+                                               own screen (its profile: the one
+                                               it was put on, else shared; a
+                                               <profile> puts it there for
+                                               good), and a link: VIEW-only
                                                in the chat, CONTROL to
                                                admin_channel (both when typed
                                                there; refused while admin_channel
@@ -418,28 +420,35 @@ The link closes 2 minutes after the last viewer leaves, or after 10 minutes if
 nobody opens it; `/<handle> browser stop` closes it now. A viewer left on a tab
 does not hold it open: after `chrome.idle_minutes` (default 30; `0` or `keep` =
 never) with no browser use through the spine (a being's browser tool, `/tabs`,
-`/open`, `/<handle> browser` again), the link and its VNC close, the browser
-stays, and the chat the link was shared in gets one line: `browser <group> screen
-closed after N min idle`. A group with an open link is not evicted on memory;
-with the link closed it is again. Control-link typing alone does not count as
-use. `keep` on the command (`/<handle> browser keep`, `browser all keep`) holds
+`/open`, `/<handle> browser` again) and no human input in the browser (a click or
+a key through the link: the X display's idle time, `xprintidle` in the image),
+the link and its VNC close, the browser stays, and the chat the link was shared
+in gets one line: `browser <group> screen closed after N min idle`. If the
+probe cannot answer, the screen counts as active (never closed because the probe
+broke) and the log says so once. A group with an open link is not evicted on
+memory; with the link closed it is again. `keep` on the command (`/<handle> browser keep`, `browser all keep`) holds
 that link past the idle timer until `/<handle> browser close` (or `stop`); a
 spine restart forgets it. `/<handle> browser close` closes the browser itself: its
 Chrome, its link and its screen; the next need starts them again. On a desktop
 node (Windows) the browser opens as a normal window on that PC and the answer
 says so: no screen, no link.
 
-A group launches on the profile named like the group (`~/.egpt/chrome/profiles/<group>`;
-`brain` = `chrome.profile_dir`). `/<handle> browser [all] <profile>` launches
-THIS chat's group on another profile instead (`/edu browser lola`): the name is a
-plain dir name (the group-name rule: no paths, no `..`) of a profile this node
-knows (`brain`, `shared`, a `browsers.yaml` group, or a folder under `profiles/`).
-An unknown name is refused; `<profile> new` makes it (an empty profile, signed in
-to nothing). One profile is one Chrome: it is refused while another group's
-Chrome or a sign-in window holds it, a group already running on one profile is
-refused another until `browser close`, and the `brain` group's profile cannot be
-swapped. The choice is per launch: after the browser closes, the group is on its
-own profile again unless named again. `stop` and `close` still name a GROUP.
+A browser group is a profile: group `work` runs on `~/.egpt/chrome/profiles/work`
+(`brain` = `chrome.profile_dir`), and `config/browsers.yaml` lists which chats
+belong to which group. A chat not listed is in `shared` (created on first use; no
+`new` needed). `/<handle> browser [all] <profile>` (`/edu browser lola`) puts THIS
+chat on that profile and writes the chat into `browsers.yaml` under that group
+(leaving any other), so the next bare `/edu browser [all]` uses it: its saved
+passwords, tabs, sessions. The name is a plain dir name (no paths, no `..`) of a
+profile this node knows (`brain`, `shared`, a `browsers.yaml` group, or a folder
+under `profiles/`); an unknown name is refused, `<profile> new` makes it (empty,
+signed in to nothing). Other chats naming the same profile share that one Chrome.
+A profile held by another group's Chrome (or the brain's own dir) is refused,
+nothing recorded. The `brain` group is fixed: its chats cannot leave it and no
+other chat joins it. To undo: `/<handle> browser shared` puts the chat back in
+`shared`. (Naming a group no longer views another group's browser; `stop` and
+`close` still name a GROUP.) The spine edits `browsers.yaml` for this, keeping
+its comments and other keys.
 
 On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
 [url]` (default `brain`, Google sign-in). It closes the Chrome processes on that
