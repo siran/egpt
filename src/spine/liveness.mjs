@@ -33,7 +33,6 @@
 //     needed; no answer → one line to the logging group. Nothing is evicted or killed here.
 import { LIVE_FRAME_MARK } from '../dispatch-line.mjs';
 import { elapsed } from './sender.mjs';
-import { hhmm } from '../dispatch-line.mjs';
 
 export const LIVENESS_EVERY_MS = 15_000;       // every live message's pulse (operator 2026-10-16); config liveness.every_ms overrides (read each tick)
 export const LIVENESS_BACKGROUND_EVERY_MS = 10 * 60_000;   // a chat's unchanged background status, posted again (operator 2026-10-30); config liveness.background_every_ms overrides (read each tick)
@@ -58,7 +57,7 @@ export function workOf(tasks, being, labelOf) {
 // `allBackground`: () => [{ being, surface, chatId, taskId, taskType?, parentTaskId?, ambient?, description, since }] — every live background task,
 // in the chat a finished one would wake (boot: the pool's). `outcomeOf`: ({ being, chatId, taskId }) =>
 // { status, message } | null — how a finished one ended, as its session's CLI said it (boot: the pool's).
-export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, timeZone = null, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
+export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
   const turns = new Set();     // { out, being, ev, chat, auto, since, last, status }
   const bg = new Map();        // chatId → { being, ev, chat, auto, reply, last, posted, changed, seen, done, quiet, asks }; `being` posts it
   const chatNames = new Map(); // chatId → the chat's name, for the logging-group line
@@ -78,7 +77,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
   // …and after a finished one, what the CLI said of its failure, or that it was stopped.
   const why = (o) => (o?.status === 'failed' && o.message ? ` — ${o.message}` : o?.status === 'stopped' ? ' — stopped' : '');
   // The chat's status: its running tasks •, those finished since the last post marked as each ended (ENDED),
-  // each running one with when it started (since HH:MM, the node's clock: a posted line never ticks) and each ended one with how long it took, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
+  // each running one with how long it has run, as of the post (operator 2026-11-20: elapsed, not "since 12:17" — an unchanged
+  // status is posted again every 10 min, so the newest is never far behind), and each ended one with how long it took, one per line (operator 2026-10-30: "una por línea, con su bullet"), each under
   // the listed agent that launched it, └ (operator 2026-10-31). The count is every running task, nested ones included.
   // The last says "done" only if all of it completed (operator 2026-10-31).
   function post(s, running, t) {
@@ -92,7 +92,7 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     const line = (x, depth) => {
       const i = listed.indexOf(x);
       const mark = live.has(x) ? (depth ? '' : '• ') : `${ENDED[x.outcome?.status] ?? '◦'} `;
-      const time = live.has(x) ? ` · since ${hhmm(x.since, timeZone)}` : x.rolled ? '' : ` · ${elapsed(x.ended - x.since)}`;
+      const time = live.has(x) ? ` · ${elapsed(t - x.since)}` : x.rolled ? '' : ` · ${elapsed(x.ended - x.since)}`;
       const under = listed.filter((c) => parentOf(c) === x).map((c) => line(c, depth + 1)).join('');
       return `\n${depth ? `${'  '.repeat(depth)}└ ` : ''}${mark}${what[i]}${time}${why(x.outcome)}${under}`;
     };

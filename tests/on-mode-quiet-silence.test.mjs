@@ -142,7 +142,7 @@ describe('on mode, a non-human line — no placeholder up front', () => {
     await b.bridge.emit(msg('alguien sabe?', BEING));
     await new Promise((r) => setImmediate(r));
     expect(b.bridge.streams).toEqual([]);
-    expect(b.bridge.sent).toMatchObject([{ chat: '!g', text: '⚙️ background work (1):\n• Crawl the site · since 00:00', opts: { persona: 'egpt', replyTo: null } }]);
+    expect(b.bridge.sent).toMatchObject([{ chat: '!g', text: '⚙️ background work (1):\n• Crawl the site · 0s', opts: { persona: 'egpt', replyTo: null } }]);
   });
 
   it("REPRODUCE: addressed makes no difference — a node-signed '@e …' silence posts nothing", async () => {
