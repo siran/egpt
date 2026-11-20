@@ -1,16 +1,19 @@
 // egpt-update.mjs — keeping eGPT itself current: the 6-hourly look at the checkout's upstream, the
-// log_to_group notice, auto → `/upgrade full`, and the ask_on_boot line. The sibling of beeper-update.mjs
-// (same cadence, same noticed/autoTried state, same say/hint). Applying is the existing `/upgrade full`:
-// boot's announceAndExit(46), which drains turns (the next quiet moment) and waits for a busy Beeper update.
+// log_to_group notice, auto-full → `/upgrade full` when the daemon's own files changed (else `/upgrade`),
+// auto → `/upgrade`, and the ask_on_boot line. The sibling of beeper-update.mjs
+// (same cadence, same noticed/autoTried state, same say/hint). Applying is the existing `/upgrade [full]`:
+// boot's announceAndExit(46 | 42), which drains turns (the next quiet moment) and waits for a busy Beeper update.
 //
-// config: auto_update.egpt = auto | manual | none (default auto), auto_update.ask_on_boot = true | false
+// config: auto_update.egpt = auto-full | auto | manual | none (default auto-full), auto_update.ask_on_boot = true | false
 // (default true) (config-schema.mjs). Beeper's own method stays in beeper.auto_update.<os>.method.
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { EGPT_HOME } from '../egpt-home.mjs';
-import { AUTO_UPDATE_METHODS, CHECK_EVERY_MS, autoUpdateMethod } from './beeper-update.mjs';
+import { CHECK_EVERY_MS, autoUpdateMethod } from './beeper-update.mjs';
+import { daemonGraph, daemonChanges } from './daemon-graph.mjs';
 
+const EGPT_METHODS = ['auto-full', 'auto', 'manual', 'none'];
 const SUBJECTS = 3;            // commit subjects the notice names
 const SUBJECT_CAP = 60;        // each cut to this many characters
 const GIT_TIMEOUT_MS = 15_000;
@@ -22,8 +25,8 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 // { method, note }: the method this node runs; note = the one log line when what is configured is not one.
 export function egptMethod(cfg) {
   const raw = cfg?.auto_update?.egpt;
-  const method = raw == null ? 'auto' : String(raw).trim().toLowerCase();
-  if (!AUTO_UPDATE_METHODS.includes(method)) return { method: 'none', note: `auto_update.egpt "${raw}" is not auto | manual | none — treated as none` };
+  const method = raw == null ? 'auto-full' : String(raw).trim().toLowerCase();
+  if (!EGPT_METHODS.includes(method)) return { method: 'none', note: `auto_update.egpt "${raw}" is not auto-full | auto | manual | none — treated as none` };
   return { method, note: null };
 }
 
@@ -37,12 +40,13 @@ export function runGit(args, { cwd, timeoutMs = GIT_TIMEOUT_MS } = {}) {
   });
 }
 
-// r = { branch, upstream, from, to, behind, ahead, subjects, how }, how: auto | manual | diverged.
+// r = { branch, upstream, from, to, behind, ahead, subjects, how }, how: auto-full | auto | manual | diverged.
 export function noticeLine(node, r, hint) {
   const subjects = r.subjects.map((s) => (s.length > SUBJECT_CAP ? `${s.slice(0, SUBJECT_CAP - 1)}…` : s)).join('; ');
   const more = r.behind > r.subjects.length ? ` (+${r.behind - r.subjects.length} more)` : '';
   const how = {
-    auto: `upgrading (/upgrade full) ${QUIET}`,
+    'auto-full': `upgrading (/upgrade full) ${QUIET}`,
+    auto: `upgrading (/upgrade) ${QUIET}`,
     manual: `send ${hint}`,
     diverged: `not upgrading: this checkout has ${plural(r.ahead, 'commit')} ${r.upstream} lacks, so /upgrade (git pull --ff-only) would fail`,
   }[r.how];
@@ -58,11 +62,13 @@ export function createEgptUpdate({
   home = EGPT_HOME,
   repoRoot = process.cwd(),
   git = (args, timeoutMs) => runGit(args, { cwd: repoRoot, timeoutMs }),
-  upgradeFull = async () => {},       // boot: announceAndExit(46), the /upgrade full drain, never forced
+  upgrade = async () => {},           // (full) boot: announceAndExit(46 | 42), the /upgrade [full] drain, never forced
   restartPending = () => false,       // a /restart or /upgrade is draining: it goes first
   supervised = () => true,            // a daemon respawns this spine (boot: EGPT_SUPERVISED=1); without one, auto would only stop the node
   logToGroup = async () => false,     // (text) => posts one line to log_to_group
-  hint = () => '/upgrade full',       // what a human types on this node
+  daemonRespawns = () => true,        // something brings the daemon back when /upgrade full ends it (daemon-runtime's respawnsOf); else full is never run
+  daemonFiles = () => daemonGraph(repoRoot),   // → { files, packages }: what the daemon process loads, from its import graph
+  hint = (cmd) => `/${cmd}`,          // (cmd: 'upgrade' | 'upgrade full') what a human types on this node
   beeperPending = async () => null,   // boot: beeperUpdate?.pending?.() → { from, to, hint } | null
   now = Date.now,
   everyMs = CHECK_EVERY_MS,
@@ -98,10 +104,11 @@ export function createEgptUpdate({
     const [from, to] = (await git(['rev-parse', 'HEAD', '@{u}'])).split('\n');
     const [behind, ahead] = (await Promise.all([git(['rev-list', '--count', 'HEAD..@{u}']), git(['rev-list', '--count', '@{u}..HEAD'])])).map(Number);
     const subjects = behind ? (await git(['log', '--format=%s', '-n', String(SUBJECTS), 'HEAD..@{u}'])).split('\n') : [];
-    return { branch, upstream, from, to, behind, ahead, subjects };
+    const changed = behind ? (await git(['diff', '--name-only', 'HEAD..@{u}'])).split('\n').filter(Boolean) : [];
+    return { branch, upstream, from, to, behind, ahead, subjects, changed };
   }
 
-  // At boot, every 6 h: ONE notice per new upstream sha; auto applies it, ONCE per sha (persisted
+  // At boot, every 6 h: ONE notice per new upstream sha; auto-full / auto apply it, ONCE per sha (persisted
   // before the exit: a pull that leaves the checkout behind must not loop the node).
   async function check() {
     const m = egptMethod(cfg());
@@ -109,16 +116,29 @@ export function createEgptUpdate({
     const r = await probe();
     if (!r?.behind) return r;
     await load();
-    r.how = r.ahead ? 'diverged' : m.method === 'auto' && supervised() && st.autoTried !== r.to ? 'auto' : 'manual';
+    const live = !r.ahead && (m.method === 'auto-full' || m.method === 'auto') && supervised() && st.autoTried !== r.to;
+    // auto-full: the daemon is renewed only when a file it loads changed (its import graph, or package files if it
+    // imports a package); where nothing respawns it, that is NOT done: spine only, and a human is told.
+    let mode = m.method, why = null, stuck = false;
+    if (live && mode === 'auto-full') {
+      const hit = daemonChanges(r.changed, await daemonFiles());
+      const names = `${hit.slice(0, 5).join(', ')}${hit.length > 5 ? ` (+${hit.length - 5} more)` : ''}`;
+      if (!hit.length) { mode = 'auto'; why = 'daemon unchanged → spine-only upgrade'; }
+      else if (!daemonRespawns()) { mode = 'auto'; stuck = true; why = `daemon files changed: ${names} → /upgrade full needed, but nothing respawns the daemon here (EGPT_DAEMON_RESPAWNS unset): spine-only upgrade now, send ${hint('upgrade full')} by hand to renew the daemon`; }
+      else why = `daemon files changed: ${names} → full`;
+    }
+    r.how = r.ahead ? 'diverged' : live ? mode : 'manual';
+    r.cmd = mode === 'auto' ? 'upgrade' : 'upgrade full';
     if (st.noticed !== r.to) {
       st.noticed = r.to;
       await save();
-      await say(noticeLine(node(), r, hint()));
+      await say(noticeLine(node(), r, hint(r.cmd)));
+      if (why) await (stuck ? say(`⬆ ${node()} · ${why}`) : onLog(why));
     }
-    if (r.how === 'auto' && !restartPending()) {
+    if ((r.how === 'auto-full' || r.how === 'auto') && !restartPending()) {
       st.autoTried = r.to;
       await save();
-      await upgradeFull();
+      await upgrade(r.how === 'auto-full');
     }
     return r;
   }
@@ -145,8 +165,9 @@ export function createEgptUpdate({
       const what = `eGPT ${plural(r.behind, 'commit')} (${short(r.from)} → ${short(r.to)})`;
       items.push({
         diverged: { text: `${what} — this checkout has ${plural(r.ahead, 'commit')} ${r.upstream} lacks: /upgrade would not fast-forward`, ask: false },
+        'auto-full': { text: `${what} — ${QUIET}`, ask: false },
         auto: { text: `${what} — ${QUIET}`, ask: false },
-        manual: { text: `${what} — ${hint()}`, ask: true },
+        manual: { text: `${what} — ${hint(r.cmd)}`, ask: true },
       }[r.how]);
     }
     if (b) {
