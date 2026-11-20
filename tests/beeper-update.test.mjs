@@ -1288,7 +1288,7 @@ describe('mac — the Beeper processes', () => {
   it('macMains: the app\'s own executable, never its helpers or another app; its flags kept for the reopen', async () => {
     const ps = async () => [
       `  412 ${app}/Contents/MacOS/Beeper Desktop`,
-      `  518 ${app}/Contents/MacOS/Beeper Desktop --user-data-dir=/Users/an/Library/Application Support/BeeperTexts2 --pas-port=23374`,
+      `  518 ${app}/Contents/MacOS/Beeper Desktop --user-data-dir=/Users/user/Library/Application Support/BeeperTexts2 --pas-port=23374`,
       `  420 ${app}/Contents/Frameworks/Beeper Desktop Helper (Renderer).app/Contents/MacOS/Beeper Desktop Helper (Renderer) --type=renderer`,
       `  421 ${app}/Contents/MacOS/Beeper Desktop --type=gpu-process`,
       '  430 /Applications/Other.app/Contents/MacOS/Other',
@@ -1296,7 +1296,7 @@ describe('mac — the Beeper processes', () => {
     ].join('\n');
     expect(await macMains(app, { ps })).toEqual([
       { pid: 412, args: [] },
-      { pid: 518, args: ['--user-data-dir=/Users/an/Library/Application Support/BeeperTexts2', '--pas-port=23374'] },
+      { pid: 518, args: ['--user-data-dir=/Users/user/Library/Application Support/BeeperTexts2', '--pas-port=23374'] },
       { pid: 431, args: [] },
     ]);
   });
