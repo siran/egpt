@@ -89,6 +89,7 @@ describe('mentionQuote: the sentence of the line that names the being', () => {
   });
   it('Markdown emphasis and extra whitespace are dropped', () => {
     expect(mentionQuote('**Done.**\n\n  Please   _@finch_ review `the` plan', names)).toBe('Please @finch review the plan');
+    expect(mentionQuote('@finch check soporte_v2 and allowed_users', names)).toBe('@finch check soporte_v2 and allowed_users');
   });
   it('a long sentence is cut around the mention with … on the cut sides', () => {
     const long = `${'word '.repeat(40)}@finch please look ${'more '.repeat(40)}end.`;

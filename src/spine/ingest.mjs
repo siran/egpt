@@ -110,7 +110,7 @@ export const mentionExpired = (sender, being, quote = '') => `⌛ ${sender} → 
 // The sentence around the first hit, whitespace collapsed, Markdown emphasis dropped, cut to `max` with … on the side
 // that was cut; no hit → the start of the line. The being's own stamp ("🐦 Lark:") is not part of what was said.
 export function mentionQuote(text, names, max = 140) {
-  const flat = (t) => t.replace(/[*_~`]+/g, '').replace(/\s+/g, ' ').trim();
+  const flat = (t) => t.replace(/[*~`]+|(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '').replace(/\s+/g, ' ').trim();   // snake_case keeps its _
   const body = flat(String(text ?? '').replace(BEING_STAMP, ''));
   const alt = [...new Set((names ?? []).map((n) => String(n).toLowerCase()).filter(Boolean))].sort((a, b) => b.length - a.length)
     .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
