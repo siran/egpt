@@ -52,15 +52,15 @@ describe('compact-being — deterministic trigger', () => {
     expect(needsCompaction(40, { window: 100, ratio: 0.5 })).toBe(false);
   });
 
-  it('context window is per-model — haiku 200k, opus/sonnet 1M', () => {
-    expect(windowForModel('haiku')).toBe(200_000);
+  it('context window is per-model — haiku and opus/sonnet 1M, unlisted 200k', () => {
+    expect(windowForModel('haiku')).toBe(1_000_000);
     expect(windowForModel('claude-opus-4-8')).toBe(1_000_000);
     expect(windowForModel('sonnet')).toBe(1_000_000);
     expect(windowForModel('whatever-unknown')).toBe(200_000);   // conservative default
     expect(needsCompaction(769351, { window: windowForModel('opus') })).toBe(true);   // 769k ≥ 250k → compact
     expect(needsCompaction(120_000, { window: windowForModel('opus') })).toBe(false); // 120k on opus → plenty of room
-    expect(needsCompaction(40_000, { window: windowForModel('haiku') })).toBe(false); // 40k < 50k → ok
-    expect(needsCompaction(60_000, { window: windowForModel('haiku') })).toBe(true);  // 60k ≥ 50k → compact
+    expect(needsCompaction(40_000, { window: DEFAULT_WINDOW })).toBe(false); // 40k < 50k → ok
+    expect(needsCompaction(60_000, { window: DEFAULT_WINDOW })).toBe(true);  // 60k ≥ 50k → compact
   });
 
   // REPRODUCE-FIRST (phase 1, operator 2026-08-14): a live thread lives in the ONE per-being
@@ -82,7 +82,7 @@ describe('compact-being — deterministic trigger', () => {
     } };
     const got = compactableConversations(state, 'haiku');
     expect(got.map(c => c.name).sort()).toEqual(['telegram/tg-chat#egpt', 'whatsapp/mom#egpt', 'whatsapp/work#egpt']);
-    expect(got.find(c => c.name === 'whatsapp/mom#egpt')).toMatchObject({ surface: 'whatsapp', slug: 'mom', being: 'egpt', sessionId: 'sess-mom', engine: null, model: 'haiku', window: 200_000 });
+    expect(got.find(c => c.name === 'whatsapp/mom#egpt')).toMatchObject({ surface: 'whatsapp', slug: 'mom', being: 'egpt', sessionId: 'sess-mom', engine: null, model: 'haiku', window: 1_000_000 });
     expect(got.find(c => c.name === 'whatsapp/work#egpt').engine).toBe(null);
   });
 
@@ -120,7 +120,7 @@ describe('compact-being — deterministic trigger', () => {
     expect(got).toEqual(['don', 'wren']);
     const wren = compactableBeings(config).find(b => b.name === 'wren');
     expect(wren.model).toBe('haiku');
-    expect(wren.window).toBe(200_000);
+    expect(wren.window).toBe(1_000_000);
     const don = compactableBeings(config).find(b => b.name === 'don');
     expect(don.cwd).toBe('C:/x');
   });
@@ -132,7 +132,7 @@ describe('compact-being — deterministic trigger', () => {
       sona: { type: 'ccode', session_id: 'c', model: 'sonnet', context_window: 400_000 },
     } };
     const by = Object.fromEntries(compactableBeings(config).map(b => [b.name, b.window]));
-    expect(by).toEqual({ wren: 1_000_000, don: 200_000, sona: 400_000 });
+    expect(by).toEqual({ wren: 1_000_000, don: 1_000_000, sona: 400_000 });
   });
 
   it('isActiveMtime: a recently-touched jsonl is mid-turn', () => {
