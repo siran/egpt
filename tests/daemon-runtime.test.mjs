@@ -2099,3 +2099,116 @@ describe('/upgrade full renews the daemon', () => {
     expect(await leaves({})).toBe(false);
   });
 });
+
+// /upgrade full in Session 1 (operator 2026-11-21): the task's launcher runs the daemon again on 46. In
+// between nobody holds s1.claim, and the Session 0 daemon must not take the profile for those seconds:
+// the leaving daemon marks state/s1.renewing while it still holds the claim, Session 0 holds off while
+// the mark is under a minute old, and the next Session 1 daemon removes it once it holds the claim.
+describe('/upgrade full in Session 1: Session 0 never takes the profile in between', () => {
+  const name = (p) => String(p).replace(/\\/g, '/').split('/').pop();
+  function node() {
+    let at = CLOCK;
+    const files = new Map(), locks = new Map(), events = [];
+    let fd = 10;
+    const daemon = (session1, env = session1 ? { EGPT_DAEMON_RESPAWNS: '1' } : {}) => {
+      const processObj = makeProcess();
+      processObj.pid = session1 ? 5001 : 5000;
+      Object.assign(processObj.env, session1 ? { EGPT_SESSION1: '1' } : {}, env);
+      const intervals = [], timers = [];
+      const h = makeRuntime({
+        processObj,
+        now: () => at,
+        statSync: () => ({ mtimeMs: at - 10_000 }),
+        readFileSync: (p) => { if (files.has(name(p))) return files.get(name(p)); const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+        writeFileSync: (p, body) => { files.set(name(p), String(body)); events.push(`write ${name(p)}`); },
+        unlinkSync: (p) => { files.delete(name(p)); },
+        liveDaemonPid: fakeLive,
+        lockFile: (p) => { if (locks.has(name(p))) return null; fd += 1; locks.set(name(p), fd); return fd; },
+        unlockFile: (f) => { for (const [k, v] of locks) if (v === f) { locks.delete(k); events.push(`unlock ${k}`); } },
+        lockHeld: (p) => locks.has(name(p)),
+        setInterval: (fn, ms) => { const t = { fn, ms, ref() { return t; }, unref() { return t; } }; intervals.push(t); return t; },
+        clearInterval: (t) => { if (t) t.cleared = true; },
+        setTimeout: (fn, ms) => { timers.push({ fn, ms }); },
+        spawnSync: makeSpawnSync({ shas: ['oldsha'] }),
+      });
+      const tick = () => intervals.filter((t) => t.ms === 3_000 && !t.cleared).forEach((t) => t.fn());
+      return { ...h, tick, leave: () => timers.splice(0).forEach((t) => t.fn()) };
+    };
+    return { files, locks, events, daemon, later: (ms) => { at += ms; } };
+  }
+  // S1 runs the node, S0 holds off; S1's spine leaves with 46 and its daemon exits.
+  async function renewing() {
+    const n = node();
+    const s1 = n.daemon(true);
+    s1.runtime.start();
+    const s0 = n.daemon(false);
+    s0.runtime.start();
+    expect([s1.children.length, s0.children.length]).toEqual([1, 0]);
+    await s1.children[0].child.handlers.exit(UPGRADE_FULL_EXIT_CODE, null);
+    s1.leave();
+    expect(s1.processObj.exits).toEqual([UPGRADE_FULL_EXIT_CODE]);
+    expect(n.locks.has('s1.claim')).toBe(false);
+    return { n, s1, s0 };
+  }
+
+  it('the mark is written while s1.claim is still held', async () => {
+    const { n } = await renewing();
+    const marked = n.events.indexOf('write s1.renewing');
+    expect(marked).toBeGreaterThan(-1);
+    expect(marked).toBeLessThan(n.events.indexOf('unlock s1.claim'));
+  });
+
+  it('S0 holds off through the gap; the relaunched S1 daemon claims the profile, spawns, and removes the mark', async () => {
+    const { n, s0 } = await renewing();
+    n.later(3_000);
+    s0.tick();
+    expect(s0.children).toHaveLength(0);
+    expect(s0.runtime.state.holding).toMatch(/renew/);
+    expect(n.locks.has('runner.lock')).toBe(false);
+
+    const next = n.daemon(true);
+    next.runtime.start();
+    expect(next.processObj.exits).toEqual([]);
+    expect(next.children).toHaveLength(1);
+    expect(n.files.has('s1.renewing')).toBe(false);
+    s0.tick();
+    expect(s0.children).toHaveLength(0);
+    expect(s0.runtime.state.holding).toMatch(/s1\.claim/);
+  });
+
+  it('a relaunch that never comes: after a minute S0 takes the profile', async () => {
+    const { n, s0 } = await renewing();
+    n.later(59_000);
+    s0.tick();
+    expect(s0.children).toHaveLength(0);
+    n.later(2_000);
+    s0.tick();
+    expect(s0.children).toHaveLength(1);
+  });
+
+  it('no mark without the relaunch: an S1 daemon nothing respawns, and S0 at a logoff, are as before', async () => {
+    const n = node();
+    const s1 = n.daemon(true, {});
+    s1.runtime.start();
+    const s0 = n.daemon(false);
+    s0.runtime.start();
+    await s1.children[0].child.handlers.exit(UPGRADE_FULL_EXIT_CODE, null);
+    expect(s1.children).toHaveLength(2);           // spine only
+    expect(s1.processObj.exits).toEqual([]);
+    expect(n.files.has('s1.renewing')).toBe(false);
+
+    s1.runtime.shutdown('SIGTERM');                // a logoff: the claim goes, with no mark
+    s0.tick();
+    expect(s0.children).toHaveLength(1);
+  });
+
+  it('S0 renewing itself (respawned by its service or container) writes no mark', async () => {
+    const n = node();
+    const s0 = n.daemon(false, { EGPT_DAEMON_RESPAWNS: '1' });
+    s0.runtime.start();
+    await s0.children[0].child.handlers.exit(UPGRADE_FULL_EXIT_CODE, null);
+    s0.leave();
+    expect(s0.processObj.exits).toEqual([UPGRADE_FULL_EXIT_CODE]);
+    expect(n.files.has('s1.renewing')).toBe(false);
+  });
+});

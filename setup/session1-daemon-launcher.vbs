@@ -16,6 +16,9 @@
 '      Task Scheduler the task had succeeded and no restart would ever fire. The cost is
 '      one resident wscript.exe and one resident cmd.exe for the life of the daemon.
 '
+'   3. 46 (/upgrade full) RUNS IT AGAIN, on the code just pulled. EGPT_DAEMON_RESPAWNS=1 tells
+'      the daemon (and its spine) that this relaunch exists.
+'
 ' EGPT_SESSION1=1 IS SET HERE AND ONLY HERE, per process. The daemon reads it to key its
 ' singleton to the logon session and to hold the browsers and claude sessions. It must NEVER
 ' be set in HKCU\Environment: that leaks into every process the operator starts.
@@ -49,8 +52,11 @@ cmdLine = "cmd.exe /c cd /d """ & repoDir & """" & _
           " && echo [%DATE% %TIME%] session1-daemon-launcher: starting egpt-daemon.mjs (EGPT_HOME=" & egptHome & ") >> """ & logPath & """" & _
           " && set ""EGPT_HOME=" & egptHome & """" & _
           " && set ""EGPT_SESSION1=1""" & _
+          " && set ""EGPT_DAEMON_RESPAWNS=1""" & _
           " && """ & nodeExe & """ ""egpt-daemon.mjs"" >> """ & logPath & """ 2>&1"
 
 Set sh = CreateObject("WScript.Shell")
-rc = sh.Run(cmdLine, 0, True)
+Do
+  rc = sh.Run(cmdLine, 0, True)
+Loop While rc = 46
 WScript.Quit rc

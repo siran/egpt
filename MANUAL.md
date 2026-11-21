@@ -137,8 +137,9 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                then respawn; `full` also ends the
                                                daemon (its Chromes and sessions)
                                                for its supervisor to respawn it:
-                                               the container does, a Windows
-                                               service is not assumed to
+                                               the container and the Session 1
+                                               task do, the Session 0 service
+                                               is not assumed to
                                                (the node also notices new commits
                                                itself and, by default, runs this
                                                `full` form at a quiet moment when
