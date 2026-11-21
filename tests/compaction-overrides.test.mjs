@@ -31,7 +31,7 @@ function recorder(due = false) {
   return { seen, dueFor: (target, opts) => { seen.push({ target, opts }); return { due, tokens: 50_000, threshold: 40_000 }; } };
 }
 
-const TARGET = { key: 'e:ccode:whatsapp:hfm-1', sessionId: 'sid-1', model: 'haiku', cwd: '/c', allowedTools: 'all' };
+const TARGET = { key: 'e:ccode:whatsapp:hfm-1', sessionId: 'sid-1', model: 'unlisted-model', cwd: '/c', allowedTools: 'all' };
 // The node-global block these tests override. Deliberately different from every built-in
 // default so a fallback can never be mistaken for a correct override.
 const NODE = { compaction: { ratio: 0.90, cooling_ms: 30_000, context_window: 400_000 } };
@@ -40,7 +40,7 @@ const NODE = { compaction: { ratio: 0.90, cooling_ms: 30_000, context_window: 40
 // the regression lock below should FAIL rather than follow the new number silently.
 const DEFAULT_RATIO = 0.20;           // compaction.mjs DEFAULT_RATIO (operator 2026-06-30)
 const DEFAULT_COOLING_MS = 120_000;   // compaction.mjs DEFAULT_COOLING_MS — 2 min of quiet
-const HAIKU_WINDOW = 200_000;         // compact-being.mjs windowForModel('haiku')
+const HAIKU_WINDOW = 200_000;         // DEFAULT_WINDOW: TARGET's model is unlisted (haiku is 1M now)
 
 // Arm one turn and fire the cooling timer, returning everything the run touched.
 function arm({ config = {}, compaction, due = false } = {}) {

@@ -13,6 +13,7 @@ export const TEMPLATES = {
   'compaction.handoff_prompt': STAMP,
   'compaction.welcome': STAMP,
   compaction_warn_notice: { agent: "the being's handle", percent: 'how full the conversation is', path: 'the handoff file' },
+  compaction_alert_notice: { agent: "the being's handle", chat: "the conversation's name", in: 'time left before the compaction, e.g. 10m', percent: 'how full the conversation is' },
   'heartbeats.<name>.post': { stdout: "the command's output, trimmed" },
 };
 

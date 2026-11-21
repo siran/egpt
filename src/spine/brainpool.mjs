@@ -1596,7 +1596,7 @@ export function createBrainPool({
           text,
         }), being)
         : null;
-      try { afterTurn?.({ key, klass, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn }); } catch { /* non-fatal */ }
+      try { afterTurn?.({ key, klass, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn, chat: scope.scoped ? slug : (ev.chatName || slug) }); } catch { /* non-fatal */ }
       // `verbose` (the one reading of verbose_thinking resolved above) rides out on the reply so the
       // spine can gate the limb-only commandMark on it without a second config read (src/spine/sender.mjs).
       return { text, sessionId: newSession ?? sessionId ?? null, being, verbose, ...(r?.failed ? { failed: true, failReason: r.failReason ?? null } : {}) };

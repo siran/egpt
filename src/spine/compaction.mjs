@@ -30,7 +30,7 @@
 // measure it before relying on it; it would still not re-feed the identity).
 // THIS DECISION CAN BE REVISITED.
 import { join, isAbsolute } from 'node:path';
-import { dueForCompaction, criticallyOver, compactionPolicy, compactionRatio, positiveOrNull } from '../tools/compact-being.mjs';
+import { dueForCompaction, criticallyOver, compactionPolicy, compactionRatio, parseSize, parseDuration } from '../tools/compact-being.mjs';
 import { fill } from '../tools/template.mjs';
 
 const DEFAULT_COOLING_MS = 120_000;   // 2 min of quiet after the last reply
@@ -41,6 +41,16 @@ const DEFAULT_WARN_GAP = 0.03;
 // THE DEFAULT PRE-COMPACTION NOTICE text (top-level compaction_warn_notice). {agent} = being handle,
 // {percent} = current fullness, {path} = the handoff file the being writes. Unset → this; blank → skip.
 const DEFAULT_WARN_NOTICE = 'the conversation is at {percent}%, handoff being written, compaction next. you can read the handoff here: {path}';
+// THE PRE-COMPACTION ALERT body (top-level compaction_warn_notice's sibling compaction_alert_notice):
+// {agent}, {chat}, {in} (time left, e.g. "10m"), {percent}. Unset -> this; blank -> no alert.
+const DEFAULT_ALERT_NOTICE = 'compaction in {in}';
+// ms -> "1h30m" / "10m" / "30s" for {in}.
+export function formatDuration(ms) {
+  let s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  return `${h ? `${h}h` : ''}${m ? `${m}m` : ''}${s || (!h && !m) ? `${s}s` : ''}`;
+}
 // The handoff file the handoff_prompt names (its first *.md token); the notice's {path} is that file.
 const MD_PATH = /[^\s"'`<>()]+\.md\b/;
 const two = (n) => String(n).padStart(2, '0');
@@ -106,7 +116,10 @@ export function createCompaction({
   // work was pending, so the next quiet tick compacts.
   const warned = new Map();
   const ratio = () => compactionRatio(getConfig());
-  const coolingMs = () => Number(cfg().cooling_ms ?? DEFAULT_COOLING_MS) || DEFAULT_COOLING_MS;
+  // One tier's cooling: `cooling` (a duration) wins over the legacy `cooling_ms` when both are set.
+  const _cool = (o) => parseDuration(o?.cooling) ?? parseDuration(o?.cooling_ms);
+  const coolingMs = () => _cool(cfg()) ?? DEFAULT_COOLING_MS;
+  const pendingAlert = new Map();     // warm key -> the alert timer armed beside its cooling timer
 
   // PER-CONVERSATION OVERRIDES (operator 2026-09-03), carried in on afterTurn from brainpool's
   // resolveConv and using config.yaml's OWN `compaction:` key names — `enabled`, `ratio`,
@@ -130,16 +143,17 @@ export function createCompaction({
   // YAML quoting accident, and it means what it says).
   //
   // THE RATIO AND THE WINDOW are compact-being's compactionPolicy (2026-09-24), the one rule
-  // /status reads too; `_pos` is that module's positiveOrNull, the validation above.
+  // /status reads too; `parseSize` / `parseDuration` (same module) are the one parser for sizes and durations.
   const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
-  const _pos = positiveOrNull;
-  const coolingFor = (o) => _pos(o?.cooling_ms) ?? coolingMs();
+  const coolingFor = (o) => _cool(o) ?? coolingMs();
+  // ALERT_BEFORE, per-being/room then node; unset = off. A duration.
+  const alertBeforeFor = (o) => parseDuration(o?.alert_before) ?? parseDuration(cfg().alert_before);
   // THE WARN GAP, per-being/room then node, else the default. A NON-NEGATIVE number (0 = warn
-  // coincides with compact): zero is a legitimate "no early warning", so this is _nonNeg, not _pos.
+  // coincides with compact): zero is a legitimate "no early warning", so parseSize is called with zero:true.
   // Booleans and negatives rejected like every other read here (Number(true) is 1, which would warn
   // a full window early, i.e. never below 0).
-  const _nonNeg = (v) => { const n = typeof v === 'boolean' ? NaN : Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
-  const warnGapFor = (o) => _nonNeg(o?.warn_gap) ?? _nonNeg(cfg().warn_gap) ?? DEFAULT_WARN_GAP;
+  // A size like ratio (0.03, "3%", "30k"), via the shared parser; 0 allowed.
+  const warnGapFor = (o, window) => parseSize(o?.warn_gap, window, { zero: true }) ?? parseSize(cfg().warn_gap, window, { zero: true }) ?? DEFAULT_WARN_GAP;
   // The configurable pre-compaction notice BODY (top-level compaction_warn_notice), {agent}/
   // {percent}/{path}-resolved. Unset → the operator default; a blank string → '' so the caller
   // SKIPS the notice (same degrade as handoff_prompt/welcome). {path} is the resolved handoff file,
@@ -163,11 +177,29 @@ export function createCompaction({
   // Unset at both tiers => null => disabled, and the cooling wait is the only trigger, exactly
   // as before this existed. Validated like every other read here: booleans rejected, zero and
   // negatives rejected, and a ratio above 1 rejected (it could never fire, so it is a typo).
-  const criticalRatio = () => { const n = _pos(cfg().critical_ratio); return n && n <= 1 ? n : null; };
-  const criticalFor = (o) => { const n = _pos(o?.critical_ratio); return (n && n <= 1) ? n : criticalRatio(); };
+  const criticalFor = (o, window) => parseSize(o?.critical_ratio, window) ?? parseSize(cfg().critical_ratio, window);
   // enabled: false at EITHER tier disables. The per-conversation tier can also turn compaction
   // back ON for one being while the node has it off, which is why this is `??` and not an AND.
   const enabledFor = (o) => (o?.enabled ?? cfg().enabled) !== false;
+
+  // THE PRE-COMPACTION ALERT (alert_before): armed beside the cooling timer, posts the node-signed
+  // compaction_alert_notice through the SAME noticeWarn path. Only when a compaction is actually due
+  // at that moment (over the warn threshold), so an idle small thread says nothing.
+  async function alertNow(key, target, inMs) {
+    pendingAlert.delete(key);
+    try {
+      const raw = getConfig()?.compaction_alert_notice;
+      const tpl = (raw === undefined || raw === null) ? DEFAULT_ALERT_NOTICE : (typeof raw === 'string' && raw.trim()) ? raw : '';
+      if (!tpl || !target.noticeWarn) return;
+      const { tokens } = dueFor(target, { ratio: target.ratio });
+      const window = Number(target.window) || 0;
+      if (!Number.isFinite(tokens) || !(window > 0)) return;
+      if (tokens < Math.round(window * Math.max(0, target.ratio - target.warnGap))) return;
+      const text = fill(tpl, { agent: String(key).split(':')[0], chat: target.chat ?? '', in: formatDuration(inMs), percent: Math.round((tokens / window) * 100) });
+      await target.noticeWarn({ text });
+    } catch (e) { onLog(`compact ${key}: alert failed: ${e?.message ?? e}`); }
+  }
+  const clearAlert = (key) => { const a = pendingAlert.get(key); if (a !== undefined) { scheduler.clear(a); pendingAlert.delete(key); } };
 
   // `force` (/agents compact): compact whatever the size, with a fresh handoff first. Returns
   // what happened for that caller; the scheduler ignores it.
@@ -287,7 +319,7 @@ export function createCompaction({
   return {
     // Called after every bot turn. (Re)arms the cooling timer for this conversation;
     // the check + /compact run only once it goes quiet for the cooling period.
-    afterTurn({ key, klass = 'conversation', sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted, noticeWarn } = {}) {
+    afterTurn({ key, klass = 'conversation', sessionId, model, cwd, allowedTools, compaction, armIdentityRefresh, noticeCompacted, noticeWarn, chat = null } = {}) {
       const over = _obj(compaction);
       if (!pool || !key || !sessionId) return;
       // The resolved ratio is FROZEN ONTO THE TARGET, not re-read when the timer fires: the
@@ -301,11 +333,12 @@ export function createCompaction({
       // `noticeCompacted` / `noticeWarn` are frozen for the same reason: each is bound to the being
       // and the conversation of the turn that armed this compaction, which is what the line names.
       const { window, ratio: frozenRatio } = compactionPolicy(getConfig(), model, over);
-      const target = { klass, sessionId, model, window, ratio: frozenRatio, warnGap: warnGapFor(over), armIdentityRefresh, noticeCompacted, noticeWarn, brainOptions: { sessionId, cwd, model, allowedTools } };
+      const target = { klass, sessionId, model, window, ratio: frozenRatio, warnGap: warnGapFor(over, window), chat, armIdentityRefresh, noticeCompacted, noticeWarn, brainOptions: { sessionId, cwd, model, allowedTools } };
       targets.set(key, target);   // kept even with compaction off: /agents compact is asked for
       if (!enabledFor(over)) return;
       const prev = pending.get(key);
       if (prev !== undefined) scheduler.clear(prev);
+      clearAlert(key);
       // ALREADY CRITICAL? Then do not wait for a quiet that may never come. The probe reads a
       // BOUNDED TAIL of the session jsonl rather than the whole file (compact-being's
       // criticallyOver): this runs after every single turn, and the ordinary check's
@@ -315,16 +348,24 @@ export function createCompaction({
       // ITS OWN try/catch, and the fallback is the ordinary wait rather than nothing: a probe
       // that throws must not cost this conversation its cooling timer, which is the trigger
       // that worked before the critical ratio existed.
-      const critical = criticalFor(over);
+      const critical = criticalFor(over, window);
       let urgent = false;
       if (critical != null) {
         try { urgent = criticalOver(target, { ratio: critical }) === true; }
         catch (e) { onLog(`compact ${key}: critical probe failed, falling back to the cooling wait: ${e?.message ?? e}`); }
       }
       if (urgent) onLog(`${key} is past the critical ratio ${critical} - compacting now, not waiting for quiet`);
-      const h = scheduler.set(() => fire(key, target), urgent ? 0 : coolingFor(over));
+      const cooling = coolingFor(over);
+      const h = scheduler.set(() => fire(key, target), urgent ? 0 : cooling);
       h?.unref?.();
       pending.set(key, h);
+      // One alert per armed timer, never on the no-wait path, none unless alert_before < cooling.
+      const before = urgent ? null : alertBeforeFor(over);
+      if (before != null && before < cooling) {
+        const a = scheduler.set(() => alertNow(key, target, before), cooling - before);
+        a?.unref?.();
+        pendingAlert.set(key, a);
+      }
     },
     // /agents compact: fire() NOW, forced, over the target this key's last turn froze. `sessionId`
     // is the being's current thread — a target frozen under another thread is refused, never run.
@@ -336,9 +377,10 @@ export function createCompaction({
       if (running.has(key)) return { ok: false, reason: 'a compaction is already running' };
       const h = pending.get(key);
       if (h !== undefined) { scheduler.clear(h); pending.delete(key); }
+      clearAlert(key);
       const inFlight = pool.busy?.(key) === true;
       return { ok: true, inFlight, done: fire(key, target, { force: true }) };
     },
-    stop() { for (const h of pending.values()) scheduler.clear(h); pending.clear(); warned.clear(); targets.clear(); },
+    stop() { for (const h of pending.values()) scheduler.clear(h); pending.clear(); for (const h of pendingAlert.values()) scheduler.clear(h); pendingAlert.clear(); warned.clear(); targets.clear(); },
   };
 }
