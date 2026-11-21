@@ -467,17 +467,20 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 
-  it('folder: two chat ids that render the same title never share a folder', async () => {
+  it('folder: a title another chat holds refuses the second visitor (logged, 500, nothing made); different titles are fine', async () => {
     const n = await bootTeam({ ...client(), chat_title: '{abrin}' });
     const a = await n.post({ text: 'uno', identity: signed(JD) });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JD)))).toBe(true), { timeout: 5000 });
     const who2 = { ...JD, username: 'jroe', short_name: 'Jim Roe' };
     const b = await n.post({ text: 'dos', identity: signed(who2) });
-    await vi.waitFor(async () => expect(answered(await n.messages(b.session, signed(who2)))).toBe(true), { timeout: 5000 });
-    expect(a.session).not.toBe(b.session);
-    const [d1, d2] = n.turns.map((t) => dirOf(t.cwd));
-    expect(d1).toBe('abc');
-    expect(d2).toMatch(/^abc-[0-9a-f]{6}$/);
+    expect(b).toEqual({ error: 'internal error' });
+    await settle();
+    expect(n.lines.some((l) => l.includes('chatbox: chat_title "abc" is already http:contoso-') && l.includes("'s folder — the template must name a unique claim (e.g. {username}); this visitor is refused"))).toBe(true);
+    expect(n.turns).toHaveLength(1);
+    expect(Object.values(n.state().contacts.http).map((e) => e.slug)).toEqual(['abc']);
+    const c = await n.post({ text: 'tres', identity: signed({ ...JD, abrin: 'xyz' }) });
+    await vi.waitFor(async () => expect(answered(await n.messages(c.session, signed({ ...JD, abrin: 'xyz' })))).toBe(true), { timeout: 5000 });
+    expect(Object.values(n.state().contacts.http).map((e) => e.slug).sort()).toEqual(['abc', 'xyz']);
     n.app.stop();
   });
 

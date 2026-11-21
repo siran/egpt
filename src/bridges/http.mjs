@@ -561,7 +561,10 @@ export async function startHttpBridge({
       try {
         await beforeLine?.({ client: c.name, chatId, chatName: s.chat.name, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity, ...chat });
       }
-      catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
+      catch (e) {
+        log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`);
+        if (e?.refused) throw e;   // a chat the spine cannot place: the line fails (500), not carried on
+      }
       if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
       log(`incoming [${name}] the visitor opened the chatbox`);
       deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})`, {   // on the record only

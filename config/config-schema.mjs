@@ -1001,8 +1001,8 @@ export const CONFIG_SCHEMA = {
                               "{abrin} · {short_name} · {username}". Recorded as "title" in the
                               conversation's desktop/user.json when it starts; unsigned: none ("Visitor").
                               It also NAMES the signed visitor's folder, with no client prefix (cut at 255;
-                              renamed, thread kept, when a claim changes; a repeat title takes the chat id's
-                              tail): "{abrin}-{user_type}-{username}-{short_name}" -> http/abc-P-jdoe-Jane Doe.
+                              renamed, thread kept, when a claim changes; it must be unique: a title that is
+                              another chat's folder refuses that visitor, and a rename onto one is kept off): "{abrin}-{user_type}-{username}-{short_name}" -> http/abc-P-jdoe-Jane Doe.
                               Unsigned: <client>-<key>. The chat id is unchanged
             chat_subtitle     the same for the line under the title, default "{user_type}"
             identity          off (default) | optional | required: the host page's

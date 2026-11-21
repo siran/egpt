@@ -2354,6 +2354,9 @@ export async function boot({
     // rewritten whenever a verified line or init brings other values — not only for a new conversation.
     const cardSeen = new Map();   // chatId → the card claims as last written or read
     const beforeLine = async ({ client, chatId, chatName, isNew, init, recap, identity, title, subtitle }) => {
+      // A chat the registry cannot place (its chat_title is another chat's folder; contacts.resolve logged why) is refused:
+      // the limb fails the line (500) rather than carry it on without a folder.
+      if (!await httpSlug(chatId, chatName)) throw Object.assign(new Error('no conversation folder for this chat'), { refused: true });
       const c = clients[client] ?? {};
       const extra = (Array.isArray(c.card_claims) ? c.card_claims.map(String) : []).filter((k) => k && k !== 'exp' && k !== 'iat');
       if (identity && (isNew || extra.length)) {

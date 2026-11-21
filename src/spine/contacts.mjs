@@ -43,12 +43,14 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
    * `seed` is what a BRAND-NEW entry is created with (ensureContact ignores it otherwise).
    * @returns {Promise<string|null>} the slug, or null when unresolvable (caller treats null as skip)
    */
+  // A chatbox title another chat already holds is refused, not suffixed (the template must name a unique claim).
+  const refusal = (ens) => onLog(`chatbox: chat_title "${ens.refused.title}" is already ${ens.refused.holder}'s folder — the template must name a unique claim (e.g. {username}); ${ens.slug ? 'this chat keeps its folder' : 'this visitor is refused'}`);
   async function resolve(surface, chatId, { chatName, seed } = {}) {
       // A known chat with nothing to change is a READ: answered without the node-wide lock.
       if (chatId) {
         try {
           const seen = ensureContact(await loadState(), surface, current(surface, chatId), ctxOf(surface, chatName, seed));
-          if (!seen.changed) return seen.slug ?? null;
+          if (!seen.changed) { if (seen.refused) refusal(seen); return seen.slug ?? null; }
         } catch { /* the locked path below reports it */ }
       }
       // Serialize the whole load→mutate→write against the shared registry so two
@@ -75,6 +77,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         // filesystem half the old dispatcher did: move the slug dir so
         // transcript.md + media/ follow the name, then record the rename inside the
         // NEW folder's own history.
+        if (ens.refused) refusal(ens);
         let { state: next, changed, slug } = ens;
         if (ens.renamedFrom && ens.renamedTo) {
           const newDir = slugDir(surface, ens.renamedTo);

@@ -310,13 +310,22 @@ describe('a chatbox conversation is named by its chatName like any limb\'s chat'
     expect(r.entry.agents.ed.threadId).toBe('t-1');
   });
 
-  it('two chat ids with one title are two folders, even seconds apart (never merged as one chat)', () => {
+  it('a title another chat holds is refused (nothing created, the first untouched); other titles are fine', () => {
     const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' });
-    const b = ensureContact(a.state, 'http', H2, { pushedName: 'abc' });
-    expect(a.slug).toBe('abc');
-    expect(b.slug).not.toBe('abc');
-    expect(b.slug).toMatch(/^abc-/);
-    expect(b.state.contacts.http[H2].aliasOf).toBeUndefined();
+    const b = ensureContact(a.state, 'http', H2, { pushedName: 'ABC' });
+    expect(b).toMatchObject({ slug: null, entry: null, isNew: false, changed: false, refused: { title: 'ABC', holder: H1 } });
+    expect(b.state).toBe(a.state);
+    expect(b.state.contacts.http[H2]).toBeUndefined();
+    expect(ensureContact(a.state, 'http', H2, { pushedName: 'abd' }).slug).toBe('abd');
+  });
+
+  it('a rename onto a held title keeps the current folder and reports the refusal', () => {
+    let st = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' }).state;
+    st = ensureContact(st, 'http', H2, { pushedName: 'abd' }).state;
+    const r = ensureContact(st, 'http', H2, { pushedName: 'abc' });
+    expect(r).toMatchObject({ slug: 'abd', refused: { title: 'abc', holder: H1 } });
+    expect(r.renamedTo).toBeNull();
+    expect(r.state.contacts.http[H2].slug).toBe('abd');
   });
 
   it('regression: Telegram keeps its slug cap (80), its same-title merge and its clash tail', () => {

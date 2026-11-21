@@ -1661,8 +1661,12 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     let renamedFrom = null, renamedTo = null;
     const cap = _capOf(surface);
     const title = sanitizeSlug(ctx.pushedName, cap) || sanitizeSlug(cur.pushedName, cap) || String(cur.slug ?? '').replace(LEGACY_SUFFIX, '');
+    let refused = null;
     if (!viaAlias && !fixed && !isForkEntry(cur) && title) {
-      const candidate = _slugFor(state, surface, resolved.primaryJid, title);
+      // An http chat's title must be unique (the operator's rule): a rename onto another chat's folder keeps the current one.
+      const held = surface === 'http' && title.toLowerCase() !== String(cur.slug).toLowerCase() && _slugHolder(state, surface, title, resolved.primaryJid);
+      const candidate = held ? cur.slug : _slugFor(state, surface, resolved.primaryJid, title);
+      if (held) refused = { title, holder: held[0] };
       if (candidate !== cur.slug) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
@@ -1682,6 +1686,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       changed,
       renamedFrom,
       renamedTo,
+      ...(refused ? { refused } : {}),
     };
   }
 
@@ -1703,6 +1708,9 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     nextBucket[jid] = { aliasOf: holder[0] };
     return { state: next, surface, jid: holder[0], slug: holder[1].slug, entry: holder[1], isNew: false, changed: true };
   }
+  // An http chat's title is unique, as a primary key is: a title another chat holds refuses this chat (nothing created).
+  const taken = !fixed && surface === 'http' && _slugHolder(state, surface, baseSlug, jid);
+  if (taken) return { state, surface, jid, slug: null, entry: null, isNew: false, changed: false, refused: { title: baseSlug, holder: taken[0] } };
   const candidateSlug = fixed || _slugFor(state, surface, jid, baseSlug);
 
   // 3. Brand-new contact — the SLIM shape (operator 2026-07-02). The
