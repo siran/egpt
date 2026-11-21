@@ -50,6 +50,8 @@ import { spliceYamlScalar, spliceYamlInsertKey } from '../src/tools/config-io.mj
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the being that answers to `dron` becomes a meta engineer — `access_level: all`, gated by the node\'s own trusted ids';
 
 const HANDLE = 'dron';

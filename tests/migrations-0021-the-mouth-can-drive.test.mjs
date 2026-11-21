@@ -458,7 +458,7 @@ describe('0021 through the runner', () => {
 
   it('kg: applied and recorded, one line changed and one backup beside it', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0021', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0021', approve: ['0021'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0021-the-mouth-can-drive'].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);
@@ -467,7 +467,7 @@ describe('0021 through the runner', () => {
 
   it('do: applied and recorded; dren has it, don does not', async () => {
     const h = doHome();
-    const { exitCode } = await runMigrations({ through: '0021', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0021', approve: ['0021'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0021-the-mouth-can-drive'].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);   // byte-identical but dren's one line
@@ -477,7 +477,7 @@ describe('0021 through the runner', () => {
 
   it('a node with no meta engineer converges too, recorded as already-satisfied', async () => {
     const h = home(NO_ENGINEER);
-    const { exitCode } = await runMigrations({ through: '0021', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0021', approve: ['0021'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0021-the-mouth-can-drive'].outcome).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(NO_ENGINEER);
@@ -485,7 +485,7 @@ describe('0021 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on both fixtures - one that acted would invalidate these', async () => {
     for (const h of [home(), doHome()]) {
-      await runMigrations({ through: '0021', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0021', approve: ['0021'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0021');
       expect(earlier.length).toBeGreaterThanOrEqual(20);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);

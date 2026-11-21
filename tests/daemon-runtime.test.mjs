@@ -476,6 +476,47 @@ describe('daemon runtime fake-world harness', () => {
       expect(r.sidecars[0].note.split('\n')).toHaveLength(1);
     });
 
+    // Operator 2026-11-21: a migration that changes operator-owned config is PENDING APPROVAL (runner
+    // exit 3): not applied, said once per migration on the back-up note, one line each, with the
+    // chat command and the shell one. The runner prints the full id (0025-everyone-in-a-box).
+    const APPROVAL_OUT = [
+      '  0025-everyone-in-a-box  PENDING APPROVAL - every being is in the OS box unless it says otherwise',
+      '      change a', '  ****', '    approve:  "node" "migrate.mjs" --approve 0025',
+      '  0029-the-admin-channel-is-declared  PENDING APPROVAL - the admin channel is declared',
+      '      change b', '', 'migrations: NOT CONVERGED - a migration is PENDING APPROVAL (or BLOCKED behind one), see above.',
+    ].join('\n');
+
+    it('exit 3 (pending approval): one line per migration on the note, with summary and both commands, and still respawns', async () => {
+      const r = await upgradeMigrating({ migrate: { status: 3, out: APPROVAL_OUT } });
+      expect(r.respawned).toBe(true);
+      expect(r.sidecars[0].outcome).toBe('pulled 3 commits, npm install ok, 2 migrations pending approval');
+      const lines = r.sidecars[0].note.split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('migration 0025 needs your approval: every being is in the OS box unless it says otherwise');
+      expect(lines[0]).toContain('/<handle> migrate approve 0025');
+      expect(lines[0]).toContain('/<handle> migrate decline 0025');
+      expect(lines[0]).toContain('node setup/migrate.mjs --approve 0025 | --decline 0025');
+      expect(lines[1]).toContain('migration 0029 needs your approval: the admin channel is declared');
+      expect(r.sidecars[0].note).not.toMatch(/elevation|FAILED/);
+    });
+
+    it('exit 2 with elevation AND approval pending: both are said, each on its own line', async () => {
+      const out = ['  0054-thing  PENDING - a thing  [needs elevation]', `    ${ELEV}`, APPROVAL_OUT].join('\n');
+      const r = await upgradeMigrating({ migrate: { status: 2, out } });
+      expect(r.sidecars[0].outcome).toBe('pulled 3 commits, npm install ok, migrations pending elevation, 2 migrations pending approval');
+      const lines = r.sidecars[0].note.split('\n');
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain('0054 needs elevation');
+      expect(lines[1]).toContain('migration 0025 needs your approval');
+    });
+
+    it('runUpgrade returns the pending approvals on the seam', async () => {
+      const { runtime } = makeRuntime({
+        spawnSync: (cmd, args = []) => /migrate\.mjs$/.test(String(args[0] ?? '')) ? { status: 3, stdout: Buffer.from(APPROVAL_OUT) } : makeSpawnSync({ shas: ['a', 'b'] })(cmd, args),
+      });
+      expect((await runtime.runUpgrade()).migrations.pendingApproval.map((a) => a.id)).toEqual(['0025', '0029']);
+    });
+
     it('exit 1 (failed): names the migration and the reason, still respawns the new code', async () => {
       const out = ['  0053  done (applied, x)', '', '  0054  FAILED - the chain stops here, nothing after it runs, and it is not recorded', '      config.yaml has no networks block', '', 'migrations: FAILED - see above.'].join('\n');
       const r = await upgradeMigrating({ migrate: { status: 1, out } });

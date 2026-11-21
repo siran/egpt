@@ -545,7 +545,7 @@ describe('0022 through the runner', () => {
 
   it('kg: applied and recorded, one room changed and one backup beside it', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0022', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0022', approve: ['0022'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
     expect(readFileSync(roomsPath(h), 'utf8')).toBe(KG_ROOMS_AFTER);
@@ -554,7 +554,7 @@ describe('0022 through the runner', () => {
 
   it('a node with no rooms.yaml converges too, recorded as already-satisfied', async () => {
     const h = home({ rooms: null });
-    const { exitCode } = await runMigrations({ through: '0022', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0022', approve: ['0022'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('already-satisfied');
     expect(existsSync(roomsPath(h))).toBe(false);
@@ -562,7 +562,7 @@ describe('0022 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on these fixtures - one that acted would invalidate them', async () => {
     for (const h of [home(), home({ rooms: null })]) {
-      await runMigrations({ through: '0022', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0022', approve: ['0022'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0022');
       expect(earlier.length).toBeGreaterThanOrEqual(21);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);

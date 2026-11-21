@@ -242,6 +242,22 @@ still starts. `do`'s Beeper services and both nodes' session 1
 task carried legacy names until then. A change to either node that is not a
 migration is how the two drift apart again.
 
+**Migrations that ask.** Most migrations are tied to the code and just run. One
+that changes the operator's own config or node policy (which beings exist, their
+model, mode and access, grants, compaction ratios, the admin channel) declares
+`approval = true`: an upgrade reports it as PENDING APPROVAL (runner exit 3; on
+the daemon path, one line per migration on the back-up message, with its summary
+and the commands) and does not apply or record it. The node answers with
+`/<handle> migrate approve <id>` or `/<handle> migrate decline <id>` (operator
+only; bare `/<handle> migrate` lists pending, approved, declined), or on a shell
+`node setup/migrate.mjs --approve <id>` / `--decline <id>`. Approve applies it
+and records it; decline records `declined` (time, by operator), and it is never
+proposed again. Only a migration that asks can be declined: a code-shape one
+cannot, because the code depends on it. An independent node that keeps its own
+config (EDW) declines the three that would rewrite it, once, after its first
+upgrade: `/edu migrate decline 0025,0028,0029`, or `node setup/migrate.mjs
+--decline 0025,0028,0029`.
+
 What still differs, measured, and why it is not being changed:
 
 - **`kg`'s primary Beeper has no `--user-data-dir`.** It runs from the LocalSystem

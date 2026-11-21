@@ -500,6 +500,7 @@ export function createCommands({
   floodBan = null,                       // the media-flood auto-ban (src/flood-ban.mjs) — /unban clears, /bans lists; the SAME instance the bridges observe into. Null (standalone) → both commands say it isn't wired.
   background = null,                     // the node's background-work registry (src/spine/background.mjs) — the operator's bare /agents lists it
   beeperUpdate = null,                   // /update beeper (src/tools/beeper-update.mjs createBeeperUpdate); null → not wired here
+  migrate = null,                        // /migrate: (args) => { exitCode, out, … } — boot wires daemon-runtime's runMigrationsChild (THE child-process helper the upgrade runs the runner through); null → not wired here
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
@@ -1114,6 +1115,12 @@ export function createCommands({
       await send?.(ev.chatId, target !== 'beeper' ? usage : beeperUpdate ? await beeperUpdate.update((t) => send?.(ev.chatId, t)) : 'Beeper updates are not wired on this node');
       return;
     }
+
+    // /migrate [approve|decline <id[,id]>] — the operator's yes or no to the migrations that change
+    // operator-owned config (setup/migrate.mjs: PENDING APPROVAL), so nobody needs a shell. Bare: what is
+    // pending, approved and declined on THIS node. Operator-only, in the command gate (isCommand) and here.
+    const migrateMatch = /^\/migrate\b[ \t]*(.*)$/i.exec(line);
+    if (migrateMatch) return await migrateCmd(ev, migrateMatch[1].trim());
 
     // /split — /<handle> split [<name>] spins a side-group backed by a NEW, DIVERGING conversation (its
     // beings' threads are copied); /send — reply /send to a message in a side group to relay it back to
@@ -4304,6 +4311,38 @@ export function createCommands({
     try { newId = await client.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
     await room.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
     await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
+  }
+
+  // /migrate — shells out to the node's own runner with --dry-run (the list), --approve or --decline
+  // (migrate, above); the runner validates the ids, this only keeps a typo from becoming a flag.
+  async function migrateCmd(ev, rest) {
+    if (!isOperator(ev)) { await send?.(ev.chatId, '/migrate is operator-only'); return 'not operator'; }
+    if (!migrate) { await send?.(ev.chatId, 'migrations are not wired on this node'); return; }
+    const [verb, ...more] = rest.split(/\s+/).filter(Boolean);
+    const ids = more.join(',').split(',').filter(Boolean);
+    const usage = `usage: ${hintOf('migrate', ev)} — list · ${hintOf('migrate approve <id[,id]>', ev)} · ${hintOf('migrate decline <id[,id]>', ev)} (ids: 0025, or 0025,0028,0029)`;
+    if (verb && (!['approve', 'decline'].includes(verb.toLowerCase()) || !ids.length || ids.some((i) => !/^\d{4}(-[a-z0-9-]+)?$/.test(i)))) { await send?.(ev.chatId, usage); return; }
+    if (!verb) {
+      const r = await migrate(['--dry-run']);
+      if (r.exitCode !== 0) { await send?.(ev.chatId, `migrations: ${r.failedId ? `${r.failedId} FAILED: ` : ''}${r.reason ?? `the runner exited ${r.exitCode}`}`); return 'failed'; }
+      const nums = (re) => [...r.out.matchAll(re)].map((m) => m[1]);
+      const list = (xs) => (xs.length ? xs.join(', ') : 'none');
+      await send?.(ev.chatId, [
+        'migrations on this node:',
+        `pending approval: ${r.pendingApproval.length ? r.pendingApproval.map((a) => `${a.id} (${a.summary})`).join('; ') : 'none'}`,
+        `approved: ${list(nums(/^\s+(\d{4})\S*\s+done \(applied by operator/gm))}`,
+        `declined: ${list(nums(/^\s+(\d{4})\S*\s+done \(declined/gm))}`,
+        `pending, runs at the next upgrade: ${list(nums(/^\s+(\d{4})\S*\s+PENDING - /gm))}`,
+      ].join('\n'));
+      return 'list';
+    }
+    const r = await migrate([`--${verb.toLowerCase()}`, ids.join(',')]);
+    if (r.exitCode !== 0 && r.exitCode !== 2 && r.exitCode !== 3) { await send?.(ev.chatId, `/migrate ${verb.toLowerCase()}: ${r.failedId ? `migration ${r.failedId} FAILED: ` : ''}${r.reason}`); return 'failed'; }
+    const wanted = new Set(ids.map((i) => i.slice(0, 4)));
+    const done = [...r.out.matchAll(/^\s+(\d{4})\S*\s+(APPLIED|DECLINED).*$/gm)].filter((m) => wanted.has(m[1])).map((m) => m[0].trim());
+    const left = r.pendingApproval.map((a) => a.id);
+    await send?.(ev.chatId, [...(done.length ? done : [`${ids.join(', ')}: nothing ran`]), ...(left.length ? [`still pending approval: ${left.join(', ')}`] : [])].join('\n'));
+    return verb.toLowerCase();
   }
 
   // /bans — the media-flood auto-bans currently active across every chat (src/flood-ban.mjs).

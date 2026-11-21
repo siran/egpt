@@ -385,6 +385,8 @@ if (-not (Test-Path $runner)) {
   $migrationsApplied = @($migrateOut | Where-Object { "$_" -match '\sAPPLIED - recorded' }).Count -gt 0
   if ($migrateRc -eq 2) {
     Write-Host "=== MIGRATIONS PENDING ELEVATION -- the node is not converged until they run (see above) ===" -ForegroundColor Yellow
+  } elseif ($migrateRc -eq 3) {
+    Write-Host "=== MIGRATIONS PENDING APPROVAL -- not applied; approve or decline each (see above, or /<handle> migrate in chat) ===" -ForegroundColor Yellow
   } elseif ($migrateRc -ne 0) {
     Write-Host "=== MIGRATIONS FAILED (exit $migrateRc) -- the deploy landed, the migration chain stopped ===" -ForegroundColor Red
     $migrationsFailed = $true

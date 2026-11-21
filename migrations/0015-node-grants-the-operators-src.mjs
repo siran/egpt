@@ -48,6 +48,8 @@ import * as YAML from 'yaml';
 import { spliceYamlInsertKey } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = "the operator's own src/ is readable by every being on this node, granted once at the node level";
 
 const KEY = 'allowed_paths';

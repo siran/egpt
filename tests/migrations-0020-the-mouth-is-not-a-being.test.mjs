@@ -349,7 +349,7 @@ describe('0020 through the runner', () => {
 
   it('kg: applied and recorded; the being, its four records and its identity are gone', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0020', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0020', approve: ['0020'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0020-the-mouth-is-not-a-being'].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_WITHOUT);
@@ -361,7 +361,7 @@ describe('0020 through the runner', () => {
 
   it('do: applied and recorded; the one line changed and nothing else', async () => {
     const h = doHome();
-    const { exitCode } = await runMigrations({ through: '0020', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0020', approve: ['0020'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)['0020-the-mouth-is-not-a-being'].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
@@ -369,7 +369,7 @@ describe('0020 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on both fixtures - one that acted would invalidate these', async () => {
     for (const h of [home(), doHome()]) {
-      await runMigrations({ through: '0020', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0020', approve: ['0020'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0020');
       expect(earlier.length).toBeGreaterThanOrEqual(18);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);

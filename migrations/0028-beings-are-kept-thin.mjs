@@ -37,6 +37,8 @@ import { spliceYamlInsertKey, spliceYamlRemoveKey } from '../src/tools/config-io
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'beings are kept thin: the node compacts at 0.2 of a being\'s window, the meta engineers and acim\'s room at 0.8, and every other room override goes';
 
 const ID = '0028';

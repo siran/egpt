@@ -25,6 +25,8 @@ import { spliceYamlInsertKey, spliceYamlScalar } from '../src/tools/config-io.mj
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the relays rest: carol and cara are switched off (mode: off) and kept on file, paths and all, for when the mesh returns';
 
 const ID = '0027';

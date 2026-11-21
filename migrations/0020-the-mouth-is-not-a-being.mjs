@@ -53,6 +53,8 @@ import { wakeTokens } from '../src/spine/router.mjs';
 import { evict, applyEviction, beingsAnswering } from './0019-dron-is-gone.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the mouth stops being a being: the one answering to `rodz` is removed, and the one answering to `don` answers to `rodz` too';
 
 const ID = '0020';

@@ -272,7 +272,7 @@ describe('0016 through the runner', () => {
 
   it('do: applied and recorded, both edits made, a backup beside config.yaml', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0016', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0016', approve: ['0016'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
@@ -281,7 +281,7 @@ describe('0016 through the runner', () => {
 
   it('kg: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: KG });
-    const { exitCode } = await runMigrations({ through: '0016', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0016', approve: ['0016'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);

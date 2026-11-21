@@ -22,6 +22,7 @@ function migrationSource(id, spec) {
 const spec = ${JSON.stringify(spec)};
 const log = (what) => globalThis.__mig.calls.push('${id}:' + what);
 ${'elevated' in spec ? `export const elevated = ${spec.elevated};` : ''}
+${spec.approval ? 'export const approval = true;' : ''}
 export const summary = 'test ${id}';
 ${spec.after ? `export const after = ${JSON.stringify(spec.after)};` : ''}
 export async function plan(ctx) {
@@ -206,6 +207,124 @@ describe('elevation', () => {
   });
 });
 
+describe('approval (operator-owned config: the node says yes or no)', () => {
+  const specs = () => ({ '0001-code': { elevated: false }, '0002-policy': { elevated: false, approval: true }, '0003-after': { elevated: false, after: ['0002-policy'] }, '0004-free': { elevated: false } });
+
+  it('a pending approval migration is reported PENDING APPROVAL with its summary and both commands; it is not applied, not recorded, and exit is 3', async () => {
+    const t = setup(specs());
+    const { exitCode, results } = await t.run();
+    expect(exitCode).toBe(3);
+    expect(results.map((r) => [r.id, r.outcome])).toEqual([['0001-code', 'applied'], ['0002-policy', 'pending-approval'], ['0003-after', 'blocked'], ['0004-free', 'applied']]);
+    expect(globalThis.__mig.calls.some((c) => c.startsWith('0002-policy:apply'))).toBe(false);
+    expect(Object.keys(t.ledger())).toEqual(['0001-code', '0004-free']);
+    const out = t.output();
+    expect(out).toMatch(/0002-policy {2}PENDING APPROVAL - test 0002-policy/);
+    expect(out).toMatch(/approve: .*--approve 0002/);
+    expect(out).toMatch(/decline: .*--decline 0002/);
+    expect(out).toMatch(/PENDING APPROVAL \(or BLOCKED behind one\)/);
+  });
+
+  it('one that lists it in `after` is blocked, and that is exit 3 as well', async () => {
+    const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-needs-it': { elevated: false, after: ['0001-policy'] } });
+    const { exitCode } = await t.run();
+    expect(exitCode).toBe(3);
+    expect(globalThis.__mig.calls.some((c) => c.startsWith('0002-needs-it'))).toBe(false);
+  });
+
+  it('pending elevation outranks pending approval: exit 2 when both are left, in either order', async () => {
+    const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-admin': { elevated: true } });
+    expect((await t.run()).exitCode).toBe(2);
+    const u = setup({ '0001-admin': { elevated: true }, '0002-policy': { elevated: false, approval: true } });
+    expect((await u.run()).exitCode).toBe(2);
+  });
+
+  it('an approval migration that is already satisfied is recorded as ever: nothing to approve', async () => {
+    const t = setup({ '0001-policy': { elevated: false, approval: true, satisfied: true } });
+    const { exitCode } = await t.run();
+    expect(exitCode).toBe(0);
+    expect(t.ledger()['0001-policy'].outcome).toBe('already-satisfied');
+  });
+
+  it('--approve applies it through the normal path (plan, apply, re-plan) and records it; the one that waited on it then runs', async () => {
+    const t = setup(specs());
+    await t.run();
+    globalThis.__mig.calls.length = 0;
+    const { exitCode, results } = await t.run({ approve: ['0002'] });
+    expect(exitCode).toBe(0);
+    expect(results.find((r) => r.id === '0002-policy').outcome).toBe('applied');
+    expect(results.find((r) => r.id === '0003-after').outcome).toBe('applied');
+    expect(globalThis.__mig.calls.filter((c) => c.startsWith('0002-policy'))).toEqual(['0002-policy:plan', '0002-policy:apply', '0002-policy:plan']);
+    expect(t.ledger()['0002-policy']).toEqual({ outcome: 'applied', at: '2026-09-16T10:00:00.000Z', by: 'operator' });
+  });
+
+  it('--approve in the very first run applies it in chain order; the whole name works as well as the number', async () => {
+    const t = setup(specs());
+    const { exitCode } = await t.run({ approve: ['0002-policy'] });
+    expect(exitCode).toBe(0);
+    expect(globalThis.__mig.calls.filter((c) => c.endsWith(':apply'))).toEqual(['0001-code:apply', '0002-policy:apply', '0003-after:apply', '0004-free:apply']);
+  });
+
+  it('--decline records `declined` with a time and "by operator", runs nothing of it, and it is never proposed again', async () => {
+    const t = setup(specs());
+    const { exitCode, results } = await t.run({ decline: ['0002'] });
+    expect(exitCode).toBe(0);
+    expect(results.find((r) => r.id === '0002-policy').outcome).toBe('declined');
+    expect(t.ledger()['0002-policy']).toEqual({ outcome: 'declined', at: '2026-09-16T10:00:00.000Z', by: 'operator' });
+    expect(globalThis.__mig.calls.some((c) => c.startsWith('0002-policy'))).toBe(false);
+    // the one that waited on it is not stuck: the ledger has an entry
+    expect(results.find((r) => r.id === '0003-after').outcome).toBe('applied');
+    globalThis.__mig.calls.length = 0;
+    t.lines.length = 0;
+    const again = await t.run();
+    expect(again.exitCode).toBe(0);
+    expect(globalThis.__mig.calls).toEqual([]);
+    expect(t.output()).toMatch(/0002-policy {2}done \(declined by operator,/);
+    expect(t.output()).not.toMatch(/PENDING APPROVAL - test/);
+  });
+
+  it('--decline takes several ids at once; on a dry run it records nothing', async () => {
+    const t = setup({ '0001-a': { elevated: false, approval: true }, '0002-b': { elevated: false, approval: true } });
+    const dry = await t.run({ decline: ['0001', '0002'], dryRun: true });
+    expect(dry.results.map((r) => r.outcome)).toEqual(['would-decline', 'would-decline']);
+    expect(t.ledger()).toBe(null);
+    await t.run({ decline: ['0001', '0002'] });
+    expect(Object.values(t.ledger()).map((e) => e.outcome)).toEqual(['declined', 'declined']);
+  });
+
+  it('refuses an unknown id: exit 1, nothing runs, nothing is recorded', async () => {
+    const t = setup(specs());
+    for (const opts of [{ approve: ['0099'] }, { decline: ['0099'] }]) {
+      const { exitCode } = await t.run(opts);
+      expect(exitCode).toBe(1);
+    }
+    expect(t.output()).toMatch(/--decline 0099: no such migration/);
+    expect(globalThis.__mig.calls.some((c) => c.endsWith(':apply'))).toBe(false);
+    expect(t.ledger()).toBe(null);
+  });
+
+  it('refuses --decline of a code-shape migration: the code depends on it', async () => {
+    const t = setup(specs());
+    const { exitCode } = await t.run({ decline: ['0001'] });
+    expect(exitCode).toBe(1);
+    expect(t.output()).toMatch(/0001-code is not an approval migration - it is a code-shape fix tied to the code.* cannot be declined/);
+    expect(globalThis.__mig.calls.some((c) => c.endsWith(':apply'))).toBe(false);
+    expect(t.ledger()).toBe(null);
+  });
+
+  it('refuses --approve of a non-approval migration, an id already recorded, and one id given to both flags', async () => {
+    const t = setup(specs());
+    expect((await t.run({ approve: ['0001'] })).exitCode).toBe(1);
+    await t.run({ decline: ['0002'] });
+    const again = await t.run({ approve: ['0002'] });
+    expect(again.exitCode).toBe(1);
+    expect(t.output()).toMatch(/0002-policy is already recorded \(declined,/);
+    expect(t.output()).toMatch(/--approve 0001: 0001-code is not an approval migration/);
+    const u = setup(specs());
+    expect((await u.run({ approve: ['0002'], decline: ['0002'] })).exitCode).toBe(1);
+    expect(u.output()).toMatch(/given to both --approve and --decline/);
+  });
+});
+
 describe('the shipped migrations directory', () => {
   it('holds only well-formed, uniquely numbered files, each declaring elevation', async () => {
     const list = listMigrations(join(import.meta.dirname, '..', 'migrations'));
@@ -214,6 +333,15 @@ describe('the shipped migrations directory', () => {
       const mod = await import(pathToFileURL(m.file).href);
       expect(typeof mod.elevated, `${m.id} must declare elevation`).toBe('boolean');
       expect(typeof mod.plan).toBe('function');
+    }
+  });
+
+  // operator 2026-11-21: 0025 / 0028 / 0029 would rewrite an independent node's real config on its
+  // first upgrade; the node must say yes (or decline them, as EDW does).
+  it('0025, 0028 and 0029 declare approval', async () => {
+    for (const n of ['0025', '0028', '0029']) {
+      const m = listMigrations(join(import.meta.dirname, '..', 'migrations')).find((x) => x.id.startsWith(n));
+      expect((await import(pathToFileURL(m.file).href)).approval, n).toBe(true);
     }
   });
 });

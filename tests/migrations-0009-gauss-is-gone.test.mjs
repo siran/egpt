@@ -216,7 +216,7 @@ describe('0009 through the runner', () => {
 
   it('kg: 0009 applies, is recorded, removes only the gauss lines and the identity file, and leaves a backup of each', async () => {
     const h = home({ config: KG, identity: IDENTITY, conversations: CONVERSATIONS });
-    const { exitCode } = await runMigrations({ through: '0009', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0009', approve: ['0009'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('applied');
@@ -228,7 +228,7 @@ describe('0009 through the runner', () => {
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO });
-    const { exitCode } = await runMigrations({ through: '0009', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0009', approve: ['0009'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0009-gauss-is-gone'].outcome).toBe('already-satisfied');

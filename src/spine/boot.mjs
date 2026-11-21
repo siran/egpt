@@ -58,7 +58,7 @@ import {
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
 import { createFloodBan } from '../flood-ban.mjs';
 import { createSendGuard, loopGuardConfig, inboundOverrideOf, legacyEntryCount } from '../loop-guard.mjs';
-import { CLEAN_EXIT_CODE, UPGRADE_EXIT_CODE, UPGRADE_FULL_EXIT_CODE, respawnsOf } from '../daemon-runtime.mjs';
+import { CLEAN_EXIT_CODE, UPGRADE_EXIT_CODE, UPGRADE_FULL_EXIT_CODE, respawnsOf, runMigrationsChild } from '../daemon-runtime.mjs';
 
 import { createIdentity, surfaceOf, SHELL_SURFACE } from './identity.mjs';
 import { echoRank } from './echo-priority.mjs';
@@ -3518,6 +3518,7 @@ export async function boot({
     getConfig,
     seedOf: strangerSeedOf,                           // a new chat's public_commands, before its entry exists
     beeperUpdate,                                     // /update beeper
+    migrate: (args) => runMigrationsChild({ egptHome: EGPT_HOME, args, log: (m) => log.line?.(`[migrate] ${m}`) }),   // /migrate: the runner, through the daemon's own child helper
     floodBan,                                         // /unban + /bans — the SAME in-memory instance the bridges observe into
     background,                                       // the operator's bare /agents lists it
     send: commandTranscript.send,

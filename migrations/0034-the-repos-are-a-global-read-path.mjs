@@ -28,6 +28,8 @@ import * as YAML from 'yaml';
 import { spliceYamlInsertKey } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the operator\'s repositories are a global read path: config.yaml lists `global_read_paths: - repos: C:/Users/user/src/siran` where that folder exists';
 
 const ID = '0034';
