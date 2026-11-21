@@ -83,6 +83,8 @@ import * as YAML from 'yaml';
 import { spliceYamlInsertKey } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'a room that carries every chat invited into it compacts at half the window, not the node ratio — so its one thread is trimmed before the overflow backstop resets it';
 
 const ID = '0022';

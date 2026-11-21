@@ -608,7 +608,7 @@ describe('0024 through the runner', () => {
 
   it('kg: applied and recorded, two files changed and a backup beside each', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0024', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0024', approve: ['0024'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_AFTER);
@@ -624,7 +624,7 @@ describe('0024 through the runner', () => {
   it('a node without that folder converges too, recorded as already-satisfied with nothing written', async () => {
     const h = home();
     const { exitCode } = await runMigrations({
-      through: '0024', dir, egptHome: h, elevated: false, platform: 'win32', log: () => {},
+      through: '0024', approve: ['0024'], dir, egptHome: h, elevated: false, platform: 'win32', log: () => {},
       ctx: { ...ctx, isDirectory: () => false },
     });
     expect(exitCode).toBe(0);
@@ -636,7 +636,7 @@ describe('0024 through the runner', () => {
 
   it('a node with no rooms.yaml converges too - a refusal here would stop every later migration', async () => {
     const h = home({ rooms: null });
-    const { exitCode } = await runMigrations({ through: '0024', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0024', approve: ['0024'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledgerOf(h)[ID].outcome).toBe('already-satisfied');
     expect(existsSync(roomsPath(h))).toBe(false);
@@ -644,7 +644,7 @@ describe('0024 through the runner', () => {
 
   it('EVERY earlier migration reads satisfied on these fixtures - one that acted would invalidate them', async () => {
     for (const h of [home(), home({ rooms: DO_ROOMS }), home({ rooms: null }), appliedHome()]) {
-      await runMigrations({ through: '0024', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+      await runMigrations({ through: '0024', approve: ['0024'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
       const earlier = Object.entries(ledgerOf(h)).filter(([id]) => id < '0024');
       expect(earlier.length).toBeGreaterThanOrEqual(23);
       expect(earlier.filter(([, e]) => e.outcome !== 'already-satisfied')).toEqual([]);

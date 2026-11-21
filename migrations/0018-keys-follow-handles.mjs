@@ -71,6 +71,8 @@ import { spliceYamlKey, spliceYamlScalar } from '../src/tools/config-io.mjs';
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'a being\'s key follows its handle: the beings answering to `don`, `den` and `dren` take those keys, and every block, row and folder keyed by the old one moves with its thread';
 
 // THE MAP: handle → the key that being takes. Explicit and closed, never derived from a being's

@@ -256,7 +256,7 @@ describe('0011 through the runner', () => {
 
   it('kg: applied and recorded, only the E+ lines added, a backup left beside the config', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0011', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0011', approve: ['0011'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG_WITH);
@@ -265,7 +265,7 @@ describe('0011 through the runner', () => {
 
   it('do: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO, configuration: false });
-    const { exitCode } = await runMigrations({ through: '0011', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0011', approve: ['0011'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(JSON.parse(readFileSync(join(h, 'state', 'migrations-applied.json'), 'utf8'))['0011-eplus-is-e-on-opus'].outcome).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);

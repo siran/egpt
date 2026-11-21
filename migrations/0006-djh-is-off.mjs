@@ -24,6 +24,8 @@ import * as YAML from 'yaml';
 import { spliceYamlScalar } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'djh (djhaiku) is off until dj pi replaces it';
 
 const AGENT = 'djh';

@@ -9,9 +9,13 @@
 //   node setup/migrate.mjs                      # run what is pending on ~/.egpt (or EGPT_HOME)
 //   node setup/migrate.mjs --dry-run            # print what each pending migration would change; change nothing
 //   node setup/migrate.mjs --egpt-home <dir>
+//   node setup/migrate.mjs --approve <id[,id]>  # apply those PENDING APPROVAL migrations now
+//   node setup/migrate.mjs --decline <id[,id]>  # record them as declined: never run, never proposed again
+//   (an <id> is the number, 0025, or the whole name; the ledger is never hand-edited)
 //
 // Exit: 0 = nothing left pending; 1 = a migration FAILED or refused (the chain stopped there);
-//       2 = what is left is PENDING ELEVATION (or BLOCKED behind such a migration).
+//       2 = what is left is PENDING ELEVATION (or BLOCKED behind such a migration);
+//       3 = what is left is only PENDING APPROVAL (or BLOCKED behind one). When both are left: 2.
 //       A dry run exits 0 unless a plan refuses.
 //
 // THE RULES, each one decided with the operator:
@@ -21,8 +25,14 @@
 //     <EGPT_HOME>/state/migrations-applied.json. Moving applied files around in the repo was
 //     rejected - it dirties the checkout upgrade.ps1 pulls, and two nodes would each want to
 //     move the same file somewhere different.
-//   - It runs at DEPLOY (setup/upgrade.ps1), never at boot: boot is what the watchdog retries in
-//     a loop, so a broken migration there becomes a crash loop.
+//   - It runs at UPGRADE, on EVERY node (operator 2026-11-20: "all nodes, not only peer, should run
+//     migrations"): the daemon's runUpgrade (src/daemon-runtime.mjs) runs it after the pull and
+//     npm install and before the respawn, which is the one path /upgrade, /upgrade full, auto and
+//     auto-full all end in, containers included. setup/upgrade.ps1 runs it again on the Windows
+//     nodes: harmless, everything is idempotent, and it is what reports a failure to the deployer.
+//     Never at boot: boot is what the watchdog retries in a loop, so a broken migration there
+//     becomes a crash loop. A FAILED one does not hold the new code back (the deploy landed, the
+//     chain stopped); the daemon says so loudly on the back-up line.
 //   - Every migration is idempotent. Its plan() looks at the node first and reports "already
 //     satisfied" rather than acting, so a lost ledger is survivable - and after apply() the
 //     runner asks plan() again and records nothing unless the node now IS satisfied.
@@ -30,6 +40,19 @@
 //   - A migration DECLARES whether it needs elevation. Unelevated, a pending elevated migration
 //     is reported loudly as PENDING with the exact command to run, is not recorded, and does
 //     not block the migrations after it - unless one of them lists it in `after`.
+//   - A migration DECLARES whether it needs the node's APPROVAL (operator 2026-11-21: "migrations
+//     have to be approved by nodes, though they're mostly tied to changes in code"). `approval = true`
+//     is for a migration that changes OPERATOR-OWNED config or node policy (which beings exist, their
+//     model, mode and access, grants, ratios); a code-shape fix tied to the code (a renamed key, a
+//     card text, a task description) never declares it. A pending approval migration is handled
+//     like a pending elevated one: reported as PENDING APPROVAL with its summary and the two
+//     commands, not applied, not recorded, not blocking what follows unless listed in `after`.
+//     --approve applies it through the normal plan/apply/re-plan/record path; --decline records it
+//     as `declined` (with the time, by operator) without running it, and it is never proposed again.
+//     A migration that is already satisfied is recorded as ever: there is nothing to approve.
+//     A CODE-SHAPE migration cannot be declined (the code depends on it), and ids are checked
+//     against the migrations that exist: an unknown id, a non-approval one, or one already
+//     recorded is refused, and nothing runs.
 //
 // THE LEDGER is one JSON file, not one marker per migration: a single `cat` shows the node's
 // whole history in order, and the kg and do ledgers diff against each other directly, which is
@@ -40,6 +63,7 @@
 //
 // A MIGRATION MODULE exports:
 //   elevated: boolean                  - required; does apply() need administrator rights?
+//   approval?: boolean                 - true = changes operator-owned config/policy; needs --approve
 //   summary:  string                   - one line
 //   after?:   string[]                 - ids that must be recorded before this one may act
 //   plan(ctx) -> { satisfied: true, notes?: string[] }
@@ -142,12 +166,43 @@ function elevatedCommand(egptHome) {
   ];
 }
 
+// --approve / --decline ids -> the migration ids they name (a number, 0025, or the whole name).
+// Refuses what cannot be acted on, so a typo never reaches the ledger: an id no migration has, one
+// that is not an approval migration (a code-shape migration runs by itself and the code depends on
+// it, so it cannot be declined), and one the ledger already records.
+async function resolveApprovalIds(migrations, ledger, wanted, verb) {
+  const out = new Set();
+  for (const want of wanted) {
+    const hit = migrations.find(({ id }) => id === want || id.slice(0, 4) === want);
+    if (!hit) throw new Error(`--${verb} ${want}: no such migration`);
+    const mod = await import(pathToFileURL(hit.file).href);
+    if (mod.approval !== true) {
+      throw new Error(`--${verb} ${want}: ${hit.id} is not an approval migration - it is a code-shape fix tied to the code, which runs by itself and cannot be ${verb}d`);
+    }
+    if (ledger[hit.id]) throw new Error(`--${verb} ${want}: ${hit.id} is already recorded (${ledger[hit.id].outcome}, ${ledger[hit.id].at})`);
+    out.add(hit.id);
+  }
+  return out;
+}
+
+// The two ways to settle a PENDING APPROVAL, for its report.
+function approvalCommands(egptHome, id) {
+  const runner = join(HERE, 'migrate.mjs');
+  const n = id.slice(0, 4);
+  return [
+    `approve:  "${process.execPath}" "${runner}" --egpt-home "${egptHome}" --approve ${n}`,
+    `decline:  "${process.execPath}" "${runner}" --egpt-home "${egptHome}" --decline ${n}`,
+  ];
+}
+
 export async function runMigrations({
   dir = MIGRATIONS_DIR,
   egptHome,
   repo = REPO_ROOT,
   dryRun = false,
   elevated,
+  approve = [],
+  decline = [],
   platform = process.platform,
   log = (line) => console.log(line),
   now = () => new Date(),
@@ -161,6 +216,8 @@ export async function runMigrations({
   const results = [];
   const say = (line = '') => log(line);
   let exitCode = 0;
+  // 1 (failed) outranks 2 (elevation) outranks 3 (approval); the chain breaks at a failure.
+  const raise = (code) => { if (exitCode === 0 || (exitCode === 3 && code === 2)) exitCode = code; };
 
   say(`migrations: ${dir}`);
   say(`  profile  ${egptHome}`);
@@ -169,19 +226,26 @@ export async function runMigrations({
 
   let ledger;
   let migrations;
+  let approveIds;
+  let declineIds;
   try {
     ledger = readLedger(egptHome);
     migrations = listMigrations(dir);
     if (through) migrations = migrations.filter(({ id }) => id.slice(0, 4) <= String(through).slice(0, 4));
+    approveIds = await resolveApprovalIds(migrations, ledger, approve, 'approve');
+    declineIds = await resolveApprovalIds(migrations, ledger, decline, 'decline');
+    const both = [...approveIds].filter((id) => declineIds.has(id));
+    if (both.length) throw new Error(`${both.join(', ')} given to both --approve and --decline`);
   } catch (e) {
     say(`FAILED before any migration ran: ${e.message}`);
     return { results, exitCode: 1 };
   }
 
   const recordedNow = new Set();
+  const pendingApproval = new Set();
   for (const { id, file } of migrations) {
     if (ledger[id]) {
-      say(`  ${id}  done (${ledger[id].outcome}, ${ledger[id].at})`);
+      say(`  ${id}  done (${ledger[id].outcome}${ledger[id].by ? ` by ${ledger[id].by}` : ''}, ${ledger[id].at})`);
       results.push({ id, outcome: 'in-ledger' });
       continue;
     }
@@ -194,6 +258,16 @@ export async function runMigrations({
       exitCode = 1;
     };
 
+    if (declineIds.has(id)) {
+      if (!dryRun) {
+        recordInLedger(egptHome, id, { outcome: 'declined', at: now().toISOString(), by: 'operator' });
+        recordedNow.add(id);
+      }
+      say(`  ${id}  DECLINED by the operator - ${dryRun ? 'would be recorded' : 'recorded'}, it will not be proposed again`);
+      results.push({ id, outcome: dryRun ? 'would-decline' : 'declined' });
+      continue;
+    }
+
     let mod;
     try { mod = await import(pathToFileURL(file).href); } catch (e) { fail(`cannot load ${file}: ${e.message}`); break; }
     if (typeof mod.elevated !== 'boolean' || typeof mod.plan !== 'function') {
@@ -205,7 +279,7 @@ export async function runMigrations({
     if (missing.length) {
       say(`  ${id}  BLOCKED - waits for ${missing.join(', ')}; not recorded`);
       results.push({ id, outcome: 'blocked', waitingFor: missing });
-      if (exitCode === 0) exitCode = 2;
+      raise(missing.some((dep) => pendingApproval.has(dep)) ? 3 : 2);
       continue;
     }
 
@@ -245,12 +319,26 @@ export async function runMigrations({
     }
 
     say('');
-    say(`  ${id}  PENDING - ${mod.summary ?? ''}${mod.elevated ? '  [needs elevation]' : ''}`);
+    const awaitingApproval = mod.approval === true && !approveIds.has(id);
+    say(`  ${id}  PENDING${awaitingApproval ? ' APPROVAL' : ''} - ${mod.summary ?? ''}${mod.elevated ? '  [needs elevation]' : ''}`);
     for (const c of plan.changes) say(`      ${c}`);
 
     if (dryRun) {
       say(`      (dry run: not applied)`);
       results.push({ id, outcome: 'would-apply', changes: plan.changes });
+      continue;
+    }
+
+    if (awaitingApproval) {
+      say('');
+      say(`  ******************************************************************************`);
+      say(`  ${id} changes OPERATOR-OWNED config or policy and needs this node's APPROVAL. It was`);
+      say(`  NOT applied and is not recorded. The migrations after it still run.`);
+      for (const ln of approvalCommands(egptHome, id)) say(`    ${ln}`);
+      say(`  ******************************************************************************`);
+      results.push({ id, outcome: 'pending-approval', changes: plan.changes });
+      pendingApproval.add(id);
+      raise(3);
       continue;
     }
 
@@ -262,7 +350,7 @@ export async function runMigrations({
       for (const ln of elevatedCommand(egptHome)) say(`    ${ln}`);
       say(`  ******************************************************************************`);
       results.push({ id, outcome: 'pending-elevation', changes: plan.changes });
-      if (exitCode === 0) exitCode = 2;
+      raise(2);
       continue;
     }
 
@@ -272,7 +360,7 @@ export async function runMigrations({
       if (after?.satisfied !== true) throw new Error('apply() finished but plan() still reports changes pending - not recording it');
     } catch (e) { fail(e.message); break; }
 
-    recordInLedger(egptHome, id, { outcome: 'applied', at: now().toISOString() });
+    recordInLedger(egptHome, id, { outcome: 'applied', at: now().toISOString(), ...(approveIds.has(id) && { by: 'operator' }) });
     recordedNow.add(id);
     say(`  ${id}  APPLIED - recorded`);
     results.push({ id, outcome: 'applied', changes: plan.changes });
@@ -281,17 +369,23 @@ export async function runMigrations({
   say('');
   if (exitCode === 1) say('migrations: FAILED - see above. Nothing after the failure ran.');
   else if (exitCode === 2) say('migrations: NOT CONVERGED - a migration is PENDING ELEVATION (or BLOCKED behind one), see above.');
+  else if (exitCode === 3) say('migrations: NOT CONVERGED - a migration is PENDING APPROVAL (or BLOCKED behind one), see above.');
   else say(`migrations: ${dryRun ? 'dry run complete' : 'node is current'}`);
   return { results, exitCode };
 }
 
 function parseArgs(argv) {
-  const out = { dryRun: false, egptHome: process.env.EGPT_HOME || join(homedir(), '.egpt') };
+  const out = { dryRun: false, approve: [], decline: [], egptHome: process.env.EGPT_HOME || join(homedir(), '.egpt') };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run' || a === '-WhatIf' || a === '--whatif') out.dryRun = true;
     else if (a === '--egpt-home') out.egptHome = argv[++i];
-    else throw new Error(`unknown argument: ${a}  (usage: migrate.mjs [--dry-run] [--egpt-home <dir>])`);
+    else if (a === '--approve' || a === '--decline') {
+      const ids = String(argv[++i] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (!ids.length) throw new Error(`${a} needs a migration id (0025, or 0025,0028)`);
+      out[a.slice(2)].push(...ids);
+    }
+    else throw new Error(`unknown argument: ${a}  (usage: migrate.mjs [--dry-run] [--egpt-home <dir>] [--approve <id[,id]>] [--decline <id[,id]>])`);
   }
   if (!out.egptHome) throw new Error('--egpt-home needs a directory');
   return out;

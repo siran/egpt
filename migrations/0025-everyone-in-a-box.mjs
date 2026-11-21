@@ -161,6 +161,8 @@ import { spliceYamlInsertKey, spliceYamlRemoveKey, spliceYamlScalar } from '../s
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'every being is in the OS box unless it says otherwise: the blanket ~/src grant goes, an undeclared being states `access_level: sandbox`, the one tier with nothing holding it is switched off (keeping its tier), and a being NOT switched off has its level and the stale `sandboxed:` line beside it corrected together';
 
 const ID = '0025';

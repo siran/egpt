@@ -104,6 +104,8 @@ import * as YAML from 'yaml';
 import { spliceYamlInsertKey } from '../src/tools/config-io.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the room that translates hands its finished files out: this node approves ONE folder by name in `outbox_targets:`, and the room\'s per-being block names only that key';
 
 const ID = '0024';

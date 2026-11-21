@@ -166,7 +166,7 @@ describe('0028 — beings are kept thin', () => {
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0028');
     writeFileSync(join(egptHome, 'state', 'migrations-applied.json'),
       JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-09-24T00:00:00Z' }]))));
-    const { exitCode } = await runMigrations({ through: '0028', egptHome, elevated: false, platform: 'win32', ctx: { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set(), findChrome: () => null, isDirectory: () => false }, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0028', approve: ['0028'], egptHome, elevated: false, platform: 'win32', ctx: { ps: () => JSON.stringify({ map: [], services: [], from: { exists: false }, to: { exists: false } }), localAddresses: new Set(), findChrome: () => null, isDirectory: () => false }, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(egptHome, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0028-beings-are-kept-thin'].outcome).toBe('applied');

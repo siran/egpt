@@ -151,6 +151,11 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                restarts Beeper (eGPT stays up),
                                                one result line in log_to_group;
                                                else the one-line Beeper state
+/<handle> migrate [approve|decline <id[,id]>]  operator only: the node's yes or no
+                                               to the migrations that change your
+                                               config; bare lists pending,
+                                               approved, declined (see
+                                               "Migrations that ask" below)
 /<handle> browser [<profile> [new]] [keep]     this chat's browser, opened on its
                                                own screen (its profile: the one
                                                it was put on, else shared; a
@@ -390,6 +395,30 @@ command, S's own line never runs it, and a being's run counts in
 adds nobody, so only an owner's quote of its post does; the command reads neither. Its block:
 config-schema `agents` (THE SUPERINTENDENT); personality
 `config/agents/identities/super.md`.
+
+### Migrations that ask — `/<handle> migrate`
+
+Every upgrade runs the node's pending migrations (`setup/migrate.mjs`). Most are
+tied to the code (a renamed key, a card text) and just run. A migration that
+changes YOUR choices (which beings exist, their model, mode or access, grants,
+compaction ratios, the admin channel) declares `approval = true` and does not run
+until you say so. After an upgrade, the back-up message carries one line per
+such migration: its summary and the two commands. Nothing is recorded until you
+answer.
+
+```
+/<handle> migrate                       pending approval, approved, declined, and what runs next upgrade
+/<handle> migrate approve 0025          apply it now (and anything else pending that is not waiting for you)
+/<handle> migrate decline 0025,0028     it does not apply to this node: recorded as declined, never proposed again
+```
+
+Operator only. The same on a shell: `node setup/migrate.mjs --approve 0025` /
+`--decline 0025,0028,0029` (exit 3 = only approvals are left; 2 = elevation is
+left too). The ledger (`state/migrations-applied.json`) is never hand-edited.
+Only migrations that ask can be declined; a code-shape one cannot, because the code
+depends on it. An unknown id or one already recorded is refused and nothing runs.
+An independent node that keeps its own config (EDW) declines the three that
+rewrite it: `/edu migrate decline 0025,0028,0029`.
 
 ### `/<handle> browser refresh [group] [url]` — sign in yourself
 

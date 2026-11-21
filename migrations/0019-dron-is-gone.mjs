@@ -54,6 +54,8 @@ import { spliceYamlRemoveKey } from '../src/tools/config-io.mjs';
 import { wakeTokens } from '../src/spine/router.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the being that answers to `dron` is gone: its block in config.yaml, its per-chat records and the identity it wore';
 
 const ID = '0019';

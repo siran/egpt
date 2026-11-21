@@ -76,7 +76,7 @@ describe('0029 — the admin channel is declared', () => {
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0029');
     writeFileSync(join(egptHome, 'state', 'migrations-applied.json'),
       JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-09-24T00:00:00Z' }]))));
-    const { exitCode } = await runMigrations({ through: '0029', egptHome, elevated: false, platform: 'win32', log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0029', approve: ['0029'], egptHome, elevated: false, platform: 'win32', log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(egptHome, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0029-the-admin-channel-is-declared'].outcome).toBe('applied');

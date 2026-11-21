@@ -564,7 +564,7 @@ describe('0018 through the runner', () => {
 
   it('do: applied and recorded, every file moved and backed up, the folder renamed', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0018', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0018', approve: ['0018'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO_AFTER);
@@ -579,7 +579,7 @@ describe('0018 through the runner', () => {
 
   it('kg: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: KG, conversations: KG_CONV, rooms: null, agents: KG_AGENTS, room: null });
-    const { exitCode } = await runMigrations({ through: '0018', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0018', approve: ['0018'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(KG);

@@ -223,7 +223,7 @@ describe('0015 through the runner', () => {
 
   it('kg: applied and recorded, the block at the root, a backup beside config.yaml', async () => {
     const h = home();
-    const { exitCode } = await runMigrations({ through: '0015', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0015', approve: ['0015'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('applied');
     // 0014 rewrites wren.yaml on this fixture, so config.yaml is asserted on the grant itself.
@@ -234,7 +234,7 @@ describe('0015 through the runner', () => {
 
   it('a node with no src/: recorded as already satisfied, nothing touched, no backup', async () => {
     const h = home({ config: DO, src: false });
-    const { exitCode } = await runMigrations({ through: '0015', dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0015', approve: ['0015'], dir, egptHome: h, elevated: false, platform: 'win32', ctx, log: () => {} });
     expect(exitCode).toBe(0);
     expect(ledger(h)).toBe('already-satisfied');
     expect(readFileSync(cfgPath(h), 'utf8')).toBe(DO);

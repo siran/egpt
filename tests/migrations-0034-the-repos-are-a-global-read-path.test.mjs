@@ -111,7 +111,7 @@ describe('0034 — the repos are a global read path', () => {
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0034');
     writeFileSync(join(egptHome, 'state', 'migrations-applied.json'),
       JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-09-28T00:00:00Z' }]))));
-    const { exitCode } = await runMigrations({ through: '0034', egptHome, elevated: false, platform: 'win32', ctx: { isDirectory: (p) => p === SIRAN }, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0034', approve: ['0034'], egptHome, elevated: false, platform: 'win32', ctx: { isDirectory: (p) => p === SIRAN }, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(egptHome, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0034-the-repos-are-a-global-read-path'].outcome).toBe('applied');
@@ -124,7 +124,7 @@ describe('0034 — the repos are a global read path', () => {
     const earlier = listMigrations(MIGRATIONS_DIR).filter(({ id }) => id < '0034');
     writeFileSync(join(egptHome, 'state', 'migrations-applied.json'),
       JSON.stringify(Object.fromEntries(earlier.map(({ id }) => [id, { outcome: 'applied', at: '2026-09-28T00:00:00Z' }]))));
-    const { exitCode } = await runMigrations({ through: '0034', egptHome, elevated: false, platform: 'win32', ctx: { isDirectory: () => false }, log: () => {} });
+    const { exitCode } = await runMigrations({ through: '0034', approve: ['0034'], egptHome, elevated: false, platform: 'win32', ctx: { isDirectory: () => false }, log: () => {} });
     expect(exitCode).toBe(0);
     const ledger = JSON.parse(readFileSync(join(egptHome, 'state', 'migrations-applied.json'), 'utf8'));
     expect(ledger['0034-the-repos-are-a-global-read-path'].outcome).toBe('already-satisfied');

@@ -114,6 +114,8 @@ import { wakeTokens } from '../src/spine/router.mjs';
 import { allowedUsersPermits } from '../src/conversations-state.mjs';
 
 export const elevated = false;
+// Operator-owned config or node policy, not a code-shape fix: the node approves it (setup/migrate.mjs --approve|--decline).
+export const approval = true;
 export const summary = 'the mouth may drive this node\'s meta engineer: its matrix id (EGPT_MOUTH_ID) joins the allowed_users of the `access_level: all` being pinned node-wide with `scope:`';
 
 const ID = '0021';
