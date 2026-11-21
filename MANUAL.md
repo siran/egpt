@@ -559,7 +559,7 @@ limbs:
     chatboxes: [ contoso_marketer, contoso_soporte ]   # each one a top-level block below
 
 contoso_marketer:
-  url: contoso                 # the id in the URL (/chat/contoso/widget.js) and the chat ids (http:contoso-<sid>)
+  client_name: contoso         # optional, default the block's name; the id in the URL (/chat/contoso/widget.js) and the chat ids (http:contoso-<sid>)
   being: asesor
   seed: seeds/contoso
   title: "🐶 Agente Contoso SI"
@@ -569,7 +569,7 @@ contoso_marketer:
   label: Marketer — website
 
 contoso_soporte:
-  url: democlient
+  client_name: democlient
   being: soporte
   identity: required
 ```
@@ -579,7 +579,9 @@ the limb's own strings (`ended`, the team topic's line on an end; `earlier`, its
 recap's head) are written beside them. A `strings:` map in the block still works;
 a key written beside it wins. `identity` is the mode (`off`, `optional`,
 `required`); its text (the 401's message) goes in `strings: { identity: "…" }`.
-`url` defaults to the block's name. Keep the `url` of a chatbox that is already
+`client_name` defaults to the block's name, so it is normally omitted (`support:` serves
+`/chat/support/`). `url` is its old name and is still read (boot logs a rename hint; if both
+are set, `client_name` wins). Keep the client of a chatbox that is already
 live: its widget's address, its chat ids and its conversation folders all use it.
 
 **The UI is a plugin, not core.** The bubble and the panel, their texts, the
@@ -643,7 +645,7 @@ ignored. What a place looks like (its css, the signed user's strip) is the
 skin's, in `skin.yaml`.
 
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
-name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
+name the same client, the block wins and boot logs it. A name in `chatboxes` with
 no block is logged and skipped. A change to a block takes a `/restart`, as any
 change under `limbs` does.
 
