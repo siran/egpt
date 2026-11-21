@@ -3596,7 +3596,14 @@ export async function boot({
       // 'secondary' is said through the one placement (sayOnce): the mouth in its OWN room for the chat
       // (the stored mouth_chat, else routeLocally), else the connection holding it; not said → the
       // primary. Never found by title. `canary`: a side group's opener names the group (persona-wrap).
-      postReply:     async (chatId, text, replyToMessageID, { via = null, unsigned = false, canary = null } = {}) => {
+      // `being` (/msg): said AS that being — its stamp and signature layers, recorded in the chat's transcript — through
+      // heartbeatSay, the placement a being's own post takes (the connection holding the chat, or the mouth).
+      postReply:     async (chatId, text, replyToMessageID, { via = null, unsigned = false, canary = null, being = null, surface = null } = {}) => {
+        if (being) {
+          const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
+          try { await heartbeatSay({ being, ns: chatId, ev: await services.identity.spineEvent(surface, chatId), text, tag, recordAs: being, what: 'msg' }); return true; }
+          catch (e) { log.line?.(`[command] /msg: not delivered to ${chatId} — ${e?.message ?? e}`); return false; }
+        }
         const opts = { replyTo: replyToMessageID, skipSignature: unsigned, canary };
         if (via === 'secondary' && await sayOnce({ chatId, text, opts, what: '/send' })) return true;
         return postBridgeFor(via === 'secondary' ? 'primary' : via).send(chatId, text, opts);

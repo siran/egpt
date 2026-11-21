@@ -82,6 +82,14 @@ chat itself. `/send` in a topic copies to General; `/end` closes the topic.
 Turning Topics on makes a basic group a supergroup with a new id; the
 conversation (folder, threads, settings, a `closed_chats` rule) follows it.
 
+`/<handle> msg <chat> <text>` (operator only) posts `<text>` into another chat of
+this node, stamped as that being, and answers `sent to <chat>`. `<chat>` is the
+first word, or a "quoted name"; it matches names, slugs and `Group/topic`, ignoring
+case and accents, and sends only when exactly one chat matches (otherwise the
+matches are listed). The text is the rest of the message, line breaks kept. Only
+chats where the being already answers are allowed; chatbox visitors never are.
+`msg: false` in config.yaml turns it off.
+
 ```text
 /<handle> status                               compact node health (fenced yaml):
                                                git sha + subject, pid, uptime,
@@ -178,6 +186,10 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                below)
 /<handle> super <message>                      a turn of this chat's superintendent
                                                S, answered here (see below)
+/<handle> msg <chat> <text>                    post <text> as this being into
+                                               another chat it answers in
+                                               (operator; see the paragraph
+                                               under /split; msg: false = off)
 /<handle> side <prompt>                        ONE turn of the chat's being, in the
                                                chat's own thread, answered in the
                                                chat's SI+ side group (made as
