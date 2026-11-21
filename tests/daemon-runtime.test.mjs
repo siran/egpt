@@ -403,6 +403,113 @@ describe('daemon runtime fake-world harness', () => {
     });
   });
 
+  // EVERY node runs its pending migrations when it upgrades (operator 2026-11-20: "all nodes, not
+  // only peer, should run migrations"). /upgrade, /upgrade full and the auto ones all end in
+  // runUpgrade, so the runner (setup/migrate.mjs, as a child: the NEW code on disk) runs there,
+  // after the pull + npm install and before the respawn. A failed migration still respawns the new
+  // code (what setup/upgrade.ps1 does: "the deploy landed, the migration chain stopped") and says so
+  // loudly on the back-up line; the return value is the seam for the later upgrade monitor.
+  describe('/upgrade runs the pending migrations', () => {
+    const SPINE_SIDECAR = { chatId: 'tg:-1000000000104/3', kind: '/upgrade', preSha: 'oldsha', pid: 7 };
+    const ELEV = 'from an ADMINISTRATOR shell:  "C:\\node.exe" "C:\\repo\\egpt\\setup\\migrate.mjs" --egpt-home "C:\\home\\.egpt"';
+    const upgradeMigrating = async ({ shas = ['oldsha', 'newsha'], pull = { status: 0 }, npm = 0, migrate = { status: 0, out: '' } }) => {
+      const writes = [];
+      const order = [];
+      let childrenAtMigrate = null;
+      let h;
+      const base = makeSpawnSync({ shas });
+      const spawnSync = (cmd, args = [], opts = {}) => {
+        if (/migrate\.mjs$/.test(String(args[0] ?? ''))) {
+          order.push('migrate');
+          childrenAtMigrate = h.children.length;
+          base.calls.push({ cmd, args, opts });
+          return { status: migrate.status, stdout: Buffer.from(migrate.out), stderr: Buffer.from('') };
+        }
+        if (cmd === 'npm install') { order.push('npm'); return { status: npm }; }
+        if (cmd === 'git' && args[0] === 'pull') { order.push('pull'); return { stdout: Buffer.from(''), stderr: Buffer.from(''), ...pull }; }
+        if (cmd === 'git' && args[0] === 'rev-list') return { status: 0, stdout: Buffer.from('3\n') };
+        return base(cmd, args, opts);
+      };
+      h = makeRuntime({
+        spawnSync,
+        readFileSync: (p) => { if (String(p).includes('restart-announce.json')) return JSON.stringify(SPINE_SIDECAR); const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+        writeFileSync: (p, body) => writes.push({ p: String(p), body: String(body) }),
+      });
+      h.runtime.spawnShell();
+      await h.children[0].child.handlers.exit(UPGRADE_EXIT_CODE, null);
+      return {
+        order, childrenAtMigrate, respawned: h.children.length === 2,
+        calls: base.calls.filter((c) => /migrate\.mjs$/.test(String(c.args[0] ?? ''))),
+        sidecars: writes.filter((w) => w.p.includes('restart-announce.json')).map((w) => JSON.parse(w.body)),
+      };
+    };
+
+    it('runs after the pull and npm install, before the respawn, on this profile', async () => {
+      const r = await upgradeMigrating({});
+      expect(r.order).toEqual(['pull', 'npm', 'migrate']);
+      expect(r.childrenAtMigrate).toBe(1);   // the new spine is not up yet
+      expect(r.respawned).toBe(true);
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].args.slice(1)).toEqual(['--egpt-home', 'C:/home/.egpt']);
+      expect(String(r.calls[0].args[0]).replaceAll('\\', '/')).toBe('C:/repo/egpt/setup/migrate.mjs');
+    });
+
+    it('also when the pull brought nothing: a checkout pulled earlier may still have pending ones', async () => {
+      const r = await upgradeMigrating({ shas: ['oldsha'] });
+      expect(r.order).toEqual(['pull', 'migrate']);
+      expect(r.respawned).toBe(true);
+    });
+
+    it('nothing pending (exit 0): silent, the outcome line is what it was', async () => {
+      const r = await upgradeMigrating({});
+      expect(r.sidecars).toEqual([{ ...SPINE_SIDECAR, outcome: 'pulled 3 commits, npm install ok' }]);
+    });
+
+    it('exit 2 (pending elevation): says so once with the exact command, and still respawns', async () => {
+      const out = ['  0054  PENDING - a thing  [needs elevation]', '      change', `    ${ELEV}`, '    or from this one:  Start-Process ...'].join('\n');
+      const r = await upgradeMigrating({ migrate: { status: 2, out } });
+      expect(r.respawned).toBe(true);
+      expect(r.sidecars).toHaveLength(1);
+      expect(r.sidecars[0].outcome).toBe('pulled 3 commits, npm install ok, migrations pending elevation');
+      expect(r.sidecars[0].note).toContain('0054');
+      expect(r.sidecars[0].note).toContain(ELEV.replace('from an ADMINISTRATOR shell:  ', ''));
+      expect(r.sidecars[0].note.split('\n')).toHaveLength(1);
+    });
+
+    it('exit 1 (failed): names the migration and the reason, still respawns the new code', async () => {
+      const out = ['  0053  done (applied, x)', '', '  0054  FAILED - the chain stops here, nothing after it runs, and it is not recorded', '      config.yaml has no networks block', '', 'migrations: FAILED - see above.'].join('\n');
+      const r = await upgradeMigrating({ migrate: { status: 1, out } });
+      expect(r.respawned).toBe(true);
+      expect(r.sidecars[0].outcome).toBe('pulled 3 commits, npm install ok, migration 0054 FAILED');
+      expect(r.sidecars[0].note).toContain('0054');
+      expect(r.sidecars[0].note).toContain('config.yaml has no networks block');
+      expect(r.sidecars[0].note).toMatch(/new code is running/);
+    });
+
+    it('exit 1 with no parsable id (runner died): still loud', async () => {
+      const r = await upgradeMigrating({ migrate: { status: 1, out: 'FAILED before any migration ran: ledger does not parse' } });
+      expect(r.sidecars[0].note).toContain('ledger does not parse');
+    });
+
+    it('a pull that failed runs nothing: the code did not change', async () => {
+      const r = await upgradeMigrating({ shas: ['oldsha'], pull: { status: 128, stderr: Buffer.from('fatal\n') } });
+      expect(r.order).toEqual(['pull']);
+    });
+
+    it('an npm install that failed runs nothing: the migrations may need the new deps, and it says so', async () => {
+      const r = await upgradeMigrating({ npm: 1 });
+      expect(r.order).toEqual(['pull', 'npm']);
+      expect(r.sidecars[0].outcome).toBe('pulled 3 commits, npm install exited 1, migrations skipped');
+    });
+
+    it('runUpgrade returns the seam: what the migrations did', async () => {
+      const { runtime, children } = makeRuntime({
+        spawnSync: (cmd, args = []) => /migrate\.mjs$/.test(String(args[0] ?? '')) ? { status: 1, stdout: Buffer.from('  0054  FAILED - x\n      boom\n') } : makeSpawnSync({ shas: ['a', 'b'] })(cmd, args),
+      });
+      expect(await runtime.runUpgrade()).toMatchObject({ pulled: true, migrations: { exitCode: 1, failedId: '0054' } });
+    });
+  });
+
   // === restart-announce sidecar — the daemon writes a fallback marker for the two exit
   // paths where the dying spine never got a chance to write its own (announceAndExit's
   // graceful path is untouched/out of scope): a genuine crash, and a wedge-kill. Same

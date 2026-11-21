@@ -472,14 +472,47 @@ export function createDaemonRuntime(opts = {}) {
   // you didn't show updates"): the outcome joins the sidecar the going-down spine wrote, and boot.mjs's
   // read-back says it after the shas ("— /upgrade: already up to date"). No sidecar (the spine could
   // not write one): the daemon log is all there is. The ladder's own note overwrites it (force).
-  function addOutcome(outcome) {
-    try { writeFileSync(restartAnnouncePath, JSON.stringify({ ...JSON.parse(readFileSync(restartAnnouncePath, 'utf8')), outcome })); }
+  // `note` is the ⚠️ paragraph under it (boot.mjs: sc.note, to the admin chat AND log_to_group): the loud half of a
+  // migration that needs the operator.
+  function addOutcome(outcome, note = null) {
+    try { writeFileSync(restartAnnouncePath, JSON.stringify({ ...JSON.parse(readFileSync(restartAnnouncePath, 'utf8')), outcome, ...(note && { note }) })); }
     catch { /* best-effort */ }
   }
   function appendOutcome(more) {
     let was = '';
     try { was = JSON.parse(readFileSync(restartAnnouncePath, 'utf8')).outcome ?? ''; } catch { /* no sidecar */ }
     addOutcome(was ? `${was}, ${more}` : more);
+  }
+
+  // EVERY node runs its pending migrations when it upgrades (operator 2026-11-20: "all nodes, not
+  // only peer, should run migrations"). setup/migrate.mjs is the one runner, run here as a CHILD so
+  // it is the code just pulled that runs, once the pull and npm install are done and BEFORE the
+  // respawn; never at boot (a broken migration there would be a crash loop). Its exit code is the
+  // contract (0 current, 1 failed/refused, 2 pending elevation) and its stdout names the rest.
+  function runPendingMigrations() {
+    const runner = join(root, 'setup', 'migrate.mjs');
+    log(`running pending migrations (${runner})`);
+    const r = spawnSync(processObj.execPath ?? process.execPath, [runner, '--egpt-home', egptHome], { cwd: root, stdio: 'pipe', env: { ...processObj.env, EGPT_HOME: egptHome } });
+    const out = (r.stdout?.toString() ?? '') + (r.error ? `\n${r.error.message}` : '');
+    const lines = out.split('\n');
+    for (const ln of lines) if (ln.trim()) log(`  migrate: ${ln.trimEnd()}`);
+    const exitCode = r.status ?? 1;
+    const res = { exitCode };
+    if (exitCode === 2) {
+      res.pendingIds = lines.map((l) => /^\s+(\d{4})\s+PENDING.*\[needs elevation\]/.exec(l)?.[1]).filter(Boolean);
+      res.command = /from an ADMINISTRATOR shell:\s+(.+)$/m.exec(out)?.[1]?.trim() ?? null;
+    } else if (exitCode !== 0) {
+      const i = lines.findIndex((l) => /^\s+\d{4}\s+FAILED/.test(l));
+      if (i >= 0) {
+        res.failedId = /(\d{4})/.exec(lines[i])[1];
+        const why = [];
+        for (let j = i + 1; j < lines.length && lines[j].trim(); j++) why.push(lines[j].trim());
+        res.reason = why.join(' ');
+      } else {
+        res.reason = lines.map((l) => l.trim()).filter(Boolean).slice(-3).join(' ') || `the runner exited ${r.status}`;
+      }
+    }
+    return res;
   }
 
   async function runUpgrade() {
@@ -490,10 +523,11 @@ export function createDaemonRuntime(opts = {}) {
       const why = gitWhy(pull).replace(/^: /, '') || `exit ${pull.status}`;
       log(`git pull failed (${why}); continuing with current code`);
       addOutcome(`git pull failed (${why}), still on ${before}`);
-      return false;
+      return { pulled: false, migrations: null };
     }
     const after = gitVersion(root);
     let outcome;
+    let npmOk = true;
     if (after.sha !== before) {
       log(`pulled ${before} -> ${after.sha} — running npm install`);
       const n = Number(gitOut(git(['rev-list', '--count', `${before}..${after.sha}`])));
@@ -501,15 +535,33 @@ export function createDaemonRuntime(opts = {}) {
       if (r.status !== 0) {
         log(`npm install exited ${r.status}${r.error ? `: ${r.error.message}` : ''}; continuing with current deps`);
       }
-      outcome = `pulled ${n} commit${n === 1 ? '' : 's'}, npm install ${r.status === 0 ? 'ok' : `exited ${r.status}`}`;
+      npmOk = r.status === 0;
+      outcome = `pulled ${n} commit${n === 1 ? '' : 's'}, npm install ${npmOk ? 'ok' : `exited ${r.status}`}`;
     } else {
       log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
       outcome = 'already up to date';
     }
     if (!(await buildExtension(root))) outcome += ', build:ext failed';
-    addOutcome(outcome);
+    // Silent when nothing is pending. Pending elevation continues; a FAILED one still respawns the new
+    // code (setup/upgrade.ps1's rule: the deploy landed, the chain stopped) and says so loudly. The
+    // returned `migrations` is the seam for the upgrade monitor / rollback.
+    let migrations = null;
+    let note = null;
+    if (!npmOk) outcome += ', migrations skipped';
+    else {
+      migrations = runPendingMigrations();
+      if (migrations.exitCode === 2) {
+        const ids = migrations.pendingIds;
+        outcome += ', migrations pending elevation';
+        note = `migration${ids.length === 1 ? '' : 's'} ${ids.join(', ')} need${ids.length === 1 ? 's' : ''} elevation and did not run; from an administrator shell: ${migrations.command ?? `node setup/migrate.mjs --egpt-home ${egptHome}`}`;
+      } else if (migrations.exitCode !== 0) {
+        outcome += migrations.failedId ? `, migration ${migrations.failedId} FAILED` : ', migrations FAILED';
+        note = `MIGRATION FAILED${migrations.failedId ? ` ${migrations.failedId}` : ''}: ${migrations.reason} — the new code is running, the node is NOT migrated and the chain stopped there; fix it and run: node setup/migrate.mjs --egpt-home ${egptHome}`;
+      }
+    }
+    addOutcome(outcome, note);
     log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
-    return true;
+    return { pulled: true, migrations };
   }
 
   // The ref comes from the sidecar when the SPINE asked for the rewind (/rewind <ref> →
