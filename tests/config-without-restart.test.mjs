@@ -54,7 +54,7 @@ describe('config-swap — restart-only keys', () => {
   });
 
   it('a top-level chatbox block named by limbs.http.chatboxes binds at boot: restart-only, named by its key; an unrelated top-level block is hot', () => {
-    const boxes = { ...base, limbs: { http: { port: 8095, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { url: 'contoso', being: 'ed', intro: 'Hola' }, notes: { a: 1 } };
+    const boxes = { ...base, limbs: { http: { port: 8095, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { client_name: 'contoso', being: 'ed', intro: 'Hola' }, notes: { a: 1 } };
     expect(restartKeysChanged(boxes, { ...boxes, contoso_marketer: { ...boxes.contoso_marketer, intro: '¡Hola, soy Edu!' } })).toEqual(['contoso_marketer']);
     expect(restartKeysChanged(boxes, { ...boxes, notes: { a: 2 } })).toEqual([]);
     // a block added by its name, or removed with it: the list (under limbs) and the block

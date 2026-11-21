@@ -90,7 +90,7 @@ limbs:
   #   chatboxes: [ mysite ]         # each one a top-level block below (mysite:); the older clients: { mysite: {...} } map still works
 
 # mysite:                           # a chatbox named in limbs.http.chatboxes: its keys and its UI strings, flat
-#   # url: mysite                   # its id: /chat/mysite/widget.js, chat ids http:mysite-<sid>; default the block's name
+#   # client_name: mysite           # its id: /chat/mysite/widget.js, chat ids http:mysite-<sid>; default the block's name (url: the old name, still read)
 #   being: e                        # the agent that answers; any visitor wakes it in its own session
 #   # seed: desks/mysite            # copied once into each new session's folder (relative: under EGPT_HOME)
 #   # card_claims: [cuentas]          # signed claims also kept on the card (desktop/user.json), refreshed when they change

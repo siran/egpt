@@ -140,7 +140,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo Contoso
       node_name: 'EDW', user_name: 'John',
       conversation_defaults: { allowed_users: ['owner-1'] },
       ...(block
-        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { url: 'contoso', being: 'ed', title: 'Contoso', ...client } }
+        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { client_name: 'contoso', being: 'ed', title: 'Contoso', ...client } }
         : { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { contoso: { being: 'ed', title: 'Contoso', ...client } } } } }),
       agents: AGENTS,
     }),

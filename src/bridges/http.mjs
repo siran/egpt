@@ -210,7 +210,7 @@ function clientConfig(name, c = {}, home = null) {
 // limbs.http.clients and limbs.http.chatboxes, what boot serves and reads. limbs.http.chatboxes names
 // top-level blocks, one chatbox each: a clients entry's keys, the limb's strings (HTTP_STRINGS) flat beside
 // them, beating a `strings:` map there (`identity` is the mode; its text stays in strings:). Its client,
-// in the URL and the chat ids, is its `url`, default its name. A block beats a clients entry of the
+// in the URL and the chat ids, is its `client_name`, default its name (`url` is the old name, still read). A block beats a clients entry of the
 // same client; a name with no block (a map) is skipped. Both logged. A chatbox with no `ui:` of its own
 // takes limbs.http.ui.
 const FLAT_STRINGS = Object.keys(HTTP_STRINGS).filter((k) => k !== 'identity');
@@ -222,9 +222,10 @@ export function chatboxesOf(cfg, log = () => {}) {
   const out = {}, blockOf = {};
   for (const name of chatboxNames(cfg)) {
     if (!isMap(cfg[name])) { log(`limbs.http.chatboxes names ${name}, but there is no ${name}: block — skipped`); continue; }
-    const { url, strings, ...keys } = cfg[name];
-    const client = url == null ? name : String(url);
-    if (blockOf[client]) { log(`the ${name}: block's url '${client}' is the ${blockOf[client]}: block's too — skipped`); continue; }
+    const { client_name, url, strings, ...keys } = cfg[name];
+    if (client_name == null && url != null) log(`the ${name}: block's url is now client_name — rename it`);
+    const client = String(client_name ?? url ?? name);
+    if (blockOf[client]) { log(`the ${name}: block's client_name '${client}' is the ${blockOf[client]}: block's too — skipped`); continue; }
     blockOf[client] = name;
     const own = {}, flat = {};
     for (const [k, v] of Object.entries(keys)) (FLAT_STRINGS.includes(k) ? flat : own)[k] = v;

@@ -373,7 +373,7 @@ describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured 
   // The shape of a node's config: no clients:, the chatbox's keys flat in its block.
   const blocks = (more = {}) => (cfg) => {
     cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['contoso_marketer'] };
-    cfg.contoso_marketer = { url: 'contoso', being: 'ed', title: 'Agente Contoso', intro: '¡Hola, soy Edu!', ...more };
+    cfg.contoso_marketer = { client_name: 'contoso', being: 'ed', title: 'Agente Contoso', intro: '¡Hola, soy Edu!', ...more };
   };
   const info = (url) => fetch(`${url}info`).then((r) => r.json());
   const slugOf = (turn) => turn.cwd.split(/[\\/]/).at(-1);
@@ -428,7 +428,7 @@ describe('limbs.http.chatboxes: each chatbox named under limbs.http, configured 
   it('clients: still serves beside them; the same url in both: the block wins, logged; a name with no block, or not a map, is logged and skipped', async () => {
     const { app, url, port, post, messages, lines } = await bootChatbox({ edit: (cfg) => {
       cfg.limbs.http = { port: cfg.limbs.http.port, chatboxes: ['ghost', 'contoso_marketer', 'flat'], clients: { contoso: { being: 'egpt', title: 'Viejo' }, acme: { being: 'ed', title: 'Acme' } } };
-      cfg.contoso_marketer = { url: 'contoso', being: 'ed', title: 'Agente Contoso' };
+      cfg.contoso_marketer = { client_name: 'contoso', being: 'ed', title: 'Agente Contoso' };
       cfg.flat = 'not a block';
     } });
     expect((await info(url)).title).toBe('Agente Contoso');

@@ -900,7 +900,7 @@ export const CONFIG_SCHEMA = {
                                 port: 8095
                                 chatboxes: [ contoso_marketer, contoso_soporte ]
                             contoso_marketer:
-                              url: contoso
+                              client_name: contoso
                               being: asesor
                               seed: seeds/contoso
                               title: "🐶 Agente Contoso SI"
@@ -909,16 +909,16 @@ export const CONFIG_SCHEMA = {
                               team_group: -1000000000102
                               label: Marketer — website
                             contoso_soporte:
-                              url: democlient
+                              client_name: democlient
                               being: soporte
                               identity: required
                               allowed_origins: [ … ]
                           A block holds a <client>'s keys (below), the limb's strings written
                           flat beside them (ended, earlier); a strings: map there still
                           works, a flat key beats it. identity is the mode: its text goes in
-                          strings:. url: the <client>, in the URL (/chat/contoso/widget.js),
+                          strings:. client_name: the <client>, in the URL (/chat/contoso/widget.js),
                           the chat ids (http:contoso-<sid>), the folders and the key file;
-                          default the block's name. A name with no block (a map): logged and
+                          default the block's name (url: its old name, still read). A name with no block (a map): logged and
                           skipped. A block and a clients entry with the same <client>: the
                           block wins (logged). The blocks are restart-only, as limbs is.
                           /ayde lists the blocks in this order, then clients'.
