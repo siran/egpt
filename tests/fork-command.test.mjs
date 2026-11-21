@@ -152,7 +152,7 @@ function harness({ config, state, rooms = new Map(), rodzUserId = RODZ_USER_ID, 
     // first, the opener the second), so each side's exact-shape toEqual assertions stay minimal.
     // What the primary posts reaches Rodz's account too, in Rodz's own room, carrying the canary.
     postReply: async (chatId, text, replyToMessageID, opts = {}) => {
-      calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null, ...(opts.unsigned !== undefined ? { unsigned: opts.unsigned } : {}), ...(opts.canary != null ? { canary: opts.canary } : {}) });
+      calls.post.push({ chatId, text, replyToMessageID, via: opts.via ?? null, ...(opts.unsigned !== undefined ? { unsigned: opts.unsigned } : {}), ...(opts.canary != null ? { canary: opts.canary } : {}), ...(opts.being ? { being: opts.being } : {}) });
       if (throwOnPost) throw new Error('beeper down');
       if (opts.via === 'primary' && copyArrives) {
         const copy = { chatID: secRoomOf(chatId), text: `${text}${encodeChatCanary(opts.canary ?? '')}` };
@@ -600,6 +600,7 @@ describe('/send — relays the replied-to message back to the original (alias OR
     expect(calls.post[0].chatId).toBe(C_CHAT);
     expect(calls.post[0].via).toBe('primary');
     expect(calls.post[0].text).toBe('la respuesta elegida');
+    expect(calls.post[0]).toEqual({ chatId: C_CHAT, text: 'la respuesta elegida', replyToMessageID: null, via: 'primary', unsigned: true });   // regression lock: /send is the shared delivery, no being
     expect(calls.archive).toHaveLength(0);
     expect(aliasTargetOf(getState(), 'whatsapp', JOIN_CHAT)).toBe(getContact(getState(), 'whatsapp', C_CHAT).jid);
   });
