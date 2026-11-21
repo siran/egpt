@@ -703,11 +703,13 @@ line. Chat ids and folder names are in the tooltip. Nobody below root can list
 prefix, as a Telegram group's name names its folder (cut at 255 characters, and
 renamed with its thread kept when a claim changes). With
 `chat_title: "{abrin}-{user_type}-{username}-{short_name}"` the folder is
-`conversations/http/abc-P-jdoe-Jane Doe/`. A title is unique,
-as a primary key is: a chat whose title is already another chat's folder is
-refused (the line fails with a 500 and the spine logs why), and a claim change
-that would land on another chat's folder keeps the current folder. Name a unique
-claim in the template (e.g. `{username}`).
+`conversations/http/abc-P-jdoe-Jane Doe/`. Two chats that render the same title
+never share a folder: the second takes the tail of its chat id (`abc-3f9a1c`).
+With `unique_title: true` (default false) that chat is refused instead: its line
+gets a 409 `{"error":"title_taken"}`, nothing is saved, and the spine logs the
+holder; a claim change onto a taken title keeps the current folder. Matching
+ignores case. Set it only when the template names a unique claim (e.g.
+`{username}`): two visitors who share a name would lock the second one out.
 The chat id stays `http:<client>-<key>`. An unsigned visitor keeps
 `<client>-<key>`; a conversation made before this is renamed when its signed
 visitor next writes.

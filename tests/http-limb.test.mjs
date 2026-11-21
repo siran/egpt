@@ -197,6 +197,23 @@ describe('sessions', () => {
     expect(HTTP_STRINGS.earlier).toBe('(conversación iniciada antes: {n} mensajes)');
   });
 
+  it('a beforeLine that throws {refused} fails the line with 409 title_taken (no holder in the body), delivers nothing, and keeps the session out of the saved state', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'egpt-http-state-'));
+    try {
+      const { post, got, lines, b } = await limb(undefined, { stateDir, beforeLine: async () => { throw Object.assign(new Error('chat_title "x" is already http:acme-9 folder'), { refused: true }); } });
+      const r = await post({ text: 'hola' });
+      expect(r.status).toBe(409);
+      const body = await r.json();
+      expect(body).toEqual({ error: 'title_taken', message: 'this name is already in use here' });
+      expect(JSON.stringify(body)).not.toContain('http:');
+      expect(got).toEqual([]);
+      expect(lines.some((l) => l.includes('is already http:acme-9'))).toBe(true);
+      await new Promise((r2) => setTimeout(r2, 100));
+      expect(JSON.parse(await readFile(join(stateDir, 'http-sessions.json'), 'utf8'))).toEqual({});
+      b.stop();
+    } finally { await rm(stateDir, { recursive: true, force: true }); }
+  });
+
   it('a failing beforeLine is logged and the line still enters', async () => {
     const { post, got, lines } = await limb(undefined, { beforeLine: () => { throw new Error('seed folder missing'); } });
     expect((await post({ text: 'hola' })).status).toBe(200);

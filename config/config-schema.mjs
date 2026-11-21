@@ -1001,9 +1001,17 @@ export const CONFIG_SCHEMA = {
                               "{abrin} · {short_name} · {username}". Recorded as "title" in the
                               conversation's desktop/user.json when it starts; unsigned: none ("Visitor").
                               It also NAMES the signed visitor's folder, with no client prefix (cut at 255;
-                              renamed, thread kept, when a claim changes; it must be unique: a title that is
-                              another chat's folder refuses that visitor, and a rename onto one is kept off): "{abrin}-{user_type}-{username}-{short_name}" -> http/abc-P-jdoe-Jane Doe.
+                              renamed, thread kept, when a claim changes; a repeat title takes the chat id's
+                              tail, unless unique_title): "{abrin}-{user_type}-{username}-{short_name}" -> http/abc-P-jdoe-Jane Doe.
                               Unsigned: <client>-<key>. The chat id is unchanged
+            unique_title      true | false (default false). false: a chat_title another chat's folder
+                              already has takes the tail of the chat id (abc-3f9a1c). true: that chat is
+                              refused instead: its line gets 409 {error: "title_taken", message} (the
+                              spine log names the holder), nothing is saved, and a claim change onto a
+                              taken title keeps the current folder. Case-insensitive (Juan = juan). A
+                              returning visitor is never refused (the chat id comes from the identity key).
+                              Only sensible when chat_title names a unique claim, e.g. {username}: two
+                              visitors who share a name would lock the second out for good
             chat_subtitle     the same for the line under the title, default "{user_type}"
             identity          off (default) | optional | required: the host page's
                               signed user (below). required: a call without one is

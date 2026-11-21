@@ -16,7 +16,7 @@ import { shortChatId } from '../bridges/chat-id.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-export function createContacts({ loadState, writeState, io = {}, onLog = () => {} } = {}) {
+export function createContacts({ loadState, writeState, io = {}, onLog = () => {}, uniqueTitleOf = () => false } = {}) {
   if (typeof loadState !== 'function' || typeof writeState !== 'function') {
     throw new Error('createContacts: loadState + writeState are required');
   }
@@ -32,7 +32,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
   // id), else, when ensureContact asks, the holder's stats first_seen, which survives a restart.
   const firstSeen = new Map();
   const statsFirstSeen = io.statsFirstSeen ?? ((surface, id, name) => chatFirstSeen(surface, id, { name, io }));
-  const ctxOf = (surface, chatName, seed) => ({ pushedName: chatName, slugHint: chatName, seed, firstSeenOf: (id) => firstSeen.get(`${surface}\0${id}`) });
+  const ctxOf = (surface, chatName, seed, chatId) => ({ pushedName: chatName, slugHint: chatName, seed, uniqueTitle: uniqueTitleOf(surface, chatId), firstSeenOf: (id) => firstSeen.get(`${surface}\0${id}`) });
 
   /**
    * Resolve (and self-heal) the slug for a chat. ALWAYS calls ensureContact —
@@ -43,13 +43,13 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
    * `seed` is what a BRAND-NEW entry is created with (ensureContact ignores it otherwise).
    * @returns {Promise<string|null>} the slug, or null when unresolvable (caller treats null as skip)
    */
-  // A chatbox title another chat already holds is refused, not suffixed (the template must name a unique claim).
+  // A unique_title chatbox's title another chat already holds is refused, not suffixed (the template must name a unique claim).
   const refusal = (ens) => onLog(`chatbox: chat_title "${ens.refused.title}" is already ${ens.refused.holder}'s folder — the template must name a unique claim (e.g. {username}); ${ens.slug ? 'this chat keeps its folder' : 'this visitor is refused'}`);
   async function resolve(surface, chatId, { chatName, seed } = {}) {
       // A known chat with nothing to change is a READ: answered without the node-wide lock.
       if (chatId) {
         try {
-          const seen = ensureContact(await loadState(), surface, current(surface, chatId), ctxOf(surface, chatName, seed));
+          const seen = ensureContact(await loadState(), surface, current(surface, chatId), ctxOf(surface, chatName, seed, chatId));
           if (!seen.changed) { if (seen.refused) refusal(seen); return seen.slug ?? null; }
         } catch { /* the locked path below reports it */ }
       }
@@ -61,11 +61,11 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         if (!chatId) return null;
         chatId = current(surface, chatId);   // again under the lock: a move may have landed meanwhile
         const state = await loadState();
-        let ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed));
+        let ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed, chatId));
         if (ens.needsFirstSeen) {
           const holder = ens.needsFirstSeen;
           const ms = await statsFirstSeen(surface, holder, getContact(state, surface, holder)?.entry?.pushedName);
-          if (ms != null) { firstSeen.set(`${surface}\0${holder}`, ms); ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed)); }
+          if (ms != null) { firstSeen.set(`${surface}\0${holder}`, ms); ens = ensureContact(state, surface, chatId, ctxOf(surface, chatName, seed, chatId)); }
         }
 
         // Rename: the chat's TITLE changed (a group renamed, or a placeholder

@@ -512,7 +512,7 @@ export async function startHttpBridge({
     if (opens && !idn.identity) return refuse(c, res, { status: 401, error: 'identity required' }, cors);
     const who = whoOf(c, idn.identity);
     const key = typeof body?.id === 'string' && ID_RE.test(body.id) ? `${c.name} ${body.id}` : null;
-    if (key && posted.has(key)) return json(res, 200, await posted.get(key).reply, cors);
+    if (key && posted.has(key)) return answer(res, posted.get(key).reply, cors);
     const n = now();
     const budget = lined && c.identityTurns && who ? `${c.name} ${who}` : null;
     const spent = budget ? spentOf(budget, n) : [];
@@ -563,7 +563,12 @@ export async function startHttpBridge({
       }
       catch (e) {
         log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`);
-        if (e?.refused) throw e;   // a chat the spine cannot place: the line fails (500), not carried on
+        if (e?.refused) {   // a chat the spine cannot place (unique_title: its chat_title is another chat's): the line fails (409), not carried on, and leaves nothing
+          if (hit.started) forget(sid);
+          if (budget && !quiet) turns.set(budget, spent);
+          persist();
+          throw e;
+        }
       }
       if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
       log(`incoming [${name}] the visitor opened the chatbox`);
@@ -577,7 +582,13 @@ export async function startHttpBridge({
       return { session: token };
     })();
     if (key) { posted.set(key, { at: n, reply }); reply.catch(() => posted.delete(key)); }
-    return json(res, 200, await reply, cors);
+    return answer(res, reply, cors);
+  }
+
+  // A line's answer: a refused one (beforeLine's {refused}) is a 409 the widget can show, no holder named (the log has it).
+  async function answer(res, reply, cors) {
+    try { return json(res, 200, await reply, cors); }
+    catch (e) { if (e?.refused) return json(res, 409, { error: 'title_taken', message: 'this name is already in use here' }, cors); throw e; }
   }
 
   // The visitor's "end conversation": the same session, token and conversation; onEnd gives it a

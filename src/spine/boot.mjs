@@ -1419,7 +1419,9 @@ export async function boot({
   // The ONE shared contact-resolver: every service that needs a chat's slug goes
   // through here, so the pushedName refresh + rename self-heal (move the slug dir
   // old→new + write renames.log) run for KNOWN chats too, not just new ones.
-  const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`) });
+  const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`),
+    // a chatbox's unique_title (its config block): a chat_title another chat holds refuses a new chat instead of suffixing it
+    uniqueTitleOf: (surface, chatId) => surface === 'http' && chatboxesOf(getConfig())[httpClientOf(chatId)]?.unique_title === true });
 
   // The ONE conversation-room resolver (bug fix 2026-07-23): contacts.resolve (the shared,
   // self-healing slug lookup) → the conversation's Room. BOTH the phase-4 relay's resolveMembers
