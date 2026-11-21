@@ -137,8 +137,9 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                then respawn; `full` also ends the
                                                daemon (its Chromes and sessions)
                                                for its supervisor to respawn it:
-                                               the container does, a Windows
-                                               service is not assumed to
+                                               the container and the Session 1
+                                               task do, the Session 0 service
+                                               is not assumed to
                                                (the node also notices new commits
                                                itself and, by default, runs this
                                                `full` form at a quiet moment when
@@ -514,7 +515,7 @@ default; commented blocks are optional overrides.
 | `turn_timeout_ms` | Opt-in per-turn timeout (ms): a turn running longer fails and its session is evicted. 0/absent = no limit (default). |
 | `auto_update` | Keeping eGPT itself current. `egpt:` `auto-full` (default), `auto`, `manual` or `none`: at boot and every 6 h the node fetches its checkout's upstream and, with new commits, posts ONE line per upstream sha to `log_to_group` (`⬆ nu · eGPT 3 new commits on main (b14257d3 → 1a2b3c4d): … — send /n upgrade full`). `auto-full` is `auto`, unless necessary: at the next quiet moment (turns in flight finish first, a Beeper update under way finishes first) it runs plain `/upgrade`, and `/upgrade full` only when a file the daemon loads changed (its import graph from `egpt-daemon.mjs`, the `setup/` scripts it names, `package*.json`); where nothing respawns the daemon it runs plain `/upgrade` and posts that `/upgrade full` is still needed by hand. `auto` always runs plain `/upgrade` (spine only, the daemon and its Chromes stay). Both: once per upstream sha, so a pull that leaves the checkout behind never loops the node; `manual` only notices; `none` does nothing (the off switch). A checkout ahead of its upstream (diverged), without one, or on a detached HEAD never upgrades by itself. `ask_on_boot:` `true` (default) or `false`: when eGPT commits and/or a Beeper update are pending at boot, one line after `✅ egpt back up!` says what and the command for each (`⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?`); under `auto-full` / `auto` it says they apply at the next quiet moment instead. Beeper's own method stays in `limbs.beeper.auto_update.<os>.method`. Read at each look: an edit needs no restart. |
 | `log_to_group` / `admin_channel` | Two chats of the node's own (a name, short room id or `tg:<chat>[/<topic>]`; README quickstart C). `log_to_group` (eGPT Logs): one metadata-only line per command, the lifecycle lines, and the log-type notices: compaction and a public being's error (operator An, 2026-11-20: "please put eGPT Logs in its channel, so eGPT Admin stays clean"). `admin_channel` (eGPT Admin): `/browser`'s CONTROL link, the captcha notice and a `silent:` heartbeat's output; also the log-type notices while `log_to_group` is unset. |
-| `compaction` | After a quiet `cooling_ms`, if the warm session grew past `ratio` of the context window, native-`/compact` it in place (transcript.md keeps the full record). A compact that SUCCEEDS then arms the identity re-feed, exactly as `/agents refresh` does, so the being gets its identity back on its next turn — `/compact` rewrites the context, and the kickoff feed can be summarised out of it. A compact that fails arms nothing. The pre-compaction warning and the "compacted" notice go to `log_to_group` (eGPT Logs), or to `admin_channel` when that is unset (see the row above). |
+| `compaction` | After a quiet `cooling` (a duration like `3h`, default 2m; legacy `cooling_ms` still read), if the warm session grew past `ratio` of the context window (a share `0.2`/`"20%"` or tokens `"400k"`; the same for `critical_ratio` and `warn_gap`; haiku, sonnet and opus are 1M), optionally warning `alert_before` ahead of it (`compaction_alert_notice`; unset = no alert, none when `alert_before` >= `cooling`). Every key works at three tiers: the node block, `agents.<being>.conversation_defaults.compaction`, a conversation's own `compaction:`. Native-`/compact` it in place, native-`/compact` it in place (transcript.md keeps the full record). A compact that SUCCEEDS then arms the identity re-feed, exactly as `/agents refresh` does, so the being gets its identity back on its next turn — `/compact` rewrites the context, and the kickoff feed can be summarised out of it. A compact that fails arms nothing. The pre-compaction warning and the "compacted" notice go to `log_to_group` (eGPT Logs), or to `admin_channel` when that is unset (see the row above). |
 | `heartbeats` | Declarative timers — see §3. |
 | `transcription_service` | Voice-note transcription — see §4. |
 
@@ -543,6 +544,7 @@ with a link (a Telegram topic) answers `/split` with its link.
 | `split.opener` | `{group}` the original chat's name, `{handle}` the handle the command was typed to | `Fork of {group}` → `Fork of Familia` |
 | `send.origin_template` | `{group}` the side group's name | `↪ from {group}: ` → `↪ from SI+Familia-viaje: ` |
 | `compaction.handoff_prompt`, `compaction.welcome` | `{agent}` the being's handle, `{YYMMDD-HHMM}` the local time of the warning | `handoffs/{agent}.{YYMMDD-HHMM}.md` → `handoffs/e.261021-2030.md` |
+| `compaction_alert_notice` | `{agent}` the being's handle, `{chat}` the conversation's name, `{in}` time left, `{percent}` how full | `compaction in {in}` → `compaction in 10m` |
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
 | `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
 
@@ -559,7 +561,7 @@ limbs:
     chatboxes: [ contoso_marketer, contoso_soporte ]   # each one a top-level block below
 
 contoso_marketer:
-  url: contoso                 # the id in the URL (/chat/contoso/widget.js) and the chat ids (http:contoso-<sid>)
+  client_name: contoso         # optional, default the block's name; the id in the URL (/chat/contoso/widget.js) and the chat ids (http:contoso-<sid>)
   being: asesor
   seed: seeds/contoso
   title: "🐶 Agente Contoso SI"
@@ -569,7 +571,7 @@ contoso_marketer:
   label: Marketer — website
 
 contoso_soporte:
-  url: democlient
+  client_name: democlient
   being: soporte
   identity: required
 ```
@@ -579,7 +581,9 @@ the limb's own strings (`ended`, the team topic's line on an end; `earlier`, its
 recap's head) are written beside them. A `strings:` map in the block still works;
 a key written beside it wins. `identity` is the mode (`off`, `optional`,
 `required`); its text (the 401's message) goes in `strings: { identity: "…" }`.
-`url` defaults to the block's name. Keep the `url` of a chatbox that is already
+`client_name` defaults to the block's name, so it is normally omitted (`support:` serves
+`/chat/support/`). `url` is its old name and is still read (boot logs a rename hint; if both
+are set, `client_name` wins). Keep the client of a chatbox that is already
 live: its widget's address, its chat ids and its conversation folders all use it.
 
 **The UI is a plugin, not core.** The bubble and the panel, their texts, the
@@ -643,7 +647,7 @@ ignored. What a place looks like (its css, the signed user's strip) is the
 skin's, in `skin.yaml`.
 
 The older form, `limbs.http.clients: { contoso: { … } }`, still works. If both
-name the same `url`, the block wins and boot logs it. A name in `chatboxes` with
+name the same client, the block wins and boot logs it. A name in `chatboxes` with
 no block is logged and skipped. A change to a block takes a `/restart`, as any
 change under `limbs` does.
 
@@ -694,6 +698,16 @@ defaults `"{abrin} · {short_name} · {username}"` and `"{user_type}"`). Else th
 row shows name and username; an anonymous chat is **Visitor** and its first
 line. Chat ids and folder names are in the tooltip. Nobody below root can list
 `conversations/` itself.
+
+`chat_title` also names a signed visitor's conversation folder, with no client
+prefix, as a Telegram group's name names its folder (cut at 255 characters, and
+renamed with its thread kept when a claim changes). With
+`chat_title: "{abrin}-{user_type}-{username}-{short_name}"` the folder is
+`conversations/http/abc-P-jdoe-Jane Doe/`. Two chats that render the same title
+never share a folder: the second takes the tail of its chat id (`abc-3f9a1c`).
+The chat id stays `http:<client>-<key>`. An unsigned visitor keeps
+`<client>-<key>`; a conversation made before this is renamed when its signed
+visitor next writes.
 
 **Support line.** Any ayde user who reads a conversation can say a line into its
 live chatbox session (`POST <ayde.path>/say`, `{client, key, text}`; the room has

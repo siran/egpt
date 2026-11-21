@@ -26,7 +26,7 @@ function makeScheduler() {
 }
 function fakePool() { const runs = []; return { runs, run(key, msg, _onP, opts) { runs.push({ key, msg, opts }); return Promise.resolve({ text: '' }); } }; }
 
-const TARGET = { key: 'e:ccode:whatsapp:hfm-1', sessionId: 'sid-1', model: 'haiku', cwd: '/c', allowedTools: 'all' };
+const TARGET = { key: 'e:ccode:whatsapp:hfm-1', sessionId: 'sid-1', model: 'unlisted-model', cwd: '/c', allowedTools: 'all' };
 
 describe('compaction service', () => {
   // contract 10.3
@@ -216,7 +216,7 @@ describe('compaction service: graceful compaction (handoff + welcome)', () => {
 // ── TWO THRESHOLDS: WARN (handoff + pre-compaction notice), then COMPACT (operator 2026-10-08) ──
 // The WARN threshold sits `warn_gap` of the window BELOW the compact `ratio`. At WARN the being
 // writes its handoff and the admin channel gets the pre-compaction notice, ONCE per thread; at
-// `ratio` the /compact runs and the handoff is NOT re-run. TARGET is model haiku → window 200_000,
+// `ratio` the /compact runs and the handoff is NOT re-run. TARGET is an unlisted model → window 200_000,
 // default ratio 0.20 → compact threshold 40_000, default warn_gap 0.03 → warn threshold 34_000.
 // dueFor is mocked with the COMPACT `due` and a `tokens`; the service derives WARN from tokens+window.
 describe('compaction service: two thresholds (warn, then compact)', () => {

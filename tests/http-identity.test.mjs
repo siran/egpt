@@ -307,7 +307,7 @@ describe('conversation_by', () => {
       const chatId = got[0].from.chatId;
       expect(chatId).toMatch(/^http:acme-[0-9a-f]{16}$/);
       expect(got[1].from.chatId).toBe(chatId);
-      expect(got[1].from.chatName).toBe(chatId.slice('http:'.length));
+      expect(got[1].from.chatName).toBe('IEV · Juan Pérez · jperez');   // a signed visitor: its rendered chat_title, no client prefix
       expect(hooks.map((h) => h.isNew)).toEqual([true, false]);
       const tabs = [laptop, phone].map((s) => sse(`${url}events?session=${encodeURIComponent(s.session)}&identity=${encodeURIComponent(tok())}`));
       for (const t of tabs) await t.until((ev) => ev.length >= 2);

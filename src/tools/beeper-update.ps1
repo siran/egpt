@@ -3,8 +3,7 @@
 # Beeper is a PER-USER install (%LOCALAPPDATA%\Programs\BeeperTexts) shared by the Beeper app
 # and any eGPT Beeper service. electron-updater installs only on "Relaunch to update"; a plain
 # quit does not, and any running Beeper.exe blocks it. NSSM restarts a killed service Desktop,
-# so a service is STOPPED, and Beeper is never killed: a killed syncing client can come back
-# needing re-verification.
+# so a service is STOPPED, never killed.
 #
 # Two flows, by what is running:
 #   app       no Beeper service running (the baseline): close the app, install, relaunch it,
@@ -18,9 +17,9 @@
 # daemon's next pass opens the window on its profile (one owner); with none, beeper-window opens it.
 # The update lock (Get-BeeperUpdateLockPath) keeps the daemon's pass from reopening Beeper from
 # closing the app until the relaunch.
-# The app goes FIRST and gets WM_CLOSE (hidden window included). It hides instead of quitting
-# unless its "Quit Beeper when closing the main window" is on; then nothing is stopped or
-# installed and the result says to quit it from the tray.
+# The app goes FIRST (Close-BeeperApp): WM_CLOSE (hidden window included); it hides instead of
+# quitting unless its "Quit Beeper when closing the main window" is on, so then its process tree
+# is ended. Only an app still running after that stops the run: nothing stopped or installed.
 # Refused before anything is touched: a sha512 mismatch, nothing newer, an installer that needs
 # admin rights, a missing permission. The installer runs as THIS user, never as SYSTEM.
 # The last stdout line is ONE JSON object (eGPT reads it).
@@ -32,8 +31,8 @@
 #   beeper-update.cmd -Force          reinstall even if the version is not newer
 #   beeper-update.cmd -NoRelaunchGui  leave the Beeper app closed
 #   -NoElevate                        never ask for UAC (eGPT runs it this way)
-#   -CloseAppOnly [-WaitSec n]        only close the open app (WM_CLOSE, then n s, default 30, for it
-#                                     to quit); {quit:true} or the close-app refusal, nothing else touched
+#   -CloseAppOnly [-WaitSec n]        only close the open app (WM_CLOSE, n s, default 30; still there:
+#                                     its process tree ended); {quit:true} or the close-app refusal
 #   -RelaunchApp                      relaunch the app even though it is not running now (eGPT closed it first)
 #   -Installer <exe> -Sha512 <b64>    install this file (eGPT's own download), not the pending folder's
 #   -StateFile <json>                 plan from a recorded state, not this machine (tests); implies -DryRun
@@ -142,10 +141,10 @@ function Get-UpdatePlan($s) {
   return $p
 }
 
-$closeAppRefusal = [ordered]@{ ok = $false; step = 'close-app'; error = 'the Beeper app hid instead of quitting'; remedy = 'quit Beeper from its tray icon (Quit), then update again'; connections = @(); app = [ordered]@{ ran = $true; relaunched = $false } }
+$closeAppRefusal = [ordered]@{ ok = $false; step = 'close-app'; error = 'the Beeper app is still running after closing and ending it'; remedy = 'quit Beeper from its tray icon (Quit), then update again'; connections = @(); app = [ordered]@{ ran = $true; relaunched = $false } }
 if ($CloseAppOnly) {
   $updateLock = Open-BeeperClaim (Get-BeeperUpdateLockPath $LocalAppData)
-  Say "closing the Beeper app (waiting up to ${WaitSec}s)"
+  Say "closing the Beeper app (WM_CLOSE, up to ${WaitSec}s; still there: its process tree ended)"
   if (Close-BeeperApp $WaitSec (Get-BeeperDefaultProfile $AppData)) { Done ([ordered]@{ ok = $true; quit = $true }) }
   Say 'the Beeper app is still running - nothing was stopped'
   $closeAppRefusal.quit = $false
@@ -207,7 +206,7 @@ $updateLock = Open-BeeperClaim (Get-BeeperUpdateLockPath $LocalAppData)
 if ($plan.closeApp) {
   Say 'closing the Beeper app'
   if (-not (Close-BeeperApp 30 (Get-BeeperDefaultProfile $AppData))) {
-    Say 'the Beeper app hid instead of quitting - nothing was stopped or installed'
+    Say 'the Beeper app is still running after closing and ending it - nothing was stopped or installed'
     foreach ($k in 'flow', 'from', 'to', 'install') { $closeAppRefusal[$k] = $plan[$k] }
     $closeAppRefusal.installed = $state.installed
     Done $closeAppRefusal 1

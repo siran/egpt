@@ -900,7 +900,7 @@ export const CONFIG_SCHEMA = {
                                 port: 8095
                                 chatboxes: [ contoso_marketer, contoso_soporte ]
                             contoso_marketer:
-                              url: contoso
+                              client_name: contoso
                               being: asesor
                               seed: seeds/contoso
                               title: "🐶 Agente Contoso SI"
@@ -909,16 +909,16 @@ export const CONFIG_SCHEMA = {
                               team_group: -1000000000102
                               label: Marketer — website
                             contoso_soporte:
-                              url: democlient
+                              client_name: democlient
                               being: soporte
                               identity: required
                               allowed_origins: [ … ]
                           A block holds a <client>'s keys (below), the limb's strings written
                           flat beside them (ended, earlier); a strings: map there still
                           works, a flat key beats it. identity is the mode: its text goes in
-                          strings:. url: the <client>, in the URL (/chat/contoso/widget.js),
+                          strings:. client_name: the <client>, in the URL (/chat/contoso/widget.js),
                           the chat ids (http:contoso-<sid>), the folders and the key file;
-                          default the block's name. A name with no block (a map): logged and
+                          default the block's name (url: its old name, still read). A name with no block (a map): logged and
                           skipped. A block and a clients entry with the same <client>: the
                           block wins (logged). The blocks are restart-only, as limbs is.
                           /ayde lists the blocks in this order, then clients'.
@@ -999,7 +999,11 @@ export const CONFIG_SCHEMA = {
                               {<claim>} of the token (e.g. "{school} · {short_name}"). A claim with no value
                               is empty and the separator it leaves goes. Default
                               "{abrin} · {short_name} · {username}". Recorded as "title" in the
-                              conversation's desktop/user.json when it starts; unsigned: none ("Visitor")
+                              conversation's desktop/user.json when it starts; unsigned: none ("Visitor").
+                              It also NAMES the signed visitor's folder, with no client prefix (cut at 255;
+                              renamed, thread kept, when a claim changes; a repeat title takes the chat id's
+                              tail): "{abrin}-{user_type}-{username}-{short_name}" -> http/abc-P-jdoe-Jane Doe.
+                              Unsigned: <client>-<key>. The chat id is unchanged
             chat_subtitle     the same for the line under the title, default "{user_type}"
             identity          off (default) | optional | required: the host page's
                               signed user (below). required: a call without one is
@@ -3590,8 +3594,9 @@ export const CONFIG_SCHEMA = {
                      package). A hit: /upgrade full (the daemon renewed too);
                      none: /upgrade, spine only. One log line says which and why.
                      Where nothing respawns the daemon (EGPT_DAEMON_RESPAWNS=1
-                     or the container entrypoint, the daemon's own check: a
-                     Windows service or task is not assumed to), a hit is NOT run
+                     or the container entrypoint, the daemon's own check: the
+                     container and the Session 1 task's launcher set it, the
+                     Session 0 service is not assumed to), a hit is NOT run
                      full: it upgrades the spine only and posts one line that
                      /upgrade full is still needed by hand.
           auto and auto-full both: the existing drain (turns in flight finish, a
@@ -4122,12 +4127,25 @@ export const CONFIG_SCHEMA = {
     cooling timer re-arms on every turn and a busy conversation would otherwise
     never reach quiet.
 
+    EVERY KEY works at all three tiers, resolved most specific first: the
+    conversation's own compaction: block (conversations.yaml), then
+    agents.<being>.conversation_defaults.compaction, then this node block.
+    An unusable value at a tier falls through to the next tier, then the default.
+
+    SIZES (ratio, critical_ratio, warn_gap) read as a share of the window or as
+    tokens: 0.2 or "20%" is a share; "100k", "1.5m" or an integer above 1 such as
+    100000 is tokens, converted by the conversation's resolved window (its model's,
+    or context_window). Booleans, zero, negatives and garbage are rejected; so are
+    tokens at or above the window (they could never fire). warn_gap alone accepts 0.
+    DURATIONS (cooling, alert_before): "3h", "90m", "30s", "1h30m", or a bare
+    number of ms.
+
     KEYS:
       enabled
         DEFAULT: on; false disables.
       ratio
-        DEFAULT: 0.20 — compact once the session passes this fraction of the
-        context window. This is the COMPACT threshold; warn_gap below sets a
+        DEFAULT: 0.20 — compact once the session passes this share of the
+        context window (a size, see above; "400k" on a 1M window = 0.4). This is the COMPACT threshold; warn_gap below sets a
         second, lower WARN threshold a few % under it.
       warn_gap
         DEFAULT: 0.03 (operator 2026-10-08). The WARN threshold sits this fraction
@@ -4139,12 +4157,23 @@ export const CONFIG_SCHEMA = {
         context compacts. Per-being/room overridable, same place as ratio. A
         non-negative number (0 = warn coincides with compact, i.e. no early warning);
         booleans and negatives are rejected and fall back to the default.
+      cooling
+        DEFAULT: 2m — quiet period after the last reply before the size check
+        runs. A duration ("3h", "90m", "30s", "1h30m", or ms). Wins over cooling_ms
+        when both are set.
       cooling_ms
-        DEFAULT: 120000 — quiet period after the last reply before the size
-        check runs.
+        The same in ms (120000 = the default), still read; cooling wins.
+      alert_before
+        DEFAULT: unset — no alert. A duration. When a cooling timer is armed, a
+        second timer fires alert_before ahead of it and, if the session is then over
+        the warn threshold (a compaction is due), the log channel gets
+        compaction_alert_notice ("compaction in 10m"). A new turn cancels it and it
+        re-arms with the cooling timer, so one alert per armed timer. Not posted on
+        the critical_ratio no-wait path, and never when alert_before >= cooling.
+        e.g. compaction: { ratio: 400k, critical_ratio: 800k, cooling: 3h, alert_before: 10m }
       critical_ratio
         DEFAULT: unset — disabled, and the cooling wait is the only trigger.
-        When set, a session ALREADY past this (higher) fraction of the window is
+        When set (a size), a session ALREADY past this (higher) share of the window is
         compacted with NO wait at all. The cooling timer is re-armed on every
         turn, so a conversation that never goes quiet never compacts — and
         overshooting is not "compacted late", it is LOST: brainpool's overflow
@@ -4153,7 +4182,8 @@ export const CONFIG_SCHEMA = {
         cooling check it runs after every turn.
       context_window
         Override the per-model window token count.
-        DEFAULT: windowForModel(model)
+        DEFAULT: windowForModel(model) — haiku, sonnet and opus 1,000,000; any
+        other model 200,000.
       handoff_prompt
         GRACEFUL COMPACTION, step ① (operator 2026-10-04; moved to the WARN threshold
         2026-10-08). An instruction given to the being on its OWN warm session at the
@@ -4190,6 +4220,21 @@ export const CONFIG_SCHEMA = {
         compacts at the next quiet tick past the warn threshold. A failed or empty
         handoff turn waits for ratio. false = compact only at ratio. critical_ratio is
         unaffected.
+  `,
+
+  compaction_alert_notice: `
+    The PRE-COMPACTION alert posted to the log channel (same path and "node · chat"
+    signature as compaction_warn_notice) compaction.alert_before ahead of the
+    cooling timer firing, when a compaction is due. Example line:
+    "🗜️ HQ · ana in Team: compaction in 10m".
+
+    PLACEHOLDERS:
+      {agent}    the being's handle
+      {chat}     the conversation's name
+      {in}       time left, e.g. 10m
+      {percent}  current fullness = round(tokens / window * 100)
+
+    DEFAULT: unset — "compaction in {in}". A blank string SKIPS the alert.
   `,
 
   compaction_warn_notice: `

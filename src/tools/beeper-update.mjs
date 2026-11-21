@@ -9,7 +9,7 @@
 // ear verdict) → the install tool runs → the state clears (redial now, held calls go) → ONE line.
 import { readFile, writeFile, mkdir, rename, rm, readdir, mkdtemp, chmod, access } from 'node:fs/promises';
 import { openSync, closeSync, mkdirSync, createReadStream, createWriteStream, constants as fsConstants } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, posix } from 'node:path';
 import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -20,11 +20,9 @@ import { beeperBlockOf } from './config-io.mjs';
 
 export const AUTO_UPDATE_METHODS = ['auto', 'manual', 'none'];
 export const CHECK_EVERY_MS = 6 * 3_600_000;
-export const PEER_WINDOW_MS = 20 * 60_000;    // a peer's "restarting for update…" line older than this is stale
 const TOOL_CAP_MS = 20 * 60_000;              // longest the bridges hold for the tool
 const DOWNLOAD_CAP_MS = 20 * 60_000;          // longest the installer download may take
-export const CLOSE_TRY_SEC = 30;              // the open app: WM_CLOSE, then this long for it to quit
-export const CLOSE_WAIT_SEC = 570;            // it only hid: this much longer for the operator's tray Quit
+export const CLOSE_TRY_SEC = 30;              // the open app: WM_CLOSE, this long to quit; then its process tree is ended
 const OS_OF = { win32: 'windows', linux: 'linux', darwin: 'mac' };
 const DEFAULT_METHOD = { windows: 'auto', linux: 'auto', mac: 'auto' };
 const IMPLEMENTED = ['windows', 'linux', 'mac'];   // the OSes that can install a Beeper update
@@ -152,7 +150,7 @@ export async function fetchInstaller({ url, sha512 }, { dir, fetchImpl = fetch, 
 
 export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData, platform = process.platform, arch, home } = {}) {
   const installed = await installedVersion({ platform, home });
-  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform, arch })]);
+  const [pending, running, latest] = await Promise.all([platform === 'win32' ? readPending({ localAppData }) : null, readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform, arch })]);
   return { installed, pending, running, latest };
 }
 
@@ -185,7 +183,6 @@ export function refusalText(r) {
 
 export const downloadLine = (node, from, to, mb) => `⬇ ${node} · Beeper ${from} → ${to}: downloading the installer${mb ? ` (${mb} MB)` : ''} first`;
 export const startLine = (node, from, to, marker) => `🔄 ${node} · Beeper ${from} → ${to} · restarting for update… ${marker}`;
-export const quitLine = (node, from, to) => `⏳ ${node} · Beeper ${from} → ${to}: quit Beeper from the tray (Quit) and the update continues; nothing is stopped until then`;
 
 // The ONE line that replaces the start line: "🔄 kg · Beeper a → b · restarted in 72 s · primary ✓ · secondary ✓".
 export function resultLine(node, { from, to, result: r = {} }) {
@@ -193,17 +190,6 @@ export function resultLine(node, { from, to, result: r = {} }) {
   const took = r.restartSec != null ? `restarted in ${r.restartSec} s` : null;
   const conns = (r.connections ?? []).map((c) => `${c.name} ${c.status === 'ok' ? '✓' : `✗ ${c.status}`}`);
   return (r.ok ? [head, took, ...conns] : [`${head} · FAILED at ${r.step ?? '?'}: ${refusalText(r)}`, took, ...conns]).filter(Boolean).join(' · ');
-}
-
-// The first other node whose recent start line in log_to_group is still open, or null.
-export function peerUpdating(messages, { own = new Set(), nowMs = Date.now(), windowMs = PEER_WINDOW_MS } = {}) {
-  for (const m of messages ?? []) {
-    const hit = /🔄 (\S+) · Beeper [^\n]*· restarting for update…/u.exec(String(m?.text ?? ''));
-    if (!hit || own.has(hit[1].toLowerCase())) continue;
-    if (m.ts != null && nowMs - m.ts > windowMs) continue;
-    return hit[1];
-  }
-  return null;
 }
 
 // ── the .ps1 ─────────────────────────────────────────────────────────────────────────────────
@@ -231,7 +217,7 @@ export function runToolDry({ repoRoot, home = EGPT_HOME, restartOnly = false, in
 
 // The real run, as a child writing to config/logs/beeper-update.log (a file, so nothing it prints
 // depends on this process); resolves with its JSON line once it exits.
-// closeAppOnly: only close the open app and wait waitSec for it to quit → { quit: true } or the close-app refusal.
+// closeAppOnly: only close the open app (WM_CLOSE, waitSec; still there: its process tree ended) → { quit: true } or the close-app refusal.
 // installer + sha512: install that file (eGPT's own download), not Beeper's pending one.
 export function runTool({ repoRoot, home = EGPT_HOME, restartOnly = false, closeAppOnly = false, waitSec = CLOSE_TRY_SEC, relaunchApp = false, installer = null, sha512 = null, spawn = nodeSpawn, readFileImpl = readFile, capMs = TOOL_CAP_MS } = {}) {
   const logPath = join(home, 'config', 'logs', 'beeper-update.log');
@@ -407,7 +393,7 @@ export async function runMacDry({ candidates = appCandidates(), io = { access, w
 // under Contents/Frameworks/), never --type= → [{ pid, args }], args = the main's own flags, kept for the reopen.
 // A flag value holding " -" would split in two: ps joins argv with spaces.
 export async function macMains(app, { ps = () => execFileP('ps', ['-axww', '-o', 'pid=,args=']) } = {}) {
-  const exe = `${join(app, 'Contents', 'MacOS')}/`;
+  const exe = `${posix.join(app, 'Contents', 'MacOS')}/`;
   return String(await ps()).split('\n').map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter((m) => m && m[2].startsWith(exe) && !/\s--type=/.test(m[2])).map(([, pid, cmd]) => {
     const rest = cmd.slice(exe.length), at = rest.search(/\s-/);
     return { pid: Number(pid), args: at < 0 ? [] : rest.slice(at + 1).split(/\s+(?=-)/).filter((a) => !a.startsWith('-psn_')) };
@@ -503,7 +489,6 @@ export function createBeeperUpdate({
   readLog = async () => [],           // log_to_group's recent messages: [{ id, text, ts }]
   editLog = async () => false,        // (id, text) => bool
   hint = () => '/update beeper',      // what a human types on this node
-  ownNames = () => new Set(),         // this node's own names (node_name ∪ node_alias), lowercased
   fetchImpl = fetch,                  // the installer download (state available)
   now = Date.now,
   everyMs = CHECK_EVERY_MS,
@@ -540,15 +525,11 @@ export function createBeeperUpdate({
     return logToGroup(text);
   };
 
-  // The open app quits first, with every bridge still serving: WM_CLOSE; if it only hid, ONE line
-  // asking for the tray Quit, then a longer wait. → null once it has quit, else the result to report.
-  async function closeApp({ from, to }) {
+  // The open app goes first, with every bridge still serving: WM_CLOSE, else its process tree ended
+  // (Close-BeeperApp). → null once it is gone, else the result to report.
+  async function closeApp() {
     try {
-      let r = await run({ closeAppOnly: true, waitSec: CLOSE_TRY_SEC });
-      if (r?.quit !== true && r?.step === 'close-app') {
-        await say(quitLine(node(), from, to));
-        r = await run({ closeAppOnly: true, waitSec: CLOSE_WAIT_SEC });
-      }
+      const r = await run({ closeAppOnly: true, waitSec: CLOSE_TRY_SEC });
       return r?.quit === true ? null : r;
     } catch (e) { return { ok: false, step: 'tool', error: e?.message ?? String(e) }; }
   }
@@ -559,18 +540,12 @@ export function createBeeperUpdate({
     return { restartOnly, from: restartOnly ? oldestRunning(d) : d.installed, to: restartOnly ? d.installed : state === 'available' ? d.latest.version : d.pending.version };
   };
 
-  // Once the drain finds nothing in flight: peer check, the start line, the app, the restart, the result.
+  // Once the drain finds nothing in flight: the start line, the app, the restart, the result.
   async function apply({ from, to, restartOnly, appOpen = false, own = {} }) {
     try {
-      let peer = null;
-      try { peer = peerUpdating(await readLog(), { own: ownNames(), nowMs: now() }); } catch (e) { onLog(`peer check: ${e?.message ?? e}`); }
-      if (peer) {
-        await say(`⏸ ${node()} · Beeper ${from} → ${to} not started — ${peer} is restarting its Beeper for an update; send ${hint()} again after its 🔄 line`);
-        return;
-      }
       const marker = `⟦bu-${node()}-${now().toString(36)}⟧`;
       await say(startLine(node(), from, to, marker));
-      let result = appOpen ? await closeApp({ from, to }) : null;
+      let result = appOpen ? await closeApp() : null;
       if (!result) {
         try { await beeperRestart(true); result = await run({ restartOnly, relaunchApp: appOpen, ...own }); }
         catch (e) { result = { ok: false, step: 'tool', error: e?.message ?? String(e) }; }

@@ -213,10 +213,13 @@ describe('clean ingest — a signed line wakes only the being it explicitly addr
     expect(wokeBeings(brain).sort()).toEqual(['egpt', 'eplus']);
   });
 
-  // contract 7.3
-  it("LOCK: this node's own node-only frame wakes nobody, even naming @eplus", async () => {
-    const { spine, brain } = buildSpine({ mode: 'on' });
-    await spine.handleInbound({ body: `@eplus aviso${encodeNodeSignature('kg')}`, from: from({ msgKey: 'kg-sys-1', isSender: true }) });
-    expect(wokeBeings(brain)).toEqual([]);
+  // operator 2026-11-21: addressed at its start, this node's own node-only frame wakes that being
+  it("this node's own node-only frame wakes @eplus at its start, nobody when it names @eplus mid-text", async () => {
+    const a = buildSpine({ mode: 'on' });
+    await a.spine.handleInbound({ body: `@eplus aviso${encodeNodeSignature('kg')}`, from: from({ msgKey: 'kg-sys-1', isSender: true }) });
+    expect(wokeBeings(a.brain)).toEqual(['eplus']);
+    const b = buildSpine({ mode: 'on' });
+    await b.spine.handleInbound({ body: `aviso para @eplus${encodeNodeSignature('kg')}`, from: from({ msgKey: 'kg-sys-2', isSender: true }) });
+    expect(wokeBeings(b.brain)).toEqual([]);
   });
 });

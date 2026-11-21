@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as YAML from 'yaml';
 import { liveDaemonPid as defaultLiveDaemonPid, openExclusive, closeExclusive, heldExclusive } from './daemon-singleton.mjs';
 import { raiseSelfToNormal } from './process-priority.mjs';
+import { gitEnv } from './git-env.mjs';
 
 export const RESTART_MIN_MS = 2_000;
 export const RESTART_MAX_MS = 60_000;
@@ -15,8 +16,9 @@ export const REWIND_EXIT_CODE = 44;
 // /standdown: the spine handed the profile to the waiting Session 1 daemon (operator 2026-10-22).
 export const STANDDOWN_EXIT_CODE = 45;
 // /upgrade full: the /upgrade, and then THE DAEMON goes too, so whatever respawns it (the container's
-// keep_running, docker/entrypoint.sh) brings it back on the new code. /upgrade alone renews only the
-// spine: chrome-host, cli-host and this file stay as loaded until the daemon itself restarts.
+// keep_running, docker/entrypoint.sh; the Session 1 task's setup/session1-daemon-launcher.vbs) brings it
+// back on the new code. /upgrade alone renews only the spine: chrome-host, cli-host and this file stay
+// as loaded until the daemon itself restarts.
 export const UPGRADE_FULL_EXIT_CODE = 46;
 // The container's entrypoint, whose keep_running respawns a daemon that exits.
 export const CONTAINER_ENTRYPOINT = '/usr/local/bin/egpt-entrypoint';
@@ -24,6 +26,7 @@ export const CONTAINER_ENTRYPOINT = '/usr/local/bin/egpt-entrypoint';
 export const respawnsOf = (env, platform, exists = nodeExistsSync) => env?.EGPT_DAEMON_RESPAWNS === '1' || (platform === 'linux' && exists(CONTAINER_ENTRYPOINT));
 export const CLEAN_EXIT_CODE = 0;
 const HOLD_LOG_MS = 60_000;   // while a daemon waits for the profile, it says who holds it this often
+const S1_RENEW_HOLD_MS = 60_000;   // Session 0 holds off this long on state/s1.renewing; past it, a relaunch that never came holds nothing
 
 // --- the boot-failure recovery ladder (operator 2026-08-30) ------------------------------
 // THE INCIDENT: ~/bin/egpt is both the production checkout and an agent's working dir. An
@@ -151,6 +154,9 @@ export function createDaemonRuntime(opts = {}) {
   const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
   const runnerLockPath = join(egptHome, 'state', 'runner.lock');
   const s1ClaimPath = join(egptHome, 'state', 's1.claim');
+  // A Session 1 daemon leaving to be relaunched (/upgrade full) writes the time here while it still holds
+  // s1.claim; the relaunched one removes it once it holds the claim again.
+  const s1RenewPath = join(egptHome, 'state', 's1.renewing');
   const ingestDir = join(egptHome, 'state', 'ingest');
   // WHICH SESSION THIS DAEMON SUPERVISES (see the SESSION1_ENV block above). s1 = the logon session.
   const session1 = opts.session1 ?? isSession1(processObj.env);
@@ -160,8 +166,9 @@ export function createDaemonRuntime(opts = {}) {
   const cliHost = createCliHost ? createCliHost({ log }) : null;
   // Does anything bring this daemon back when it exits? Only then may /upgrade full end it. The
   // container's entrypoint does (EGPT_DAEMON_RESPAWNS=1, or the entrypoint on disk for images built
-  // before it exported that); a Windows service or task is not assumed to. A process shared by
-  // several profiles (startProfileDaemons) never ends for one of them.
+  // before it exported that), and the Session 1 task's launcher (EGPT_DAEMON_RESPAWNS=1); the Session 0
+  // service is not assumed to. A process shared by several profiles (startProfileDaemons) never ends
+  // for one of them.
   const daemonRespawns = opts.daemonRespawns
     ?? respawnsOf(processObj.env, platform, existsSync);
   const sharedProcess = opts.sharedProcess ?? false;
@@ -605,7 +612,7 @@ export function createDaemonRuntime(opts = {}) {
     return true;
   }
 
-  const git = (args, extra = {}) => spawnSync('git', args, { cwd: root, stdio: 'pipe', ...extra });
+  const git = (args, extra = {}) => spawnSync('git', args, { cwd: root, stdio: 'pipe', env: gitEnv(), ...extra });
   const gitOut = (r) => (r.stdout?.toString() ?? '').trim();
   const gitWhy = (r) => {
     if (r.error) return `: ${r.error.message}`;
@@ -785,11 +792,16 @@ export function createDaemonRuntime(opts = {}) {
   // only), then any other live spine, then the lock — taken last, so it is only held with a spine.
   function blocker() {
     if (!session1 && lockHeld(s1ClaimPath)) return { why: 'the Session 1 daemon holds state/s1.claim' };
+    if (!session1 && s1Renewing()) return { why: 'the Session 1 daemon is renewing (state/s1.renewing)' };
     const holder = livePidIn(spinePidPath);
     if (holder && holder !== lastChildPid) return { why: `spine pid ${holder} holds the profile`, holder };
     if (!runnerLock) runnerLock = tryLock(runnerLockPath);
     if (!runnerLock) return { why: 'another daemon holds state/runner.lock' };
     return null;
+  }
+
+  function s1Renewing() {
+    try { return now() - Number(readFileSync(s1RenewPath, 'utf8')) < S1_RENEW_HOLD_MS; } catch { return false; }
   }
 
   // No spine for now: let go of the lock, end the sessions no other daemon can adopt, and ask the
@@ -953,6 +965,10 @@ export function createDaemonRuntime(opts = {}) {
         if (daemonRespawns && !sharedProcess) {
           appendOutcome('daemon renewed');
           log('/upgrade full — the daemon exits now; its supervisor respawns it on the new code');
+          if (session1) {
+            try { writeFileSync(s1RenewPath, String(now())); }
+            catch (e) { log(`could not write ${s1RenewPath} (${e.message}) — the Session 0 daemon may take the profile until the relaunched daemon asks for it back`); }
+          }
           stopAll();
           cliHost?.endAll('/upgrade full: the daemon renews');
           chromeHost?.closeAll?.('/upgrade full: the daemon renews');
@@ -1081,6 +1097,7 @@ export function createDaemonRuntime(opts = {}) {
         processObj.exit(0);
         return false;
       }
+      try { unlinkSync(s1RenewPath); } catch { /* not renewing */ }
     }
     return true;
   }

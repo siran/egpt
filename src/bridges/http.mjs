@@ -23,6 +23,8 @@
 // A signed visitor's chat gets a title and a subtitle from its identity's claims (chat_title, chat_subtitle: templates
 // like topic_title, {school} · {short_name}; default {abrin} · {short_name} · {username}, and {user_type}), handed to
 // beforeLine, which records them in the conversation's folder for /ayde's chat lists; unsigned: none (the list says "Visitor").
+// The chat_title, rendered, is also the chatName the limb delivers for a signed visitor, with no client prefix: it names the
+// conversation's folder like a Telegram group's name (contacts.resolve); unsigned: <client>-<key>. The chat id stays http:<client>-<key>.
 // A session's messages (the last LOG_MAX) are kept in <stateDir>/http-messages/<sid>.json, so the
 // GET after a restart still returns them.
 // identity (per client, off by default): the host page's signed user, base64url(JSON).base64url(HMAC-SHA256);
@@ -148,8 +150,9 @@ export function renderTopicTitle(template, values = {}) {
 // ({school} {short_name} …, any claim of the token); a missing claim is empty, and a separator it leaves
 // dangling goes. '' when nothing is left.
 export const DEFAULT_CHAT_TITLE = '{abrin} · {short_name} · {username}', DEFAULT_CHAT_SUBTITLE = '{user_type}';
+export const CHAT_TITLE_MAX = 255;   // chat_title also names a signed visitor's folder (SLUG_MAX)
 export function renderChatLabel(template, claims = {}) {
-  return cutTitle(fillTitle(String(template), claims, true).replace(/^[\s·|,-]+|[\s·|,-]+$/g, '').replace(/(?:\s*[·|])+(?=\s*[·|])/g, ''), TOPIC_TITLE_MAX);
+  return cutTitle(fillTitle(String(template), claims, true).replace(/^[\s·|,-]+|[\s·|,-]+$/g, '').replace(/(?:\s*[·|])+(?=\s*[·|])/g, ''), CHAT_TITLE_MAX);
 }
 
 // A client's identity mode: `identity: <mode>`, or the mode of `identity: { mode, required, key }` (default
@@ -210,7 +213,7 @@ function clientConfig(name, c = {}, home = null) {
 // limbs.http.clients and limbs.http.chatboxes, what boot serves and reads. limbs.http.chatboxes names
 // top-level blocks, one chatbox each: a clients entry's keys, the limb's strings (HTTP_STRINGS) flat beside
 // them, beating a `strings:` map there (`identity` is the mode; its text stays in strings:). Its client,
-// in the URL and the chat ids, is its `url`, default its name. A block beats a clients entry of the
+// in the URL and the chat ids, is its `client_name`, default its name (`url` is the old name, still read). A block beats a clients entry of the
 // same client; a name with no block (a map) is skipped. Both logged. A chatbox with no `ui:` of its own
 // takes limbs.http.ui.
 const FLAT_STRINGS = Object.keys(HTTP_STRINGS).filter((k) => k !== 'identity');
@@ -222,9 +225,10 @@ export function chatboxesOf(cfg, log = () => {}) {
   const out = {}, blockOf = {};
   for (const name of chatboxNames(cfg)) {
     if (!isMap(cfg[name])) { log(`limbs.http.chatboxes names ${name}, but there is no ${name}: block — skipped`); continue; }
-    const { url, strings, ...keys } = cfg[name];
-    const client = url == null ? name : String(url);
-    if (blockOf[client]) { log(`the ${name}: block's url '${client}' is the ${blockOf[client]}: block's too — skipped`); continue; }
+    const { client_name, url, strings, ...keys } = cfg[name];
+    if (client_name == null && url != null) log(`the ${name}: block's url is now client_name — rename it`);
+    const client = String(client_name ?? url ?? name);
+    if (blockOf[client]) { log(`the ${name}: block's client_name '${client}' is the ${blockOf[client]}: block's too — skipped`); continue; }
     blockOf[client] = name;
     const own = {}, flat = {};
     for (const [k, v] of Object.entries(keys)) (FLAT_STRINGS.includes(k) ? flat : own)[k] = v;
@@ -248,7 +252,7 @@ export async function startHttpBridge({
   addressWithoutAt = true,
   trustProxy = false,      // the visitor's address: the last X-Forwarded-For entry, else the socket's
   stateDir = null,
-  beforeLine = null,      // ({ client, chatId, isNew, init, recap, identity, title, subtitle }), awaited before each line enters; recap() → the panel's lines so far as text, or null
+  beforeLine = null,      // ({ client, chatId, chatName, isNew, init, recap, identity, title, subtitle }), awaited before each line enters; recap() → the panel's lines so far as text, or null
   onEnd = null,           // ({ client, chatId, ended }), awaited by POST end before the history is cleared
   identityKey = () => null,   // (client) → its HMAC key, or null
   ayde = null,                // { path, on, public_max_level, scope }: /ayde, the team's browser of aydeRoot
@@ -419,12 +423,12 @@ export async function startHttpBridge({
     const c = clients.get(client), chat = chats.get(key);
     if (!c || chat?.client !== client) return null;
     if ([...text].length > c.maxChars) return { error: 'too long', status: 413, max: c.maxChars };
-    const by = field(user), chatId = chatIdOf(chat), name = `${client}-${key}`;
+    const by = field(user), chatId = chatIdOf(chat), name = `${client}-${key}`;   // chat.name (last set by the visitor's line) is the folder's; none yet: the stored one stays
     const m = append(chat, 'support', text, true, by);
     const st = mentionStatus(text, wakeWords, { addressWithoutAt });
     log(`incoming [${name}] support ${by}`);
     deliver(text, {
-      chatId, chatName: name, chatType: 'private', network: 'http',
+      chatId, chatName: chat.name, chatType: 'private', network: 'http',
       userId: chatId, senderName: `${SUPPORT}${by}`, firstName: by,
       isSender: false, authorized: false, lineMode: SUPPORT_MODE,
       atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
@@ -472,7 +476,7 @@ export async function startHttpBridge({
     const st = mentionStatus(text, wakeWords, { addressWithoutAt });
     log(`incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
     deliver(place ? `(in ${place}) ${text}` : text, {
-      chatId, chatName: name, chatType: 'private', network: 'http',
+      chatId, chatName: s.chat.name ?? name, chatType: 'private', network: 'http',
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
       atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
@@ -540,6 +544,8 @@ export async function startHttpBridge({
     }
     const { sid, s } = hit;
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
+    const chat = idn.identity ? { title: renderChatLabel(c.chatTitle, idn.identity.claims), subtitle: renderChatLabel(c.chatSubtitle, idn.identity.claims) } : {};
+    s.chat.name = chat.title || name;   // the conversation's name for the spine: a signed visitor's chat_title, else <client>-<key>
     const cold = !(n - (s.chat.warmAt ?? -Infinity) < COLD_MS);   // read before this line warms it: the widget's waiting_cold
     // nothing sent: a bare init under init: prime (no phrase), an opening into a thread that already has lines (a reload,
     // another tab or device: the conversation is ongoing), a bare init: true onto a resumed session
@@ -553,14 +559,13 @@ export async function startHttpBridge({
     s.chat.isNew = false;
     const reply = (async () => {
       try {
-        const chat = idn.identity ? { title: renderChatLabel(c.chatTitle, idn.identity.claims), subtitle: renderChatLabel(c.chatSubtitle, idn.identity.claims) } : {};
-        await beforeLine?.({ client: c.name, chatId, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity, ...chat });
+        await beforeLine?.({ client: c.name, chatId, chatName: s.chat.name, isNew, init, recap: (o) => recapOf(c, s.chat, o), identity: idn.identity, ...chat });
       }
       catch (e) { log(`${c.name}-${sid}: before the line — ${e?.message ?? e}`); }
       if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
       log(`incoming [${name}] the visitor opened the chatbox`);
       deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})`, {   // on the record only
-        chatId, chatName: name, chatType: 'private', network: 'http',
+        chatId, chatName: s.chat.name, chatType: 'private', network: 'http',
         userId: chatId, senderName: 'visitor', firstName: 'visitor',
         isSender: false, authorized: false,
         backlog: true, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,

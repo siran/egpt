@@ -15,6 +15,7 @@
 // Told apart in state: the side group is an ALIAS marked `automatic: true` (aliasOf → the chat). A
 // /join room is an alias without it; a /split is its own entry (parent_chat). Those two keep their own.
 import { describe, it, expect } from 'vitest';
+import { basename, dirname } from 'node:path';
 import { Room } from '../src/room-core.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
@@ -154,6 +155,11 @@ function world({ state = stateWith(), statWorks = true } = {}) {
     appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); mtimes.set(p, clock.t); },
     mkdir: async () => {},
     existsSync: (p) => files.has(p),
+    // the stats writer (recordMemberStat) too: else it reaches the real fs under EGPT_HOME
+    readFile: async (p) => { if (!files.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' }); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, String(d)); },
+    readdir: async (d) => [...files.keys()].filter((f) => dirname(f) === d).map((f) => basename(f)),
+    rename: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
   };
   const reader = createAccumReader({
     contacts, surfaceOf: (n) => n, readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },

@@ -32,7 +32,7 @@ import { join, relative, sep, isAbsolute } from 'node:path';
 import { EGPT_HOME } from "./egpt-home.mjs";
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
-import { sanitizeSlug } from './sanitize.mjs';
+import { sanitizeSlug, SLUG_MAX } from './sanitize.mjs';
 import { readRoomConfig, setRoomConfigBlock } from './rooms-file.mjs';
 
 // ── THE surface → filesystem-root map ───────────────────────────────────────
@@ -381,7 +381,7 @@ export class ConversationRoom extends Room {
   // file). A room — and an agent — differs from every other chat in this ONE
   // expression and nowhere else.
   baseDir() {
-    const slug = sanitizeSlug(this.slug);
+    const slug = sanitizeSlug(this.slug, SLUG_MAX);
     return this.surface === 'room'  ? join(ROOMS_ROOT, slug)
          : this.surface === 'agent' ? join(AGENTS_ROOT, slug)
          : join(CONVERSATIONS_ROOT, this.surface, slug);
@@ -389,5 +389,5 @@ export class ConversationRoom extends Room {
   // From (surface, slug) DIRECTLY, never derived from baseDir(): a Room whose
   // folder is not under EGPT_HOME (a test fixture in a temp dir) would otherwise
   // relativize to `../../tmp-xxxx/conv` and write junk rows into rooms.yaml.
-  ns() { return `${this.surface}/${sanitizeSlug(this.slug)}`; }
+  ns() { return `${this.surface}/${sanitizeSlug(this.slug, SLUG_MAX)}`; }
 }

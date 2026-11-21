@@ -120,6 +120,9 @@ answered), ends its background work — each being says so once where it ran —
 with 45; the session 0 daemon holds off, and the session 1 daemon spawns the spine, whose
 browsers need the desktop. At logoff Windows ends session 1, the OS drops `s1.claim`, and
 the session 0 daemon takes the node back within seconds. Locking does not hand back.
+`/upgrade full` in session 1 ends the daemon with 46 and the task's launcher runs it again;
+the leaving daemon writes `state/s1.renewing` while it still holds `s1.claim`, and the
+session 0 daemon holds off while that is under a minute old.
 
 Two spines on one `EGPT_HOME` would open two connections per token (every message
 ingested twice, answered twice), race `config/conversations.yaml` and

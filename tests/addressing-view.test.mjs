@@ -22,6 +22,10 @@ const fromThisNode = (ev) => ev?.fromNode != null && String(ev.fromNode).toLower
 const SIG_KG_E = encodeNodeSignature('kg', 'egpt');
 const SIG_KG_W = encodeNodeSignature('kg', 'wren');
 const SIG_DO_DON = encodeNodeSignature('do', 'don');
+const SIG_KG = encodeNodeSignature('kg');
+const SIG_DO = encodeNodeSignature('do');
+// boot.mjs's undelivered notice as kg posted it in eGPT Admin, 2026-11-21 13:46 (🏰: kg's visible close).
+const NOTICE = 'kg · ⚠ reply (egpt) not delivered to 89xiq… — POST … → 401 {"message":"Token expired",…} 🏰';
 
 function buildSpine({ mode = 'mention', guard = null } = {}) {
   const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, body: ev.body }); return { text: 'x' }; } };
@@ -69,6 +73,59 @@ describe('addressing view — leading whitespace, invisible characters and a lea
     const { spine, brain } = buildSpine({ mode: 'mention-direct' });
     await spine.handleInbound({ body: `${SIG_DO_DON}e ¿lo ves?`, from: from({ msgKey: 'don-1' }) });
     expect(woke(brain)).toEqual(['egpt']);
+  });
+});
+
+describe('a framed line addressed at its start wakes that being (operator 2026-11-21)', () => {
+  it("REPRODUCE: 'w why does this happen?' over a pasted kg node line wakes wren", async () => {
+    for (const mode of ['mention', 'mention-direct', 'on']) {
+      const { spine, brain } = buildSpine({ mode });
+      await spine.handleInbound({ body: `w why does this happen?\n\n${NOTICE}${SIG_KG}`, from: from({ msgKey: `paste-${mode}`, isSender: true, senderName: 'An' }) });
+      expect(woke(brain), mode).toEqual(['wren']);
+    }
+  });
+
+  it("LOCK: kg's own node notice wakes nobody", async () => {
+    for (const mode of ['mention', 'on']) {
+      const { spine, brain, transcript } = buildSpine({ mode });
+      await spine.handleInbound({ body: `${NOTICE}${SIG_KG}`, from: from({ msgKey: `notice-${mode}`, isSender: true }) });
+      expect(woke(brain), mode).toEqual([]);
+      expect(transcript.logged.at(-1)?.body).toBe(`${NOTICE}<kg>`);
+    }
+  });
+
+  it("LOCK: a being's own line addressed to itself wakes nobody", async () => {
+    for (const body of [`🐦 wren: w nota${SIG_KG_W}`, `w nota${SIG_KG_W}`]) {
+      const { spine, brain } = buildSpine({ mode: 'mention' });
+      await spine.handleInbound({ body, from: from({ msgKey: 'self-w' }) });
+      expect(woke(brain), body).toEqual([]);
+    }
+  });
+
+  it('LOCK: a kg node line naming a being mid-text wakes nobody', async () => {
+    for (const body of [`${NOTICE} — @wren mira${SIG_KG}`, `aviso: w revisa esto${SIG_KG}`]) {
+      const { spine, brain } = buildSpine({ mode: 'mention' });
+      await spine.handleInbound({ body, from: from({ msgKey: 'mid-kg', isSender: true }) });
+      expect(woke(brain), body).toEqual([]);
+    }
+  });
+
+  it("LOCK: a peer node's line addressed at its start wakes the being", async () => {
+    for (const body of [`w revisa esto${SIG_DO}`, `@wren revisa esto${SIG_DO_DON}`]) {
+      const { spine, brain } = buildSpine({ mode: 'mention' });
+      await spine.handleInbound({ body, from: from({ msgKey: 'peer-w', isSender: true }) });
+      expect(woke(brain), body).toEqual(['wren']);
+    }
+  });
+
+  it('kg node lines addressing w and e in turn stop at loop_guard.inbound', async () => {
+    const g = createStopGuard({ turns: 4 });
+    const { spine, brain } = buildSpine({ mode: 'mention', guard: g });
+    for (let i = 0; i < 6; i++) {
+      await spine.handleInbound({ body: `${i % 2 ? 'e' : 'w'} turno ${i}${SIG_KG}`, from: from({ msgKey: `nl${i}`, isSender: true }) });
+    }
+    expect(g.blocked('whatsapp:c')).toBe(true);
+    expect(woke(brain)).toEqual(['wren', 'egpt', 'wren', 'egpt']);
   });
 });
 

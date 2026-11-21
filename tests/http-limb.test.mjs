@@ -575,6 +575,32 @@ describe('the chatbox UI: info and its files (a plugin; the limb knows only the 
     expect((await fetch(`http://127.0.0.1:${port}/chat/acme/../outside.css`)).status).toBe(404);
   });
 
+  it('a chatbox block\'s client: client_name, else the block name; url is the old name, still read and logged', () => {
+    const logs = [];
+    const cfg = (blocks) => ({ limbs: { http: { chatboxes: Object.keys(blocks) } }, ...blocks });
+    expect(Object.keys(chatboxesOf(cfg({ contoso: { being: 'ed' } })))).toEqual(['contoso']);
+    expect(Object.keys(chatboxesOf(cfg({ a: { client_name: 'democlient', being: 'ed' } })))).toEqual(['democlient']);
+    const legacy = chatboxesOf(cfg({ a: { url: 'democlient', being: 'ed' } }), (m) => logs.push(m));
+    expect(Object.keys(legacy)).toEqual(['democlient']);
+    expect(logs).toEqual(["the a: block's url is now client_name — rename it"]);
+    logs.length = 0;
+    const both = chatboxesOf(cfg({ a: { client_name: 'sales', url: 'support', being: 'ed' } }), (m) => logs.push(m));
+    expect(Object.keys(both)).toEqual(['sales']);
+    expect(logs).toEqual([]);
+    for (const box of [legacy.democlient, both.sales]) {
+      expect(box).not.toHaveProperty('url');
+      expect(box).not.toHaveProperty('client_name');
+      expect(box.strings).not.toHaveProperty('url');
+    }
+  });
+
+  it('two blocks of one client: the second is skipped and the message names client_name', () => {
+    const logs = [];
+    const boxes = chatboxesOf({ limbs: { http: { chatboxes: ['a', 'b'] } }, a: { being: 'ed' }, b: { client_name: 'a', being: 'ed' } }, (m) => logs.push(m));
+    expect(Object.keys(boxes)).toEqual(['a']);
+    expect(logs[0]).toContain("block's client_name 'a'");
+  });
+
   it('a relative ui: folder is under home; limbs.http.ui is the default of a chatbox with none', async () => {
     const { root } = await uiDirs();
     const boxes = chatboxesOf({ limbs: { http: { ui: 'plugin', chatboxes: ['a', 'b'] } }, a: { being: 'ed' }, b: { being: 'ed', ui: ['plugin', 'skin'] } });

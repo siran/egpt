@@ -293,3 +293,40 @@ describe('renameRoomRow', () => {
     expect(await renameRoomRow('whatsapp/a', 'whatsapp/c', { path: 'x', read: async () => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); } })).toBe(false);
   });
 });
+
+describe('a chatbox conversation is named by its chatName like any limb\'s chat', () => {
+  const H1 = 'http:abc-0000000000000001', H2 = 'http:abc-0000000000000002';
+  it('the slug is the chatName (no fixed slug), up to 255 characters', () => {
+    expect(fixedSlugFor('http', H1)).toBeNull();
+    const r = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc-P-jdoe-Jane Doe' });
+    expect(r.slug).toBe('abc-P-jdoe-Jane Doe');
+    expect(ensureContact(emptyState(), 'http', H1, { pushedName: 'x'.repeat(400) }).slug).toHaveLength(255);
+  });
+
+  it('a new chatName renames the folder (renamedFrom/To) and keeps the entry\'s thread', () => {
+    let st = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc-P-jdoe-Jane Doe', seed: { agents: { ed: { threadId: 't-1' } } } }).state;
+    const r = ensureContact(st, 'http', H1, { pushedName: 'abc-P-jdoe-Jane Roe' });
+    expect(r).toMatchObject({ slug: 'abc-P-jdoe-Jane Roe', renamedFrom: 'abc-P-jdoe-Jane Doe', renamedTo: 'abc-P-jdoe-Jane Roe' });
+    expect(r.entry.agents.ed.threadId).toBe('t-1');
+  });
+
+  it('two chat ids with one title are two folders, even seconds apart (never merged as one chat)', () => {
+    const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' });
+    const b = ensureContact(a.state, 'http', H2, { pushedName: 'abc' });
+    expect(a.slug).toBe('abc');
+    expect(b.slug).not.toBe('abc');
+    expect(b.slug).toMatch(/^abc-/);
+    expect(b.state.contacts.http[H2].aliasOf).toBeUndefined();
+  });
+
+  it('regression: Telegram keeps its slug cap (80), its same-title merge and its clash tail', () => {
+    const T1 = 'tg:-1001', T2 = 'tg:-1002';
+    expect(ensureContact(emptyState(), 'telegram', T1, { pushedName: 'x'.repeat(400) }).slug).toHaveLength(80);
+    const a = ensureContact(emptyState(), 'telegram', T1, { pushedName: 'Family' });
+    const b = ensureContact(a.state, 'telegram', T2, { pushedName: 'Family' });
+    expect(a.slug).toBe('Family');
+    expect(b.slug).toBe('Family-tg1002');   // first seen unknown: a duplicate title takes the id's tail
+    const m = ensureContact(a.state, 'telegram', T2, { pushedName: 'Family', firstSeenOf: () => Date.now() });
+    expect(m.state.contacts.telegram[T2]).toEqual({ aliasOf: T1 });   // seen seconds ago: the same chat under a second id
+  });
+});

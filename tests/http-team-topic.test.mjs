@@ -140,7 +140,7 @@ async function bootTeam(client = { team_group: GROUP, team_name: 'Equipo Contoso
       node_name: 'EDW', user_name: 'John',
       conversation_defaults: { allowed_users: ['owner-1'] },
       ...(block
-        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { url: 'contoso', being: 'ed', title: 'Contoso', ...client } }
+        ? { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, chatboxes: ['contoso_marketer'] } }, contoso_marketer: { client_name: 'contoso', being: 'ed', title: 'Contoso', ...client } }
         : { limbs: { telegram: { main: { account: 'edw_bot' } }, http: { port, clients: { contoso: { being: 'ed', title: 'Contoso', ...client } } } } }),
       agents: AGENTS,
     }),
@@ -423,6 +423,74 @@ describe('a chatbox client with no team_group', () => {
 describe('a signed visitor (identity)', () => {
   const client = (identity = 'required') => ({ team_group: GROUP, team_name: 'Equipo Contoso', identity, topic_title: CONTOSO_TITLE });
 
+  // The folder of a signed visitor is its rendered chat_title (no client prefix), through contacts.resolve like any limb's chat name.
+  const JD = { abrin: 'abc', user_type: 'P', short_name: 'Jane Doe', username: 'jdoe' };
+  const TITLE = '{abrin}-{user_type}-{username}-{short_name}';
+  const dirOf = (cwd) => cwd.split(/[\\/]/).at(-1);
+
+  it('folder: a signed visitor\'s folder is its rendered chat_title; the user card and the team topic land in that folder', async () => {
+    const n = await bootTeam({ ...client(), chat_title: TITLE });
+    const identity = signed(JD);
+    const a = await n.post({ text: 'hola', identity });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
+    expect(dirOf(n.turns[0].cwd)).toBe('abc-P-jdoe-Jane Doe');
+    const card = JSON.parse(await fs.readFile(join(n.turns[0].cwd, 'desktop', 'user.json'), 'utf8'));
+    expect(card).toMatchObject({ abrin: 'abc', username: 'jdoe', title: 'abc-P-jdoe-Jane Doe' });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await fs.readFile(ROOMS_FILE, 'utf8')).toContain('abc-P-jdoe-Jane Doe'), { timeout: 5000 });
+    expect(Object.values(n.state().contacts.http).map((e) => e.slug)).toEqual(['abc-P-jdoe-Jane Doe']);
+    expect(Object.keys(n.state().contacts.http)[0]).toMatch(/^http:contoso-[0-9a-f]{16}$/);   // the chat id is unchanged
+    n.app.stop();
+  });
+
+  it('folder: an unsigned visitor keeps <client>-<key>', async () => {
+    const n = await bootTeam({ ...client('optional'), chat_title: TITLE });
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    expect(dirOf(n.turns[0].cwd)).toMatch(/^contoso-[0-9a-f]{16}$/);
+    n.app.stop();
+  });
+
+  it('folder: a changed claim renames the folder and keeps the thread', async () => {
+    const n = await bootTeam({ ...client(), chat_title: TITLE }, { realFs: true });
+    const a = await n.post({ text: 'uno', identity: signed(JD) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JD)))).toBe(true), { timeout: 5000 });
+    const b = await n.post({ session: a.session, text: 'dos', identity: signed({ ...JD, short_name: 'Jane Roe' }) });
+    expect(b.session).toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(dirOf(n.turns[0].cwd)).toBe('abc-P-jdoe-Jane Doe');
+    expect(dirOf(n.turns[1].cwd)).toBe('abc-P-jdoe-Jane Roe');
+    expect(n.turns[1].session).toBe(n.turns[0].session);
+    await expect(fs.access(n.turns[0].cwd)).rejects.toThrow();
+    await fs.access(join(n.turns[1].cwd, 'desktop', 'user.json'));
+    n.app.stop();
+  });
+
+  it('folder: two chat ids that render the same title never share a folder', async () => {
+    const n = await bootTeam({ ...client(), chat_title: '{abrin}' });
+    const a = await n.post({ text: 'uno', identity: signed(JD) });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JD)))).toBe(true), { timeout: 5000 });
+    const who2 = { ...JD, username: 'jroe', short_name: 'Jim Roe' };
+    const b = await n.post({ text: 'dos', identity: signed(who2) });
+    await vi.waitFor(async () => expect(answered(await n.messages(b.session, signed(who2)))).toBe(true), { timeout: 5000 });
+    expect(a.session).not.toBe(b.session);
+    const [d1, d2] = n.turns.map((t) => dirOf(t.cwd));
+    expect(d1).toBe('abc');
+    expect(d2).toMatch(/^abc-[0-9a-f]{6}$/);
+    n.app.stop();
+  });
+
+  it('folder: a long chat_title is cut at 255 characters', async () => {
+    const n = await bootTeam({ ...client(), chat_title: '{short_name} {short_name} {short_name} {short_name}' });   // each claim is cut at 80 first
+    const who = { ...JD, short_name: 'N'.repeat(400) };
+    const a = await n.post({ text: 'uno', identity: signed(who) });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(who)))).toBe(true), { timeout: 5000 });
+    expect(dirOf(n.turns[0].cwd).length).toBeLessThanOrEqual(255);
+    expect(dirOf(n.turns[0].cwd).length).toBeGreaterThan(200);
+    n.app.stop();
+  });
+
   it('a valid token: the topic is "<abrin> <user_type> <short_name> (<username>)", and the user is on the desk (desktop/user.json, desktop/user.md), never the token', async () => {
     const n = await bootTeam(client());
     const identity = signed({ ...JP, user_id: 4711 });
@@ -576,7 +644,7 @@ describe('a signed visitor (identity)', () => {
       const identity = signed(JP);
       const i = await n.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
       await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
-      expect(n.turns[0].cwd).toMatch(/contoso-[0-9a-f]{16}/);
+      expect(n.turns[0].cwd).toMatch(/conversations[\\/]http[\\/]IEV · Juan Pérez · jperez$/);   // the folder: the visitor's chat_title
       expect(n.turns[0].m).toContain('revisa mis notas');
       expect(n.turns[0].m).not.toMatch(/opened the chatbox|nothing to answer yet/);
       await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being' && m.done)).toHaveLength(1), { timeout: 5000 });
@@ -624,7 +692,7 @@ describe('a signed visitor (identity)', () => {
     const identity = signed({ ...JP, user_id: 4711 });
     const i = await n.post({ kind: 'init', identity });
     expect(i.session).toEqual(expect.any(String));
-    const folders = () => [...n.io.files.keys()].filter((f) => /[\\/]conversations[\\/]http[\\/]contoso-[0-9a-f]{16}[\\/]transcript\.md$/.test(f));
+    const folders = () => [...n.io.files.keys()].filter((f) => /[\\/]conversations[\\/]http[\\/][^\\/]+[\\/]transcript\.md$/.test(f));
     await vi.waitFor(() => expect(folders()).toHaveLength(1), { timeout: 5000 });
     const slug = folders()[0].split(/[\\/]/).at(-2);
     await vi.waitFor(() => expect(n.transcript(slug)).toContain('(opened the chatbox, signed in as {"abrin":"IEV","user_type":"P","short_name":"Juan Pérez","username":"jperez","user_id":4711})'), { timeout: 5000 });

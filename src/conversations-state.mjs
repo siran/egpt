@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
-import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
+import { sanitizeSlug, sanitizeName, SLUG_MAX } from './sanitize.mjs';
 import { parseFrontMatter, renderFrontMatter, stripFrontMatter } from './transcript-meta.mjs';
 import { Room } from './room-core.mjs';
 import { mergeRoomBeings, persistRoomBeings, mergeAgentBeings, persistAgentBeings, roomsPathBeside, agentsPathBeside } from './rooms-file.mjs';
@@ -1058,6 +1058,8 @@ function _firstSeenMs(jid, entry, firstSeenOf) {
 // `base`, or when another chat holds it, `base-<tail of the chat id>`: 6 letters/digits, more while
 // taken. The tail, not the head: every Telegram supergroup id starts `tg:-100`. A server part
 // (`!room:beeper.com`, `n@s.whatsapp.net`) is the same for every chat, so it is left out.
+// A slug's cap: the historic 80, except an http conversation's, named by the chatbox's chat_title (up to SLUG_MAX).
+const _capOf = (surface) => (surface === 'http' ? SLUG_MAX : 80);
 function _slugFor(state, surface, jid, base) {
   if (!_slugHeld(state, surface, base, jid)) return base;
   const own = String(jid).startsWith('!') ? String(jid).slice(1).split(':')[0] : String(jid).split('@')[0];
@@ -1065,7 +1067,7 @@ function _slugFor(state, surface, jid, base) {
   let slug = base;
   for (let n = Math.min(6, id.length); n <= Math.min(id.length, 20); n++) {
     const tag = id.slice(-n);
-    slug = `${sanitizeSlug(base, 79 - tag.length)}-${tag}`;
+    slug = `${sanitizeSlug(base, _capOf(surface) - 1 - tag.length)}-${tag}`;
     if (!_slugHeld(state, surface, slug, jid)) break;
   }
   return slug;
@@ -1578,8 +1580,6 @@ export function fixedSlugFor(surface, jid) {
   // to. It also gives chatIdForEntity (boot.mjs) the reverse lookup for free: that function
   // already resolves any fixed-slug surface generically through this one.
   if (surface === 'room' || surface === 'agent') return sanitizeName(jid) || null;
-  // A chatbox session `http:<client>-<sid>` lives in conversations/http/<client>-<sid>/ (limbs.http).
-  if (surface === 'http') return /^http:./.test(String(jid)) ? sanitizeName(String(jid).slice(5)) : null;
   return (surface === 'shell' && jid === 'main') ? LOBBY_SLUG : null;
 }
 
@@ -1659,7 +1659,8 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     // The on-disk folder is moved by the caller (contacts.resolve), which also writes
     // a renames.log entry into the folder.
     let renamedFrom = null, renamedTo = null;
-    const title = sanitizeSlug(ctx.pushedName) || sanitizeSlug(cur.pushedName) || String(cur.slug ?? '').replace(LEGACY_SUFFIX, '');
+    const cap = _capOf(surface);
+    const title = sanitizeSlug(ctx.pushedName, cap) || sanitizeSlug(cur.pushedName, cap) || String(cur.slug ?? '').replace(LEGACY_SUFFIX, '');
     if (!viaAlias && !fixed && !isForkEntry(cur) && title) {
       const candidate = _slugFor(state, surface, resolved.primaryJid, title);
       if (candidate !== cur.slug) {
@@ -1691,10 +1692,11 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   // the contact, AND so creation agrees with the name-tracking above (no rename
   // on the 2nd message). slugHint is a fallback for callers that pass only a slug
   // (e.g. a slash command), and 'contact' is the last-resort placeholder.
-  const baseSlug = sanitizeSlug(ctx.pushedName)
-    || sanitizeSlug(ctx.slugHint)
+  const baseSlug = sanitizeSlug(ctx.pushedName, _capOf(surface))
+    || sanitizeSlug(ctx.slugHint, _capOf(surface))
     || 'contact';
-  const holder = !fixed && baseSlug !== 'contact' && _slugHolder(state, surface, baseSlug, jid);   // two nameless chats are never one
+  // two nameless chats are never one; nor are two chatbox chats (one id per chat: no second id to merge, and a title can repeat)
+  const holder = !fixed && surface !== 'http' && baseSlug !== 'contact' && _slugHolder(state, surface, baseSlug, jid);
   const same = holder && holder[1].slug.replace(LEGACY_SUFFIX, '') === baseSlug ? holder[0] : null;
   const seen = same ? _firstSeenMs(same, holder[1], ctx.firstSeenOf) : null;
   if (seen != null && (ctx.now ?? Date.now()) - seen <= MERGE_WINDOW_MS) {
