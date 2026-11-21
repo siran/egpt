@@ -3590,8 +3590,9 @@ export const CONFIG_SCHEMA = {
                      package). A hit: /upgrade full (the daemon renewed too);
                      none: /upgrade, spine only. One log line says which and why.
                      Where nothing respawns the daemon (EGPT_DAEMON_RESPAWNS=1
-                     or the container entrypoint, the daemon's own check: a
-                     Windows service or task is not assumed to), a hit is NOT run
+                     or the container entrypoint, the daemon's own check: the
+                     container and the Session 1 task's launcher set it, the
+                     Session 0 service is not assumed to), a hit is NOT run
                      full: it upgrades the spine only and posts one line that
                      /upgrade full is still needed by hand.
           auto and auto-full both: the existing drain (turns in flight finish, a
