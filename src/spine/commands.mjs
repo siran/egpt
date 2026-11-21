@@ -281,6 +281,8 @@ const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end', 'side'];
 const AGENTS_BARE_CMD = /^\/agents\s*$/i;
 // /<handle> super <message> (operator 2026-11-04): a turn of the chat's superintendent, agents.super.
 const SUPER_CMD = /^\/super\b/i;
+// The only commands a being's own signed line runs (commandOf reads them; isCommand holds each one's rule).
+const BEING_LINE_CMDS = new Set(['/super', '/msg']);
 const SUPER_BEING = 'super';
 // The public list's words for a reply mode; 'off' has none (that being is not listed).
 const PUBLIC_MODE_WORDS = {
@@ -812,7 +814,7 @@ export function createCommands({
     if (!body.startsWith('/')) {
       // A being's line (node-signed), read past its stamp and frame: /super is the only command found there.
       const view = ev?.fromNode != null ? addressingView(ev).trim() : null;
-      const hit = view && parseBeingCommand(view)?.cmd === '/super' ? { body: view, alias: null } : aliasOf(ev, body);
+      const hit = view && BEING_LINE_CMDS.has(parseBeingCommand(view)?.cmd) ? { body: view, alias: null } : aliasOf(ev, body);
       if (!hit) return null;
       ({ body, alias } = hit);
     }
@@ -859,6 +861,8 @@ export function createCommands({
     if (!body.startsWith('/')) return false;
     const onConsole = surfaceOf(ev) === SHELL_SURFACE && COMMAND_SET.has(body.split(/\s/)[0].toLowerCase());
     if (ev?.commandBeing == null && !onConsole) return false;
+    // /msg is anyone's, a person's or a being's line alike, except from a chatbox (http, chat-edu).
+    if (/^\/msg\b/i.test(body)) return surfaceOf(ev) !== 'http';
     // A being's line runs /super, but never this node's own S's line (author exclusion).
     if (ev?.fromNode != null && SUPER_CMD.test(body)) return !(String(ev.fromBeing ?? '').toLowerCase() === SUPER_BEING && !fromOtherNode(cfg(), ev));
     if (isOperator(ev)) return true;
@@ -4034,6 +4038,7 @@ export function createCommands({
     const text = (m?.[4] ?? '').trim();
     if (!term || !text) return refuse(`say where and what: ${hintOf('msg', ev)} <chat> <text> (a "quoted name" if it has spaces)`);
     if (!loadState) return refuse('no state');
+    if (surfaceOf(ev) === 'http') return refuse('not from a chatbox');
     const state = await loadState();
     const hit = resolveTarget(state, term, surfaceOf(ev), { skip: MSG_SKIP_SURFACES });
     if (hit.error) return refuse(hit.error);
