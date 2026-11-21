@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from './egpt-home.mjs';
-import { sanitizeSlug } from './sanitize.mjs';
+import { sanitizeSlug, SLUG_MAX } from './sanitize.mjs';
 import { statCache } from './stat-cache.mjs';
 
 // ── THE TWO REGISTRIES (operator 2026-09-01) ───────────────────────────────
@@ -235,7 +235,7 @@ export async function deleteRoomConfigBlock(ns, key, { reg = registryOf(ns), pat
 //
 // Byte-identical to ConversationRoom.ns() — computed here off (surface, slug) rather
 // than imported, since room-core.mjs imports THIS module.
-const nsOf = (reg, slug) => `${reg.surface}/${sanitizeSlug(slug)}`;
+const nsOf = (reg, slug) => `${reg.surface}/${sanitizeSlug(slug, SLUG_MAX)}`;
 const _agentsOf = (row) => (isPlainObject(row) && isPlainObject(row.agents)) ? row.agents : null;
 const _movable = (entry) => isPlainObject(entry) && !entry.aliasOf && !!entry.slug;
 

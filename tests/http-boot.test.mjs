@@ -309,8 +309,8 @@ describe('limbs.http.ayde through boot', () => {
     await fs.writeFile(join(convDir(id), 'desktop', 'user.json'), JSON.stringify({ abrin: 'IEV', username: 'mlopez' }));
     try {
       const other = 'contoso-00000000000000bb';
-      let registry = ensureContact(emptyState(), 'http', `http:${id}`).state;
-      registry = ensureContact(registry, 'http', `http:${other}`).state;
+      let registry = ensureContact(emptyState(), 'http', `http:${id}`, { pushedName: id }).state;
+      registry = ensureContact(registry, 'http', `http:${other}`, { pushedName: other }).state;
       await fs.mkdir(convDir(other), { recursive: true });
       const { app, url, lines } = await bootChatbox({ ayde: { on: true, scope: [`http:${id}`] }, registry });
       const ayde = url.replace('/chat/contoso/', '/ayde/');

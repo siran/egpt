@@ -2320,17 +2320,21 @@ export async function boot({
     // it is seated reach it as a recap.
     const TOPIC_COOLDOWN_MS = 2 * 60_000;
     const seating = new Map(), failedAt = new Map();
-    const seatTeamTopic = (client, chatId, { isNew, recap, identity }) => {
+    // A chatbox conversation's folder: what its contacts entry says, through the same resolver as every limb's chat
+    // (the name the limb delivers, chat_title for a signed visitor, names it and renames it). Without a name, the stored one stays.
+    const httpSlug = (chatId, chatName) => contacts.resolve('http', chatId, { chatName, seed: strangerSeedOf({ surface: 'http', chatId }) });
+    const seatTeamTopic = (client, chatId, { isNew, recap, identity, chatName }) => {
       const c = clients[client] ?? {};
       if (c.team_group == null || !telegramPort || seating.has(chatId)) return;
       if (now() - (failedAt.get(chatId) ?? -Infinity) < TOPIC_COOLDOWN_MS) return;
       const fail = (why) => { failedAt.set(chatId, now()); hlog(`${chatId}: no team topic — ${why}`); };
       seating.set(chatId, (async () => {
-        const slug = fixedSlugFor('http', chatId);
+        const slug = await httpSlug(chatId, chatName);
+        if (!slug) return fail('no conversation folder');
         const room = Room.forChat('http', slug);
         if ((await room.members()).some((m) => m.kind === 'tg-group')) return;
         if (!isNew) hlog(`${chatId}: no team topic yet — trying again`);
-        const title = renderTopicTitle(c.topic_title, { ...identity?.claims, title: c.title || client, sid: slug.slice(client.length + 1, client.length + 7) });
+        const title = renderTopicTitle(c.topic_title, { ...identity?.claims, title: c.title || client, sid: chatId.slice(`http:${client}-`.length).slice(0, 6) });
         const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
         if (!made?.success) return fail(made?.reason ?? 'the Telegram limb made none');
         failedAt.delete(chatId);
@@ -2349,14 +2353,14 @@ export async function boot({
     // (e.g. every account of the person, signed by the site). They can change between page loads, so the card is
     // rewritten whenever a verified line or init brings other values — not only for a new conversation.
     const cardSeen = new Map();   // chatId → the card claims as last written or read
-    const beforeLine = async ({ client, chatId, isNew, init, recap, identity, title, subtitle }) => {
+    const beforeLine = async ({ client, chatId, chatName, isNew, init, recap, identity, title, subtitle }) => {
       const c = clients[client] ?? {};
       const extra = (Array.isArray(c.card_claims) ? c.card_claims.map(String) : []).filter((k) => k && k !== 'exp' && k !== 'iat');
       if (identity && (isNew || extra.length)) {
         const picked = {};
         for (const k of extra) { const v = identity.claims?.[k] ?? identity.data?.[k]; if (v !== undefined) picked[k] = v; }
         const sig = JSON.stringify(picked);
-        const dir = slugDir('http', fixedSlugFor('http', chatId));
+        const dir = slugDir('http', await httpSlug(chatId, chatName));
         const file = join(dir, 'desktop', 'user.json');
         let write = isNew;
         if (!write && cardSeen.get(chatId) !== sig) {
@@ -2378,16 +2382,16 @@ export async function boot({
       }
       if (isNew && c.seed) {
         const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));
-        const n = copyTreeIfMissing(from, slugDir('http', fixedSlugFor('http', chatId)));
+        const n = copyTreeIfMissing(from, slugDir('http', await httpSlug(chatId, chatName)));
         hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
       }
-      if (!init) seatTeamTopic(client, chatId, { isNew, recap, identity });
+      if (!init) seatTeamTopic(client, chatId, { isNew, recap, identity, chatName });
     };
     // A visitor's "end conversation": a fresh thread in the same conversation (/agents rethread's
     // own path), and the `ended` line to its chat members seated for replies (the team topic).
     const onEnd = async ({ chatId, ended }) => {
-      const slug = fixedSlugFor('http', chatId);
-      const beings = await commands.endConversation({ surface: 'http', chatId, chatName: slug });
+      const slug = await httpSlug(chatId);   // no name: the conversation's own stays
+      const beings = await commands.endConversation({ surface: 'http', chatId, chatName: getContact(await _loadState(), 'http', chatId)?.entry?.pushedName });
       hlog(`${chatId}: ended by the visitor — ${beings.length ? `${beings.join(', ')} rethreaded` : 'no being had a thread'}`);
       for (const m of await Room.forChat('http', slug).members()) {
         if (m.replies === true && CHAT_MEMBER_KINDS.includes(m.kind)) await sayOnce({ chatId: m.id, text: ended, what: 'chatbox end' });

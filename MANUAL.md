@@ -698,6 +698,16 @@ row shows name and username; an anonymous chat is **Visitor** and its first
 line. Chat ids and folder names are in the tooltip. Nobody below root can list
 `conversations/` itself.
 
+`chat_title` also names a signed visitor's conversation folder, with no client
+prefix, as a Telegram group's name names its folder (cut at 255 characters, and
+renamed with its thread kept when a claim changes). With
+`chat_title: "{abrin}-{user_type}-{username}-{short_name}"` the folder is
+`conversations/http/abc-P-jdoe-Jane Doe/`. Two chats that render the same title
+never share a folder: the second takes the tail of its chat id (`abc-3f9a1c`).
+The chat id stays `http:<client>-<key>`. An unsigned visitor keeps
+`<client>-<key>`; a conversation made before this is renamed when its signed
+visitor next writes.
+
 **Support line.** Any ayde user who reads a conversation can say a line into its
 live chatbox session (`POST <ayde.path>/say`, `{client, key, text}`; the room has
 a box for it). The visitor's widget shows it headed `Soporte · <user>`; the
