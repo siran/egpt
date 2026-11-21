@@ -23,6 +23,9 @@
 // `cap` (default 80, the historic slug cap) is overridable so other name consumers
 // (stats filenames want ~120 with their own word-boundary trim, operator 2026-07-04)
 // share this ONE implementation instead of reimplementing the char rules.
+// The longest a conversation folder name may be (an http conversation's: the chatbox's chat_title); every other
+// surface's slug stays at the historic 80 (ensureContact), and the folder paths accept up to this.
+export const SLUG_MAX = 255;
 const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 export function sanitizeSlug(s, cap = 80) {
   let out = String(s ?? '')
