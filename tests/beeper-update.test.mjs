@@ -120,7 +120,7 @@ describe('detection — the states, from structured facts only', () => {
       return { status: ok ? 200 : 401, json: async () => [] };
     };
     const cfg = { beeper: { primary: { token: 'tok-primary' }, secondary: { token: 'tok-secondary' }, auto_update: { windows: { method: 'manual' } }, use: 'secondary' } };
-    const d = await detect(cfg, { fetchImpl, installedVersion: async () => '4.3.176', localAppData: lad });
+    const d = await detect(cfg, { fetchImpl, platform: 'win32', installedVersion: async () => '4.3.176', localAppData: lad });
     expect(d.installed).toBe('4.3.176');
     expect(d.pending).toEqual({ fileName: 'Beeper x64 4.3.209.exe', version: '4.3.209', adminRequired: false });
     expect(d.latest).toEqual({ version: '4.3.209', date: '2026-10-15T11:58:08+00:00', url: 'https://example.invalid/Beeper%20x64%204.3.209.exe', sha512: 'c2hh' });
@@ -135,7 +135,7 @@ describe('detection — the states, from structured facts only', () => {
   });
 
   it('the feed answering 204 means nothing newer', async () => {
-    const d = await detect({}, { fetchImpl: async (url) => { if (String(url).includes('api.beeper.com')) return { status: 204, json: async () => null }; throw new Error('ECONNREFUSED'); }, installedVersion: async () => '4.3.209', localAppData: tmp() });
+    const d = await detect({}, { fetchImpl: async (url) => { if (String(url).includes('api.beeper.com')) return { status: 204, json: async () => null }; throw new Error('ECONNREFUSED'); }, platform: 'win32', installedVersion: async () => '4.3.209', localAppData: tmp() });
     expect(d.latest).toEqual({ version: '4.3.209', date: null });
     expect(stateOf(d)).toBe('up-to-date');
     expect(statusLine('do', d)).toBe('do · Beeper 4.3.209 · up to date');

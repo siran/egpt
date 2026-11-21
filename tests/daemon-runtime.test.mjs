@@ -698,6 +698,7 @@ describe('boot-failure recovery ladder (never-healthy crash loop)', () => {
       expect(iCommit).toBeGreaterThan(iAdd);
       expect(iVerify).toBeGreaterThan(iCommit);
       expect(iBack).toBeGreaterThan(iVerify);          // destructive step LAST, behind the gate
+      expect(h.spawnSync.calls[iVerify].opts.env.MSYS).toMatch(/\bnoglob\b/);   // rescue/…^{commit} reaches an msys2 git intact (git-env.test.mjs)
       expect(sigs.some((s) => s.startsWith('git push -u origin rescue/'))).toBe(true);
       expect(h.logs.join('')).toContain('and the working copy cleaned');
     });

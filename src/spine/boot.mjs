@@ -4377,6 +4377,7 @@ export async function boot({
       for (const w of peerLiveness.values()) w.stop();   // stop probing the peer spines
       lagProbe.stop();
       spine.stop();
+      return background?.flush();   // its last state/background.json write: await it before removing the profile
     },
   };
 }

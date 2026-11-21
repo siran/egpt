@@ -214,7 +214,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     const { app, tg } = await bootWith(NU(), { ingest: true });
     await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt started/.test(s.text))).toBe(true), { timeout: 10000 });
     expect(tg[0].sent.filter((s) => /egpt started/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
-    app.stop();
+    await app.stop();
   });
 
   it('a legacy chat_ids is still read: the same line, same chat', async () => {
@@ -222,7 +222,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     const { app, tg } = await bootWith(NU({ chat_ids: [TOPIC], allowed_users: [42] }), { ingest: true });
     await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt started/.test(s.text))).toBe(true), { timeout: 10000 });
     expect(tg[0].sent.filter((s) => /egpt started/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
-    app.stop();
+    await app.stop();
   });
 
   it('/e restart in the topic, from a sender on no list: the topic is an admin chat, so it runs; "↻" goes there and the sidecar names it', async () => {
@@ -232,7 +232,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
     expect(tg[0].sent.filter((s) => s.text.includes('↻')).map((s) => s.chatId)).toEqual([TOPIC]);
     expect(JSON.parse(await fs.readFile(SIDECAR, 'utf8')).chatId).toBe(TOPIC);
-    app.stop();
+    await app.stop();
   });
 
   it('the read-back: "egpt back up!" goes to the chat the sidecar names', async () => {
@@ -242,7 +242,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     const { app, tg } = await bootWith(NU(), { ingest: true });
     await vi.waitFor(() => expect(tg[0].sent.some((s) => /egpt back up!/.test(s.text))).toBe(true), { timeout: 10000 });
     expect(tg[0].sent.filter((s) => /egpt back up!/.test(s.text)).map((s) => s.chatId)).toEqual([TOPIC]);
-    app.stop();
+    await app.stop();
   });
 
   // log_to_group as a Telegram topic (operator 2026-11-03: "can you fix so that it shows in the log
@@ -256,7 +256,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     const { app, tg } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
     await tg[0].onIncoming('/e status', tgFrom);
     await vi.waitFor(() => expect(said(tg, /\/status in An R by An R/)).toEqual([LOGS]), { timeout: 10000 });
-    app.stop();
+    await app.stop();
   });
 
   it('"↻" goes to the admin topic AND the log topic', async () => {
@@ -265,7 +265,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await tg[0].onIncoming('/e restart', inTopic);
     await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
     expect(said(tg, /↻/).sort()).toEqual([TOPIC, LOGS].sort());
-    app.stop();
+    await app.stop();
   });
 
   it('"egpt back up!" goes to both; once when log_to_group IS the admin chat', async () => {
@@ -276,7 +276,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
       const { app, tg } = await bootWith({ ...NU(), log_to_group: logTo }, { ingest: true, tgExtra: { resolveChatId } });
       await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toHaveLength(want.length), { timeout: 10000 });
       expect(said(tg, /egpt back up!/).sort()).toEqual([...want].sort());
-      app.stop();
+      await app.stop();
     }
   });
 
@@ -284,7 +284,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await writeToken();
     const { app, tg } = await bootWith({ ...NU({ allowed_users: [42] }), log_to_group: LOGS }, { ingest: true, tgExtra: { resolveChatId } });
     await vi.waitFor(() => expect(said(tg, /egpt started/)).toEqual([LOGS]), { timeout: 10000 });
-    app.stop();
+    await app.stop();
   });
 
   // The outcome daemon-runtime.mjs addOutcome joins to the sidecar.
@@ -296,7 +296,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
       const { app, tg } = await bootWith(NU(), { ingest: true });
       await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toEqual([TOPIC]), { timeout: 10000 });
       expect(tg[0].sent.find((s) => /egpt back up!/.test(s.text)).text.split('\n')[0]).toMatch(new RegExp(`^✅ egpt back up! \\(.+\\) pid 999 → \\d+ — /upgrade: ${outcome.replace(/[().]/g, '\\$&')}$`));
-      app.stop();
+      await app.stop();
     });
   }
 
@@ -306,7 +306,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await tg[0].onIncoming('stop', inTopic);   // the owner (42, authorized), in the admin topic
     expect(exits).toEqual([]);
     await expect(fs.access(join(_HOME, 'STOP'))).rejects.toThrow();
-    app.stop();
+    await app.stop();
   });
 });
 
