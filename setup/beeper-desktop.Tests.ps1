@@ -229,12 +229,12 @@ Describe 'Close-BeeperApp (-CloseAppOnly)' {
       $p.HasExited | Should Be $true
     } finally { if (-not $p.HasExited) { $p.Kill() } }
   }
-  It 'an app that only hides (Beeper with quit_on_close off): $false after the wait, and still running' {
+  It 'an app that only hides (Beeper with quit_on_close off): its process tree is ended after the wait, $true once gone' {
     $p = Start-Form 'hides' -Hides
     try {
       $get = { @(Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)") }.GetNewClosure()
-      Close-BeeperApp 3 $noLock $get 'WindowsForms10.Window.*' | Should Be $false
-      $p.HasExited | Should Be $false
+      Close-BeeperApp 3 $noLock $get 'WindowsForms10.Window.*' | Should Be $true
+      $p.WaitForExit(5000) | Should Be $true
     } finally { if (-not $p.HasExited) { $p.Kill() } }
   }
   It 'gone, but its profile lockfile still held: not quit until the lock clears' {

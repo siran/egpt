@@ -3492,7 +3492,6 @@ export async function boot({
     readLog: async () => (await logGroupIo())?.readRecent() ?? [],
     editLog: async (id, text) => (await logGroupIo())?.edit(id, text) ?? false,
     hint: () => commands.hintOf('update beeper'),   // this node's own handle: /e update beeper, /don update beeper
-    ownNames: () => ownNodeNamesOf(getConfig()),
     onLog: (m) => log.line?.(`[beeper-update] ${m}`),
   }) : null;
   // The 6-hourly look at this checkout's upstream (src/tools/egpt-update.mjs): the notice, and under

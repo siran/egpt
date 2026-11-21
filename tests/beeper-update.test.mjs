@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
-  autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine, startLine,
-  peerUpdating, refusalText, lastJson, createBeeperUpdate, holdLine, quitLine, CLOSE_TRY_SEC, CLOSE_WAIT_SEC,
+  autoUpdateMethod, stateOf, cmpVersion, detect, statusLine, noticeLine, resultLine,
+  refusalText, lastJson, createBeeperUpdate, holdLine, CLOSE_TRY_SEC,
   runToolDry, runTool, readInstalledVersion, readInstalledLinux, runLinuxDry, runLinux, beeperMains, ENTRYPOINT_MARKER,
   findMacApp, readInstalledMac, runMacDry, runMac, macMains, reopenArgs, readLatest,
 } from '../src/tools/beeper-update.mjs';
@@ -173,7 +173,6 @@ function rig({ detect: det = REVE, plan = { ok: true, flow: 'services' }, result
     readLog: async () => { calls.push('readLog'); return [...log, ...posts.map((text, i) => ({ id: `p${i}`, text, ts: 0 }))]; },
     editLog: async (id, t) => { calls.push('edit'); edits.push({ id, t }); return true; },
     hint: () => '/e update beeper',
-    ownNames: () => new Set([node]),
     now: () => 0,
     onLog: (m) => lines.push(m),
   });
@@ -332,14 +331,14 @@ describe('/update beeper — the flow', () => {
     expect(await r.u.update()).toBe('kg · Beeper 4.3.209 not installed: the download does not match its sha512 — delete X and let Beeper download it again');
   });
 
-  it('drain first; once quiet: the peer check, the start line, the restart state around the tool, then ONE result line', async () => {
+  it('drain first; once quiet: the start line, the restart state around the tool, then ONE result line', async () => {
     const r = rig();
     const reply = await r.u.update();
     expect(reply).toMatch(/^⏳ kg · Beeper 4\.3\.176 → 4\.3\.209: restarting Beeper for the update once turns finish/);
     expect(r.calls).toEqual(['detect', 'dryRun', 'drain']);   // the tool waits for the drain
     expect(r.u.busy()).toBe(true);
     await r.runDrain();
-    expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
+    expect(r.calls.slice(3)).toEqual(['post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
     expect(r.posts[0]).toMatch(/^🔄 kg · Beeper 4\.3\.176 → 4\.3\.209 · restarting for update… ⟦bu-kg-/);
     expect(r.edits).toEqual([{ id: 'p0', t: '🔄 kg · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓ · secondary ✓' }]);
     expect(r.u.busy()).toBe(false);
@@ -347,38 +346,30 @@ describe('/update beeper — the flow', () => {
 
   describe('the open app goes first, with every bridge still serving', () => {
     const OPEN = { ok: true, flow: 'services', closeApp: true };
-    const HID = { ok: false, quit: false, step: 'close-app', error: 'the Beeper app hid instead of quitting', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] };
+    const STUCK = { ok: false, quit: false, step: 'close-app', error: 'the Beeper app is still running after closing and ending it', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] };
     const QUIT = { ok: true, quit: true };
-    const ASK = '⏳ kg · Beeper 4.3.176 → 4.3.209: quit Beeper from the tray (Quit) and the update continues; nothing is stopped until then';
+    const fromStart = (r) => r.calls.slice(r.calls.indexOf('post:🔄'));
 
-    it('it only hides: ONE line asking for the tray Quit, the long wait, then the restart state and the run that relaunches it', async () => {
-      const r = rig({ plan: OPEN, runs: [HID, QUIT] });
-      await r.u.update();
-      await r.runDrain();
-      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'post:⏳ ', `run:closeAppOnly:${CLOSE_WAIT_SEC}`, 'beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
-      expect(r.posts.filter((p) => p.startsWith('⏳'))).toEqual([ASK]);
-      expect(quitLine('kg', '4.3.176', '4.3.209')).toBe(ASK);
-      expect(r.edits).toEqual([{ id: 'p0', t: '🔄 kg · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓ · secondary ✓' }]);
-      expect([CLOSE_TRY_SEC, CLOSE_WAIT_SEC]).toEqual([30, 570]);
-      expect(r.u.busy()).toBe(false);
-    });
-
-    it('it quits on WM_CLOSE: no tray line, straight on, and it is relaunched', async () => {
+    it('ONE close run (WM_CLOSE, else its process tree ended): no tray line, then the restart state and the run that relaunches it', async () => {
       const r = rig({ plan: OPEN, runs: [QUIT] });
       await r.u.update();
       await r.runDrain();
-      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
+      expect(fromStart(r)).toEqual(['post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
       expect(r.posts.some((p) => p.startsWith('⏳'))).toBe(false);
+      expect(r.edits).toEqual([{ id: 'p0', t: '🔄 kg · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓ · secondary ✓' }]);
+      expect(CLOSE_TRY_SEC).toBe(30);
+      expect(r.u.busy()).toBe(false);
     });
 
-    it('nobody quits it in time: today\'s refusal line, nothing stopped, no restart state', async () => {
-      const r = rig({ plan: OPEN, runs: [HID, HID] });
+    // kg, eGPT Admin 2026-11-21 14:13: "⏳ kg · … quit Beeper from the tray (Quit) and the update continues",
+    // 14:23: "FAILED at close-app: the Beeper app hid instead of quitting".
+    it('still there after closing and ending it: the tray remedy is the reported failure — no ask, no second wait, no restart state', async () => {
+      const r = rig({ plan: OPEN, runs: [STUCK, QUIT] });
       await r.u.update();
       await r.runDrain();
-      expect(r.calls.slice(3)).toEqual(['readLog', 'post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'post:⏳ ', `run:closeAppOnly:${CLOSE_WAIT_SEC}`, 'readLog', 'edit']);
-      expect(r.calls).not.toContain('beeperRestart:true');
-      expect(r.posts.filter((p) => p.startsWith('⏳'))).toEqual([ASK]);
-      expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.176 → 4.3.209 · FAILED at close-app: the Beeper app hid instead of quitting — quit Beeper from its tray icon (Quit), then update again');
+      expect(fromStart(r)).toEqual(['post:🔄', `run:closeAppOnly:${CLOSE_TRY_SEC}`, 'readLog', 'edit']);
+      expect(r.posts.some((p) => p.startsWith('⏳'))).toBe(false);
+      expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.176 → 4.3.209 · FAILED at close-app: the Beeper app is still running after closing and ending it — quit Beeper from its tray icon (Quit), then update again');
       expect(r.u.busy()).toBe(false);
     });
 
@@ -391,30 +382,32 @@ describe('/update beeper — the flow', () => {
       expect(r.edits[0].t).toBe('🔄 kg · Beeper 4.3.176 → 4.3.209 · FAILED at tool: spawn powershell.exe ENOENT');
     });
 
-    it('a handover hold during the wait is refused; the update goes on when he quits', async () => {
-      let quit;
-      const r = rig({ plan: OPEN, runs: [HID, () => new Promise((res) => { quit = res; })] });
+    it('a handover hold during the close is refused; the update goes on once the app is gone', async () => {
+      let gone;
+      const r = rig({ plan: OPEN, runs: [() => new Promise((res) => { gone = res; })] });
       await r.u.update();
       await r.runDrain();
-      expect(r.calls.at(-1)).toBe(`run:closeAppOnly:${CLOSE_WAIT_SEC}`);
+      expect(r.calls.at(-1)).toBe(`run:closeAppOnly:${CLOSE_TRY_SEC}`);
       expect(r.u.busy()).toBe(true);
       expect(await r.u.hold(true)).toBe(false);
       expect(r.lines).toContain('hold refused: an update is under way');
       expect(r.calls).not.toContain('beeperRestart:true');
-      quit(QUIT);
+      gone(QUIT);
       for (let i = 0; i < 10; i++) await flush();
       expect(r.calls.slice(-5)).toEqual(['beeperRestart:true', 'run:relaunchApp', 'beeperRestart:false', 'readLog', 'edit']);
       expect(r.u.busy()).toBe(false);
     });
   });
 
-  it('a peer already restarting its Beeper: no restart here, one line saying so', async () => {
-    const r = rig({ log: [{ id: 'x', text: '🔄 do · Beeper 4.3.176 → 4.3.209 · restarting for update… ⟦bu-do-1⟧', ts: 0 }] });
+  // eGPT Admin 2026-11-21 14:13/14:14: /d update beeper answered "⏸ do · … not started — kg is restarting
+  // its Beeper" twice. Each node updates its own Beeper; another node's 🔄 line holds nothing.
+  it('another node\'s open 🔄 line holds nothing here: this node updates its own Beeper', async () => {
+    const r = rig({ node: 'do', log: [{ id: 'x', text: '🔄 kg · Beeper 4.3.308 → 4.3.340 · restarting for update… ⟦bu-kg-1⟧', ts: 0 }] });
     await r.u.update();
     await r.runDrain();
-    expect(r.calls).not.toContain('run');
-    expect(r.calls).not.toContain('beeperRestart:true');
-    expect(r.posts).toEqual(['⏸ kg · Beeper 4.3.176 → 4.3.209 not started — do is restarting its Beeper for an update; send /e update beeper again after its 🔄 line']);
+    expect(r.posts.some((p) => p.startsWith('⏸'))).toBe(false);
+    expect(r.calls.slice(r.calls.indexOf('drain') + 1)).toEqual(['post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
+    expect(r.edits).toEqual([{ id: 'p0', t: '🔄 do · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓ · secondary ✓' }]);
     expect(r.u.busy()).toBe(false);
   });
 
@@ -841,7 +834,7 @@ describe('linux — the same service: states, drain, restart state, lines', () =
     const path = join(r.home, 'state', 'beeper-update', LFILE);
     expect(readFileSync(path)).toEqual(BYTES);
     await r.runDrain();
-    expect(r.calls.slice(r.calls.indexOf('drain') + 1)).toEqual(['readLog', 'post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
+    expect(r.calls.slice(r.calls.indexOf('drain') + 1)).toEqual(['post:🔄', 'beeperRestart:true', 'run', 'beeperRestart:false', 'readLog', 'edit']);
     expect(r.tool).toEqual([
       { dryRun: true, restartOnly: false, installer: path, sha512: b64(BYTES) },
       { restartOnly: false, relaunchApp: false, installer: path, sha512: b64(BYTES) },
@@ -1018,14 +1011,6 @@ describe('the lines', () => {
       .toBe('🔄 do · Beeper 4.3.176 → 4.3.209 · FAILED at install: installer exit 2; Beeper.exe is 4.3.176, expected 4.3.209 · restarted in 40 s');
   });
 
-  it('the peer check reads only another node\'s open, recent start line', () => {
-    const line = (n) => ({ text: startLine(n, '4.3.176', '4.3.209', '⟦bu-x⟧'), ts: 1000 });
-    expect(peerUpdating([line('do')], { own: new Set(['kg']), nowMs: 2000 })).toBe('do');
-    expect(peerUpdating([line('kg')], { own: new Set(['kg']), nowMs: 2000 })).toBe(null);
-    expect(peerUpdating([line('do')], { own: new Set(['kg']), nowMs: 1000 + 21 * 60_000 })).toBe(null);
-    expect(peerUpdating([{ text: '🔄 do · Beeper 4.3.176 → 4.3.209 · restarted in 72 s · primary ✓', ts: 1000 }], { own: new Set(['kg']), nowMs: 2000 })).toBe(null);
-  });
-
   it('the tool\'s JSON is its last JSON line', () => {
     expect(lastJson('[beeper-update] x\r\n{"ok":true,"flow":"app"}\r\n')).toEqual({ ok: true, flow: 'app' });
     expect(lastJson('[beeper-update] no json here')).toBe(null);
@@ -1150,18 +1135,24 @@ describe.skipIf(process.platform !== 'win32')('the service permission — one AC
 });
 
 // 2026-10-21 17:02: CloseMainWindow cannot reach a window hidden in the tray, so the tool killed
-// the operator's Beeper ("6 Beeper processes still up - terminating").
-describe('beeper-update.ps1 never kills Beeper', () => {
+// the operator's Beeper ("6 Beeper processes still up - terminating"): WM_CLOSE goes first since.
+// 2026-11-21 (operator): eGPT closes and opens Beeper; an app that only hid is ended, not asked for.
+describe('beeper-update.ps1 closes the app through Close-BeeperApp only', () => {
   const src = readFileSync(TOOL, 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
-  it('no Stop-Process, no CloseMainWindow; the app is closed (WM_CLOSE, hidden window included) BEFORE any service stops', () => {
-    expect(code).not.toMatch(/Stop-Process|\.Kill\(|CloseMainWindow/);
+  it('the tool kills nothing itself; the app is closed BEFORE any service stops', () => {
+    expect(code).not.toMatch(/Stop-Process|\.Kill\(|CloseMainWindow|taskkill/i);
     expect(code.indexOf('Close-BeeperApp ')).toBeGreaterThan(0);
     expect(code.indexOf('Close-BeeperApp ')).toBeLessThan(code.indexOf('Stop-Service $svc'));
+  });
+  it('Close-BeeperApp: WM_CLOSE first (hidden window included), then the app\'s process trees ended; never a Session 0 Beeper', () => {
     const lib = readFileSync(LIB, 'utf8');
     const fn = lib.slice(lib.indexOf('function Close-BeeperApp('));
     const body = fn.slice(0, fn.indexOf('\n}'));
-    expect(body).toContain('Close-BeeperAppWindows');
+    expect(body).toContain('SessionId -ne 0');
+    expect(body.indexOf('Close-BeeperAppWindows')).toBeGreaterThan(0);
+    expect(body).toMatch(/taskkill\.exe \/PID \$\w+ \/T \/F/);
+    expect(body.indexOf('taskkill.exe')).toBeGreaterThan(body.indexOf('Close-BeeperAppWindows'));
     expect(body).not.toMatch(/Stop-Process|\.Kill\(|CloseMainWindow/);
   });
   it('-CloseAppOnly answers before any plan, refusal or service is touched', () => {
@@ -1170,10 +1161,41 @@ describe('beeper-update.ps1 never kills Beeper', () => {
     expect(at).toBeLessThan(code.indexOf('Read-MachineState }'));
     expect(at).toBeLessThan(code.indexOf('Stop-Service'));
   });
-  it('an app that hides instead of quitting: refused at close-app, nothing stopped, and the line says what to do', () => {
-    expect(code).toMatch(/step = 'close-app'; error = 'the Beeper app hid instead of quitting'/);
-    expect(resultLine('kg', { from: '4.3.209', to: '4.3.229', result: { ok: false, step: 'close-app', error: 'the Beeper app hid instead of quitting', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] } }))
-      .toBe('🔄 kg · Beeper 4.3.209 → 4.3.229 · FAILED at close-app: the Beeper app hid instead of quitting — quit Beeper from its tray icon (Quit), then update again');
+  it('an app still there after closing and ending it: refused at close-app, nothing stopped, and the line says what to do', () => {
+    expect(code).toMatch(/step = 'close-app'; error = 'the Beeper app is still running after closing and ending it'; remedy = 'quit Beeper from its tray icon \(Quit\), then update again'/);
+    expect(resultLine('kg', { from: '4.3.209', to: '4.3.229', result: { ok: false, step: 'close-app', error: 'the Beeper app is still running after closing and ending it', remedy: 'quit Beeper from its tray icon (Quit), then update again', connections: [] } }))
+      .toBe('🔄 kg · Beeper 4.3.209 → 4.3.229 · FAILED at close-app: the Beeper app is still running after closing and ending it — quit Beeper from its tray icon (Quit), then update again');
+  });
+});
+
+// kg, eGPT Admin 2026-11-21 14:23: "FAILED at close-app: the Beeper app hid instead of quitting". A throwaway
+// window that swallows WM_CLOSE, as Beeper does with "Quit Beeper when closing the main window" off; never Beeper.
+describe.skipIf(process.platform !== 'win32')('Close-BeeperApp on an app that only hides', () => {
+  it('its process tree is ended: $true, and the process is gone', { timeout: 60_000 }, () => {
+    const dir = tmp();
+    const form = join(dir, 'hides.ps1');
+    writeFileSync(form, [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      "Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition 'public class EatClose : System.Windows.Forms.IMessageFilter { public bool PreFilterMessage(ref System.Windows.Forms.Message m) { return m.Msg == 0x10; } }'; [Windows.Forms.Application]::AddMessageFilter((New-Object EatClose))",
+      '$f = New-Object Windows.Forms.Form; $f.ShowInTaskbar = $false; $f.add_Shown({ $f.Hide() })',
+      '[Windows.Forms.Application]::Run($f)',
+    ].join('\r\n'));
+    const drive = join(dir, 'drive.ps1');
+    writeFileSync(drive, [
+      `. '${LIB}'`,
+      `$si = New-Object Diagnostics.ProcessStartInfo 'powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "${form}"'`,
+      '$si.UseShellExecute = $false; $si.CreateNoWindow = $true',
+      '$p = [Diagnostics.Process]::Start($si)',
+      'Start-Sleep -Seconds 4',
+      'try {',
+      '  $get = { @(Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)") }.GetNewClosure()',
+      `  $r = Close-BeeperApp 3 '${join(dir, 'no-profile')}' $get 'WindowsForms10.Window.*'`,
+      '  Write-Output "closed=$r exited=$($p.WaitForExit(5000))"',
+      '} finally { if (-not $p.HasExited) { $p.Kill() } }',
+    ].join('\r\n'));
+    const out = ps(['-File', drive]).stdout;
+    rmSync(dir, { recursive: true, force: true });
+    expect(out).toMatch(/closed=True exited=True/);
   });
 });
 

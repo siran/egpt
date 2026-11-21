@@ -293,19 +293,24 @@ public delegate bool EnumProc(IntPtr h, IntPtr l);
   return $hits.Count
 }
 
-# The Beeper app (Session 1): WM_CLOSE, then wait up to $Sec for its processes and its profile
-# lockfile to go. $true once it has quit, or was not running. It never kills: one that only hid
-# is still running when this returns $false.
+# The Beeper app (never a Session 0 service): WM_CLOSE, up to $Sec for its processes and its profile
+# lockfile to go; one that only hid has its main process trees ended (taskkill /T /F, as chrome-host
+# does), then up to $Sec again. $true once it has quit, or was not running.
 function Close-BeeperApp([int] $Sec, [string] $ProfileDir, [scriptblock] $GetApp = { @(Get-CimInstance Win32_Process -Filter "Name='Beeper.exe'" | Where-Object { $_.SessionId -ne 0 }) }, [string] $ClassLike = 'Chrome_WidgetWin_1') {
   if (-not @(& $GetApp).Count) { return $true }
   $main = @(& $GetApp | Where-Object { [string]$_.CommandLine -notmatch '--type=' } | ForEach-Object { [int]$_.ProcessId })
+  $gone = {
+    $deadline = (Get-Date).AddSeconds($Sec)
+    do {
+      if (-not @(& $GetApp).Count -and -not (Test-BeeperLockHeld $ProfileDir)) { return $true }
+      Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+  }
   [void](Close-BeeperAppWindows $main $ClassLike)
-  $deadline = (Get-Date).AddSeconds($Sec)
-  do {
-    if (-not @(& $GetApp).Count -and -not (Test-BeeperLockHeld $ProfileDir)) { return $true }
-    Start-Sleep -Milliseconds 500
-  } while ((Get-Date) -lt $deadline)
-  return $false
+  if (& $gone) { return $true }
+  foreach ($id in $main) { & taskkill.exe /PID $id /T /F | Out-Null }
+  return (& $gone)
 }
 
 # --- a Beeper service run as the desktop user ----------------------------------------------
