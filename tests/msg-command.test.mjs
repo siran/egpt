@@ -42,7 +42,9 @@ function build(keys, config = {}) {
     onLog: () => {},
   });
   const msg = (body) => cmds.run({ chatId: ORIGIN, surface: 'telegram', msgId: 'm1', body, isSender: true, commandBeing: 'leo', commandHandle: 'leo' });
-  return { msg, sent, posts };
+  // the spine's own path for any line: commandOf, then isCommand, then run
+  const via = async (ev) => { const c = cmds.commandOf({ chatId: ORIGIN, surface: 'telegram', msgId: 'm2', ...ev }, undefined); if (c && await cmds.isCommand(c)) { await cmds.run(c); return true; } return false; };
+  return { msg, sent, posts, via, run: cmds.run };
 }
 
 describe('/msg', () => {
@@ -115,5 +117,36 @@ describe('/msg', () => {
     await msg('/msg daniel');
     expect(posts).toHaveLength(0);
     expect(sent.at(-1).text).toMatch(/say where and what/);
+  });
+
+  it("a being's own signed line runs it and posts", async () => {
+    const { via, posts } = build(['daniel']);
+    expect(await via({ body: '🐶 leo: /leo msg Daniel hi', fromNode: 'n', fromBeing: 'leo' })).toBe(true);
+    expect(posts.map((p) => [p.chatId, p.text])).toEqual([['tg:201', 'hi']]);
+  });
+  it('a non-owner person in a group runs it, with no public_commands entry', async () => {
+    const { via, posts } = build(['daniel'], { public_commands: [] });
+    expect(await via({ body: '/leo msg Daniel hi', senderId: 'stranger', raw: { chatType: 'group' } })).toBe(true);
+    expect(posts).toHaveLength(1);
+  });
+  it('an http-origin line, a person\'s or a being\'s, is not a command and posts nothing', async () => {
+    const { via, posts, sent } = build(['daniel']);
+    expect(await via({ surface: 'http', body: '/leo msg Daniel hi', senderId: 'visitor' })).toBe(false);
+    expect(await via({ surface: 'http', body: '🐶 leo: /leo msg Daniel hi', fromNode: 'n', fromBeing: 'leo' })).toBe(false);
+    expect(posts).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+  it('msgTo itself refuses an http origin, whoever sent it', async () => {
+    const h = build(['daniel']);
+    await h.run({ chatId: 'http:acme-abc', surface: 'http', body: '/msg daniel hi', commandBeing: 'leo', isSender: true });
+    expect(h.posts).toHaveLength(0);
+    expect(h.sent.at(-1).text).toMatch(/not from a chatbox/);
+  });
+  it("a being's line with any other command is still not run", async () => {
+    const { via, posts } = build(['daniel']);
+    for (const body of ['🐶 leo: /leo upgrade', '🐶 leo: /leo browser close all', '🐶 leo: /leo restart', '🐶 leo: /leo agents leo reset']) {
+      expect(await via({ body, fromNode: 'n', fromBeing: 'leo' }), body).toBe(false);
+    }
+    expect(posts).toHaveLength(0);
   });
 });
