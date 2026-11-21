@@ -1661,8 +1661,14 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     let renamedFrom = null, renamedTo = null;
     const cap = _capOf(surface);
     const title = sanitizeSlug(ctx.pushedName, cap) || sanitizeSlug(cur.pushedName, cap) || String(cur.slug ?? '').replace(LEGACY_SUFFIX, '');
+    let refused = null;
     if (!viaAlias && !fixed && !isForkEntry(cur) && title) {
-      const candidate = _slugFor(state, surface, resolved.primaryJid, title);
+      // ctx.uniqueTitle (an http chatbox's unique_title): a rename onto another chat's folder keeps the current one.
+      // A folder that is already this title's suffixed form (made without the flag) is this chat's own: no refusal.
+      const wanted = _slugFor(state, surface, resolved.primaryJid, title);
+      const held = ctx.uniqueTitle === true && surface === 'http' && wanted !== cur.slug && title.toLowerCase() !== String(cur.slug).toLowerCase() && _slugHolder(state, surface, title, resolved.primaryJid);
+      const candidate = held ? cur.slug : wanted;
+      if (held) refused = { title, holder: held[0] };
       if (candidate !== cur.slug) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
@@ -1682,6 +1688,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       changed,
       renamedFrom,
       renamedTo,
+      ...(refused ? { refused } : {}),
     };
   }
 
@@ -1703,6 +1710,9 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     nextBucket[jid] = { aliasOf: holder[0] };
     return { state: next, surface, jid: holder[0], slug: holder[1].slug, entry: holder[1], isNew: false, changed: true };
   }
+  // ctx.uniqueTitle (an http chatbox's unique_title): a title another chat holds refuses this chat (nothing created).
+  const taken = ctx.uniqueTitle === true && !fixed && surface === 'http' && _slugHolder(state, surface, baseSlug, jid);
+  if (taken) return { state, surface, jid, slug: null, entry: null, isNew: false, changed: false, refused: { title: baseSlug, holder: taken[0] } };
   const candidateSlug = fixed || _slugFor(state, surface, jid, baseSlug);
 
   // 3. Brand-new contact — the SLIM shape (operator 2026-07-02). The

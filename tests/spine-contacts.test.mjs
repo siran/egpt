@@ -178,3 +178,40 @@ describe('contacts.resolve', () => {
     expect(getContact(state, SURFACE, CHAT_B)?.slug).toBe(slugB);
   });
 });
+
+describe('contacts.resolve: unique_title for an http chat', () => {
+  const A = 'http:abc-0000000000000001', B = 'http:abc-0000000000000002';
+  const hs = (unique = false) => {
+    const flag = { unique };
+    let state = emptyState();
+    const logs = [];
+    const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io: { rename: async () => {}, appendFile: async () => {} }, uniqueTitleOf: () => flag.unique, onLog: (m) => logs.push(m) });
+    return { contacts, logs, flag, getState: () => state };
+  };
+
+  it('off (default): a taken title is suffixed, nothing logged as refused', async () => {
+    const { contacts, logs } = hs();
+    await contacts.resolve('http', A, { chatName: 'abc' });
+    expect(await contacts.resolve('http', B, { chatName: 'abc' })).toMatch(/^abc-/);
+    expect(logs).toEqual([]);
+  });
+
+  it('on: a taken title resolves to null, logged once with the holder, and registers nothing', async () => {
+    const { contacts, logs, getState } = hs(true);
+    await contacts.resolve('http', A, { chatName: 'abc' });
+    expect(await contacts.resolve('http', B, { chatName: 'ABC' })).toBeNull();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain(A);
+    expect(getState().contacts.http[B]).toBeUndefined();
+  });
+
+  it('on: an existing suffixed folder of the same chat logs no refusal on any line', async () => {
+    const { contacts, logs, flag } = hs();
+    await contacts.resolve('http', A, { chatName: 'abc' });
+    const slug = await contacts.resolve('http', B, { chatName: 'abc' });   // suffixed (flag off)
+    flag.unique = true;
+    for (let i = 0; i < 3; i++) expect(await contacts.resolve('http', B, { chatName: 'abc' })).toBe(slug);
+    expect(logs).toEqual([]);
+  });
+});
+

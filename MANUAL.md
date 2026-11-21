@@ -734,6 +734,11 @@ renamed with its thread kept when a claim changes). With
 `chat_title: "{abrin}-{user_type}-{username}-{short_name}"` the folder is
 `conversations/http/abc-P-jdoe-Jane Doe/`. Two chats that render the same title
 never share a folder: the second takes the tail of its chat id (`abc-3f9a1c`).
+With `unique_title: true` (default false) that chat is refused instead: its line
+gets a 409 `{"error":"title_taken"}`, nothing is saved, and the spine logs the
+holder; a claim change onto a taken title keeps the current folder. Matching
+ignores case. Set it only when the template names a unique claim (e.g.
+`{username}`): two visitors who share a name would lock the second one out.
 The chat id stays `http:<client>-<key>`. An unsigned visitor keeps
 `<client>-<key>`; a conversation made before this is renamed when its signed
 visitor next writes.

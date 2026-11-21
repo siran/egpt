@@ -467,17 +467,40 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 
-  it('folder: two chat ids that render the same title never share a folder', async () => {
+  const who2 = { ...JD, username: 'jroe', short_name: 'Jim Roe' };
+  const raw = (n, body) => fetch(`${n.url}messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('folder: by default (unique_title off) two chats with one title never share a folder: the second takes its chat id tail', async () => {
     const n = await bootTeam({ ...client(), chat_title: '{abrin}' });
     const a = await n.post({ text: 'uno', identity: signed(JD) });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JD)))).toBe(true), { timeout: 5000 });
-    const who2 = { ...JD, username: 'jroe', short_name: 'Jim Roe' };
     const b = await n.post({ text: 'dos', identity: signed(who2) });
     await vi.waitFor(async () => expect(answered(await n.messages(b.session, signed(who2)))).toBe(true), { timeout: 5000 });
     expect(a.session).not.toBe(b.session);
     const [d1, d2] = n.turns.map((t) => dirOf(t.cwd));
     expect(d1).toBe('abc');
     expect(d2).toMatch(/^abc-[0-9a-f]{6}$/);
+    expect(n.lines.some((l) => l.includes('is refused'))).toBe(false);
+    n.app.stop();
+  });
+
+  it('folder: unique_title refuses the second visitor with 409 title_taken (no holder in the body, holder in the log, nothing made); the first returns freely; other titles are fine', async () => {
+    const n = await bootTeam({ ...client(), chat_title: '{abrin}', unique_title: true });
+    const a = await n.post({ text: 'uno', identity: signed(JD) });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(JD)))).toBe(true), { timeout: 5000 });
+    const r = await raw(n, { text: 'dos', identity: signed(who2) });
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: 'title_taken', message: 'this name is already in use here' });
+    await settle();
+    expect(n.lines.some((l) => l.includes('chatbox: chat_title "abc" is already http:contoso-') && l.includes("'s folder — the template must name a unique claim (e.g. {username}); this visitor is refused"))).toBe(true);
+    expect(n.turns).toHaveLength(1);
+    expect(Object.values(n.state().contacts.http).map((e) => e.slug)).toEqual(['abc']);
+    const again = await n.post({ session: a.session, text: 'tres', identity: signed(JD) });   // the holder itself is never refused
+    expect(again.session).toBe(a.session);
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    const c = await n.post({ text: 'cuatro', identity: signed({ ...JD, abrin: 'xyz' }) });
+    await vi.waitFor(async () => expect(answered(await n.messages(c.session, signed({ ...JD, abrin: 'xyz' })))).toBe(true), { timeout: 5000 });
+    expect(Object.values(n.state().contacts.http).map((e) => e.slug).sort()).toEqual(['abc', 'xyz']);
     n.app.stop();
   });
 

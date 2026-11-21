@@ -1419,7 +1419,9 @@ export async function boot({
   // The ONE shared contact-resolver: every service that needs a chat's slug goes
   // through here, so the pushedName refresh + rename self-heal (move the slug dir
   // old→new + write renames.log) run for KNOWN chats too, not just new ones.
-  const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`) });
+  const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`),
+    // a chatbox's unique_title (its config block): a chat_title another chat holds refuses a new chat instead of suffixing it
+    uniqueTitleOf: (surface, chatId) => surface === 'http' && chatboxesOf(getConfig())[httpClientOf(chatId)]?.unique_title === true });
 
   // The ONE conversation-room resolver (bug fix 2026-07-23): contacts.resolve (the shared,
   // self-healing slug lookup) → the conversation's Room. BOTH the phase-4 relay's resolveMembers
@@ -2354,6 +2356,9 @@ export async function boot({
     // rewritten whenever a verified line or init brings other values — not only for a new conversation.
     const cardSeen = new Map();   // chatId → the card claims as last written or read
     const beforeLine = async ({ client, chatId, chatName, isNew, init, recap, identity, title, subtitle }) => {
+      // A chat the registry cannot place (its chat_title is another chat's folder; contacts.resolve logged why) is refused:
+      // the limb fails the line (500) rather than carry it on without a folder.
+      if (!await httpSlug(chatId, chatName)) throw Object.assign(new Error('no conversation folder for this chat'), { refused: true });
       const c = clients[client] ?? {};
       const extra = (Array.isArray(c.card_claims) ? c.card_claims.map(String) : []).filter((k) => k && k !== 'exp' && k !== 'iat');
       if (identity && (isNew || extra.length)) {

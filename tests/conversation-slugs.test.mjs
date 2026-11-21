@@ -310,13 +310,59 @@ describe('a chatbox conversation is named by its chatName like any limb\'s chat'
     expect(r.entry.agents.ed.threadId).toBe('t-1');
   });
 
-  it('two chat ids with one title are two folders, even seconds apart (never merged as one chat)', () => {
+  it('default (unique_title off): a title another chat holds takes the chat id tail (#65), never refused, never merged', () => {
     const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' });
     const b = ensureContact(a.state, 'http', H2, { pushedName: 'abc' });
     expect(a.slug).toBe('abc');
-    expect(b.slug).not.toBe('abc');
     expect(b.slug).toMatch(/^abc-/);
+    expect(b.refused).toBeUndefined();
     expect(b.state.contacts.http[H2].aliasOf).toBeUndefined();
+  });
+
+  it('uniqueTitle: a title another chat holds is refused (nothing created, the first untouched); other titles are fine', () => {
+    const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc', uniqueTitle: true });
+    const b = ensureContact(a.state, 'http', H2, { pushedName: 'ABC', uniqueTitle: true });
+    expect(b).toMatchObject({ slug: null, entry: null, isNew: false, changed: false, refused: { title: 'ABC', holder: H1 } });
+    expect(b.state).toBe(a.state);
+    expect(b.state.contacts.http[H2]).toBeUndefined();
+    expect(ensureContact(a.state, 'http', H2, { pushedName: 'abd', uniqueTitle: true }).slug).toBe('abd');
+  });
+
+  it('"Juan" and "juan" collide only with uniqueTitle', () => {
+    const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'Juan' });
+    expect(ensureContact(a.state, 'http', H2, { pushedName: 'juan', uniqueTitle: true }).refused).toMatchObject({ holder: H1 });
+    const off = ensureContact(a.state, 'http', H2, { pushedName: 'juan' });
+    expect(off.refused).toBeUndefined();
+    expect(off.slug).toMatch(/^juan-/);
+  });
+
+  it('the same chat returning is never refused, with or without uniqueTitle', () => {
+    const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc', uniqueTitle: true });
+    for (const uniqueTitle of [true, false]) {
+      const r = ensureContact(a.state, 'http', H1, { pushedName: 'abc', uniqueTitle });
+      expect(r).toMatchObject({ slug: 'abc', changed: false });
+      expect(r.refused).toBeUndefined();
+    }
+  });
+
+  it('uniqueTitle: a chat whose folder is already the suffixed form of its title (made by the default) is not refused and keeps it', () => {
+    const a = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' });
+    const b = ensureContact(a.state, 'http', H2, { pushedName: 'abc' });
+    const r = ensureContact(b.state, 'http', H2, { pushedName: 'abc', uniqueTitle: true });
+    expect(r.refused).toBeUndefined();
+    expect(r).toMatchObject({ slug: b.slug, changed: false });
+  });
+
+  it('a rename onto a held title: uniqueTitle keeps the current folder and reports it; default suffixes it', () => {
+    let st = ensureContact(emptyState(), 'http', H1, { pushedName: 'abc' }).state;
+    st = ensureContact(st, 'http', H2, { pushedName: 'abd' }).state;
+    const r = ensureContact(st, 'http', H2, { pushedName: 'abc', uniqueTitle: true });
+    expect(r).toMatchObject({ slug: 'abd', refused: { title: 'abc', holder: H1 } });
+    expect(r.renamedTo).toBeNull();
+    expect(r.state.contacts.http[H2].slug).toBe('abd');
+    const d = ensureContact(st, 'http', H2, { pushedName: 'abc' });
+    expect(d.refused).toBeUndefined();
+    expect(d.slug).toMatch(/^abc-/);
   });
 
   it('regression: Telegram keeps its slug cap (80), its same-title merge and its clash tail', () => {

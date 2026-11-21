@@ -107,6 +107,7 @@ limbs:
 #   # team_name: "Equipo"           # the team's name in the widget
 #   # topic_title: "{title} · {sid}"  # also {abrin} {user_type} {short_name} {username}, any {<claim>}
 #   # chat_title: "{abrin} · {short_name} · {username}"   # a signed chat's name in /ayde's lists, like topic_title: any {<claim>} (default as shown)
+#   # unique_title: false           # true: a chat_title another chat holds is refused (409 title_taken) instead of taking the chat id tail; only with a unique claim in chat_title, e.g. {username}
 #   # chat_subtitle: "{user_type}"  # and its line under the title
 #   # session_days: 365             # idle days before a session expires; also /ayde's "active" window: a chat is active while its last line is this recent
 #   # identity: { mode: off, required: [abrin, username], key: [abrin, username] }   # mode off | optional | required: a signed user (secrets/chatbox-mysite.key); required: claims a token must carry; key: the claims that are the identity; its text: strings: { identity: "..." }
