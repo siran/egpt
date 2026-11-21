@@ -1053,15 +1053,17 @@ export function createSpine({
 
     // A SIGNED LINE (our own output, or any node's frame) wakes ONLY a being it EXPLICITLY addresses
     // (@mention/quote of its post) — never a being taken by its mode (operator 2026-10-13 own output,
-    // 2026-10-18 every node). Our own frame never wakes its AUTHOR; our output
-    // with no author wakes nobody. A peer's frame has no author exclusion (another node's instance).
+    // 2026-10-18 every node). Our own frame never wakes its AUTHOR; our framed output with no
+    // author wakes only a being its words address at the start (operator 2026-11-21: a pasted
+    // node line). A peer's frame has no author exclusion (another node's instance).
     // Unaddressed = record-only ('off' still not received); a wake counts toward the loop guard.
     let crossBeingWake = false;
     const echo = kindOf(ev) === 'echo';
     if (echo || ev.fromNode != null) {
       const author = echo && fromThisNode(ev) && ev.fromBeing ? String(ev.fromBeing).toLowerCase() : null;
-      const wakes = (t) => !t.fallthrough && String(gateAs(t, '')).toLowerCase() !== author;
-      const woke = (author || !echo) ? targets.filter(wakes) : [];
+      const wakes = (t) => !t.fallthrough && String(gateAs(t, '')).toLowerCase() !== author
+        && (author || !echo || (ev.fromNode != null && t.mention?.atEStart));
+      const woke = targets.filter(wakes);
       refused = author ? refused.filter(wakes) : [];
       if (!woke.length) {
         if (!echo && !(await gatesOf(targets, { ...ev, backlog: true }, receives)).received) return null;
@@ -1121,8 +1123,8 @@ export function createSpine({
     }
 
     // OUR OWN ECHO: classified PER-BEING above (right after routeOf), before the gate — a
-    // same-being/unsigned own-frame is already returned record-only there, and a cross-being wake
-    // rides on from here as a normal dispatch. The old wholesale `kindOf==='echo'` return lived
+    // same-being own-frame, or an authorless one not addressed at its start, is already returned
+    // record-only there, and a cross-being wake rides on from here as a normal dispatch. The old wholesale `kindOf==='echo'` return lived
     // here; it is gone because it suppressed a DIFFERENT being's wake too (the same-node sibling).
 
     return asking(() => dispatchChat({ ev, gated, channel }));
