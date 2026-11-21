@@ -22,9 +22,9 @@ describe('cmdUsesProfile: exact --user-data-dir match', () => {
     expect(cmdUsesProfile('chrome --user-data-dir=C:\\p\\work', 'C:/p/work', 'linux')).toBe(false);
   });
   it('Windows ignores case and treats backslash and slash alike', () => {
-    expect(cmdUsesProfile('chrome.exe --user-data-dir=C:\\Users\\An\\Work', 'c:/users/an/work', 'win32')).toBe(true);
-    expect(cmdUsesProfile('chrome.exe "--user-data-dir=C:/Users/An/My Work"', 'C:\\users\\an\\my work', 'win32')).toBe(true);
-    expect(cmdUsesProfile('chrome.exe --user-data-dir=C:\\Users\\An\\Work2', 'C:\\Users\\An\\Work', 'win32')).toBe(false);
+    expect(cmdUsesProfile('chrome.exe --user-data-dir=C:\\Users\\User\\Work', 'c:/users/user/work', 'win32')).toBe(true);
+    expect(cmdUsesProfile('chrome.exe "--user-data-dir=C:/Users/User/My Work"', 'C:\\users\\user\\my work', 'win32')).toBe(true);
+    expect(cmdUsesProfile('chrome.exe --user-data-dir=C:\\Users\\User\\Work2', 'C:\\Users\\User\\Work', 'win32')).toBe(false);
   });
   it('no command or no profile never matches', () => {
     expect(cmdUsesProfile('', '/p/work', 'linux')).toBe(false);

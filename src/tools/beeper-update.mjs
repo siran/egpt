@@ -9,7 +9,7 @@
 // ear verdict) → the install tool runs → the state clears (redial now, held calls go) → ONE line.
 import { readFile, writeFile, mkdir, rename, rm, readdir, mkdtemp, chmod, access } from 'node:fs/promises';
 import { openSync, closeSync, mkdirSync, createReadStream, createWriteStream, constants as fsConstants } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, posix } from 'node:path';
 import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -152,7 +152,7 @@ export async function fetchInstaller({ url, sha512 }, { dir, fetchImpl = fetch, 
 
 export async function detect(cfg, { fetchImpl = fetch, installedVersion = readInstalledVersion, localAppData, platform = process.platform, arch, home } = {}) {
   const installed = await installedVersion({ platform, home });
-  const [pending, running, latest] = await Promise.all([readPending({ localAppData }), readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform, arch })]);
+  const [pending, running, latest] = await Promise.all([platform === 'win32' ? readPending({ localAppData }) : null, readRunning(cfg, { fetchImpl }), readLatest(installed, { fetchImpl, platform, arch })]);
   return { installed, pending, running, latest };
 }
 
@@ -407,7 +407,7 @@ export async function runMacDry({ candidates = appCandidates(), io = { access, w
 // under Contents/Frameworks/), never --type= → [{ pid, args }], args = the main's own flags, kept for the reopen.
 // A flag value holding " -" would split in two: ps joins argv with spaces.
 export async function macMains(app, { ps = () => execFileP('ps', ['-axww', '-o', 'pid=,args=']) } = {}) {
-  const exe = `${join(app, 'Contents', 'MacOS')}/`;
+  const exe = `${posix.join(app, 'Contents', 'MacOS')}/`;
   return String(await ps()).split('\n').map((l) => /^\s*(\d+)\s+(.*)$/.exec(l)).filter((m) => m && m[2].startsWith(exe) && !/\s--type=/.test(m[2])).map(([, pid, cmd]) => {
     const rest = cmd.slice(exe.length), at = rest.search(/\s-/);
     return { pid: Number(pid), args: at < 0 ? [] : rest.slice(at + 1).split(/\s+(?=-)/).filter((a) => !a.startsWith('-psn_')) };

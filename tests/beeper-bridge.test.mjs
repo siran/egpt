@@ -1217,7 +1217,8 @@ describe('beeper bridge', () => {
       id: 'human-voice', senderID: '@whatsapp_lid-human:beeper.local', isSender: false, text: null, type: 'VOICE', attachments: [voiceAtt('a-human')],
     })] });
 
-    await waitFor(() => fake.posts.some((p) => p.replyToMessageID === 'human-voice'));
+    // the 👂 (the whisper leg) and the arrival line (the dispatch leg) land in either order
+    await waitFor(() => fake.posts.some((p) => p.replyToMessageID === 'human-voice') && incoming.some((i) => i.from.msgKey === 'human-voice'));
     // the human note ran whisper, surfaced, and drew a 👂 …
     expect(whisper).toHaveLength(1);
     expect(incoming.find((i) => i.from.msgKey === 'human-voice')).toBeTruthy();

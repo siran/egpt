@@ -10,6 +10,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { gitEnv } from '../git-env.mjs';
 import { CHECK_EVERY_MS, autoUpdateMethod } from './beeper-update.mjs';
 import { daemonGraph, daemonChanges } from './daemon-graph.mjs';
 
@@ -33,7 +34,7 @@ export function egptMethod(cfg) {
 // git in the checkout → its stdout; a failure is git's own first line. Never a credentials prompt.
 export function runGit(args, { cwd, timeoutMs = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: timeoutMs, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout: timeoutMs, windowsHide: true, env: { ...gitEnv(), GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
       if (err) reject(new Error(String(stderr).trim().split('\n')[0] || err.message));
       else resolve(String(stdout).trim());
     });

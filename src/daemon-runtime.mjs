@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as YAML from 'yaml';
 import { liveDaemonPid as defaultLiveDaemonPid, openExclusive, closeExclusive, heldExclusive } from './daemon-singleton.mjs';
 import { raiseSelfToNormal } from './process-priority.mjs';
+import { gitEnv } from './git-env.mjs';
 
 export const RESTART_MIN_MS = 2_000;
 export const RESTART_MAX_MS = 60_000;
@@ -553,7 +554,7 @@ export function createDaemonRuntime(opts = {}) {
     return true;
   }
 
-  const git = (args, extra = {}) => spawnSync('git', args, { cwd: root, stdio: 'pipe', ...extra });
+  const git = (args, extra = {}) => spawnSync('git', args, { cwd: root, stdio: 'pipe', env: gitEnv(), ...extra });
   const gitOut = (r) => (r.stdout?.toString() ?? '').trim();
   const gitWhy = (r) => {
     if (r.error) return `: ${r.error.message}`;
