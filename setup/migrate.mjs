@@ -21,8 +21,14 @@
 //     <EGPT_HOME>/state/migrations-applied.json. Moving applied files around in the repo was
 //     rejected - it dirties the checkout upgrade.ps1 pulls, and two nodes would each want to
 //     move the same file somewhere different.
-//   - It runs at DEPLOY (setup/upgrade.ps1), never at boot: boot is what the watchdog retries in
-//     a loop, so a broken migration there becomes a crash loop.
+//   - It runs at UPGRADE, on EVERY node (operator 2026-11-20: "all nodes, not only peer, should run
+//     migrations"): the daemon's runUpgrade (src/daemon-runtime.mjs) runs it after the pull and
+//     npm install and before the respawn, which is the one path /upgrade, /upgrade full, auto and
+//     auto-full all end in, containers included. setup/upgrade.ps1 runs it again on the Windows
+//     nodes: harmless, everything is idempotent, and it is what reports a failure to the deployer.
+//     Never at boot: boot is what the watchdog retries in a loop, so a broken migration there
+//     becomes a crash loop. A FAILED one does not hold the new code back (the deploy landed, the
+//     chain stopped); the daemon says so loudly on the back-up line.
 //   - Every migration is idempotent. Its plan() looks at the node first and reports "already
 //     satisfied" rather than acting, so a lost ledger is survivable - and after apply() the
 //     runner asks plan() again and records nothing unless the node now IS satisfied.

@@ -230,9 +230,12 @@ service is stopped and Disabled on both):
 | `egpt-beeper-secondary` | Running · Auto · the mouth | Running · Auto · the mouth |
 
 They got there by **migrations** (`migrations/0001`–`0005`), not by hand: each
-change is written once in the repo, `setup/upgrade.ps1` applies whatever is
-pending after every deploy, and each node records what it has applied in
-`state/migrations-applied.json`. `do`'s Beeper services and both nodes' session 1
+change is written once in the repo, every node applies whatever is pending
+whenever it upgrades (the daemon's `/upgrade`, manual or auto, plain or full,
+container nodes included; `setup/upgrade.ps1` runs it again on Windows), and
+each node records what it has applied in `state/migrations-applied.json`. A
+failed one stops the chain and is reported on the back-up line; the new code
+still starts. `do`'s Beeper services and both nodes' session 1
 task carried legacy names until then. A change to either node that is not a
 migration is how the two drift apart again.
 
