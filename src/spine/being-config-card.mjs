@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { wakeTokens } from './router.mjs';
 import { compactionRatio } from './compaction.mjs';
+import { windowForModel } from '../tools/compact-being.mjs';
 
 export const CONFIG_CARD_FILE = 'config.readonly.yaml';
 const HEADER = [
@@ -96,7 +97,7 @@ export function renderConfigBlock({
   const own = (compaction && typeof compaction === 'object' && !Array.isArray(compaction)) ? compaction : null;
   out.push(own
     ? line(2, 'compaction', own, FROM[sources.compaction])
-    : line(2, 'compaction', { ratio: compactionRatio(config) }, FROM.node));
+    : line(2, 'compaction', { ratio: compactionRatio(config, windowForModel(model)) }, FROM.node));
   if (outboxTarget?.key) {
     out.push(line(2, 'outbox_to', outboxTarget.key, outboxTarget.to ? FROM[sources.outboxTo] : 'not an approved target - nothing is delivered'));
   }

@@ -43,10 +43,10 @@ import { pathToFileURL } from 'node:url';
 import { residentsOf, getBeing, findThreadJsonl, forkKeyOf } from '../conversations-state.mjs';
 import { jsonlStoreDirOf } from '../sandbox-cli-session.mjs';
 
-// Context window is PER-MODEL: haiku is 200k, the large-context 4.x models
-// (sonnet/opus) are ~1M. Match by substring; a being may override with
+// Context window is PER-MODEL: the current haiku, like sonnet/opus, is ~1M (a pure haiku-5-5
+// session reached 966k on a live node; the old 200k was the 3.x/4.x haiku). Match by substring; a being may override with
 // `context_window` in its sibling config.
-export const MODEL_WINDOWS = { haiku: 200_000, sonnet: 1_000_000, opus: 1_000_000 };
+export const MODEL_WINDOWS = { haiku: 1_000_000, sonnet: 1_000_000, opus: 1_000_000 };
 export const DEFAULT_WINDOW = 200_000;
 export const COMPACT_RATIO  = 0.25;   // keep sessions THIN — compact at 25% of the window (operator 2026-06-19)
 // A session whose jsonl changed within this window is treated as a turn IN FLIGHT
@@ -70,8 +70,8 @@ export function windowForModel(model) {
 // module's COMPACT_RATIO (0.25), which is only dueForCompaction's default PARAMETER when a caller
 // passes none; the spine always passes this one.
 export const DEFAULT_RATIO = 0.20;    // compact at 20% of the model window (operator 2026-06-30)
-export function compactionRatio(config) {
-  return Number(config?.compaction?.ratio ?? DEFAULT_RATIO) || DEFAULT_RATIO;
+export function compactionRatio(config, window = DEFAULT_WINDOW) {
+  return parseSize(config?.compaction?.ratio, window) ?? DEFAULT_RATIO;
 }
 
 // A positive number, or null. BOOLEANS ARE REJECTED: `Number(true)` is 1, so `ratio: true` would
@@ -82,6 +82,57 @@ export function compactionRatio(config) {
 export function positiveOrNull(v) {
   const n = typeof v === 'boolean' ? NaN : Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// ── THE ONE PARSER for the size keys (`ratio`, `critical_ratio`, `warn_gap`), shared by
+//    compactionPolicy and every reader in spine/compaction.mjs. Returns a SHARE of `window` (0..1) or
+//    null. Accepted: 0.2 or "20%" (a share); "100k", "1.5m" or an integer > 1 such as 100000
+//    (tokens, divided by the window). Rejected (null, so the caller falls to the next tier / the
+//    default): booleans, negatives, garbage, a fraction above 1, tokens under 1000 (a bare `40` is a
+//    percent typo, and would compact after every turn), and tokens at or above the window
+//    (it could never fire). Zero is rejected unless `zero` (warn_gap 0 = no early warning). ──
+const NUM = '(\\d+(?:\\.\\d+)?|\\.\\d+)';
+export function parseSize(v, window, { zero = false } = {}) {
+  if (typeof v === 'boolean' || v == null) return null;
+  let n = null, share = null, tokens = null, m;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if ((m = new RegExp(`^${NUM}\\s*%$`).exec(s))) share = Number(m[1]) / 100;
+    else if ((m = new RegExp(`^${NUM}\\s*([km])$`).exec(s))) tokens = Number(m[1]) * (m[2] === 'k' ? 1e3 : 1e6);
+    else if (new RegExp(`^${NUM}$`).test(s)) n = Number(s);
+    else return null;
+  } else if (typeof v === 'number') n = v;
+  else return null;
+  if (n !== null) {
+    if (!Number.isFinite(n) || n < 0) return null;
+    if (n <= 1) share = n;
+    else if (Number.isInteger(n)) tokens = n;
+    else return null;
+  }
+  if (tokens !== null) {
+    if (tokens < 1000 || !(Number(window) > 0) || tokens >= window) return null;   // `ratio: 40` meant 40%, not 40 tokens: under 1k is a typo
+    share = tokens / window;
+  }
+  if (!Number.isFinite(share) || share > 1 || share < 0) return null;
+  return share === 0 && !zero ? null : share;
+}
+
+// THE ONE PARSER for durations (`cooling`, `alert_before`): "3h", "90m", "30s", "1h30m" (also "500ms"),
+// or a bare number / numeric string = ms. Positive ms, or null (booleans, zero, negatives, garbage).
+export function parseDuration(v) {
+  if (typeof v === 'boolean' || v == null) return null;
+  let ms = null;
+  if (typeof v === 'number') ms = v;
+  else if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (/^(\d+(?:\.\d+)?|\.\d+)$/.test(s)) ms = Number(s);
+    else if (/^(?:(?:\d+(?:\.\d+)?|\.\d+)(?:ms|h|m|s))+$/.test(s)) {
+      const U = { ms: 1, s: 1e3, m: 6e4, h: 36e5 };
+      ms = 0;
+      for (const [, num, u] of s.matchAll(/((?:\d+(?:\.\d+)?|\.\d+))(ms|h|m|s)/g)) ms += Number(num) * U[u];
+    } else return null;
+  } else return null;
+  return Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null;
 }
 
 // THE PER-CONVERSATION OVERRIDE a turn carries (operator 2026-09-03): this conversation's own
@@ -100,9 +151,8 @@ export function compactionOverrideOf(beingView, config, being) {
 // spine does.
 export function compactionPolicy(config, model, over = null) {
   const o = (over && typeof over === 'object' && !Array.isArray(over)) ? over : null;
-  const r = positiveOrNull(o?.ratio);
-  const ratio = r && r <= 1 ? r : compactionRatio(config);
   const window = positiveOrNull(o?.context_window) ?? (Number(config?.compaction?.context_window) || windowForModel(model));
+  const ratio = parseSize(o?.ratio, window) ?? compactionRatio(config, window);
   return { ratio, window, threshold: Math.round(window * ratio) };
 }
 
