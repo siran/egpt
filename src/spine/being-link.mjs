@@ -130,6 +130,32 @@ export function boxedCdpRefusal({ method, params = {} }, url, convDir, { uploads
 // newline in it cannot forge a second log line, and a long one cannot flood the file.
 const quoted = (v) => JSON.stringify(String(v ?? '').slice(0, 40));
 
+// REMOTE BEINGS (operator 2026-11-22 #854: "ekg drives enu's browser over ssh"). config.yaml:
+//   remote_beings:
+//     ekg: { being: egpt, surface: telegram, slug: An, token_file: secrets/remote-beings/ekg.token }
+// A being on ANOTHER node reaches this node's spine over an ssh forward of the console port, and
+// answers the same nonce challenge a boxed session does, with the secret in token_file (relative to
+// EGPT_HOME; 32+ characters). It is then `being` in `surface/slug` for the browser asks: that chat's
+// group Chrome, filtered as for a boxed being. An entry missing a field, or whose file is unreadable
+// or short, is skipped. The secret never rides the wire.
+export const REMOTE_SECRET_MIN = 32;
+export function readRemoteBeings(cfg, { home = EGPT_HOME, read = (f) => readFileSync(f, 'utf8') } = {}) {
+  const out = [];
+  const map = cfg?.remote_beings;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return out;
+  for (const [name, e] of Object.entries(map)) {
+    if (!e || typeof e !== 'object') continue;
+    const being = String(e.being ?? '').trim(), surface = String(e.surface ?? '').trim(), slug = String(e.slug ?? '').trim();
+    const file = String(e.token_file ?? '').trim();
+    if (!being || !surface || !slug || !file) continue;
+    let secret = '';
+    try { secret = String(read(isAbsolute(file) ? file : join(home, file))).trim(); } catch { continue; }
+    if (secret.length < REMOTE_SECRET_MIN) continue;
+    out.push({ name, being, surface, slug, secret });
+  }
+  return out;
+}
+
 /**
  * @param {object} opts
  * @param {number} opts.port                       the console port the being dials (boot's shellPortFrom(cfg))
@@ -139,6 +165,7 @@ const quoted = (v) => JSON.stringify(String(v ?? '').slice(0, 40));
  * @param {() => Promise<object>} [opts.readGroups] config/browsers.yaml's groups (default rooms-file.readBrowserGroups, read fresh per ask)
  * @param {(who: object) => Promise<object>} [opts.conversationOf] the being's chat → its browser group (boot: commands.browserConversationOf); default resolves the slug alone against readGroups
  * @param {(convDir: string) => object} [opts.resolveConfig] the conversation's resolved config (config-resolver configFor): privileged_browser
+ * @param {() => object[]} [opts.remotes] readRemoteBeings(live config) — standing secrets of beings on other nodes
  * @param {(group: string) => boolean} [opts.uploadsOn] browsers.yaml uploads: for that group (default rooms-file.browserUploadsOn, read fresh per upload)
  * @param {string} [opts.uploadStage]              where checked upload copies go; the being cannot write here
  * @param {string} [opts.clientPath]               the client script handed in ASK_SPINE_ENV (default askSpineClientPath()); being-cdp.mjs sits beside it
@@ -146,7 +173,7 @@ const quoted = (v) => JSON.stringify(String(v ?? '').slice(0, 40));
  * @param {(m: string) => void} [opts.onLog]       the AUDIT line, one per request
  * @param {typeof nodeRandomBytes} [opts.randomBytes]
  */
-export function createBeingLink({ port, startBrowser, chromeClientFor = null, requestLogin = null, readGroups = readBrowserGroups, conversationOf = async (who) => chromeConversationOf({ slug: who.slug }, await readGroups()), resolveConfig = () => ({}), uploadsOn = browserUploadsOn, uploadStage = join(EGPT_HOME, 'state', 'uploads'), clientPath = askSpineClientPath(), nativeWebSocket = true, onLog = () => {}, randomBytes = nodeRandomBytes } = {}) {
+export function createBeingLink({ port, startBrowser, chromeClientFor = null, requestLogin = null, readGroups = readBrowserGroups, conversationOf = async (who) => chromeConversationOf({ slug: who.slug }, await readGroups()), resolveConfig = () => ({}), uploadsOn = browserUploadsOn, uploadStage = join(EGPT_HOME, 'state', 'uploads'), clientPath = askSpineClientPath(), nativeWebSocket = true, onLog = () => {}, randomBytes = nodeRandomBytes, remotes = () => [] } = {}) {
   const live = new Map();       // secret -> { being, surface, slug, boxed }
   const tunnels = new Map();    // who -> its open CDP tunnels, closed when its secret is revoked
   const muxes = new WeakMap();  // a group's CDP channel -> its mux
@@ -240,13 +267,24 @@ export function createBeingLink({ port, startBrowser, chromeClientFor = null, re
     // question at the handshake; it never sees a secret.
     identify(mac, nonce) {
       for (const [secret, who] of live) if (macMatches(mac, authMac(secret, nonce))) return who;
+      // A REMOTE BEING (config remote_beings): a being on another node, dialling over an ssh forward,
+      // with a standing secret the operator wrote to a file. It is the being it stands in for, always
+      // boxed (the CDP filter applies), and the audit line names it. Read fresh per handshake, so a
+      // removed entry or token stops answering without a restart.
+      let rs = [];
+      try { rs = remotes() ?? []; } catch (e) { onLog(`remote_beings unreadable — ${e?.message ?? e}`); }
+      for (const r of rs) {
+        if (r?.secret && macMatches(mac, authMac(r.secret, nonce))) {
+          return { being: r.being, surface: r.surface, slug: r.slug, boxed: true, remote: r.name };
+        }
+      }
       return null;
     },
 
     // ONE request off an authenticated /being connection. Never throws; every path is audited.
     // `sink` is the connection's way back ({ send(text), end() }) — what a `browser cdp` tunnel writes to.
     async ask(who, frame, sink) {
-      const tag = `${who?.being || '?'} (${who?.surface || '?'}/${who?.slug || '?'})`;
+      const tag = `${who?.being || '?'} (${who?.surface || '?'}/${who?.slug || '?'})${who?.remote ? ` via remote ${who.remote}` : ''}`;
       const refuse = (reason, detail, what) => {
         onLog(`${tag} asked ${what} → REFUSED (${reason}): ${detail}`);
         return { ok: false, reason, detail };

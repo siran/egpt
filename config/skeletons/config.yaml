@@ -385,6 +385,14 @@ networks:
 #     AbCdEfGhIjKlMnOpQrSt: { message: "This group moved to Telegram: https://t.me/..." }
 #     ZyXwVuTsRqPoNmLkJiHg: {}      # closed, silent
 
+# beings on OTHER nodes that may use a chat's browser here, over an ssh forward of shell.port (always boxed; read fresh per handshake)
+# remote_beings:
+#   ekg:                            # the name the audit line shows ("via remote ekg")
+#     being: egpt                   # the local being it stands in for
+#     surface: telegram             # and the chat whose browser group it gets
+#     slug: An
+#     token_file: secrets/remote-beings/ekg.token   # relative to EGPT_HOME; 32+ chars
+
 # --- Transcription: a standalone LAN service ---------------------------------
 # By default eGPT launches a whisper-server to transcribe audio notes
 # (ask your AI to download models from: https://huggingface.co/ggerganov/whisper.cpp)
