@@ -4329,7 +4329,7 @@ export function createCommands({
       const list = (xs) => (xs.length ? xs.join(', ') : 'none');
       await send?.(ev.chatId, [
         'migrations on this node:',
-        `pending approval: ${r.pendingApproval.length ? r.pendingApproval.map((a) => `${a.id} (${a.summary})`).join('; ') : 'none'}`,
+        `pending approval: ${r.pendingApproval.length ? r.pendingApproval.map((a) => `${a.id}${a.quiet ? ' [quiet: newer applied]' : ''} (${a.summary})`).join('; ') : 'none'}`,
         `approved: ${list(nums(/^\s+(\d{4})\S*\s+done \(applied by operator/gm))}`,
         `declined: ${list(nums(/^\s+(\d{4})\S*\s+done \(declined/gm))}`,
         `pending, runs at the next upgrade: ${list(nums(/^\s+(\d{4})\S*\s+PENDING - /gm))}`,

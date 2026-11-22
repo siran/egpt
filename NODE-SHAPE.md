@@ -253,10 +253,13 @@ only; bare `/<handle> migrate` lists pending, approved, declined), or on a shell
 `node setup/migrate.mjs --approve <id>` / `--decline <id>`. Approve applies it
 and records it; decline records `declined` (time, by operator), and it is never
 proposed again. Only a migration that asks can be declined: a code-shape one
-cannot, because the code depends on it. An independent node that keeps its own
-config (EDW) declines the three that would rewrite it, once, after its first
-upgrade: `/edu migrate decline 0025,0028,0029`, or `node setup/migrate.mjs
---decline 0025,0028,0029`.
+cannot, because the code depends on it. A migration that does not apply to a node
+is not declined: it is left unapproved, and once the ledger records a newer
+migration as applied (applied, approved or already satisfied) it is QUIET: the
+runner marks it `PENDING APPROVAL (quiet: newer applied)` and exits 0 for it, the
+back-up message does not post it, and bare `/<handle> migrate` still lists it,
+marked quiet. Quiet is derived from the ledger on every run, never stored, and
+approve or decline still work on a quiet one.
 
 What still differs, measured, and why it is not being changed:
 

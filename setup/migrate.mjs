@@ -16,6 +16,7 @@
 // Exit: 0 = nothing left pending; 1 = a migration FAILED or refused (the chain stopped there);
 //       2 = what is left is PENDING ELEVATION (or BLOCKED behind such a migration);
 //       3 = what is left is only PENDING APPROVAL (or BLOCKED behind one). When both are left: 2.
+//       A pending approval that is QUIET (see below) does not raise 3: if it is all that is left, 0.
 //       A dry run exits 0 unless a plan refuses.
 //
 // THE RULES, each one decided with the operator:
@@ -49,6 +50,14 @@
 //     commands, not applied, not recorded, not blocking what follows unless listed in `after`.
 //     --approve applies it through the normal plan/apply/re-plan/record path; --decline records it
 //     as `declined` (with the time, by operator) without running it, and it is never proposed again.
+//     QUIET (operator 2026-11-22: "you don't decline them, they just remain unapproved and then
+//     flagged to not show unless asked if newer ones were applied"): a pending approval migration
+//     is quiet when the ledger records any HIGHER id as applied (applied, approved or already
+//     satisfied; a decline does not count). Its line reads `PENDING APPROVAL (quiet: newer applied)`,
+//     it is still not applied and not recorded, it raises no exit 3 and the daemon does not post it;
+//     bare `/<handle> migrate` lists it, marked quiet, and --approve / --decline still work on it.
+//     So a node does not decline what "does not apply": it leaves it unapproved. Quiet is derived
+//     from the ledger on every run, never stored.
 //     A migration that is already satisfied is recorded as ever: there is nothing to approve.
 //     A CODE-SHAPE migration cannot be declined (the code depends on it), and ids are checked
 //     against the migrations that exist: an unknown id, a non-approval one, or one already
@@ -183,6 +192,15 @@ async function resolveApprovalIds(migrations, ledger, wanted, verb) {
     out.add(hit.id);
   }
   return out;
+}
+
+// QUIET (operator 2026-11-22: "you don't decline them, they just remain unapproved and then flagged to
+// not show unless asked if newer ones were applied"): a pending approval migration is quiet when the
+// ledger records a HIGHER id as done by any path (applied, approved, already satisfied - not declined).
+// Derived here from the ledger, never stored.
+function isQuiet(ledger, id) {
+  const n = Number(id.slice(0, 4));
+  return Object.entries(ledger).some(([other, e]) => Number(other.slice(0, 4)) > n && ['applied', 'already-satisfied'].includes(e?.outcome));
 }
 
 // The two ways to settle a PENDING APPROVAL, for its report.
@@ -320,12 +338,21 @@ export async function runMigrations({
 
     say('');
     const awaitingApproval = mod.approval === true && !approveIds.has(id);
-    say(`  ${id}  PENDING${awaitingApproval ? ' APPROVAL' : ''} - ${mod.summary ?? ''}${mod.elevated ? '  [needs elevation]' : ''}`);
+    const quiet = awaitingApproval && isQuiet(ledger, id);
+    say(`  ${id}  PENDING${awaitingApproval ? ' APPROVAL' : ''}${quiet ? ' (quiet: newer applied)' : ''} - ${mod.summary ?? ''}${mod.elevated ? '  [needs elevation]' : ''}`);
     for (const c of plan.changes) say(`      ${c}`);
 
     if (dryRun) {
       say(`      (dry run: not applied)`);
       results.push({ id, outcome: 'would-apply', changes: plan.changes });
+      continue;
+    }
+
+    if (quiet) {
+      // Derived, never stored: still not applied, not recorded, and --approve still applies it.
+      say(`      (quiet: a newer migration is applied, so this stays unapproved and is not raised; /migrate lists it)`);
+      results.push({ id, outcome: 'pending-approval', quiet: true, changes: plan.changes });
+      pendingApproval.add(id);
       continue;
     }
 
@@ -370,7 +397,10 @@ export async function runMigrations({
   if (exitCode === 1) say('migrations: FAILED - see above. Nothing after the failure ran.');
   else if (exitCode === 2) say('migrations: NOT CONVERGED - a migration is PENDING ELEVATION (or BLOCKED behind one), see above.');
   else if (exitCode === 3) say('migrations: NOT CONVERGED - a migration is PENDING APPROVAL (or BLOCKED behind one), see above.');
-  else say(`migrations: ${dryRun ? 'dry run complete' : 'node is current'}`);
+  else {
+    const q = results.filter((r) => r.quiet).map((r) => r.id.slice(0, 4));
+    say(`migrations: ${dryRun ? 'dry run complete' : 'node is current'}${q.length ? ` (${q.length} unapproved, quiet: ${q.join(', ')})` : ''}`);
+  }
   return { results, exitCode };
 }
 
