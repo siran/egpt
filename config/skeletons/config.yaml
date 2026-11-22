@@ -525,11 +525,13 @@ networks:
 # compaction_warn_notice: "the conversation is at {percent}%, handoff being written, compaction next. you can read the handoff here: {path}"
 # The PRE-COMPACTION alert, posted alert_before ahead of the cooling timer when a compaction is due (top-level). {agent}, {chat}, {in} time left, {percent}; unset = "compaction in {in}"; blank disables it.
 # compaction_alert_notice: "compaction in {in}"
-# EVERY LINE THE NODE POSTS TO ITS LOG CHANNEL (log_to_group, else admin_channel), one key per kind. Unset = the default shown (today's text);
+# language: es_VE                     # the pack of system_messages texts: config/locales/<language>.yaml (en_US, es_VE); unset = en_US; an unknown one refuses the config. Hot. Rendered with the node config (a per-conversation language is not wired yet).
+# EVERY LINE THE NODE POSTS TO ITS LOG CHANNEL (log_to_group, else admin_channel), one key per kind. Lookup: system_messages.<kind> here, else the `language` pack, else en_US;
+# the en_US texts are shown below (they live in config/locales/en_US.yaml);
 # a blank string "" = that line is not posted; {placeholders} are filled, the node's name is {node}. A line built from many parts is templated by its
 # frame, the assembled body being {details}. The compaction bodies stay compaction_warn_notice / compaction_alert_notice (above); their frame is compaction_frame.
 # going_down / started / back_up / pending_updates also go to the announce chat: one template, both places. Placeholders per key: config/config-schema.mjs, MANUAL.md.
-# log_messages:
+# system_messages:
 #   command_audit: "{command} in {chat} by {sender}{details}"   # {command} {chat} {sender} {outcome} {details}
 #   going_down: "↻ {kind}… (pid {pid})"   # {kind} {pid}
 #   started: "✅ egpt started ({sha}) pid {pid}{details}"   # {sha} {pid} {subject} {details}

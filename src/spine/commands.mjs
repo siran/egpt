@@ -888,7 +888,7 @@ export function createCommands({
     // the audit stays metadata-only. A sink that ignores the 2nd arg (the standalone default) is
     // unaffected.
     const what = ev?.alias ? `alias '${ev.alias}' → /${cmd}` : `/${cmd}`;   // never the arguments
-    // log_messages.command_audit; blank = no audit line.
+    // system_messages.command_audit; blank = no audit line.
     const line = logLine(cfg(), 'command_audit', { command: what, chat, sender: who, outcome: outcome ?? '', details: outcome ? ` → ${outcome}` : '' });
     if (!line) return;
     try { await logToGroup(line, { key: ev?.msgHash ?? null }); }

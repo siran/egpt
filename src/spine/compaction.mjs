@@ -69,7 +69,7 @@ export { compactionRatio, DEFAULT_RATIO } from '../tools/compact-being.mjs';
 // the one its "lost its thread" alert uses), `chat` the conversation it was compacted in, `tokens`
 // the size the compaction was decided at. A part that is unknown is left out, never invented. Pure,
 // so the wording is pinned by a test.
-// `config` (config.yaml) carries log_messages.compacted; a blank one makes this null: nothing to post.
+// `config` (config.yaml) carries system_messages.compacted; a blank one makes this null: nothing to post.
 export function compactedNotice({ node = null, label, chat = null, tokens, config = null } = {}) {
   const was = Number.isFinite(tokens) && tokens > 0 ? ` (was ${Math.round(tokens / 1000)}k tokens)` : '';
   const who = node ? `${node} · ${label}` : label;
@@ -84,7 +84,7 @@ export function compactedNotice({ node = null, label, chat = null, tokens, confi
 // one channel). `text` is the configurable compaction_warn_notice, already {agent}/{percent}/{path}-
 // resolved by the service — which alone holds the live size and the handoff path. Pure, so its
 // frame is pinned by a test.
-// `config` carries log_messages.compaction_frame; a blank one makes this null.
+// `config` carries system_messages.compaction_frame; a blank one makes this null.
 export function warnNotice({ node = null, label, chat = null, text, config = null } = {}) {
   const who = node ? `${node} · ${label}` : label;
   const where = chat ? ` in ${chat}` : '';

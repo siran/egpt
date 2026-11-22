@@ -3810,15 +3810,29 @@ export const CONFIG_SCHEMA = {
     daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
   `,
 
-  log_messages: `
+  language: `
+    The language pack of the node's system messages (see system_messages): the file
+    config/locales/<language>.yaml shipped in the repo, e.g. es_VE. Unset = en_US. A pack holds a
+    system_messages: block with the same keys and exactly the same {placeholders} as en_US; a key it
+    lacks falls back to en_US. An unknown language (no such file) REFUSES the config: boot fails, a
+    changed config.yaml is refused with config_refused and the running config stays. Hot: no restart.
+    Not the language a being replies in, not the time zone.
+    PER CONVERSATION (not wired yet): the config resolver already layers config.yaml < conversations.yaml
+    < rooms.yaml for any key, but the log lines are rendered with the NODE config.
+
+    EXAMPLE:  language: es_VE
+  `,
+
+  system_messages: `
     THE TEXT OF EVERY LINE THE NODE POSTS TO ITS LOG CHANNEL (log_to_group; admin_channel
     when that is unset), one key per kind of line. Operator An: "keep all eGPT log
     messages customizable in config.yaml". Each value is a template: {placeholders}
     are filled (src/tools/template.mjs fill; an unknown {x} stays as written, so a typo
     shows), and the node's own name is part of the text where it is today ({node}).
-    UNSET = the built-in text below, byte for byte, so a node that sets nothing sees
-    nothing change. A BLANK string ("") = that line is not posted (the same rule as
-    compaction_warn_notice). A line built from many optional parts is templated by its
+    UNSET = the text of the node's language pack (config/locales/<language>.yaml), else
+    en_US (config/locales/en_US.yaml, the texts listed below, byte for byte), so a node that
+    sets nothing sees nothing change. A BLANK string ("") = that line is not posted (at any
+    of the three rungs; the same rule as compaction_warn_notice). A line built from many optional parts is templated by its
     frame; the assembled body arrives as {details}.
 
     The pre-compaction notice and alert BODIES stay the top-level
@@ -3964,7 +3978,7 @@ export const CONFIG_SCHEMA = {
         {where}  ' in {chat}', or empty
         {text}  compaction_warn_notice / compaction_alert_notice, already filled
 
-    EXAMPLE:  log_messages: { command_audit: "{sender}: {command} ({chat}){details}", lag_probe: "" }
+    EXAMPLE:  system_messages: { command_audit: "{sender}: {command} ({chat}){details}", lag_probe: "" }
   `,
 
   log_to_group: `

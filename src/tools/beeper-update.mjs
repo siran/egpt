@@ -519,7 +519,7 @@ export function createBeeperUpdate({
     await io.writeFile(`${statePath}.tmp`, JSON.stringify(st), 'utf8');
     await io.rename(`${statePath}.tmp`, statePath);
   };
-  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in log_messages
+  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in system_messages
   const sayKind = (kind, vars) => say(logLine(cfg(), kind, { node: node(), ...vars }));   // the spine log keeps it when log_to_group is unset
   // Edit the line carrying `marker` in place; post `text` when it cannot be found or edited.
   const replaceLine = async (marker, text) => {

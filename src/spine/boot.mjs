@@ -129,7 +129,7 @@ import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { createBrowserScreens } from '../tools/browser-screens.mjs';
 import { createScreenTunnel } from '../tools/screen-tunnel.mjs';
-import { logLine } from '../tools/template.mjs';
+import { logLine, languagePack } from '../tools/template.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -1068,6 +1068,7 @@ const echoPeersOf = (cfg, nodeName) => (
 // BOOT'S CONFIG ASSERTIONS — fatal at boot, and the same check a changed config.yaml must pass
 // before it is swapped in or restarted onto (step B): an invalid file never replaces a running one.
 export function assertConfig(cfg) {
+  if (cfg.language != null) languagePack(cfg.language);   // an unknown language pack throws: the config is refused
   if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) {
     throw new Error(`boot: config.agents must be a map of the node's agents — no agents block is a fatal misconfiguration (${CONFIG_FILE}). See config/skeletons/config.yaml.`);
   }
@@ -1233,7 +1234,7 @@ export async function boot({
   let cfg = readConfig() ?? {};
   const configBootHash = readConfigHash();
   const getConfig = () => cfg;
-  // Every line the node posts to its log channel is config.yaml `log_messages.<kind>` (src/tools/template.mjs):
+  // Every line the node posts to its log channel is config.yaml `system_messages.<kind>` (src/tools/template.mjs):
   // unset = the built-in text, blank = null (not posted).
   const nodeName = () => getConfig()?.node_name ?? '?';
   const logMsg = (kind, vars = {}) => logLine(getConfig(), kind, { node: nodeName(), ...vars });
@@ -3027,7 +3028,7 @@ export async function boot({
   // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
   // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
   const sayLifecycle = async (chatId, text) => {
-    if (!text) return;   // blanked in log_messages: the line is not posted, to either place
+    if (!text) return;   // blanked in system_messages: the line is not posted, to either place
     const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
     await Promise.all([
       chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,

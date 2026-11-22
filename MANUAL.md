@@ -577,11 +577,12 @@ with a link (a Telegram topic) answers `/split` with its link.
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
 | `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
 
-### Log channel lines (`log_messages`)
+### System messages (`system_messages`, `language`)
 
 Every line the node posts to its log channel (`log_to_group`, else `admin_channel`) is a
-template in the `log_messages:` block, one key per kind. Unset, a key gives today's text
-exactly; a blank string (`""`) means that line is not posted; `{placeholders}` are filled as
+template in the `system_messages:` block, one key per kind. Unset, a key gives the text of the
+`language` pack, else English (en_US), which is today's text exactly (the defaults below live in
+`config/locales/en_US.yaml`); a blank string (`""`) means that line is not posted; `{placeholders}` are filled as
 above, and the node's name is `{node}`. A line built from many optional parts is templated by
 its frame, the assembled body being `{details}`. The pre-compaction bodies stay the top-level
 `compaction_warn_notice` / `compaction_alert_notice`; their frame is `compaction_frame`. The
@@ -589,8 +590,13 @@ lifecycle lines (`going_down`, `started`, `back_up`, `pending_updates`) also go 
 chat: one template shapes both, and blanking it posts to neither. The daemon posts nothing
 itself; its outcome and note arrive inside `back_up`'s `{details}`.
 
+`language: es_VE` picks the pack `config/locales/es_VE.yaml` (shipped with the repo; `en_US` and `es_VE`):
+Latin-American Spanish, same placeholders as English. Unset = `en_US`. An unknown language refuses
+the config (`config_refused`, the running config stays). Both keys are hot. The lines are rendered
+with the node config; a per-conversation `language` is not wired yet.
+
 ```yaml
-log_messages:
+system_messages:
   command_audit: "{sender}: {command} ({chat}){details}"
   lag_probe: ""        # no lag lines
 ```

@@ -94,7 +94,7 @@ export function createEgptUpdate({
     await io.writeFile(`${statePath}.tmp`, JSON.stringify(st), 'utf8');
     await io.rename(`${statePath}.tmp`, statePath);
   };
-  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in log_messages   // the spine log keeps it when log_to_group is unset
+  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in system_messages   // the spine log keeps it when log_to_group is unset
 
   // The checkout's upstream, fetched, against HEAD → r without `how`; null when the state is unknown
   // (no upstream, detached HEAD) or the fetch failed: a log line, nothing else.

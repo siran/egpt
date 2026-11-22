@@ -1584,7 +1584,7 @@ export function createBrainPool({
             tokens,
             config: getConfig(),
           });
-          return line ? noticeTo(line, being) : false;   // blank in log_messages: not posted
+          return line ? noticeTo(line, being) : false;   // blank in system_messages: not posted
         }
         : null;
       // THE PRE-COMPACTION WARN NOTICE (operator 2026-10-08) — the PRIMARY compaction notice, said a

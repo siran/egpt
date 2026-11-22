@@ -187,7 +187,7 @@ export function createLoginLimb({ cdp, bridge, readCredential = async () => null
     // no attachment path (see the report's STOP item). The notice carries only the domain + a size
     // descriptor, never anything read off the page.
     try {
-      const text = logLine(getConfig(), 'login_captcha', { site, bytes });   // log_messages.login_captcha; blank = not posted
+      const text = logLine(getConfig(), 'login_captcha', { site, bytes });   // system_messages.login_captcha; blank = not posted
       if (text) await bridge.noticeToChannel({ configKey: cfg.captcha_channel || 'admin_channel', text });
     } catch { /* fail-closed: a notice that didn't land never changes the outcome */ }
     return done('captcha-posted', site);

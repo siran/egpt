@@ -94,7 +94,7 @@ describe('spine tick — a config.yaml content change is applied, restarted, or 
     expect(group).toEqual(['? · config.yaml change refused, the running config stays: boot: no node_name']);
   });
 
-  it('log_messages.config_refused: a custom template is used, a blank one posts nothing', async () => {
+  it('system_messages.config_refused: a custom template is used, a blank one posts nothing', async () => {
     const custom = build({ answer: () => ({ error: 'bad' }), logLine: (k, v) => (k === 'config_refused' ? `refused: ${v.error}` : null) });
     custom.save(NEXT);
     custom.spine.tick(); custom.spine.tick();

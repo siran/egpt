@@ -139,7 +139,7 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     if (a.reported || stopped()) return;
     a.reported = true;
     note(`liveness: ${a.text}`);
-    const out = format ? format('background_unanswered', a.vars) : a.text;   // format: log_messages (null = blanked)
+    const out = format ? format('background_unanswered', a.vars) : a.text;   // format: system_messages (null = blanked)
     if (report && out) Promise.resolve(report(out)).catch((err) => note(`liveness: logging group refused the line — ${err?.message ?? err}`));
   }
 
