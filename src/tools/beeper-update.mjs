@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { spawn as nodeSpawn, execFile } from 'node:child_process';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { beeperBlockOf } from './config-io.mjs';
+import { logLine } from './template.mjs';
 
 export const AUTO_UPDATE_METHODS = ['auto', 'manual', 'none'];
 export const CHECK_EVERY_MS = 6 * 3_600_000;
@@ -170,11 +171,12 @@ export function statusLine(node, d, state = stateOf(d), hint = '/update beeper')
   return `${node} · Beeper ${d.installed ?? '?'} · ${what}${run ? ` · running ${run}` : ''}`;
 }
 
-export function noticeLine(node, d, state, { method, hint, updateCmd }) {
-  if (state === 'blocked') return `⬆ ${node} · Beeper ${d.pending.version} downloaded, needs admin rights — run ${updateCmd} (it asks for administrator)`;
+export function noticeBody(d, state, { method, hint, updateCmd }) {
+  if (state === 'blocked') return `Beeper ${d.pending.version} downloaded, needs admin rights — run ${updateCmd} (it asks for administrator)`;
   const running = [...new Set((d.running ?? []).map((r) => r.version).filter(Boolean))].join('/') || d.installed;
-  return `⬆ ${node} · Beeper ${d.pending.version} downloaded (running ${running}) — ${method === 'auto' ? 'installing at the next quiet moment' : `send ${hint}`}`;
+  return `Beeper ${d.pending.version} downloaded (running ${running}) — ${method === 'auto' ? 'installing at the next quiet moment' : `send ${hint}`}`;
 }
+export const noticeLine = (node, d, state, o) => `⬆ ${node} · ${noticeBody(d, state, o)}`;
 
 export function refusalText(r) {
   if (r?.step === 'permission') return `needs elevation: ${r.remedy}`;
@@ -185,12 +187,13 @@ export const downloadLine = (node, from, to, mb) => `⬇ ${node} · Beeper ${fro
 export const startLine = (node, from, to, marker) => `🔄 ${node} · Beeper ${from} → ${to} · restarting for update… ${marker}`;
 
 // The ONE line that replaces the start line: "🔄 kg · Beeper a → b · restarted in 72 s · primary ✓ · secondary ✓".
-export function resultLine(node, { from, to, result: r = {} }) {
-  const head = `🔄 ${node} · Beeper ${from} → ${to}`;
+// resultDetails: what follows "🔄 node · Beeper from → to", each part with its own " · ".
+export function resultDetails({ result: r = {} }) {
   const took = r.restartSec != null ? `restarted in ${r.restartSec} s` : null;
   const conns = (r.connections ?? []).map((c) => `${c.name} ${c.status === 'ok' ? '✓' : `✗ ${c.status}`}`);
-  return (r.ok ? [head, took, ...conns] : [`${head} · FAILED at ${r.step ?? '?'}: ${refusalText(r)}`, took, ...conns]).filter(Boolean).join(' · ');
+  return (r.ok ? [took, ...conns] : [`FAILED at ${r.step ?? '?'}: ${refusalText(r)}`, took, ...conns]).filter(Boolean).map((p) => ` · ${p}`).join('');
 }
+export const resultLine = (node, { from, to, result }) => `🔄 ${node} · Beeper ${from} → ${to}${resultDetails({ result })}`;
 
 // ── the .ps1 ─────────────────────────────────────────────────────────────────────────────────
 const installerArgs = (installer, sha512) => (installer ? ['-Installer', installer, '-Sha512', sha512] : []);
@@ -504,7 +507,8 @@ export function createBeeperUpdate({
   let busy = null;   // { kind: 'update' | 'hold', done: Promise, release }: an accepted /update beeper until its line is posted, or a handover hold
   let downloading = false;
   let holdTimer = null;
-  const busyText = () => `${node()} · ${busy?.kind === 'hold' ? 'a Beeper handover is under way' : 'a Beeper update is already under way'}`;
+  const busyReason = () => (busy?.kind === 'hold' ? 'a Beeper handover is under way' : 'a Beeper update is already under way');
+  const refuse = (reason) => ({ started: false, reason, text: `${node()} · ${reason}` });
 
   const load = async () => {
     if (!st) { try { st = JSON.parse(String(await io.readFile(statePath, 'utf8'))); } catch { st = {}; } }
@@ -515,7 +519,8 @@ export function createBeeperUpdate({
     await io.writeFile(`${statePath}.tmp`, JSON.stringify(st), 'utf8');
     await io.rename(`${statePath}.tmp`, statePath);
   };
-  const say = (text) => { onLog(text); return logToGroup(text); };   // the spine log keeps it when log_to_group is unset
+  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in log_messages
+  const sayKind = (kind, vars) => say(logLine(cfg(), kind, { node: node(), ...vars }));   // the spine log keeps it when log_to_group is unset
   // Edit the line carrying `marker` in place; post `text` when it cannot be found or edited.
   const replaceLine = async (marker, text) => {
     try {
@@ -544,16 +549,16 @@ export function createBeeperUpdate({
   async function apply({ from, to, restartOnly, appOpen = false, own = {} }) {
     try {
       const marker = `⟦bu-${node()}-${now().toString(36)}⟧`;
-      await say(startLine(node(), from, to, marker));
+      await sayKind('beeper_update_start', { from, to, marker });
       let result = appOpen ? await closeApp() : null;
       if (!result) {
         try { await beeperRestart(true); result = await run({ restartOnly, relaunchApp: appOpen, ...own }); }
         catch (e) { result = { ok: false, step: 'tool', error: e?.message ?? String(e) }; }
         finally { await beeperRestart(false); }
       }
-      const line = resultLine(node(), { from, to, result });
-      onLog(line);
-      await replaceLine(marker, line);
+      onLog(resultLine(node(), { from, to, result }));
+      const line = logLine(cfg(), 'beeper_update_result', { node: node(), from, to, details: resultDetails({ result }) });
+      if (line) await replaceLine(marker, line);
     } catch (e) { onLog(`update: ${e?.message ?? e}`); }
     finally { const b = busy; busy = null; b?.release(); }
   }
@@ -562,9 +567,9 @@ export function createBeeperUpdate({
   // progress(text): a line before the reply (the download starting).
   async function start(progress = () => {}) {
     const m = autoUpdateMethod(cfg(), platform);
-    if (!IMPLEMENTED.includes(m.os)) return { started: false, text: `${node()} · Beeper updates are not implemented on ${m.os} yet` };
-    if (busy || downloading) return { started: false, text: busyText() };
-    if (restartPending()) return { started: false, text: `${node()} · a restart is pending — send ${hint()} after it` };
+    if (!IMPLEMENTED.includes(m.os)) return refuse(`Beeper updates are not implemented on ${m.os} yet`);
+    if (busy || downloading) return refuse(busyReason());
+    if (restartPending()) return refuse(`a restart is pending — send ${hint()} after it`);
     const d = await detectFn(cfg());
     const state = stateOf(d);
     if (!APPLICABLE.includes(state)) return { started: false, text: `${statusLine(node(), d, state, hint())}${state === 'blocked' ? ` — run ${updateCmd} (it asks for administrator)` : ''}` };
@@ -575,13 +580,13 @@ export function createBeeperUpdate({
       let got;
       try { got = await fetchInstaller(d.latest, { dir: join(home, 'state', 'beeper-update'), fetchImpl, onStart: (mb) => progress(downloadLine(node(), from, to, mb)) }); }
       finally { downloading = false; }
-      if (!got.ok) return { started: false, text: `${node()} · Beeper ${to} not downloaded: ${got.error}` };
+      if (!got.ok) return refuse(`Beeper ${to} not downloaded: ${got.error}`);
       own = { installer: got.path, sha512: d.latest.sha512 };
     }
     const plan = await dryRun({ restartOnly, ...own });
-    if (!plan?.ok) return { started: false, text: `${node()} · Beeper ${to} not installed: ${refusalText(plan)}` };
-    if (typeof drain !== 'function') return { started: false, text: `${node()} · Beeper ${to}: no drain on this node — run ${updateCmd}` };
-    if (busy) return { started: false, text: busyText() };
+    if (!plan?.ok) return refuse(`Beeper ${to} not installed: ${refusalText(plan)}`);
+    if (typeof drain !== 'function') return refuse(`Beeper ${to}: no drain on this node — run ${updateCmd}`);
+    if (busy) return refuse(busyReason());
     let release;
     busy = { kind: 'update', done: new Promise((r) => { release = r; }), release };
     drain(() => { apply({ from, to, restartOnly, appOpen: !!plan.closeApp, own }); });
@@ -630,14 +635,14 @@ export function createBeeperUpdate({
     if ((state === 'downloaded' || state === 'blocked') && st.noticed !== d.pending.version) {
       st.noticed = d.pending.version;
       await save();
-      await say(noticeLine(node(), d, state, { method: m.method, hint: hint(), updateCmd }));
+      await sayKind('beeper_update_notice', { details: noticeBody(d, state, { method: m.method, hint: hint(), updateCmd }) });
     }
     const key = state === 'downloaded' ? d.pending.version : state === 'restart-needed' ? `restart-${d.installed}` : state === 'available' ? `available-${d.latest.version}` : null;
     if (m.method === 'auto' && key && st.autoTried !== key && !busy) {
       st.autoTried = key;
       await save();
       const r = await start();
-      if (!r.started) await say(r.text);   // refused: said once per version
+      if (!r.started) await (r.reason != null ? sayKind('beeper_update_refused', { details: r.reason }) : say(r.text));   // refused: said once per version
     }
     return state;
   }

@@ -577,6 +577,51 @@ with a link (a Telegram topic) answers `/split` with its link.
 | `compaction_warn_notice` | `{agent}` the being's handle, `{percent}` how full the conversation is, `{path}` the handoff file | `{agent} at {percent}%` → `e at 18%` |
 | `heartbeats.<name>.post` | `{stdout}` the command's output, trimmed | `the prime is {stdout}` → `the prime is 1637` |
 
+### Log channel lines (`log_messages`)
+
+Every line the node posts to its log channel (`log_to_group`, else `admin_channel`) is a
+template in the `log_messages:` block, one key per kind. Unset, a key gives today's text
+exactly; a blank string (`""`) means that line is not posted; `{placeholders}` are filled as
+above, and the node's name is `{node}`. A line built from many optional parts is templated by
+its frame, the assembled body being `{details}`. The pre-compaction bodies stay the top-level
+`compaction_warn_notice` / `compaction_alert_notice`; their frame is `compaction_frame`. The
+lifecycle lines (`going_down`, `started`, `back_up`, `pending_updates`) also go to the announce
+chat: one template shapes both, and blanking it posts to neither. The daemon posts nothing
+itself; its outcome and note arrive inside `back_up`'s `{details}`.
+
+```yaml
+log_messages:
+  command_audit: "{sender}: {command} ({chat}){details}"
+  lag_probe: ""        # no lag lines
+```
+
+| Key | Default | Variables |
+|---|---|---|
+| `command_audit` | `{command} in {chat} by {sender}{details}` | `{command}` the command, `/name`, or `alias 'x' → /name`; never its arguments, `{chat}` the conversation it was typed in, `{sender}` who typed it, `{outcome}` what a silent handler reports (/end); may be empty, `{details}` ' → {outcome}', or empty |
+| `going_down` | `↻ {kind}… (pid {pid})` | `{kind}` the lifecycle command: /restart, /upgrade, /upgrade full, /rewind, /standdown, `{pid}` the process that is going down |
+| `started` | `✅ egpt started ({sha}) pid {pid}{details}` | `{sha}` the commit the node came up on, `{pid}` the new process, `{subject}` the commit's subject line, `{details}` blank line + {subject}, or empty |
+| `back_up` | `✅ egpt back up! ({head}) {pids}{details}` | `{head}` the commit, or 'old → new' when it changed, `{pids}` 'pid N', or 'pid old → new', `{kind}` the lifecycle command that led here; may be empty, `{outcome}` what /upgrade or /rewind did, from the daemon; may be empty, `{note}` the daemon's ⚠️ paragraph (a recovery, a migration that needs the operator); may be empty, `{subject}` the commit's subject line, `{details}` ' — {kind}: {outcome}', then the ⚠️ {note} paragraph, then the {subject} paragraph; each only when present |
+| `pending_updates` | `⬆ pending: {details}{ask}` | `{details}` what is pending, joined with " · ", `{ask}` '. Apply now?' when a human still has to type something, else empty |
+| `egpt_update_notice` | `⬆ {node} · {details}` | `{node}` this node's name (node_name), `{details}` eGPT N new commits on <branch> (from → to): <subjects> — what happens next |
+| `egpt_update_stuck` | `⬆ {node} · {details}` | `{node}` this node's name (node_name), `{details}` why the daemon cannot be renewed automatically |
+| `beeper_update_notice` | `⬆ {node} · {details}` | `{node}` this node's name (node_name), `{details}` Beeper <version> downloaded (running …) — what happens next |
+| `beeper_update_start` | `🔄 {node} · Beeper {from} → {to} · restarting for update… {marker}` | `{node}` this node's name (node_name), `{from}` the version before, `{to}` the version after, `{marker}` the tag the result line replaces this one by; keep it in the template, else the result is posted as a new line |
+| `beeper_update_result` | `🔄 {node} · Beeper {from} → {to}{details}` | `{node}` this node's name (node_name), `{from}` the version before, `{to}` the version after, `{details}` ' · restarted in N s · <connection> ✓ …', or ' · FAILED at <step>: <why>' … |
+| `beeper_update_refused` | `{node} · {details}` | `{node}` this node's name (node_name), `{details}` why an automatic Beeper update did not start |
+| `beeper_connection_gone` | `{node} · ⚠ Beeper connection '{connection}' has answered on no port for {minutes} min — no install answers its token (Beeper not running, a service that can no longer log on, or a revoked token)` | `{node}` this node's name (node_name), `{connection}` the connection name, `{minutes}` how long it has been silent |
+| `beeper_connection_back` | `{node} · ✓ Beeper connection '{connection}' answers again ({url})` | `{node}` this node's name (node_name), `{connection}` the connection name, `{url}` where it answers |
+| `media_flood` | `{node} · {details}` | `{node}` this node's name (node_name), `{details}` the new-chat burst notice |
+| `send_rate_guard` | `{node} · send-rate guard paused {chat} — {why}` | `{node}` this node's name (node_name), `{chat}` the chat that was paused, `{why}` what tripped the guard |
+| `lag_probe` | `{node} · {details}` | `{node}` this node's name (node_name), `{details}` the lag / recovered / sleep report |
+| `undelivered` | `{node} · ⚠ {what}{being} not delivered to {title}{chat} — {reason}` | `{node}` this node's name (node_name), `{what}` opener, reply, limb …, `{being}` ' (handle)' of the being sending, or empty, `{title}` '"name" ' of the chat when it has one, or empty, `{chat}` the chat's id, `{reason}` why it was not delivered |
+| `public_error` | `{being} in {chat}: {text}` | `{being}` the public being, `{chat}` the chat, `{text}` the error line that would have gone to the chat |
+| `drain_waiting` | `{node} · restart waiting {elapsed} for {details}. Send /restart force to proceed.` | `{node}` this node's name (node_name), `{elapsed}` how long the restart has waited, `{details}` the turns and background work it waits for |
+| `config_refused` | `{node} · config.yaml change refused, the running config stays: {error}` | `{node}` this node's name (node_name), `{error}` why the new config.yaml was refused |
+| `background_unanswered` | `{node} · {being} in {chat}: background task(s) {what} running {elapsed}, the being did not answer whether they are still needed.` | `{node}` this node's name (node_name), `{being}` the being's name, `{chat}` the conversation, `{what}` the background work, `{elapsed}` how long it has run |
+| `login_captcha` | `login {site}: a CAPTCHA is blocking sign-in — solve it in the brain Chrome, then re-run /login {site}. (screenshot {bytes}B captured; image delivery pending)` | `{site}` the site, `{bytes}` the screenshot size |
+| `compacted` | `🗜️ {who}{where} compacted its context{was}. The full history stays in its transcript.md.` | `{node}` this node's name (node_name), `{label}` the being's display name, `{chat}` the conversation; may be empty, `{tokens}` the size it was decided at, in tokens; may be empty, `{who}` '{node} · {label}', or {label} alone, `{where}` ' in {chat}', or empty, `{was}` ' (was Nk tokens)', or empty |
+| `compaction_frame` | `🗜️ {who}{where}: {text}` | `{node}` this node's name (node_name), `{label}` the being's display name, `{chat}` the conversation; may be empty, `{who}` '{node} · {label}', or {label} alone, `{where}` ' in {chat}', or empty, `{text}` compaction_warn_notice / compaction_alert_notice, already filled |
+
 ### Chatboxes (`limbs.http`)
 
 A website chatbox is named under `limbs.http.chatboxes` and configured in its

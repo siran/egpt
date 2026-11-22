@@ -229,7 +229,7 @@ describe('spine.drainForRestart — /restart and /upgrade wait for the turns in 
     clock.t += 3 * NOTICE_MS; timers.fire();
     expect(exits).toEqual([]);
     expect(timers.armed()).toEqual([1000]);
-    expect(posted).toEqual([`restart waiting 30m00s for 1 turn(s): ${KEY_A}. Send /restart force to proceed.`, `restart waiting 2h00m for 1 turn(s): ${KEY_A}. Send /restart force to proceed.`]);
+    expect(posted).toEqual([`? · restart waiting 30m00s for 1 turn(s): ${KEY_A}. Send /restart force to proceed.`, `? · restart waiting 2h00m for 1 turn(s): ${KEY_A}. Send /restart force to proceed.`]);
     expect(drainLines().at(-1)).toBe(`drain: still waiting after 7200s — 1 turn(s): ${KEY_A}`);
 
     brain.release('one');
@@ -336,13 +336,13 @@ describe('spine.drainForRestart — background work holds the restart, and is ne
     expect(posted).toEqual([]);
     clock.t += 1; timers.fire();
     expect(exits).toEqual([]);
-    expect(posted).toEqual([`restart waiting 30m00s for background work: e/${A}: indexing the archive (35m00s). Send /restart force to proceed.`]);
+    expect(posted).toEqual([`? · restart waiting 30m00s for background work: e/${A}: indexing the archive (35m00s). Send /restart force to proceed.`]);
 
     clock.t += 60_000; timers.fire();
     expect(posted).toHaveLength(1);
     clock.t += NOTICE_MS - 60_000; timers.fire();
     expect(posted).toHaveLength(2);
-    expect(posted[1]).toMatch(/^restart waiting 1h00m for background work: /);
+    expect(posted[1]).toMatch(/^\? · restart waiting 1h00m for background work: /);
     expect(exits).toEqual([]);
   });
 
@@ -356,7 +356,7 @@ describe('spine.drainForRestart — background work holds the restart, and is ne
     spine.drainForRestart(() => exits.push('exit'));
 
     clock.t += NOTICE_MS; timers.fire();
-    expect(posted).toEqual([`restart waiting 30m00s for 1 turn(s): ${KEY_A}; background work: e/${A}: indexing the archive (35m00s). Send /restart force to proceed.`]);
+    expect(posted).toEqual([`? · restart waiting 30m00s for 1 turn(s): ${KEY_A}; background work: e/${A}: indexing the archive (35m00s). Send /restart force to proceed.`]);
     tasks = [];
     clock.t += 2 * NOTICE_MS; timers.fire();
     expect(exits).toEqual([]);

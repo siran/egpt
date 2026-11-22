@@ -129,6 +129,7 @@ import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { createBrowserScreens } from '../tools/browser-screens.mjs';
 import { createScreenTunnel } from '../tools/screen-tunnel.mjs';
+import { logLine } from '../tools/template.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -1232,6 +1233,10 @@ export async function boot({
   let cfg = readConfig() ?? {};
   const configBootHash = readConfigHash();
   const getConfig = () => cfg;
+  // Every line the node posts to its log channel is config.yaml `log_messages.<kind>` (src/tools/template.mjs):
+  // unset = the built-in text, blank = null (not posted).
+  const nodeName = () => getConfig()?.node_name ?? '?';
+  const logMsg = (kind, vars = {}) => logLine(getConfig(), kind, { node: nodeName(), ...vars });
 
   // THE TRANSCRIPT CLOCK'S ZONE (operator 2026-07-26: "timestamps should be rendered as per
   // the configuration key"). ONE zone mechanism for the whole node: the same config key and
@@ -1956,14 +1961,14 @@ export async function boot({
   const installGone = new Map();   // connection → { since, said }
   const noteInstall = (name, url) => {
     const g = installGone.get(name);
-    const say = (text) => Promise.resolve(logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`)).catch(() => {});
+    const say = (kind, vars) => { const text = logMsg(kind, vars); if (text) Promise.resolve(logToGroup(text)).catch(() => {}); };
     if (url) {
-      if (g?.said) say(`✓ Beeper connection '${name}' answers again (${url})`);
+      if (g?.said) say('beeper_connection_back', { connection: name, url });
       installGone.delete(name);
     } else if (!g) installGone.set(name, { since: now(), said: false });
     else if (!g.said && now() - g.since >= INSTALL_GONE_MS) {
       g.said = true;
-      say(`⚠ Beeper connection '${name}' has answered on no port for ${Math.round((now() - g.since) / 60_000)} min — no install answers its token (Beeper not running, a service that can no longer log on, or a revoked token)`);
+      say('beeper_connection_gone', { connection: name, minutes: Math.round((now() - g.since) / 60_000) });
     }
   };
   const discoverBaseUrl = async (name, token) => {
@@ -2177,7 +2182,8 @@ export async function boot({
     ...floodBanForBridge,
     observeChat: async (network, chatId, meta) => {
       const r = floodBan.observeChat(connection, chatId, { ...meta, isNew: !getContact(await _loadState(), surfaceOf(network), chatId) });
-      if (r.notice) Promise.resolve().then(() => logToGroup(`${getConfig()?.node_name ?? '?'} · ${r.notice}`)).catch((e) => log.line?.(`[media-flood] burst notice not posted: ${e?.message ?? e}`));
+      const floodLine = r.notice ? logMsg('media_flood', { details: r.notice }) : null;
+      if (floodLine) Promise.resolve().then(() => logToGroup(floodLine)).catch((e) => log.line?.(`[media-flood] burst notice not posted: ${e?.message ?? e}`));
       return r;
     },
   });
@@ -3021,6 +3027,7 @@ export async function boot({
   // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
   // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
   const sayLifecycle = async (chatId, text) => {
+    if (!text) return;   // blanked in log_messages: the line is not posted, to either place
     const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
     await Promise.all([
       chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,
@@ -3039,7 +3046,7 @@ export async function boot({
     // Beeper account that id does not exist there (operator 2026-09-11).
     // The failure is SAID rather than swallowed: a restart line that never landed leaves the
     // operator watching a silent chat, and this is the last thing the process does.
-    try { await Promise.race([sayLifecycle(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); }
+    try { await Promise.race([sayLifecycle(selfDm, logMsg('going_down', { kind: KIND_OF[code] ?? 'restart', pid: process.pid })), new Promise((r) => setTimeout(r, 3000))]); }
     catch (e) { log.line?.(`[announce] could not post the going-down line (${e?.message ?? e}) — leaving anyway`); }
     try { await unlink(drainingFile); } catch { /* no drain was published — the usual case */ }
     exit(code);
@@ -3201,7 +3208,7 @@ export async function boot({
     // noticeToChannel (forward ref, like logToGroup: fires at reply time).
     sender: createSender({ bridge: shellAwareBridge, bridgeOf: shellAwareBridgeOf, bodyEmojiOf, labelOf, agentSignatureOpenOf, agentSignatureCloseOf, peerMouth,
       publicOf: isPublicAgent,
-      noticeAdmin: ({ being, chatId, text }) => noticeToChannel({ configKey: logChannelKey(), text: `${being} in ${chatId}: ${text}`, what: 'public-error', tag: 'public' }),
+      noticeAdmin: ({ being, chatId, text }) => { const line = logMsg('public_error', { being, chat: chatId, text }); return line ? noticeToChannel({ configKey: logChannelKey(), text: line, what: 'public-error', tag: 'public' }) : false; },
       onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }),
       onLog: mouthLog, now }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
@@ -3371,7 +3378,9 @@ export async function boot({
     const on = rawBridgeOf(being, id);
     const title = on?.getChatName?.(id);
     const reason = why ?? on?.sendFailure?.(id) ?? 'the bridge gave no reason';
-    try { return await logToGroup(`${getConfig()?.node_name ?? '?'} · ⚠ ${what}${being ? ` (${being})` : ''} not delivered to ${title && title !== id ? `"${title}" ` : ''}${id} — ${reason}`); }
+    const line = logMsg('undelivered', { what, being: being ? ` (${being})` : '', title: title && title !== id ? `"${title}" ` : '', chat: id, reason });
+    if (!line) return false;
+    try { return await logToGroup(line); }
     catch { return false; }
   };
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, labelOf, afterTurn: afterEveryTurn, onAlert: alertOperator, noticeTo: noticeToAdmin, resolveConfig: configResolver.configFor, resolveScope: createIdentityScope({ resolveMembers: memberResolver, getConfig, onLog: (m) => log.line?.(`[scope] ${m}`) }), io, beingLink, onLog: (m) => log.line?.(`[brain] ${m}`) });
@@ -3956,7 +3965,8 @@ export async function boot({
       guard.stopChannel(anyChannel(key));
       const home = peerMouth?.homeChatOf?.(chat) ?? chat;
       Promise.resolve(sayOnce({ chatId: home, text: pauseNotice(`send-rate guard, ${why}`), opts: { bypassLoopGuard: true }, what: 'guard' })).catch((e) => log.line?.(`[guard] could not announce the pause in ${home}: ${e?.message ?? e}`));
-      Promise.resolve(logToGroup(`${getConfig()?.node_name ?? '?'} · send-rate guard paused ${name ?? home} — ${why}`)).catch(() => {});
+      const guardLine = logMsg('send_rate_guard', { chat: name ?? home, why });
+      if (guardLine) Promise.resolve(logToGroup(guardLine)).catch(() => {});
     },
   });
 
@@ -4028,7 +4038,7 @@ export async function boot({
   // THE LAG PROBE (src/spine/lag-probe.mjs): the loop's delay + the queues, to log_to_group while it lags.
   const lagProbe = lagProbeIn ?? createLagProbe({
     config: () => getConfig()?.lag_probe, now,
-    report: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`),
+    report: (text) => { const line = logMsg('lag_probe', { details: text }); return line ? logToGroup(line) : false; },
     note: (m) => log.line?.(`[lag] ${m}`),
     backlog: () => ({ fast: spine.stats(), turns: turns.busy() }),
   });
@@ -4043,7 +4053,7 @@ export async function boot({
   let asking = null;                  // the tick's pass over them, while it runs (declared here: the spine's first tick is below)
   // Pins whose conversations.yaml sandbox_pin is gone are released on the tick (src/spine/sandbox-pins.mjs). Real node only.
   const sandboxPins = ingest ? createSandboxPinReleaser({ loadState: _loadState, evictWarm: (being, ev) => brain.evict(being, ev), onLog: (m) => log.line?.(`[sandbox-pins] ${m}`) }) : null;
-  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, egptUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(`${getConfig()?.node_name ?? '?'} · ${text}`), stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, readAccum, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
+  const spine = createSpine({ bridge, bridgeOf: rawBridgeOf, peerMouth, brain, turns, ...services, commands, mesh, actions, backgroundWork: () => (cliHost ? [] : liveBackground()), allBackground: liveBackground, backgroundOutcome, background, beeperUpdate, egptUpdate, sandboxPins, warmPool: pool, advice, ingestAsk: { isAnswer: async (ev) => (await ingestAnswerOf(ev)) != null, answer: answerIngest, ask: askMention, tick: asksTick }, guard, guardOverride, fromThisNode, say: sayOnce, logToGroup: (text) => logToGroup(text), logLine: logMsg, stopSwitch, isSelfChat, isTransit: (ev) => isRelayChannelChat(getConfig(), ev), remindClosed: closedChats.remind, roomRelay, readTranscript, readAccum, refreshConfig: heartbeatLoader.reload, applyConfig, configBootHash, readConfigHash, requestRestart: () => announceAndExit(43), radioRelay: radioRelay.relay, synthesize: vx.synthesize, voice: vx.voice, labelOf, timeZone: transcriptTimeZone, clock: { now }, log, turnTimeoutMs, livenessEveryMs, livenessBackgroundEveryMs, livenessBackgroundChangeMs, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn, probe: lagProbe, intakeCap: () => intakeCap(lagProbe.load?.()), stopPhrase: () => getConfig()?.stop_phrase });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -4141,13 +4151,13 @@ export async function boot({
       // dirty-tree rescue, which rescue/<ts> branch the operator's uncommitted work is on.
       // Absent on every other sidecar, which therefore renders byte-for-byte as before.
       // `outcome` (daemon-runtime.mjs addOutcome, 2026-11-03): what /upgrade or /rewind did.
-      try { await sayLifecycle(sc.chatId, `✅ egpt back up! (${head}) ${pids}${sc.outcome ? ` — ${sc.kind}: ${sc.outcome}` : ''}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}`); }
+      try { await sayLifecycle(sc.chatId, logMsg('back_up', { head, pids, kind: sc.kind ?? '', outcome: sc.outcome ?? '', note: sc.note ?? '', subject, details: `${sc.outcome ? ` — ${sc.kind}: ${sc.outcome}` : ''}${sc.note ? `\n\n⚠️ ${sc.note}` : ''}${subject ? `\n\n${subject}` : ''}` })); }
       catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
       return sc.chatId;
     }
     const nowSha = shortSha();
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await sayLifecycle(announceChatId(), `✅ egpt started (${nowSha}) pid ${process.pid}${subject ? `\n\n${subject}` : ''}`); }
+    try { await sayLifecycle(announceChatId(), logMsg('started', { sha: nowSha, pid: process.pid, subject, details: subject ? `\n\n${subject}` : '' })); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
     return announceChatId();
   })()

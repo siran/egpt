@@ -91,7 +91,20 @@ describe('spine tick — a config.yaml content change is applied, restarted, or 
     spine.tick(); spine.tick();
     await Promise.resolve();
     expect(restarts).toEqual([]);
-    expect(group).toEqual(['config.yaml change refused, the running config stays: boot: no node_name']);
+    expect(group).toEqual(['? · config.yaml change refused, the running config stays: boot: no node_name']);
+  });
+
+  it('log_messages.config_refused: a custom template is used, a blank one posts nothing', async () => {
+    const custom = build({ answer: () => ({ error: 'bad' }), logLine: (k, v) => (k === 'config_refused' ? `refused: ${v.error}` : null) });
+    custom.save(NEXT);
+    custom.spine.tick(); custom.spine.tick();
+    await Promise.resolve();
+    expect(custom.group).toEqual(['refused: bad']);
+    const blank = build({ answer: () => ({ error: 'bad' }), logLine: () => null });
+    blank.save(NEXT);
+    blank.spine.tick(); blank.spine.tick();
+    await Promise.resolve();
+    expect(blank.group).toEqual([]);
   });
 
   it('a message arrival applies a hot change, but leaves a restart to the tick', async () => {

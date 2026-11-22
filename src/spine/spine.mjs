@@ -25,6 +25,7 @@ import { createTurns } from './turns.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { INTAKE_LANES } from './lag-probe.mjs';
 import { createLiveness, workOf } from './liveness.mjs';
+import { logLine as logLineOf } from '../tools/template.mjs';
 // WHICH CONNECTION AN OUTBOUND GOES OUT ON — the ONE resolver (sender.mjs makeOutbound), not a
 // fourth local copy of `bridgeOf(being) ?? bridge`.
 import { makeOutbound, elapsed } from './sender.mjs';
@@ -174,6 +175,7 @@ export function createSpine({
   // A BEING DOES NOT WAKE ON A FRAME ANOTHER NODE'S SPINE COMMITTED (operator 2026-08-31).
   guardOverride = null,                // optional (surface, chatId) => { turns?, window? } | null — the conversation's per-channel guard override (conversations.yaml). Null = node defaults only.
   fromThisNode = () => false,          // (ev) => did THIS node's own spine commit this text? boot: `ev.fromNode != null && !fromOtherNode(getConfig(), ev)` — the SAME ownNodeNamesOf set every other "who are we" question reads. The guard's third bucket (stop-guard turnKind 'echo'): our own ⏳ placeholder coming back through Beeper is bookkeeping, so it neither counts toward the loop cap nor resets it (kg 2026-09-20, "🌴FAMILIA MUESTRA🌴"). Default false = never our own frame, byte-identical to before.
+  logLine = (kind, vars) => logLineOf({}, kind, { node: '?', ...vars }),   // (kind, vars) => the text for a log_messages kind, or null when blanked (boot: config.yaml log_messages)
   logToGroup = null,                   // optional (text) => Promise — boot's log_to_group poster (node-prefixed there). Liveness reports a being that did not answer whether its long background work is still needed. Null ⇒ the note is all there is.
   backgroundWork = null,               // optional () => [{ being, chatId, description, since }] — every warm session's live background tasks (boot: the pool's); the restart drain waits for them
   allBackground = null,                // optional, same shape — every live background task whoever holds the process (boot: the pool's); what a /standdown ends
@@ -255,7 +257,7 @@ export function createSpine({
   if (commands) commands = new Proxy(commands, { get: (t, k) => (k === 'run' && typeof t[k] === 'function' ? ordered(t[k].bind(t)) : Reflect.get(t, k)) });
   // LIVENESS (src/spine/liveness.mjs): a running turn and a chat's background work stay visibly
   // alive in the chat; long background work is asked about through the wake path below.
-  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, backgroundChangeMs: livenessBackgroundChangeMs, stopped: () => !!stopSwitch?.present(), timeZone, labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup });
+  const liveness = createLiveness({ sender, allBackground, outcomeOf: backgroundOutcome, now: () => clock.now(), everyMs: livenessEveryMs, backgroundEveryMs: livenessBackgroundEveryMs, backgroundChangeMs: livenessBackgroundChangeMs, stopped: () => !!stopSwitch?.present(), timeZone, labelOf, note, ask: (o) => wakeOnBackground(o), report: logToGroup, format: logLine });
 
   // --- GUARD (C7.7): the SINGLE per-channel loop-breaker + human STOP/RESUME, wired at
   //     THIS chokepoint (handleFast) through which every inbound turn flows. Injected, so
@@ -645,9 +647,11 @@ export function createSpine({
     if (bg.length) d.bgSeenAt = now;
     if (now >= d.noticeAt) {
       d.noticeAt = now + RESTART_DRAIN_NOTICE_MS;
-      const line = `restart waiting ${elapsed(waited)} for ${[t.n && `${t.n} turn(s): ${t.list}`, bg.length && `background work: ${bg.map(bgLabel).join('; ')}`].filter(Boolean).join('; ')}. Send /restart force to proceed.`;
+      const waitingFor = [t.n && `${t.n} turn(s): ${t.list}`, bg.length && `background work: ${bg.map(bgLabel).join('; ')}`].filter(Boolean).join('; ');
+      const line = `restart waiting ${elapsed(waited)} for ${waitingFor}. Send /restart force to proceed.`;
       note(`drain: ${line}`);
-      if (logToGroup) Promise.resolve(logToGroup(line)).catch((e) => note(`drain: logging group refused the line — ${e?.message ?? e}`));
+      const drainLine = logToGroup ? logLine('drain_waiting', { elapsed: elapsed(waited), details: waitingFor }) : null;
+      if (drainLine) Promise.resolve(logToGroup(drainLine)).catch((e) => note(`drain: logging group refused the line — ${e?.message ?? e}`));
     }
     if (now - d.lastLog < RESTART_DRAIN_LOG_MS) return;
     d.lastLog = now;
@@ -1908,7 +1912,8 @@ export function createSpine({
     configHash = h;
     if (r.error) {
       note(`config.yaml change REFUSED — the running config stays: ${r.error}`);
-      if (logToGroup) Promise.resolve(logToGroup(`config.yaml change refused, the running config stays: ${r.error}`)).catch((e) => note(`config: logging group refused the line — ${e?.message ?? e}`));
+      const refusedLine = logToGroup ? logLine('config_refused', { error: r.error }) : null;
+      if (refusedLine) Promise.resolve(logToGroup(refusedLine)).catch((e) => note(`config: logging group refused the line — ${e?.message ?? e}`));
       return;
     }
     if (!r.restart?.length) { note(`config.yaml applied without a restart${r.changed?.length ? `: ${r.changed.join(', ')}` : ''}`); return; }

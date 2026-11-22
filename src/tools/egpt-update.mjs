@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { gitEnv } from '../git-env.mjs';
+import { logLine } from './template.mjs';
 import { CHECK_EVERY_MS, autoUpdateMethod } from './beeper-update.mjs';
 import { daemonGraph, daemonChanges } from './daemon-graph.mjs';
 
@@ -42,7 +43,7 @@ export function runGit(args, { cwd, timeoutMs = GIT_TIMEOUT_MS } = {}) {
 }
 
 // r = { branch, upstream, from, to, behind, ahead, subjects, how }, how: auto-full | auto | manual | diverged.
-export function noticeLine(node, r, hint) {
+export function noticeBody(r, hint) {
   const subjects = r.subjects.map((s) => (s.length > SUBJECT_CAP ? `${s.slice(0, SUBJECT_CAP - 1)}…` : s)).join('; ');
   const more = r.behind > r.subjects.length ? ` (+${r.behind - r.subjects.length} more)` : '';
   const how = {
@@ -51,11 +52,12 @@ export function noticeLine(node, r, hint) {
     manual: `send ${hint}`,
     diverged: `not upgrading: this checkout has ${plural(r.ahead, 'commit')} ${r.upstream} lacks, so /upgrade (git pull --ff-only) would fail`,
   }[r.how];
-  return `⬆ ${node} · eGPT ${plural(r.behind, 'new commit')} on ${r.branch} (${short(r.from)} → ${short(r.to)}): ${subjects}${more} — ${how}`;
+  return `eGPT ${plural(r.behind, 'new commit')} on ${r.branch} (${short(r.from)} → ${short(r.to)}): ${subjects}${more} — ${how}`;
 }
+export const noticeLine = (node, r, hint) => `⬆ ${node} · ${noticeBody(r, hint)}`;
 
 // items = [{ text, ask }]: ask = a human still has to type something.
-export const askLine = (items) => (items.length ? `⬆ pending: ${items.map((i) => i.text).join(' · ')}${items.some((i) => i.ask) ? '. Apply now?' : ''}` : null);
+export const askLine = (items, config = null) => (items.length ? logLine(config, 'pending_updates', { details: items.map((i) => i.text).join(' · '), ask: items.some((i) => i.ask) ? '. Apply now?' : '' }) : null);
 
 export function createEgptUpdate({
   getConfig = () => ({}),
@@ -92,7 +94,7 @@ export function createEgptUpdate({
     await io.writeFile(`${statePath}.tmp`, JSON.stringify(st), 'utf8');
     await io.rename(`${statePath}.tmp`, statePath);
   };
-  const say = (text) => { onLog(text); return logToGroup(text); };   // the spine log keeps it when log_to_group is unset
+  const say = (text) => { if (text == null) return null; onLog(text); return logToGroup(text); };   // null: blanked in log_messages   // the spine log keeps it when log_to_group is unset
 
   // The checkout's upstream, fetched, against HEAD → r without `how`; null when the state is unknown
   // (no upstream, detached HEAD) or the fetch failed: a log line, nothing else.
@@ -133,8 +135,8 @@ export function createEgptUpdate({
     if (st.noticed !== r.to) {
       st.noticed = r.to;
       await save();
-      await say(noticeLine(node(), r, hint(r.cmd)));
-      if (why) await (stuck ? say(`⬆ ${node()} · ${why}`) : onLog(why));
+      await say(logLine(cfg(), 'egpt_update_notice', { node: node(), details: noticeBody(r, hint(r.cmd)) }));
+      if (why) await (stuck ? say(logLine(cfg(), 'egpt_update_stuck', { node: node(), details: why })) : onLog(why));
     }
     if ((r.how === 'auto-full' || r.how === 'auto') && !restartPending()) {
       st.autoTried = r.to;
@@ -175,7 +177,7 @@ export function createEgptUpdate({
       const auto = autoUpdateMethod(cfg(), platform).method === 'auto';
       items.push({ text: `Beeper ${b.from} → ${b.to} — ${auto ? QUIET : b.hint}`, ask: !auto });
     }
-    return askLine(items);
+    return askLine(items, cfg());
   }
 
   return { tick, check, askOnBoot };

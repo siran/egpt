@@ -951,7 +951,7 @@ describe('liveness — long background work is ASKED about, never evicted', () =
     await flush();
     b.brain.calls[1].release('');
     await flush();
-    expect(b.group).toEqual(['E in fam: background task(s) Crawl the site running 2h00m, the being did not answer whether they are still needed.']);
+    expect(b.group).toEqual(['? · E in fam: background task(s) Crawl the site running 2h00m, the being did not answer whether they are still needed.']);
     at(ASK_AFTER_MS + ASK_ANSWER_MS); b.spine.tick();
     await flush();
     expect(b.group).toHaveLength(1);
