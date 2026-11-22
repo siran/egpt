@@ -735,7 +735,7 @@ describe('a signed visitor (identity)', () => {
   // init: prime — the opening phrase (the widget's prime_text) is the visitor's first line, in mention mode (a team_group)
   // and in mode on (none): one turn, answered and posted like any line. No phrase: nothing is sent.
   for (const [label, team] of [['mention (team_group)', { team_group: GROUP, team_name: 'Equipo Contoso' }], ['on (no team_group)', {}]]) {
-    it(`init: prime, ${label}: the opening phrase is ONE turn, the visitor's line on the panel and its answer posts; no notice; a reload adds no turn`, async () => {
+    it(`init: prime, ${label}: the opening phrase is ONE turn, in the transcript and answered, quiet to the widget; no notice; a reload adds no turn`, async () => {
       const n = await bootTeam({ ...team, identity: 'required', init: 'prime' });
       const identity = signed(JP);
       const i = await n.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
@@ -743,10 +743,11 @@ describe('a signed visitor (identity)', () => {
       expect(n.turns[0].cwd).toMatch(/conversations[\\/]http[\\/]IEV · Juan Pérez · jperez$/);   // the folder: the visitor's chat_title
       expect(n.turns[0].m).toContain('revisa mis notas');
       expect(n.turns[0].m).not.toMatch(/opened the chatbox|nothing to answer yet/);
-      await vi.waitFor(async () => expect((await n.messages(i.session, identity)).filter((m) => m.from === 'being' && m.done)).toHaveLength(1), { timeout: 5000 });
-      const all = await n.messages(i.session, identity);
-      expect(all.find((m) => m.from === 'visitor')).toMatchObject({ text: 'revisa mis notas' });
-      expect(all.find((m) => m.from === 'being').text).toContain('revisa mis notas');
+      const folders = () => [...n.io.files.keys()].filter((f) => /[\\/]conversations[\\/]http[\\/][^\\/]+[\\/]transcript\.md$/.test(f));
+      await vi.waitFor(() => expect(folders()).toHaveLength(1), { timeout: 5000 });
+      const slug = folders()[0].split(/[\\/]/).at(-2);
+      await vi.waitFor(() => expect(n.transcript(slug).split('revisa mis notas').length).toBeGreaterThan(2), { timeout: 5000 });   // the line and the answer: in the transcript
+      expect(await n.messages(i.session, identity)).toEqual([]);   // the warm-up is not shown to the widget
       expect((await n.post({ kind: 'init', session: i.session, identity, prime_text: 'revisa mis notas' })).session).toBe(i.session);
       await settle();
       await settle();

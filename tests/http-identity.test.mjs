@@ -438,7 +438,7 @@ describe('init: the widget opened', () => {
       expect(i).toMatchObject({ status: 200, session: expect.any(String) });
       expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas']);
       expect(r.got[0].from).toMatchObject({ backlog: false, replyToBot: true, replyToBeing: 'ed', network: 'http', senderName: 'visitor' });
-      expect(await said(r, i.session)).toEqual([['visitor', 'revisa mis notas']]);
+      expect(await said(r, i.session)).toEqual([]);   // the warm-up line is not shown to the widget
       expect(r.hooks).toHaveLength(1);
       expect(r.hooks[0]).toMatchObject({ isNew: true, init: false });
       expect(JSON.stringify([r.got, r.lines])).not.toMatch(/opened the chatbox|nothing to answer yet/);
@@ -497,7 +497,7 @@ describe('init: the widget opened', () => {
       r.tick(30 * MIN);
       await r.post({ kind: 'init', session: a.session, identity, prime_text: 'revisa mis notas' });
       expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas']);
-      expect(await said(r, a.session)).toEqual([['visitor', 'revisa mis notas']]);
+      expect(await said(r, a.session)).toEqual([]);
     });
 
     it("conversation_by identity: a second device's init joins the conversation and does not resend the opening", async () => {
@@ -549,6 +549,85 @@ describe('init: the widget opened', () => {
       const b = await off.post({ text: 'hola', identity });
       await off.end({ session: b.session, identity });
       expect(off.got).toHaveLength(1);
+    });
+  });
+
+  // init: prime is a warm-up: the line and the being's answer reach the transcript and the topic as ever, not the widget.
+  describe('init: prime — quiet until the visitor types', () => {
+    const identity = tok({ ...JP, user_id: 4711 });
+    const open = async (extra = {}, cfg = { init: 'prime' }) => {
+      const r = await limb('required', extra, cfg);
+      const i = await r.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+      const chatId = r.got[0].from.chatId;
+      const said = async (since = 0) => (await (await r.read(i.session, identity)).json()).messages.filter((m) => m.seq > since).map((m) => [m.from, m.text, m.done]);
+      return { ...r, i, chatId, said };
+    };
+
+    it('the prime line and its finished answer are absent from GET and SSE, and still delivered as before', async () => {
+      const r = await open();
+      expect(r.i).toEqual({ status: 200, session: expect.any(String) });   // the response carries no line either
+      expect(r.got).toHaveLength(1);
+      expect(r.got[0]).toMatchObject({ text: 'revisa mis notas', from: { backlog: false, replyToBot: true, replyToBeing: 'ed', network: 'http', senderName: 'visitor', userId: r.chatId, isSender: false, authorized: false } });
+      const feed = sse(`${r.url}events?session=${encodeURIComponent(r.i.session)}&identity=${encodeURIComponent(identity)}`);
+      await r.b.send('listo', { chatId: r.chatId });
+      const h = r.b.startStreamMessage('…', { chatId: r.chatId });
+      h.update('otra');
+      await h.finish('otra, lista');
+      expect(await r.said()).toEqual([]);
+      const late = sse(`${r.url}events?session=${encodeURIComponent(r.i.session)}&identity=${encodeURIComponent(identity)}`);
+      await new Promise((ok) => setTimeout(ok, 200));
+      expect(feed.events).toEqual([]);
+      expect(late.events).toEqual([]);
+      await feed.close(); await late.close();
+    });
+
+    it('a reload, another tab and a limb rebuilt from the saved log stay as quiet; a reply finished before the first typed line stays hidden after it', async () => {
+      const stateDir = await mkdtemp(join(tmpdir(), 'egpt-prime-'));
+      live.push(() => rm(stateDir, { recursive: true, force: true }));
+      const r = await open({ stateDir });
+      await r.b.send('lista', { chatId: r.chatId });
+      expect(await r.said()).toEqual([]);
+      await r.b.stop();
+      const two = await limb('required', { stateDir }, { init: 'prime' });
+      expect((await (await two.read(r.i.session, identity)).json()).messages).toEqual([]);
+      await two.post({ kind: 'init', session: r.i.session, identity, prime_text: 'revisa mis notas' });   // a reload does not resend it
+      expect(two.got).toEqual([]);
+      const typed = await two.post({ session: r.i.session, text: 'hola', identity });
+      await two.b.send('a ti', { chatId: r.chatId });
+      const rows = (await (await two.read(r.i.session, identity)).json()).messages.map((m) => [m.from, m.text]);
+      expect(rows).toEqual([['visitor', 'hola'], ['being', 'a ti']]);
+      expect(typed.message.text).toBe('hola');
+    });
+
+    it('a typed line while the answer streams shows that answer from its text on, with the typed line and later replies; the since cursor holds', async () => {
+      const r = await open();
+      const h = r.b.startStreamMessage('⏳', { chatId: r.chatId });
+      h.update('a medias');
+      const cursor = (await (await r.read(r.i.session, identity)).json()).seq;
+      const feed = sse(`${r.url}events?session=${encodeURIComponent(r.i.session)}&identity=${encodeURIComponent(identity)}&since=${cursor}`);
+      await r.post({ session: r.i.session, text: 'hola', identity });
+      expect(r.got.map((g) => g.text)).toEqual(['revisa mis notas', 'hola']);
+      expect(r.got[1].from).toMatchObject({ senderName: 'visitor', userId: r.got[0].from.userId });   // the same sender: the spine's same_sender steers
+      h.update('a medias, y más');
+      await h.finish('respuesta');
+      await r.b.send('luego', { chatId: r.chatId });
+      await feed.until((e) => e.some((m) => m.text === 'luego'));
+      expect(feed.events.map((m) => [m.from, m.text, m.done])).toEqual([
+        ['visitor', 'hola', true], ['being', 'a medias', false], ['being', 'a medias, y más', false], ['being', 'respuesta', true], ['being', 'luego', true]]);
+      expect(await r.said(cursor)).toEqual([['visitor', 'hola', true], ['being', 'respuesta', true], ['being', 'luego', true]]);   // the question, then the reply: as the SSE frames
+      await feed.close();
+    });
+
+    it('init: true and a chatbox without init: prime show their replies as ever', async () => {
+      for (const cfg of [{ init: true }, {}]) {
+        const r = await limb('required', {}, cfg);
+        const a = await r.post({ kind: 'init', identity });
+        const b = await r.post({ session: a.session, text: 'hola', identity });
+        await r.b.send('hola tú', { chatId: r.got.at(-1).from.chatId });
+        const rows = (await (await r.read(b.session, identity)).json()).messages.map((m) => [m.from, m.text]);
+        expect(rows.at(-2)).toEqual(['visitor', 'hola']);
+        expect(rows.at(-1)).toEqual(['being', 'hola tú']);
+      }
     });
   });
 

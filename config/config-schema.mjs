@@ -1058,7 +1058,9 @@ export const CONFIG_SCHEMA = {
                               plugin's default in its skin.yaml; this limb holds none), as the
                               visitor's first line, the line path itself: max_chars (413), rate
                               gates (429), identity budget (once, in rate.turns_per_identity_per_hour),
-                              escaping, recorded on the panel, answered and posted like any line.
+                              escaping, recorded, answered and posted like any line, but quiet to the
+                              widget (neither line nor answer shown) until the visitor types; an
+                              answer still streaming then shows, a finished one stays hidden.
                               No phrase: nothing is sent (no turn, no notice). Not sent when the
                               thread already has lines (a reload, another tab or device); after the
                               visitor's end-conversation nothing is replayed (the next open sends the

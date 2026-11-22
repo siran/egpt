@@ -7,7 +7,8 @@
 //                                        cold: the conversation was not warmed (a line) in COLD_MS, so the being starts cold;
 //                                        {kind: init, session?, identity, prime_text?} → {session} (init: the widget's page load; init: true records
 //                                        one line; init: prime sends prime_text, the opening phrase, as the visitor's first line: a line like
-//                                        any typed one, nothing when there is none or the thread already has lines)
+//                                        any typed one, nothing when there is none or the thread already has lines; the being answers it, but the
+//                                        widget gets neither line nor answer (quiet) until the visitor types: then an answer still streaming shows)
 //   GET  <path>/<client>/messages?session=&since=&identity=   → {session, seq, messages}
 //   GET  <path>/<client>/events?session=&since=&identity=     SSE: each message as it is posted, edited, settled
 //   POST <path>/<client>/end             {session, identity?} → {ok}: a fresh thread in the same conversation (onEnd), history cleared
@@ -363,12 +364,16 @@ export async function startHttpBridge({
     if (m.ended) return;   // cleared by an end: a reply still streaming stays out of the fresh panel
     m.seq = nextTick();
     m.id ??= String(m.seq);
+    if (m.quiet) return saveLog(chat);   // init: prime's warm-up: recorded, not shown to the widget
     const frame = `id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`;
     for (const res of chat.subs) put(res, frame);
     saveLog(chat);
   };
-  const append = (chat, from, text, done, by = null) => {
-    const m = { id: null, from, text, done, seq: 0, ...(by ? { by } : {}) };
+  // init: prime's warm-up: the opening line is in the log and no line of the visitor's own is yet
+  const priming = (chat) => chat.log.some((m) => m.quiet && m.from === 'visitor') && !chat.log.some((m) => m.from === 'visitor' && !m.quiet);
+  const append = (chat, from, text, done, by = null, quiet = false) => {
+    quiet ||= from === 'being' && priming(chat);
+    const m = { id: null, from, text, done, seq: 0, ...(by ? { by } : {}), ...(quiet ? { quiet } : {}) };
     changed(chat, m);
     chat.log.push(m);
     if (chat.log.length > LOG_MAX) chat.log.splice(0, chat.log.length - LOG_MAX);
@@ -472,9 +477,16 @@ export async function startHttpBridge({
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
   // A visitor's line: on the panel and recorded, delivered to the being. The one path of a typed line and of the opening phrase.
-  const visitorLine = (c, s, text, place, n) => {
+  const visitorLine = (c, s, text, place, n, opening = false) => {
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
-    const m = append(s.chat, 'visitor', text, true);
+    const m = append(s.chat, 'visitor', text, true, null, opening);
+    // the visitor spoke: a reply still streaming shows from its text now, after the question (log order = seq order)
+    if (!opening) for (const q of s.chat.log.filter((x) => x.quiet && x.from === 'being' && !x.done)) {
+      s.chat.log.splice(s.chat.log.indexOf(q), 1);
+      delete q.quiet;
+      s.chat.log.push(q);
+      changed(s.chat, q);
+    }
     const st = mentionStatus(text, wakeWords, { addressWithoutAt });
     log(`incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
     deliver(place ? `(in ${place}) ${text}` : text, {
@@ -572,6 +584,7 @@ export async function startHttpBridge({
           throw e;
         }
       }
+      if (opening) { visitorLine(c, s, text, place, n, true); return { session: token }; }   // the widget is not shown the warm-up line
       if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
       log(`incoming [${name}] the visitor opened the chatbox`);
       deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})`, {   // on the record only
@@ -629,7 +642,7 @@ export async function startHttpBridge({
     const hit = ownSession(c, url.searchParams.get('session'), idn);
     if (!hit) return json(res, 404, { error: 'unknown session' }, cors);
     const after = since(req, url);
-    const messages = hit.s.chat.log.filter((m) => m.seq > after).map(view);
+    const messages = hit.s.chat.log.filter((m) => m.seq > after && !m.quiet).map(view);
     return json(res, 200, { session: url.searchParams.get('session'), seq: Math.max(after, ...hit.s.chat.log.map((m) => m.seq)), messages }, cors);
   }
   function events(c, req, res, url, cors) {
@@ -641,7 +654,7 @@ export async function startHttpBridge({
     res.write('retry: 3000\n\n');
     const after = since(req, url);
     const { chat } = hit.s;
-    for (const m of chat.log) if (m.seq > after) res.write(`id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`);
+    for (const m of chat.log) if (m.seq > after && !m.quiet) res.write(`id: ${m.seq}\ndata: ${JSON.stringify(view(m))}\n\n`);
     chat.subs.add(res);
     res.on('close', () => chat.subs.delete(res));
   }

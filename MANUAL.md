@@ -735,8 +735,11 @@ visitor's first line. The phrase is the widget's, not core's: the embedding page
 (`prime_text` in the skin's `skin.yaml`). Core holds none. The line goes the
 line's own path: over `max_chars` is a 413 (never truncated), the session rate
 and `rate.turns_per_identity_per_hour` apply (a 429, counted once), it is
-recorded on the panel and in the transcript, escaped like a line, and the being
-answers it and the answer is posted. No notice goes to the being.
+recorded in the transcript, escaped like a line, and the being answers it and the
+answer is posted. It is a warm-up: the widget gets neither the line nor the answer
+(not in the history, not over SSE, not after a reload) until the visitor types; then
+an answer still streaming shows, one already finished stays hidden. No notice goes
+to the being.
 
 No phrase (the page gives none and the plugin's is empty): the init sends nothing
 — no turn, no notice. The opening is not sent into a thread that already has
