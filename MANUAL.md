@@ -404,12 +404,14 @@ changes YOUR choices (which beings exist, their model, mode or access, grants,
 compaction ratios, the admin channel) declares `approval = true` and does not run
 until you say so. After an upgrade, the back-up message carries one line per
 such migration: its summary and the two commands. Nothing is recorded until you
-answer.
+answer. One you leave unapproved goes quiet once a newer migration is applied: it is
+not posted after upgrades, only listed (marked quiet) by `/<handle> migrate`, and
+you can still approve it later.
 
 ```
 /<handle> migrate                       pending approval, approved, declined, and what runs next upgrade
 /<handle> migrate approve 0025          apply it now (and anything else pending that is not waiting for you)
-/<handle> migrate decline 0025,0028     it does not apply to this node: recorded as declined, never proposed again
+/<handle> migrate decline 0025,0028     recorded as declined, never proposed again (to just not be asked, leave it unapproved)
 ```
 
 Operator only. The same on a shell: `node setup/migrate.mjs --approve 0025` /
@@ -417,8 +419,9 @@ Operator only. The same on a shell: `node setup/migrate.mjs --approve 0025` /
 left too). The ledger (`state/migrations-applied.json`) is never hand-edited.
 Only migrations that ask can be declined; a code-shape one cannot, because the code
 depends on it. An unknown id or one already recorded is refused and nothing runs.
-An independent node that keeps its own config (EDW) declines the three that
-rewrite it: `/edu migrate decline 0025,0028,0029`.
+An independent node that keeps its own config does not decline the ones that
+rewrite it: it leaves them unapproved, and once newer migrations are applied they
+go quiet (runner exit 0, not in the back-up message, listed by `/<handle> migrate`).
 
 ### `/<handle> browser refresh [group] [url]` — sign in yourself
 

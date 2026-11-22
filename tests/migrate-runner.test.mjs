@@ -245,6 +245,66 @@ describe('approval (operator-owned config: the node says yes or no)', () => {
     expect(t.ledger()['0001-policy'].outcome).toBe('already-satisfied');
   });
 
+  describe('quiet: unapproved, with a newer migration applied', () => {
+    const seed = (t, entries) => {
+      mkdirSync(join(t.egptHome, 'state'), { recursive: true });
+      writeFileSync(ledgerPath(t.egptHome), JSON.stringify(entries));
+    };
+    const done = (outcome) => ({ outcome, at: '2026-09-01T00:00:00.000Z' });
+
+    it('is not applied, not recorded, marked quiet, and exit 0 when it is the only pending item', async () => {
+      const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-code': { elevated: false } });
+      seed(t, { '0002-code': done('applied') });
+      const { exitCode, results } = await t.run();
+      expect(exitCode).toBe(0);
+      expect(results.find((r) => r.id === '0001-policy')).toMatchObject({ outcome: 'pending-approval', quiet: true });
+      expect(globalThis.__mig.calls.some((c) => c.startsWith('0001-policy:apply'))).toBe(false);
+      expect(Object.keys(t.ledger())).toEqual(['0002-code']);
+      expect(t.output()).toMatch(/0001-policy {2}PENDING APPROVAL \(quiet: newer applied\) - test 0001-policy/);
+      expect(t.output()).not.toMatch(/\*\*\*\*/);
+    });
+
+    it('already-satisfied and approved newer ones count; a declined one does not', async () => {
+      for (const [outcome, quiet] of [['already-satisfied', true], ['applied', true], ['declined', false]]) {
+        const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-x': { elevated: false } });
+        seed(t, { '0002-x': { ...done(outcome), ...(outcome === 'applied' && { by: 'operator' }) } });
+        const { exitCode } = await t.run();
+        expect([outcome, exitCode]).toEqual([outcome, quiet ? 0 : 3]);
+      }
+    });
+
+    it('without a newer applied migration it is not quiet: exit 3, loud as before', async () => {
+      const t = setup({ '0001-policy': { elevated: false, approval: true } });
+      const { exitCode, results } = await t.run();
+      expect(exitCode).toBe(3);
+      expect(results[0].quiet).toBeUndefined();
+      expect(t.output()).toMatch(/0001-policy {2}PENDING APPROVAL - test/);
+    });
+
+    it('a mix: exit 3, and only the non-quiet one is loud', async () => {
+      const t = setup({ '0001-old': { elevated: false, approval: true }, '0002-code': { elevated: false }, '0003-new': { elevated: false, approval: true } });
+      seed(t, { '0002-code': done('applied') });
+      const { exitCode, results } = await t.run();
+      expect(exitCode).toBe(3);
+      expect(results.map((r) => [r.id, !!r.quiet])).toEqual([['0001-old', true], ['0002-code', false], ['0003-new', false]]);
+    });
+
+    it('elevation pending plus a quiet approval: exit 2', async () => {
+      const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-code': { elevated: false }, '0003-admin': { elevated: true } });
+      seed(t, { '0002-code': done('applied') });
+      expect((await t.run()).exitCode).toBe(2);
+    });
+
+    it('--approve on a quiet one applies it', async () => {
+      const t = setup({ '0001-policy': { elevated: false, approval: true }, '0002-code': { elevated: false } });
+      seed(t, { '0002-code': done('applied') });
+      const { exitCode, results } = await t.run({ approve: ['0001'] });
+      expect(exitCode).toBe(0);
+      expect(results.find((r) => r.id === '0001-policy').outcome).toBe('applied');
+      expect(t.ledger()['0001-policy'].by).toBe('operator');
+    });
+  });
+
   it('--approve applies it through the normal path (plan, apply, re-plan) and records it; the one that waited on it then runs', async () => {
     const t = setup(specs());
     await t.run();

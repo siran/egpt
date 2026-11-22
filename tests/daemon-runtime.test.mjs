@@ -500,6 +500,17 @@ describe('daemon runtime fake-world harness', () => {
       expect(r.sidecars[0].note).not.toMatch(/elevation|FAILED/);
     });
 
+    it('quiet pending approvals are not posted; the non-quiet one is; all quiet = no note', async () => {
+      const quietLine = (id) => `  ${id}-x  PENDING APPROVAL (quiet: newer applied) - quiet ${id}`;
+      const mixed = await upgradeMigrating({ migrate: { status: 3, out: [quietLine('0025'), APPROVAL_OUT.split('\n').slice(3).join('\n')].join('\n') } });
+      expect(mixed.sidecars[0].outcome).toBe('pulled 3 commits, npm install ok, 1 migration pending approval');
+      expect(mixed.sidecars[0].note).toContain('migration 0029 needs your approval');
+      expect(mixed.sidecars[0].note).not.toContain('0025');
+      const allQuiet = await upgradeMigrating({ migrate: { status: 0, out: quietLine('0025') } });
+      expect(allQuiet.sidecars[0].note ?? '').not.toMatch(/approval/);
+      expect(allQuiet.sidecars[0].outcome).not.toMatch(/approval/);
+    });
+
     it('exit 2 with elevation AND approval pending: both are said, each on its own line', async () => {
       const out = ['  0054-thing  PENDING - a thing  [needs elevation]', `    ${ELEV}`, APPROVAL_OUT].join('\n');
       const r = await upgradeMigrating({ migrate: { status: 2, out } });

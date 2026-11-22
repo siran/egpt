@@ -89,6 +89,12 @@ describe('/<handle> migrate', () => {
     ].join('\n'));
   });
 
+  it('bare: lists a quiet one too, marked', async () => {
+    const h = harness({ result: { exitCode: 0, out: LISTING, pendingApproval: [{ id: '0025', summary: 'everyone in a box', quiet: true }, { id: '0029', summary: 's' }] } });
+    await h.run(op('/edu migrate'));
+    expect(h.sent[0].text).toContain('pending approval: 0025 [quiet: newer applied] (everyone in a box); 0029 (s)');
+  });
+
   it('a refusal from the runner (unknown id, a code-shape migration) reaches the chat, and nothing else is said', async () => {
     const h = harness({ result: { exitCode: 1, out: '', pendingApproval: [], reason: 'FAILED before any migration ran: --decline 0001: 0001-x is not an approval migration - it is a code-shape fix tied to the code, which runs by itself and cannot be declined' } });
     await h.run(op('/edu migrate decline 0001'));
@@ -125,6 +131,11 @@ describe('runMigrationsChild — the one helper the upgrade and /migrate both go
     runMigrationsChild({ root: '/r', egptHome: '/h', args: ['--decline', '0025'], spawnSync: f.spawnSync, execPath: 'node', env: {} });
     expect(f.calls[0].args.slice(1)).toEqual(['--egpt-home', '/h', '--decline', '0025']);
     expect(f.calls[0].opts.env.EGPT_HOME).toBe('/h');
+  });
+
+  it('the child parser carries the quiet marker', () => {
+    const out = '  0025-a  PENDING APPROVAL (quiet: newer applied) - sum a\n  0029-b  PENDING APPROVAL - sum b';
+    expect(runMigrationsChild({ root: '/r', egptHome: '/h', spawnSync: fake(3, out).spawnSync }).pendingApproval).toEqual([{ id: '0025', summary: 'sum a', quiet: true }, { id: '0029', summary: 'sum b' }]);
   });
 
   it('reads PENDING APPROVAL items (number, summary) off the runner stdout; an early refusal is the reason', () => {

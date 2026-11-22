@@ -58,7 +58,7 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.
 // code on disk that runs): the upgrade runs it bare, and the operator's `/<handle> migrate approve|
 // decline|list` runs it with --approve / --decline / --dry-run (src/spine/commands.mjs, wired in boot).
 // Returns the runner's exit code and stdout, and reads the stdout into what the callers need: the
-// pending-elevation ids and command, the PENDING APPROVAL items ({ id, summary }), the failed one.
+// pending-elevation ids and command, the PENDING APPROVAL items ({ id, summary, quiet? }), the failed one.
 export function runMigrationsChild({ root = DEFAULT_ROOT, egptHome, args = [], spawnSync = nodeSpawnSync, execPath = process.execPath, env = process.env, log = () => {} }) {
   const runner = join(root, 'setup', 'migrate.mjs');
   const r = spawnSync(execPath, [runner, '--egpt-home', egptHome, ...args], { cwd: root, stdio: 'pipe', env: { ...env, EGPT_HOME: egptHome } });
@@ -72,7 +72,7 @@ export function runMigrationsChild({ root = DEFAULT_ROOT, egptHome, args = [], s
     out,
     pendingIds: lines.map((l) => /^\s+(\d{4})\S*\s+PENDING\s.*\[needs elevation\]/.exec(l)?.[1]).filter(Boolean),
     command: /from an ADMINISTRATOR shell:\s+(.+)$/m.exec(out)?.[1]?.trim() ?? null,
-    pendingApproval: lines.map((l) => /^\s+(\d{4})\S*\s+PENDING APPROVAL - (.*?)(?:\s+\[needs elevation\])?\s*$/.exec(l)).filter(Boolean).map((m) => ({ id: m[1], summary: m[2] })),
+    pendingApproval: lines.map((l) => /^\s+(\d{4})\S*\s+PENDING APPROVAL( \(quiet: newer applied\))? - (.*?)(?:\s+\[needs elevation\])?\s*$/.exec(l)).filter(Boolean).map((m) => ({ id: m[1], summary: m[3], ...(m[2] && { quiet: true }) })),
   };
   if (![0, 2, 3].includes(exitCode)) {
     const i = lines.findIndex((l) => /^\s+\d{4}\S*\s+FAILED/.test(l));
@@ -583,7 +583,7 @@ export function createDaemonRuntime(opts = {}) {
       // One line each on the same note: what this node's operator must say yes or no to (the runner
       // reports them whatever else it exited with). Not applied, not recorded; the chat command
       // /<handle> migrate approve|decline <id> (src/spine/commands.mjs) settles each without a shell.
-      const asks = migrations.pendingApproval ?? [];
+      const asks = (migrations.pendingApproval ?? []).filter((a) => !a.quiet);   // quiet ones are asked for, never posted
       if (asks.length) {
         outcome += `, ${asks.length} migration${asks.length === 1 ? '' : 's'} pending approval`;
         const lines = asks.map(({ id, summary }) => `migration ${id} needs your approval: ${summary} — /<handle> migrate approve ${id}  or  /<handle> migrate decline ${id}  (shell: node setup/migrate.mjs --approve ${id} | --decline ${id})`);
