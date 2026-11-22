@@ -30,7 +30,7 @@ import { createShellPort } from '../src/bridges/shell-port.mjs';
 import { responseFrame, authMac, macMatches } from '../src/shell/auth.mjs';
 import { MOUTH_PATH } from '../src/shell/mouth.mjs';
 import { BEING_PATH, isBeingDial, askFrame, askResultFrame, parseAskFrame, SPINE_PORT_ENV, BEING_TOKEN_ENV, ASK_SPINE_ENV, CDP_MODULE_ENV, NATIVE_WS_ENV } from '../src/shell/being.mjs';
-import { createBeingLink, askSpineClientPath } from '../src/spine/being-link.mjs';
+import { createBeingLink, askSpineClientPath, readRemoteBeings } from '../src/spine/being-link.mjs';
 import { createLoginLimb } from '../src/spine/login.mjs';
 import { createSandboxCliSession } from '../src/sandbox-cli-session.mjs';
 import { createCommands } from '../src/spine/commands.mjs';
@@ -243,6 +243,73 @@ describe('the link: a secret per boxed session, and one request', () => {
   it('a launch path that throws is a launch-failed answer, never an unanswered request', async () => {
     const link = createBeingLink({ port: 1, startBrowser: async () => { throw new Error('spawn EPERM'); } });
     expect(await link.ask(E_IN_ACIM, parseAskFrame(askFrame({ ask: 'browser', action: 'start' })))).toEqual({ ok: false, reason: 'launch-failed', detail: 'spawn EPERM' });
+  });
+});
+
+describe('remote beings: a being on another node answers with a standing secret from config', () => {
+  const SECRET = 'r'.repeat(40);
+  const entry = { being: 'egpt', surface: 'telegram', slug: 'An', token_file: 'secrets/ekg.token' };
+  const WHO = { being: 'egpt', surface: 'telegram', slug: 'An', boxed: true, remote: 'ekg' };
+  const files = (m) => (f) => { if (!(f in m)) throw new Error(`ENOENT ${f}`); return m[f]; };
+  const read = (cfg, m) => readRemoteBeings(cfg, { home: '/h', read: files(m) });
+
+  it('readRemoteBeings: a complete entry is read (token trimmed, relative to home); the incomplete are skipped', () => {
+    expect(read({ remote_beings: { ekg: entry } }, { [join('/h', 'secrets/ekg.token')]: `${SECRET}\n` })).toEqual([{ name: 'ekg', being: 'egpt', surface: 'telegram', slug: 'An', secret: SECRET }]);
+    const m = { [join('/h', 'secrets/ekg.token')]: SECRET };
+    for (const bad of [{ ...entry, slug: '' }, { ...entry, being: undefined }, { ...entry, token_file: '' }, null, 'x']) {
+      expect(read({ remote_beings: { ekg: bad } }, m)).toEqual([]);
+    }
+  });
+
+  it('readRemoteBeings: a short token, an unreadable file, and a non-object remote_beings are skipped', () => {
+    expect(read({ remote_beings: { ekg: entry } }, { [join('/h', 'secrets/ekg.token')]: 'r'.repeat(31) })).toEqual([]);
+    expect(read({ remote_beings: { ekg: entry } }, {})).toEqual([]);
+    for (const v of [undefined, null, 'ekg', 5, [entry]]) expect(read({ remote_beings: v }, {})).toEqual([]);
+    expect(read(undefined, {})).toEqual([]);
+  });
+
+  it('readRemoteBeings: an absolute token_file is used as is, not joined to home', () => {
+    const abs = join(STORE, 'abs.token');
+    expect(read({ remote_beings: { ekg: { ...entry, token_file: abs } } }, { [abs]: SECRET })).toHaveLength(1);
+  });
+
+  it('identify: a remote\'s secret names the being it stands in for, boxed, with remote: name; a wrong mac is nobody', () => {
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), remotes: () => [{ name: 'ekg', ...entry, secret: SECRET }] });
+    expect(link.identify(authMac(SECRET, 'n'), 'n')).toEqual(WHO);
+    expect(link.identify(authMac('s'.repeat(40), 'n'), 'n')).toBe(null);
+    expect(link.identify(authMac(SECRET, 'n1'), 'n2')).toBe(null);
+  });
+
+  it('identify: live session secrets still work alongside remotes', () => {
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), randomBytes: fixedBytes(7), remotes: () => [{ name: 'ekg', ...entry, secret: SECRET }] });
+    link.forBeing(E_IN_ACIM).mint();
+    expect(link.identify(authMac('07'.repeat(32), 'n'), 'n')).toEqual(E_IN_ACIM);
+    expect(link.identify(authMac(SECRET, 'n'), 'n')).toEqual(WHO);
+  });
+
+  it('identify: a remotes() that throws is null plus a log line, never a throw; live secrets still answer', () => {
+    const logs = [];
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), randomBytes: fixedBytes(7), remotes: () => { throw new Error('bad yaml'); }, onLog: (m) => logs.push(m) });
+    link.forBeing(E_IN_ACIM).mint();
+    expect(link.identify(authMac(SECRET, 'n'), 'n')).toBe(null);
+    expect(logs).toEqual(['remote_beings unreadable — bad yaml']);
+    expect(link.identify(authMac('07'.repeat(32), 'n'), 'n')).toEqual(E_IN_ACIM);
+  });
+
+  it('identify: read fresh per handshake — an entry removed between handshakes stops matching', () => {
+    let list = [{ name: 'ekg', ...entry, secret: SECRET }];
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true }), remotes: () => list });
+    expect(link.identify(authMac(SECRET, 'n'), 'n')).toEqual(WHO);
+    list = [];
+    expect(link.identify(authMac(SECRET, 'n'), 'n')).toBe(null);
+  });
+
+  it('ask: the audit line names the remote — "via remote ekg" — and a local being\'s line is unchanged', async () => {
+    const logs = [];
+    const link = createBeingLink({ port: 1, startBrowser: async () => ({ ok: true, launched: true, detail: 'up' }), onLog: (m) => logs.push(m) });
+    await link.ask(WHO, parseAskFrame(askFrame({ ask: 'browser', action: 'start' })));
+    await link.ask(E_IN_ACIM, parseAskFrame(askFrame({ ask: 'browser', action: 'start' })));
+    expect(logs).toEqual(['egpt (telegram/An) via remote ekg asked browser start → launched — up', 'e (room/acim) asked browser start → launched — up']);
   });
 });
 

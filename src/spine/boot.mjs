@@ -90,7 +90,7 @@ import { reactionEmoji } from '../dispatch-line.mjs';
 import { createCommands, loginProfilePathOf } from './commands.mjs';
 import { createLoginLimb } from './login.mjs';
 import { readChromeCredential } from '../tools/chrome-creds.mjs';
-import { createBeingLink } from './being-link.mjs';
+import { createBeingLink, readRemoteBeings } from './being-link.mjs';
 import { createReplyActions, confinedFile } from './reply-actions.mjs';
 import { createEmail } from './email.mjs';
 import { createBookLimb } from './book.mjs';
@@ -2910,6 +2910,7 @@ export async function boot({
     requestLogin: (site, o) => requestLogin(site, o),
     resolveConfig: configResolver.configFor,   // privileged_browser, per conversation
     nativeWebSocket: cfg.shell?.being_native_websocket !== false,
+    remotes: () => readRemoteBeings(getConfig()),   // remote_beings: beings on other nodes, over ssh
     onLog: (m) => log.line?.(`[being] ${m}`),
   });
 

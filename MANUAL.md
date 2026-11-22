@@ -520,6 +520,34 @@ On the machine itself, or with the node down: `setup\chrome-signin.cmd [profile]
 profile, opens the same normal window, and prints the steps. It does not keep
 eGPT off the profile, so prefer the command while the node runs.
 
+### Remote beings — a being on another node uses a browser here
+
+A being on another node (ekg on node kg) can drive a chat's browser on this one
+over ssh. Here, in `config.yaml`:
+
+```yaml
+remote_beings:
+  ekg:                       # the name the audit line shows: "via remote ekg"
+    being: egpt              # the local being it stands in for
+    surface: telegram        # and the chat whose browser group it gets
+    slug: An
+    token_file: secrets/remote-beings/ekg.token   # relative to EGPT_HOME; 32+ chars
+```
+
+The token file holds a secret you make (32 or more characters). On the remote
+node: forward this node's console port with `ssh -L <port>:localhost:<shell.port>`,
+and run the being's scripts with `EGPT_SPINE_PORT=<the forwarded port>`,
+`EGPT_BEING_TOKEN=<the same secret>` and `EGPT_CDP=<its own
+src/tools/being-cdp.mjs>`. It answers the same nonce challenge a boxed being
+does, so the secret never crosses the wire.
+
+It is always served as BOXED: the CDP filter and the group's `uploads` rule
+apply, whatever the remote being is (`privileged_browser` on that chat still
+lifts the filter). The log says `via remote ekg` on each request. The config and
+the token file are read fresh on every handshake: remove the entry, or the file,
+and it stops, no restart. An entry missing a field, or with an unreadable or
+short token, is skipped.
+
 ---
 
 ## 2. Config (`~/.egpt/config/config.yaml`)
@@ -544,6 +572,7 @@ default; commented blocks are optional overrides.
 | `turn_timeout_ms` | Opt-in per-turn timeout (ms): a turn running longer fails and its session is evicted. 0/absent = no limit (default). |
 | `auto_update` | Keeping eGPT itself current. `egpt:` `auto-full` (default), `auto`, `manual` or `none`: at boot and every 6 h the node fetches its checkout's upstream and, with new commits, posts ONE line per upstream sha to `log_to_group` (`⬆ nu · eGPT 3 new commits on main (b14257d3 → 1a2b3c4d): … — send /n upgrade full`). `auto-full` is `auto`, unless necessary: at the next quiet moment (turns in flight finish first, a Beeper update under way finishes first) it runs plain `/upgrade`, and `/upgrade full` only when a file the daemon loads changed (its import graph from `egpt-daemon.mjs`, the `setup/` scripts it names, `package*.json`); where nothing respawns the daemon it runs plain `/upgrade` and posts that `/upgrade full` is still needed by hand. `auto` always runs plain `/upgrade` (spine only, the daemon and its Chromes stay). Both: once per upstream sha, so a pull that leaves the checkout behind never loops the node; `manual` only notices; `none` does nothing (the off switch). A checkout ahead of its upstream (diverged), without one, or on a detached HEAD never upgrades by itself. `ask_on_boot:` `true` (default) or `false`: when eGPT commits and/or a Beeper update are pending at boot, one line after `✅ egpt back up!` says what and the command for each (`⬆ pending: eGPT 3 commits (b14257d3 → 1a2b3c4d) — /n upgrade full · Beeper 4.3.229 → 4.3.334 — /n update beeper. Apply now?`); under `auto-full` / `auto` it says they apply at the next quiet moment instead. Beeper's own method stays in `limbs.beeper.auto_update.<os>.method`. Read at each look: an edit needs no restart. |
 | `log_to_group` / `admin_channel` | Two chats of the node's own (a name, short room id or `tg:<chat>[/<topic>]`; README quickstart C). `log_to_group` (eGPT Logs): one metadata-only line per command, the lifecycle lines, and the log-type notices: compaction and a public being's error (operator An, 2026-11-20: "please put eGPT Logs in its channel, so eGPT Admin stays clean"). `admin_channel` (eGPT Admin): `/browser`'s CONTROL link, the captcha notice and a `silent:` heartbeat's output; also the log-type notices while `log_to_group` is unset. |
+| `remote_beings` | Beings on other nodes that may use a chat's browser here, over an ssh forward of the console port: `<name>: { being, surface, slug, token_file }`, the token (32+ chars) relative to `EGPT_HOME`. Always boxed (filtered); read fresh per handshake, so removing an entry stops it. Absent = none. See "Remote beings" in §1. |
 | `compaction` | After a quiet `cooling` (a duration like `3h`, default 2m; legacy `cooling_ms` still read), if the warm session grew past `ratio` of the context window (a share `0.2`/`"20%"` or tokens `"400k"`; the same for `critical_ratio` and `warn_gap`; haiku, sonnet and opus are 1M), optionally warning `alert_before` ahead of it (`compaction_alert_notice`; unset = no alert, none when `alert_before` >= `cooling`). Every key works at three tiers: the node block, `agents.<being>.conversation_defaults.compaction`, a conversation's own `compaction:`. Native-`/compact` it in place, native-`/compact` it in place (transcript.md keeps the full record). A compact that SUCCEEDS then arms the identity re-feed, exactly as `/agents refresh` does, so the being gets its identity back on its next turn — `/compact` rewrites the context, and the kickoff feed can be summarised out of it. A compact that fails arms nothing. The pre-compaction warning and the "compacted" notice go to `log_to_group` (eGPT Logs), or to `admin_channel` when that is unset (see the row above). |
 | `heartbeats` | Declarative timers — see §3. |
 | `transcription_service` | Voice-note transcription — see §4. |

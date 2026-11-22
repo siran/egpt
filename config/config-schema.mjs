@@ -3123,6 +3123,30 @@ export const CONFIG_SCHEMA = {
     and ignored; the group decides.
   `,
 
+  remote_beings: `
+    Beings on OTHER nodes that may use a chat's browser on THIS node, over ssh
+    (operator 2026-11-22: "ekg drives enu's browser over ssh").
+
+    SHAPE:
+      remote_beings:
+        ekg:                       # the name the audit line shows ("via remote ekg")
+          being: egpt              # the local being it stands in for
+          surface: telegram        # and the chat whose browser group it gets
+          slug: An
+          token_file: secrets/remote-beings/ekg.token   # relative to EGPT_HOME; 32+ chars
+
+    The remote node forwards this node's console port (shell.port) over ssh and
+    runs its scripts with EGPT_SPINE_PORT=<the forward>, EGPT_BEING_TOKEN=<the
+    secret> and EGPT_CDP=<its own src/tools/being-cdp.mjs>. It answers the same
+    nonce challenge a boxed session does; the secret never rides the wire. It is
+    always served as BOXED: the CDP filter and the group's uploads rule apply
+    (privileged_browser on that chat still lifts the filter).
+    Read fresh on every handshake: removing an entry, or its token file, stops it
+    without a restart. An entry missing a field, or with an unreadable or short
+    token, is skipped.
+    DEFAULT: absent = no remote beings.
+  `,
+
   privileged_browser: `
     Serves a BOXED being the same full CDP an unboxed being gets: no filter
     at all, so file:/chrome:/devtools: pages, uploads of ANY file of the
