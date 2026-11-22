@@ -202,9 +202,10 @@ describe('a chatbox client with a team_group', () => {
     const slug = n.slugOf(n.turns[0]);
     expect(made[0].body).toEqual({ chat_id: String(GROUP), name: `Contoso · ${slug.slice('contoso-'.length, 'contoso-'.length + 6)}` });
     await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toEqual([{ kind: 'tg-group', id: TOPIC, state: 'active', replies: true, title: 'Equipo Contoso' }]), { timeout: 5000 });
-    // the session's being answers its visitor in mode mention; the topic holds it mute
+    // the session's being answers its visitor in mode mention; the topic is only a view: no entry, no folder
     expect(getContact(n.state(), 'http', `http:${slug}`).entry.agents.ed).toMatchObject({ default: true, mode: 'mention', allowed_users: ['*'] });
-    expect(getContact(n.state(), 'telegram', TOPIC).entry.agents.ed.mode).toBe('mute');
+    expect(getContact(n.state(), 'telegram', TOPIC)).toBeNull();
+    expect([...n.io.files.keys()].filter((k) => k.includes(join('conversations', 'telegram')))).toEqual([]);
     // another visitor, another topic
     const b = await n.post({ text: 'otra visita' });
     await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
@@ -268,7 +269,7 @@ describe('a chatbox client with a team_group', () => {
     n.app.stop();
   });
 
-  it("our own copies in the topic (the recap, the visitor's line, the being's reply), handed back by Telegram, re-enter nowhere", async () => {
+  it("our own copies in the topic (the recap, the visitor's line, the being's reply), handed back by Telegram, re-enter nowhere (a view tunnels no echo)", async () => {
     const n = await bootTeam();
     const a = await n.post({ text: 'hola' });
     await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
@@ -280,7 +281,7 @@ describe('a chatbox client with a team_group', () => {
     const before = n.transcript(slug);
     const copies = n.inThread();
     n.api.updates(...copies.map((copy) => inTopic(copy.text, { message_id: copy.id, from: ME })));
-    await vi.waitFor(() => expect(n.lines.filter((l) => /echo: .*own output re-entered/.test(l))).toHaveLength(copies.length), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.lines.filter((l) => /view: .*team topic; not tunnelled/.test(l))).toHaveLength(copies.length), { timeout: 5000 });
     await settle();
     expect(n.transcript(slug)).toBe(before);
     expect(n.turns).toHaveLength(2);
@@ -297,11 +298,83 @@ describe('a chatbox client with a team_group', () => {
     const slug = n.slugOf(n.turns[0]);
     n.api.updates(inTopic('Hola, soy Ana del equipo'));
     await vi.waitFor(() => expect(n.transcript(slug)).toContain('Hola, soy Ana del equipo'), { timeout: 5000 });
-    const topic = getContact(n.state(), 'telegram', TOPIC).entry;
-    expect(topic.parent_chat).toBeUndefined();
-    expect(topic.transcript).toBeUndefined();
-    expect(topic.slug).not.toBe(getContact(n.state(), 'telegram', `tg:${GROUP}`).entry.slug);
-    expect(topic.agents.ed).toEqual({ mode: 'mute' });
+    expect(getContact(n.state(), 'telegram', TOPIC)).toBeNull();   // a view: not a fork, not an entry
+    expect(n.turns).toHaveLength(1);
+    n.app.stop();
+  });
+
+  it('a team topic is a view: a line in it is logged once in the visitor\'s transcript, shown in the widget, wakes the being in the visitor\'s folder, and makes no telegram entry or folder', async () => {
+    const n = await bootTeam();
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toHaveLength(1), { timeout: 5000 });
+    n.api.updates(inTopic('@ed manda el enlace'));
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session), 2)).toBe(true), { timeout: 5000 });
+    await settle();
+    expect(n.turns[1].cwd).toBe(n.turns[0].cwd);
+    expect(n.turns[1].m).toContain('manda el enlace');
+    expect(n.transcript(slug).split('\nAna@').length - 1).toBe(1);   // one record of the inbound line
+    expect((await n.messages(a.session)).some((m) => /Equipo Contoso: @ed manda el enlace$/.test(m.text))).toBe(true);
+    expect(getContact(n.state(), 'telegram', TOPIC)).toBeNull();
+    expect(Object.keys(n.state().contacts?.telegram ?? {})).toEqual([]);
+    expect([...n.io.files.keys()].filter((k) => k.includes(join('conversations', 'telegram')))).toEqual([]);
+    // the reply reaches the topic too
+    expect(n.inThread().map((m) => m.text)).toContainEqual(expect.stringMatching(/^🦉 respuesta a .*manda el enlace$/));
+    n.app.stop();
+  });
+
+  it('two visitors, two topics: a line in topic B reaches only conversation B', async () => {
+    const n = await bootTeam();
+    const a = await n.post({ text: 'visita A' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const b = await n.post({ text: 'visita B' });
+    await vi.waitFor(async () => expect(answered(await n.messages(b.session))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(n.api.of('createForumTopic')).toHaveLength(2), { timeout: 5000 });
+    const slugA = n.slugOf(n.turns.find((t) => t.m.includes('visita A')));
+    const slugB = n.slugOf(n.turns.find((t) => t.m.includes('visita B')));
+    await vi.waitFor(async () => expect(await Room.forChat('http', slugB).members()).toHaveLength(1), { timeout: 5000 });
+    const before = n.transcript(slugA);
+    n.api.updates(inTopic('@ed solo para B', { message_thread_id: 78 }));
+    await vi.waitFor(() => expect(n.turns).toHaveLength(3), { timeout: 5000 });
+    await settle();
+    expect(n.turns[2].cwd.split(/[\\/]/).at(-1)).toBe(slugB);
+    expect(n.transcript(slugB)).toContain('solo para B');
+    expect(n.transcript(slugA)).toBe(before);
+    expect((await n.messages(a.session)).some((m) => /solo para B/.test(m.text))).toBe(false);
+    expect(Object.keys(n.state().contacts?.telegram ?? {})).toEqual([]);
+    n.app.stop();
+  });
+
+  it('an old topic entry still in conversations.yaml: the line routes to the visitor anyway and the old entry is not written to', async () => {
+    const old = ensureContact(emptyState(), 'telegram', TOPIC, { pushedName: 'Contoso · old' });
+    const n = await bootTeam(undefined, { state: old.state });
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    await vi.waitFor(async () => expect(await Room.forChat('http', slug).members()).toHaveLength(1), { timeout: 5000 });
+    const entryBefore = JSON.stringify(getContact(n.state(), 'telegram', TOPIC).entry);
+    n.api.updates(inTopic('@ed desde el tema viejo'));
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    await settle();
+    expect(n.turns[1].cwd).toBe(n.turns[0].cwd);
+    expect(n.transcript(slug)).toContain('desde el tema viejo');
+    expect(JSON.stringify(getContact(n.state(), 'telegram', TOPIC).entry)).toBe(entryBefore);
+    expect([...n.io.files.keys()].filter((k) => k.includes(join('conversations', 'telegram')))).toEqual([]);
+    n.app.stop();
+  });
+
+  it('a topic that is NOT a room member behaves as before: its own conversation, registered by its first line, its own transcript', async () => {
+    const n = await bootTeam();
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    const slug = n.slugOf(n.turns[0]);
+    const before = n.transcript(slug);
+    n.api.updates(inTopic('una linea suelta', { message_thread_id: 90 }));
+    await vi.waitFor(() => expect(getContact(n.state(), 'telegram', `tg:${GROUP}/90`)).not.toBeNull(), { timeout: 5000 });
+    await settle();
+    expect(n.transcript(slug)).toBe(before);
     expect(n.turns).toHaveLength(1);
     n.app.stop();
   });

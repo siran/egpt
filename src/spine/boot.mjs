@@ -972,25 +972,30 @@ export function createRadioNoteRelay({
 // Each entry is the inviting conversation's address { surface, chatId, chatName } plus the
 // `member` record that names this chat there (kind, title).
 export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFile, loadState = async () => null } = {}) {
-  return async (surface, chatId) => {
+  // THE REVERSE LOOKUP ALONE: touches no conversation (a chat with no entry stays without one). A team
+  // topic is looked up here first (room-relay viewOf) because resolving ITS OWN room would register it.
+  const tunnelsOf = async (surface, chatId) => {
+    const tunnelRooms = [];
+    if (surface === SHELL_SURFACE) return tunnelRooms;
+    let state;
+    for (const [ns, row] of Object.entries(await readRooms())) {
+      const member = (Array.isArray(row?.members) ? row.members : []).find((m) => m && CHAT_MEMBER_KINDS.includes(m.kind) && String(m.id) === String(chatId));
+      if (!member) continue;
+      // The row KEY is the conversation's ns — `<surface>/<slug>`, the same string Room.ns()
+      // emits — resolved to its chat id the way every ns is (a room's chatId IS its name). A key
+      // that resolves to no conversation is not an address; skip it. Named by its slug where the
+      // slug is fixed (a room, a chatbox), else by its stored title (a re-entry never renames it).
+      state ??= (await loadState()) ?? {};
+      const to = chatIdForEntity(state, ns);
+      if (!to) continue;
+      const slug = String(ns).slice(String(ns).indexOf('/') + 1);
+      tunnelRooms.push({ ...to, chatName: fixedSlugFor(to.surface, to.chatId) ? slug : (state.contacts?.[to.surface]?.[to.chatId]?.pushedName || slug), member });
+    }
+    return tunnelRooms;
+  };
+  const resolve = async (surface, chatId) => {
     try {
-      const tunnelRooms = [];
-      if (surface !== SHELL_SURFACE) {
-        let state;
-        for (const [ns, row] of Object.entries(await readRooms())) {
-          const member = (Array.isArray(row?.members) ? row.members : []).find((m) => m && CHAT_MEMBER_KINDS.includes(m.kind) && String(m.id) === String(chatId));
-          if (!member) continue;
-          // The row KEY is the conversation's ns — `<surface>/<slug>`, the same string Room.ns()
-          // emits — resolved to its chat id the way every ns is (a room's chatId IS its name). A key
-          // that resolves to no conversation is not an address; skip it. Named by its slug where the
-          // slug is fixed (a room, a chatbox), else by its stored title (a re-entry never renames it).
-          state ??= (await loadState()) ?? {};
-          const to = chatIdForEntity(state, ns);
-          if (!to) continue;
-          const slug = String(ns).slice(String(ns).indexOf('/') + 1);
-          tunnelRooms.push({ ...to, chatName: fixedSlugFor(to.surface, to.chatId) ? slug : (state.contacts?.[to.surface]?.[to.chatId]?.pushedName || slug), member });
-        }
-      }
+      const tunnelRooms = await tunnelsOf(surface, chatId);
       const own = await resolveConvRoom(surface, chatId);
       const roster = own ? await own.members() : [];
       // Non-enumerable: an existing caller that deep-equals the roster against a plain array
@@ -1000,6 +1005,8 @@ export function createMemberResolver({ resolveConvRoom, readRooms = readRoomsFil
       return roster;
     } catch { return []; }
   };
+  resolve.tunnelsOf = tunnelsOf;
+  return resolve;
 }
 
 // EVERY EMITTED LINE CARRIES THE CLOCK (operator 2026-09-11) ────────────────────────────────
@@ -2340,8 +2347,8 @@ export async function boot({
         const made = await telegramPort.createGroup(`tg:${c.team_group}`, { title });
         if (!made?.success) return fail(made?.reason ?? 'the Telegram limb made none');
         failedAt.delete(chatId);
-        // The topic records the team and tunnels it in; its being never answers there (mute): it answers the visitor.
-        await contacts.resolve('telegram', made.chatID, { chatName: title, seed: { agents: { [c.being]: { mode: 'mute' } } } });
+        // The topic is a VIEW of this conversation, not one: no entry, folder or transcript of its own. A line typed
+        // there tunnels into it (room-relay viewOf); its being answers the visitor, and the reply reaches the topic.
         await room.setMember({ kind: 'tg-group', id: made.chatID, state: 'active', replies: true, title: c.team_name || c.title || client });
         hlog(`${chatId}: team topic "${title}" is ${made.chatID}`);
         const said = recap({ header: !isNew });   // a new session's topic just starts; a late one says what came before

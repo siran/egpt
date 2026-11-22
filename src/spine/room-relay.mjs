@@ -43,6 +43,10 @@
 //     why the reverse lookup no longer concatenates the room's members into the GROUP's roster:
 //     boot.mjs createMemberResolver).
 //
+// A chatbox's TEAM TOPIC (a tg-group member of an `http` conversation) is a VIEW, not an invited group with a
+// conversation of its own: spine.mjs asks `viewOf` before anything registers or records the chat, and its line
+// goes through this same tunnel into that conversation only (one record, the widget, its being per its mode).
+//
 // LOOP SAFETY — four locks, none of which is the guard (the guard BOUNDS a runaway; it does not
 // make the design correct):
 //   1. SELF-ECHO. The origin is skipped by IDENTITY, read two ways: `m.id === ev.chatId` when the
@@ -133,6 +137,8 @@ export function createRoomRelay({
     };
   }
 
+  const isView = (to) => to.surface === 'http';   // a chatbox's conversation: its team topic is a view of it
+
   // The synthetic that carries an invited group's message INTO the conversation it joined, addressed
   // at that conversation's OWN address `to` ({ surface, chatId, chatName }, boot.mjs
   // createMemberResolver) — for a room `{ network: 'room', chatId: <room name> }`, byte-for-byte the
@@ -150,12 +156,16 @@ export function createRoomRelay({
   // holds ev.body the structural signature is gone. Without carrying it, one of our own sends
   // that escaped the bridge's echo gate would read HUMAN inside the room and reset the very
   // counter that has to bound it (lock 2 in the header).
+  //
+  // A VIEW (a chatbox's team topic, `to.surface === 'http'`) is the exception: the topic has no
+  // conversation of its own, so a command an allowed user types there runs ONCE, in the visitor's
+  // conversation it tunnels into — nothing runs twice, so the operator's standing is carried.
   const tunnelOf = (to, ev) => ({
     body: ev.body,
     from: {
       network: to.surface, chatId: to.chatId, chatName: to.chatName,
       userId: ev.senderId, senderName: ev.senderName,
-      authorized: false, isSender: false, msgKey: null,
+      authorized: isView(to) && !!ev.authorized, isSender: isView(to) && !!ev.isSender, msgKey: null,
       // kind is a CHAT member's BY CONSTRUCTION: the reverse lookup that produced tunnelRooms
       // matches only those (boot.mjs createMemberResolver). A person talking, so the guard
       // keeps counting it human — six group messages must not auto-STOP the room they were
@@ -199,7 +209,37 @@ export function createRoomRelay({
     },
   });
 
+  // Re-enter `ev` into each room of `rooms` as a turn of its own (see THE TUNNEL in fanOut).
+  async function tunnel(ev, rooms, { blocked = () => false, reenter }) {
+    for (const to of rooms) {
+      if (blocked()) break;                               // guard tripped — stop tunnelling
+      // A chatbox's own chat (the visitor's widget) shows the line too, in the member's name
+      // (its roster title, e.g. the team), before the turn it starts can answer it.
+      if (showsMembers(to.chatId)) {
+        try { await openStream(to.member.title || speakerOf(ev), to.chatId, {}).finish({ text: ev.body }); }
+        catch (e) { onLog(`show in '${to.chatId}': ${e?.message ?? e}`); }
+      }
+      try { await reenter(tunnelOf(to, ev)); }
+      catch (e) { onLog(`tunnel '${to.chatId}': ${e?.message ?? e}`); }
+    }
+  }
+
   return {
+    // A TEAM TOPIC IS A VIEW (operator 2026-11-22): a chat that is a member of a chatbox room (http) is
+    // not a conversation. Its line goes into that room ONLY (tunnel, above): the room's one transcript,
+    // its widget, its being per its mode — no entry, no folder, no transcript, no turn of the topic's own.
+    // Returns the rooms it views (membership wins over any old entry the chat has), [] when it is none.
+    async viewOf(ev) {
+      if (ev.fromMember) return [];
+      try {
+        // The reverse lookup ALONE when the resolver has one: resolving the chat's own roster would register it.
+        const rooms = resolveMembers.tunnelsOf ? await resolveMembers.tunnelsOf(ev.surface, ev.chatId) : (await resolveMembers(ev.surface, ev.chatId))?.tunnelRooms;
+        return (rooms ?? []).filter(isView);
+      }
+      catch (e) { onLog(`resolveMembers ${ev.surface}/${ev.chatId}: ${e?.message ?? e}`); return []; }
+    },
+    // Tunnel a view's line into `rooms` (viewOf's). Resolves when the rooms' turns are done.
+    view: (ev, rooms, { reenter, blocked } = {}) => tunnel(ev, rooms, { reenter, blocked }),
     // Deliver a received room message to each admitting brain member. `blocked()` (the guard's
     // per-channel stop) short-circuits a channel the counter tripped mid-fan-out — so a runaway
     // multi-brain room halts at loop_guard.inbound.turns. `reenter` = the spine's handleInbound: a member's
@@ -223,19 +263,7 @@ export function createRoomRelay({
       // because its roster source is well-behaved is not a design). It is also what keeps
       // tunnelOf's `kind` honest: only a GENUINE inbound is ever tunnelled, so the member it comes
       // from is always the chat member the reverse lookup matched.
-      if (!ev.fromMember && typeof reenter === 'function' && Array.isArray(members?.tunnelRooms)) {
-        for (const to of members.tunnelRooms) {
-          if (blocked()) break;                               // guard tripped — stop tunnelling
-          // A chatbox's own chat (the visitor's widget) shows the line too, in the member's name
-          // (its roster title, e.g. the team), before the turn it starts can answer it.
-          if (showsMembers(to.chatId)) {
-            try { await openStream(to.member.title || speakerOf(ev), to.chatId, {}).finish({ text: ev.body }); }
-            catch (e) { onLog(`show in '${to.chatId}': ${e?.message ?? e}`); }
-          }
-          try { await reenter(tunnelOf(to, ev)); }
-          catch (e) { onLog(`tunnel '${to.chatId}': ${e?.message ?? e}`); }
-        }
-      }
+      if (!ev.fromMember && typeof reenter === 'function' && Array.isArray(members?.tunnelRooms)) await tunnel(ev, members.tunnelRooms, { blocked, reenter });
       for (const m of (Array.isArray(members) ? members : [])) {
         if (blocked()) break;                                 // guard tripped — stop fanning
         // NEVER HAND A TURN BACK TO ITS AUTHOR — the ONE skip, read two ways because a member

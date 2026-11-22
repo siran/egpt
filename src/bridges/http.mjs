@@ -47,6 +47,8 @@ export const httpClientOf = (chatId) => CHAT_RE.exec(String(chatId ?? ''))?.[1] 
 export const CLIENT_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 export const HTTP_DEFAULTS = Object.freeze({ path: '/chat', maxChars: 4000, rateMessages: 30, rateMinutes: 10, newSessions: 30, newSessionsMinutes: 60, sessionDays: 365 });
+// A team topic (team_group) is a VIEW of the visitor's conversation, never one: no conversations entry, folder or transcript
+// of its own; its lines tunnel into the conversation once (room-relay.mjs viewOf), and the being's replies reach it.
 // The limb's own texts: the 401's message, and two to the team topic. The panel's texts (title, placeholder,
 // waiting phrases, intro…) are the chatbox UI's, in its skin (UI_KEYS: read here only to say they moved).
 export const HTTP_STRINGS = Object.freeze({
