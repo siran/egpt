@@ -711,6 +711,15 @@ export function createSpine({
     timed('config', null, () => maybeApplyConfigChange({ mayRestart: false }));
     await timed('refresh', null, () => refreshConfig?.());
     const ev = built ?? identity.build(msg);   // built at arrival, to find the message's lane
+    // A TEAM TOPIC IS A VIEW, NOT A CONVERSATION (operator 2026-11-22): a chat that is a member of a chatbox's
+    // room goes into that room ONLY, before anything can register, fork, record or route it as a conversation of
+    // its own. Membership wins over any old entry it has. Only a person's line goes in: our own echo, a node's
+    // signed line and a reaction are dropped here, they have no conversation to belong to.
+    const views = roomRelay?.viewOf ? await timed('view', ev, () => roomRelay.viewOf(ev)) : [];
+    if (views.length) {
+      if (ev.recorded || ev.fromNode != null || ev.isReaction || kindOf(ev) === 'echo') { note(`view: ${guardChannel(ev)} — ${ev.isReaction ? 'a reaction' : 'a node\'s own line'} in a team topic; not tunnelled, prompts nobody`); return; }
+      return { turn: roomRelay.view(ev, views, { reenter: handleInbound }) };
+    }
     // A side group's opener names it, its origin and its kind (ev.canary): a node that does not hold
     // that group yet links it before this message is routed (commands.linkSideGroup). No canary → no-op.
     // A Telegram topic made outside /split forks its General chat's conversation (commands.forkTopic).

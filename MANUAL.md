@@ -605,6 +605,15 @@ contoso_soporte:
   identity: required
 ```
 
+A chatbox's **team topic** (`team_group`) is a view of the visitor's conversation,
+not a conversation of its own: it has no `conversations.yaml` entry, no folder and
+no transcript. A line typed in it enters the visitor's conversation once (one
+record in its transcript, shown in the widget) and wakes the chatbox's being there,
+in the visitor's folder; the being's reply goes to the widget and the topic. A
+`/<handle> …` command typed there by an allowed user runs in the visitor's
+conversation. A topic of an older version keeps its entry and folder, unused and
+unwritten: delete them by hand.
+
 A block holds every chatbox key (`config/config-schema.mjs`, `limbs.http`), and
 the limb's own strings (`ended`, the team topic's line on an end; `earlier`, its
 recap's head) are written beside them. A `strings:` map in the block still works;
