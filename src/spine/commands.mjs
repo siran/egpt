@@ -46,7 +46,7 @@ import { sanitizeName, sanitizeSlug } from '../sanitize.mjs';
 import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/registry.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf, findSessionFile } from '../tools/compact-being.mjs';
-import { fill } from '../tools/template.mjs';
+import { fill, logLine } from '../tools/template.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config-io.mjs';
@@ -888,7 +888,10 @@ export function createCommands({
     // the audit stays metadata-only. A sink that ignores the 2nd arg (the standalone default) is
     // unaffected.
     const what = ev?.alias ? `alias '${ev.alias}' → /${cmd}` : `/${cmd}`;   // never the arguments
-    try { await logToGroup(`${what} in ${chat} by ${who}${outcome ? ` → ${outcome}` : ''}`, { key: ev?.msgHash ?? null }); }
+    // system_messages.command_audit; blank = no audit line.
+    const line = logLine(cfg(), 'command_audit', { command: what, chat, sender: who, outcome: outcome ?? '', details: outcome ? ` → ${outcome}` : '' });
+    if (!line) return;
+    try { await logToGroup(line, { key: ev?.msgHash ?? null }); }
     catch { /* fail-closed: a broken audit never breaks the command */ }
   };
   // THE WRAPPER around the dispatch: run the command, then emit the ONE audit line. A '/'-command the

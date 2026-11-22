@@ -3810,6 +3810,177 @@ export const CONFIG_SCHEMA = {
     daemon log. Operator alerts are NOT sent here; they stay on the Self chat.
   `,
 
+  language: `
+    The language pack of the node's system messages (see system_messages): the file
+    config/locales/<language>.yaml shipped in the repo, e.g. es_VE. Unset = en_US. A pack holds a
+    system_messages: block with the same keys and exactly the same {placeholders} as en_US; a key it
+    lacks falls back to en_US. An unknown language (no such file) REFUSES the config: boot fails, a
+    changed config.yaml is refused with config_refused and the running config stays. Hot: no restart.
+    Not the language a being replies in, not the time zone.
+    PER CONVERSATION (not wired yet): the config resolver already layers config.yaml < conversations.yaml
+    < rooms.yaml for any key, but the log lines are rendered with the NODE config.
+
+    EXAMPLE:  language: es_VE
+  `,
+
+  system_messages: `
+    THE TEXT OF EVERY LINE THE NODE POSTS TO ITS LOG CHANNEL (log_to_group; admin_channel
+    when that is unset), one key per kind of line. Operator An: "keep all eGPT log
+    messages customizable in config.yaml". Each value is a template: {placeholders}
+    are filled (src/tools/template.mjs fill; an unknown {x} stays as written, so a typo
+    shows), and the node's own name is part of the text where it is today ({node}).
+    UNSET = the text of the node's language pack (config/locales/<language>.yaml), else
+    en_US (config/locales/en_US.yaml, the texts listed below, byte for byte), so a node that
+    sets nothing sees nothing change. A BLANK string ("") = that line is not posted (at any
+    of the three rungs; the same rule as compaction_warn_notice). A line built from many optional parts is templated by its
+    frame; the assembled body arrives as {details}.
+
+    The pre-compaction notice and alert BODIES stay the top-level
+    compaction_warn_notice / compaction_alert_notice; their frame is compaction_frame.
+
+    Lifecycle lines (going_down, started, back_up, pending_updates) go to the announce
+    chat AND to log_to_group: one template shapes both, and a blank one posts to neither.
+    The daemon (src/daemon-runtime.mjs) posts nothing itself: it writes the outcome and
+    note that the spine puts into {details} of back_up.
+
+    KEYS (default text, then placeholders):
+      command_audit
+        "{command} in {chat} by {sender}{details}"
+        {command}  the command, /name, or alias 'x' → /name; never its arguments
+        {chat}  the conversation it was typed in
+        {sender}  who typed it
+        {outcome}  what a silent handler reports (/end); may be empty
+        {details}  ' → {outcome}', or empty
+      going_down
+        "↻ {kind}… (pid {pid})"
+        {kind}  the lifecycle command: /restart, /upgrade, /upgrade full, /rewind, /standdown
+        {pid}  the process that is going down
+      started
+        "✅ egpt started ({sha}) pid {pid}{details}"
+        {sha}  the commit the node came up on
+        {pid}  the new process
+        {subject}  the commit's subject line
+        {details}  blank line + {subject}, or empty
+      back_up
+        "✅ egpt back up! ({head}) {pids}{details}"
+        {head}  the commit, or 'old → new' when it changed
+        {pids}  'pid N', or 'pid old → new'
+        {kind}  the lifecycle command that led here; may be empty
+        {outcome}  what /upgrade or /rewind did, from the daemon; may be empty
+        {note}  the daemon's ⚠️ paragraph (a recovery, a migration that needs the operator); may be empty
+        {subject}  the commit's subject line
+        {details}  ' — {kind}: {outcome}', then the ⚠️ {note} paragraph, then the {subject} paragraph; each only when present
+      pending_updates
+        "⬆ pending: {details}{ask}"
+        {details}  what is pending, joined with " · "
+        {ask}  '. Apply now?' when a human still has to type something, else empty
+      egpt_update_notice
+        "⬆ {node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  eGPT N new commits on <branch> (from → to): <subjects> — what happens next
+      egpt_update_stuck
+        "⬆ {node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  why the daemon cannot be renewed automatically
+      beeper_update_notice
+        "⬆ {node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  Beeper <version> downloaded (running …) — what happens next
+      beeper_update_start
+        "🔄 {node} · Beeper {from} → {to} · restarting for update… {marker}"
+        {node}  this node's name (node_name)
+        {from}  the version before
+        {to}  the version after
+        {marker}  the tag the result line replaces this one by; keep it in the template, else the result is posted as a new line
+      beeper_update_result
+        "🔄 {node} · Beeper {from} → {to}{details}"
+        {node}  this node's name (node_name)
+        {from}  the version before
+        {to}  the version after
+        {details}  ' · restarted in N s · <connection> ✓ …', or ' · FAILED at <step>: <why>' …
+      beeper_update_refused
+        "{node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  why an automatic Beeper update did not start
+      beeper_connection_gone
+        "{node} · ⚠ Beeper connection '{connection}' has answered on no port for {minutes} min — no install answers its token (Beeper not running, a service that can no longer log on, or a revoked token)"
+        {node}  this node's name (node_name)
+        {connection}  the connection name
+        {minutes}  how long it has been silent
+      beeper_connection_back
+        "{node} · ✓ Beeper connection '{connection}' answers again ({url})"
+        {node}  this node's name (node_name)
+        {connection}  the connection name
+        {url}  where it answers
+      media_flood
+        "{node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  the new-chat burst notice
+      send_rate_guard
+        "{node} · send-rate guard paused {chat} — {why}"
+        {node}  this node's name (node_name)
+        {chat}  the chat that was paused
+        {why}  what tripped the guard
+      lag_probe
+        "{node} · {details}"
+        {node}  this node's name (node_name)
+        {details}  the lag / recovered / sleep report
+      undelivered
+        "{node} · ⚠ {what}{being} not delivered to {title}{chat} — {reason}"
+        {node}  this node's name (node_name)
+        {what}  opener, reply, limb …
+        {being}  ' (handle)' of the being sending, or empty
+        {title}  '"name" ' of the chat when it has one, or empty
+        {chat}  the chat's id
+        {reason}  why it was not delivered
+      public_error
+        "{being} in {chat}: {text}"
+        {being}  the public being
+        {chat}  the chat
+        {text}  the error line that would have gone to the chat
+      drain_waiting
+        "{node} · restart waiting {elapsed} for {details}. Send /restart force to proceed."
+        {node}  this node's name (node_name)
+        {elapsed}  how long the restart has waited
+        {details}  the turns and background work it waits for
+      config_refused
+        "{node} · config.yaml change refused, the running config stays: {error}"
+        {node}  this node's name (node_name)
+        {error}  why the new config.yaml was refused
+      background_unanswered
+        "{node} · {being} in {chat}: background task(s) {what} running {elapsed}, the being did not answer whether they are still needed."
+        {node}  this node's name (node_name)
+        {being}  the being's name
+        {chat}  the conversation
+        {what}  the background work
+        {elapsed}  how long it has run
+      login_captcha
+        "login {site}: a CAPTCHA is blocking sign-in — solve it in the brain Chrome, then re-run /login {site}. (screenshot {bytes}B captured; image delivery pending)"
+        (goes to captcha_channel (default admin_channel))
+        {site}  the site
+        {bytes}  the screenshot size
+      compacted
+        "🗜️ {who}{where} compacted its context{was}. The full history stays in its transcript.md."
+        {node}  this node's name (node_name)
+        {label}  the being's display name
+        {chat}  the conversation; may be empty
+        {tokens}  the size it was decided at, in tokens; may be empty
+        {who}  '{node} · {label}', or {label} alone
+        {where}  ' in {chat}', or empty
+        {was}  ' (was Nk tokens)', or empty
+      compaction_frame
+        "🗜️ {who}{where}: {text}"
+        (the frame of the pre-compaction warning and alert; their bodies stay compaction_warn_notice and compaction_alert_notice)
+        {node}  this node's name (node_name)
+        {label}  the being's display name
+        {chat}  the conversation; may be empty
+        {who}  '{node} · {label}', or {label} alone
+        {where}  ' in {chat}', or empty
+        {text}  compaction_warn_notice / compaction_alert_notice, already filled
+
+    EXAMPLE:  system_messages: { command_audit: "{sender}: {command} ({chat}){details}", lag_probe: "" }
+  `,
+
   log_to_group: `
     The per-command audit channel (operator 2026-10-08): the ONE group this node
     posts a compact, METADATA-ONLY line to for EVERY slash command that runs —

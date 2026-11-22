@@ -1576,12 +1576,16 @@ export function createBrainPool({
       // the chat, so it names the conversation instead: the ROOM for a chat invited into one - the
       // room's thread is the one compacted - else the chat's own name.
       const noticeCompacted = typeof noticeTo === 'function'
-        ? ({ tokens } = {}) => noticeTo(compactedNotice({
-          node: getConfig()?.node_name ?? null,
-          label: labelOf(being) || being,
-          chat: scope.scoped ? slug : (ev.chatName || slug),
-          tokens,
-        }), being)
+        ? ({ tokens } = {}) => {
+          const line = compactedNotice({
+            node: getConfig()?.node_name ?? null,
+            label: labelOf(being) || being,
+            chat: scope.scoped ? slug : (ev.chatName || slug),
+            tokens,
+            config: getConfig(),
+          });
+          return line ? noticeTo(line, being) : false;   // blank in system_messages: not posted
+        }
         : null;
       // THE PRE-COMPACTION WARN NOTICE (operator 2026-10-08) — the PRIMARY compaction notice, said a
       // few % before the /compact so the operator is warned and the handoff already exists. Same hook,
@@ -1589,12 +1593,16 @@ export function createBrainPool({
       // {path}/{agent}-resolved) and this closure only prefixes the node · chat line, exactly as the
       // post-hoc one does.
       const noticeWarn = typeof noticeTo === 'function'
-        ? ({ text } = {}) => noticeTo(warnNotice({
-          node: getConfig()?.node_name ?? null,
-          label: labelOf(being) || being,
-          chat: scope.scoped ? slug : (ev.chatName || slug),
-          text,
-        }), being)
+        ? ({ text } = {}) => {
+          const line = warnNotice({
+            node: getConfig()?.node_name ?? null,
+            label: labelOf(being) || being,
+            chat: scope.scoped ? slug : (ev.chatName || slug),
+            text,
+            config: getConfig(),
+          });
+          return line ? noticeTo(line, being) : false;
+        }
         : null;
       try { afterTurn?.({ key, klass, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools, compaction: compactionOver, outbox, armIdentityRefresh, noticeCompacted, noticeWarn, chat: scope.scoped ? slug : (ev.chatName || slug) }); } catch { /* non-fatal */ }
       // `verbose` (the one reading of verbose_thinking resolved above) rides out on the reply so the

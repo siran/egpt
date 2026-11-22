@@ -24,6 +24,8 @@
 //     stays a local, ephemeral value: it reaches the fill seam and nothing else (never a return, a
 //     log line, or a notice body).
 
+import { logLine } from '../tools/template.mjs';
+
 export const OUTCOMES = ['logged-in', 'needs-2fa', 'captcha-posted', 'failed', 'no-credential'];
 
 const DEFAULTS = {
@@ -185,10 +187,8 @@ export function createLoginLimb({ cdp, bridge, readCredential = async () => null
     // no attachment path (see the report's STOP item). The notice carries only the domain + a size
     // descriptor, never anything read off the page.
     try {
-      await bridge.noticeToChannel({
-        configKey: cfg.captcha_channel || 'admin_channel',
-        text: `login ${site}: a CAPTCHA is blocking sign-in — solve it in the brain Chrome, then re-run /login ${site}. (screenshot ${bytes}B captured; image delivery pending)`,
-      });
+      const text = logLine(getConfig(), 'login_captcha', { site, bytes });   // system_messages.login_captcha; blank = not posted
+      if (text) await bridge.noticeToChannel({ configKey: cfg.captcha_channel || 'admin_channel', text });
     } catch { /* fail-closed: a notice that didn't land never changes the outcome */ }
     return done('captcha-posted', site);
   }

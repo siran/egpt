@@ -63,7 +63,7 @@ export function workOf(tasks, being, labelOf) {
 // `allBackground`: () => [{ being, surface, chatId, taskId, taskType?, parentTaskId?, ambient?, description, since }] — every live background task,
 // in the chat a finished one would wake (boot: the pool's). `outcomeOf`: ({ being, chatId, taskId }) =>
 // { status, message } | null — how a finished one ended, as its session's CLI said it (boot: the pool's).
-export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, labelOf = (b) => b, ask = null, report = null, note = () => {} }) {
+export function createLiveness({ sender, allBackground = null, outcomeOf = null, now, everyMs = () => LIVENESS_EVERY_MS, backgroundEveryMs = () => LIVENESS_BACKGROUND_EVERY_MS, backgroundChangeMs = () => LIVENESS_BACKGROUND_CHANGE_MS, stopped = () => false, labelOf = (b) => b, ask = null, report = null, format = null, note = () => {} }) {
   const turns = new Set();     // { out, being, ev, chat, auto, since, last, status }
   const bg = new Map();        // chatId → { being, ev, chat, auto, reply, last, posted, changed, seen, done, quiet, asks }; `being` posts it
   const chatNames = new Map(); // chatId → the chat's name, for the logging-group line
@@ -139,7 +139,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     if (a.reported || stopped()) return;
     a.reported = true;
     note(`liveness: ${a.text}`);
-    if (report) Promise.resolve(report(a.text)).catch((err) => note(`liveness: logging group refused the line — ${err?.message ?? err}`));
+    const out = format ? format('background_unanswered', a.vars) : a.text;   // format: system_messages (null = blanked)
+    if (report && out) Promise.resolve(report(out)).catch((err) => note(`liveness: logging group refused the line — ${err?.message ?? err}`));
   }
 
   // Per being: `tasks` are `being`'s own in the chat of status `s`, and the ask wakes that being.
@@ -150,7 +151,8 @@ export function createLiveness({ sender, allBackground = null, outcomeOf = null,
     if (!ask || ms < ASK_AFTER_MS || (a && (!a.settled || t - a.at < ASK_AFTER_MS))) return;
     if ([...turns].some((x) => x.being === being && x.ev.chatId === chatId)) return;
     const what = names(tasks);
-    const rec = { at: t, settled: false, reported: false, text: `${labelOf(being)} in ${chatNames.get(chatId) ?? chatId}: background task(s) ${what} running ${elapsed(ms)}, the being did not answer whether they are still needed.` };
+    const vars = { being: labelOf(being), chat: chatNames.get(chatId) ?? chatId, what, elapsed: elapsed(ms) };
+    const rec = { at: t, settled: false, reported: false, vars, text: `${vars.being} in ${vars.chat}: background task(s) ${what} running ${vars.elapsed}, the being did not answer whether they are still needed.` };
     s.asks.set(being, rec);
     note(`liveness: ${being}/${chatId} — background task(s) ${what} running ${elapsed(ms)}, asking whether still needed`);
     const line = `[egpt] Your background task(s) ${what} have been running for ${elapsed(ms)}. Are they still necessary? Stop any that aren't, and report.`;
