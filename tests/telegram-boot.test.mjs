@@ -259,25 +259,36 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await app.stop();
   });
 
-  it('"↻" goes to the admin topic AND the log topic', async () => {
+  it('"↻" goes to the log topic ONLY when there is no Self (operator 2026-11-22: "please put these in eGPT Logs")', async () => {
     await writeToken();
     const { app, tg, exits } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
     await tg[0].onIncoming('/e restart', inTopic);
     await vi.waitFor(() => expect(exits).toEqual([43]), { timeout: 10000 });
-    expect(said(tg, /↻/).sort()).toEqual([TOPIC, LOGS].sort());
+    expect(said(tg, /↻/)).toEqual([LOGS]);
     await app.stop();
   });
 
-  it('"egpt back up!" goes to both; once when log_to_group IS the admin chat', async () => {
-    for (const [logTo, want] of [[LOGS, [TOPIC, LOGS]], [TOPIC, [TOPIC]]]) {
+  it('"egpt back up!" goes to log_to_group ONLY when there is no Self; once when log_to_group IS the admin chat', async () => {
+    for (const [logTo, want] of [[LOGS, [LOGS]], [TOPIC, [TOPIC]]]) {
       await writeToken();
       await fs.mkdir(join(_HOME, 'state'), { recursive: true });
       await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
       const { app, tg } = await bootWith({ ...NU(), log_to_group: logTo }, { ingest: true, tgExtra: { resolveChatId } });
       await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toHaveLength(want.length), { timeout: 10000 });
-      expect(said(tg, /egpt back up!/).sort()).toEqual([...want].sort());
+      expect(said(tg, /egpt back up!/)).toEqual(want);
       await app.stop();
     }
+  });
+
+  it('a blanked system_messages line posts nothing, not even to log_to_group', async () => {
+    await writeToken();
+    await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+    await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+    const { app, tg } = await bootWith({ ...NU(), log_to_group: LOGS, system_messages: { back_up: '' } }, { ingest: true, tgExtra: { resolveChatId } });
+    await vi.waitFor(() => fs.access(SIDECAR).then(() => { throw new Error("sidecar still there"); }, () => {}), { timeout: 10000 });   // the announce ran (it consumes the sidecar)
+    await new Promise((r) => setTimeout(r, 300));
+    expect(said(tg, /egpt back up!/)).toEqual([]);
+    await app.stop();
   });
 
   it('"egpt started" reaches log_to_group even with no admin chat at all', async () => {

@@ -59,6 +59,7 @@ function fakeStart() {
         const h = { finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
         return h;
       },
+      async resolveChatId(id) { return id; },   // a room id is itself (beeper.mjs's resolver), so log_to_group can name one
       isAlive: () => true, stop() {},
     };
   };
@@ -94,11 +95,11 @@ const CONFIG = {
 };
 const AT = Date.UTC(2026, 7, 13, 12, 0);
 
-async function bootNode() {
+async function bootNode(config = CONFIG) {
   const { start, spy } = fakeStart();
   let state = emptyState();
   const app = await boot({
-    readConfig: () => CONFIG,
+    readConfig: () => config,
     startBridge: start,
     makeSession: fakeSession,
     loadState: async () => state,
@@ -142,6 +143,18 @@ describe('boot.mjs — restart-announce read-back', () => {
     expect(backUp.chatId).toBe(SELF_CHAT);
     expect(backUp.text).toContain('abc123');
     expect(existsSync(SIDECAR)).toBe(false);   // consumed, same as the existing unlink(sidecar) behavior
+    app.stop();
+  });
+
+  // kg/do: a whatsapp Self AND log_to_group — the line goes to both (Self + the log copy). Unchanged by the
+  // no-Self rule (operator 2026-11-22 #925), which moves a line to the log only when there is no Self.
+  it('a Self AND log_to_group: "egpt back up!" goes to both', async () => {
+    await clearSidecar();
+    await fs.writeFile(SIDECAR, JSON.stringify({ chatId: SELF_CHAT, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+    const LOGS = '!logs:beeper.com';
+    const { app, spy } = await bootNode({ ...CONFIG, log_to_group: LOGS });
+    await waitFor(() => spy.sent.filter((s) => /egpt back up!/.test(s.text)).length >= 2, { timeoutMs: 10000 });
+    expect(spy.sent.filter((s) => /egpt back up!/.test(s.text)).map((s) => s.chatId).sort()).toEqual([LOGS, SELF_CHAT].sort());
     app.stop();
   });
 });

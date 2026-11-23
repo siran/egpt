@@ -3028,9 +3028,13 @@ export async function boot({
   // A lifecycle line goes to the announce chat (announceChatId, above) AND to log_to_group when that is
   // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
   // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
+  // With NO Self (selfChatId null: the announce chat is the non-whatsapp fallback, e.g. nu's Telegram An
+  // topic) and a log_to_group that resolves, the line goes ONLY to log_to_group (operator 2026-11-22, #925:
+  // "please put these in eGPT Logs"); a node with a Self keeps Self + the log copy.
   const sayLifecycle = async (chatId, text) => {
     if (!text) return;   // blanked in system_messages: the line is not posted, to either place
     const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
+    if (group?.chatId && !selfChatId()) chatId = null;
     await Promise.all([
       chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,
       group && !(chatId && group.chatId === chatId) ? noticeToChannel({ configKey: 'log_to_group', text, what: 'announce', tag: 'announce' }) : null,
