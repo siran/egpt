@@ -37,11 +37,30 @@
 // makes it a move; a copy that lands and then fails to unlink is reported as exactly that,
 // never counted as delivered.
 //
+// A SECOND KIND OF DESTINATION: `rclone:<remote>:<path>` (operator 2026-11). Node nu (Linux) has
+// no Google Drive mount, so an `outbox_targets` value written `rclone:anrodz42:jose-lorenzo/ACIM-ES.v2`
+// reaches the same Drive folder through the web, by shelling out to rclone. It is THIS drain and
+// THESE invariants — only the three operations a destination answers differ (rcloneDestination):
+//   exists and is a folder  → `rclone lsf --max-depth 1 <remote>:<path>` exits 0; else the whole
+//                              drain is refused naming the target, nothing created.
+//   a file of that name     → the name is in that same listing; the entry stays, reported by name.
+//   move                    → `rclone copyto <file> <remote>:<path>/<name>`, then unlink — only
+//                              once rclone exited 0, so a failed upload leaves the file pending.
+// Anything not starting `rclone:<remote>:` is a local folder, exactly as before. The binary is
+// config `rclone.bin` (else `rclone` on PATH) and `rclone.config` is passed as `--config` (else
+// rclone's own default); both ride the resolved target, so the turn and the boot sweep agree.
+// The exec is `io.exec(bin, args)`, execFile-shaped: it resolves on exit 0 and rejects otherwise,
+// which is how tests fake it — none runs a real rclone. NEVER-OVERWRITE is weaker here than
+// with COPYFILE_EXCL: it is the listing taken at the start of the drain, not an atomic refusal,
+// so a writer that creates the same name in the meantime can be overwritten by copyto.
+//
 // This module does NOT post anything. It returns a result and the caller says it, through the
 // ONE placement every reaction, reply and node line already takes (sender.mjs makeOutbound, via
 // boot's sayOnce) — see createOutboxDrain below, which is wired into the ONE post-turn hook
 // brainpool already fires (compaction.mjs's afterTurn is the other rider on it).
 import { readdir, lstat, stat, access, copyFile, unlink, constants } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { Room } from './room-core.mjs';
 import { getBeing, residentsOf } from './conversations-state.mjs';
@@ -88,7 +107,9 @@ import { getBeing, residentsOf } from './conversations-state.mjs';
 //   null                         nothing names a target ⇒ THE FEATURE IS OFF. No default
 //                                destination, ever: a default would start moving files off a
 //                                being's disk on a node whose operator never asked for it.
-//   { key, to, unknown: null }   the named target, resolved to EXACTLY the mapped path.
+//   { key, to, unknown: null }   the named target, resolved to EXACTLY the mapped path. An
+//                                `rclone:<remote>:<path>` value also carries `rclone: { bin, config }`
+//                                from the node's `rclone:` block (see the header).
 //   { key, to: null, unknown }   a key the map does not have. NOT silently off — a typo must be
 //                                visible, not mysterious, so the name travels with the refusal
 //                                and gets reported (see drainOutbox).
@@ -101,7 +122,7 @@ export function resolveOutboxTarget(being_block, being, config) {
     : new Map();
   const raw = map.get(key);
   const to = (typeof raw === 'string' && raw.trim()) ? raw.trim() : null;
-  if (to) return { key, to, unknown: null };
+  if (to) return { key, to, unknown: null, ...(rcloneSpecOf(to) && { rclone: { bin: config?.rclone?.bin, config: config?.rclone?.config } }) };
   const known = [...map.keys()];
   return {
     key,
@@ -110,6 +131,12 @@ export function resolveOutboxTarget(being_block, being, config) {
       ? `\`outbox_to: ${key}\` names a target in \`outbox_targets\` whose value is not a path — nothing was moved`
       : `\`outbox_to: ${key}\` names no target in \`outbox_targets\`${known.length ? ` (this node has: ${known.join(', ')})` : ' (this node declares none)'} — nothing was moved`,
   };
+}
+
+// `rclone:<remote>:<path>` → `<remote>:<path>` (what rclone is handed), else null = a local folder.
+// The second colon is required: `rclone:foo` would otherwise reach rclone as the LOCAL path `foo`.
+function rcloneSpecOf(to) {
+  return /^rclone:([^:]+:.*)$/.exec(to ?? '')?.[1] ?? null;
 }
 
 // ── WHAT MAY BE SAID IN A CHAT: THE KEY. WHAT GOES IN THE LOG: THE PATH ──────────────────────
@@ -128,7 +155,9 @@ export function resolveOutboxTarget(being_block, being, config) {
 // WITH THE PATH IN IT ("ENOENT: no such file or directory, stat 'G:\My Drive\…'"), so passing
 // e.message through into a chat-bound sentence would put the destination straight back. Only the
 // errno CODE crosses into a chat; the full error goes to the log, at the point it happened.
-const codeOf = (e) => (typeof e?.code === 'string' && e.code) ? e.code : 'failed';
+// (A number is a child process's exit status — rclone's — and carries no path either.)
+const codeOf = (e) => (typeof e?.code === 'string' && e.code) ? e.code : typeof e?.code === 'number' ? `exit ${e.code}` : 'failed';
+const execFileP = promisify(execFile);
 
 // The destination, checked ONCE for the whole drain. Returns a CHAT-SAFE refusal sentence naming
 // the target KEY (never the path), or null when it is usable. The raw error is logged here, where
@@ -163,11 +192,37 @@ async function checkDestination(dest, key, { statFn, accessFn, onLog }) {
   return null;
 }
 
+// The same two operations for an rclone target — `check` is checkDestination's counterpart (it
+// also reads the listing the name-collision test needs), `put` is the copyFile(COPYFILE_EXCL)
+// one. `put` throws code EEXIST for a listed name, so the drain's one EEXIST branch reports it.
+// The raw exec error carries the command line (spec and local path) — it goes to the log only.
+function rcloneDestination(spec, key, { rclone, execFn, onLog }) {
+  const bin = rclone?.bin || 'rclone';
+  const argv = (args) => (rclone?.config ? [...args, '--config', rclone.config] : args);
+  const listed = new Set();
+  return {
+    async check() {
+      try {
+        const { stdout } = await execFn(bin, argv(['lsf', '--max-depth', '1', spec]));
+        for (const name of String(stdout).split(/\r?\n/)) if (name) listed.add(name);
+      } catch (e) {
+        onLog(`\`${key}\` → ${spec}: rclone lsf: ${e?.message ?? e} — nothing was moved, and nothing was created: the operator names a real folder or the drain does not run`);
+        return `\`${key}\`: the destination is not there or cannot be listed (${codeOf(e)}) — nothing was moved`;
+      }
+      return null;
+    },
+    async put(src, name) {
+      if (listed.has(name)) throw Object.assign(new Error(`${name} is already listed at ${spec}`), { code: 'EEXIST' });
+      await execFn(bin, argv(['copyto', src, `${spec}/${name}`]));
+    },
+  };
+}
+
 /**
  * Drain ONE room's outbox into ONE approved destination. Pure of policy: it is told the room and
  * the RESOLVED target, and decides nothing about either.
  *
- * @param target  what resolveOutboxTarget returned: null (off), or { key, to, unknown }.
+ * @param target  what resolveOutboxTarget returned: null (off), or { key, to, unknown, rclone? }.
  * @returns null when there is NOTHING TO SAY — no target named, no outbox folder, or an empty
  *          one. Otherwise { key, to, moved: [name], skipped: [{name, why}], refused }.
  */
@@ -178,6 +233,7 @@ export async function drainOutbox({ room, target, io = {}, onLog = () => {} } = 
   const accessFn  = io.access   ?? access;
   const copyFn    = io.copyFile ?? copyFile;
   const unlinkFn  = io.unlink   ?? unlink;
+  const execFn    = io.exec     ?? execFileP;
 
   const key = target?.key ?? null;
   const dest = target?.to ?? null;
@@ -205,7 +261,9 @@ export async function drainOutbox({ room, target, io = {}, onLog = () => {} } = 
     // it, and a line after every turn forever would be the noise that gets the feature muted.
     if (!dest) return { key, to: null, moved: [], skipped: [], refused: target?.unknown ?? `\`outbox_to: ${key}\` resolved to no destination — nothing was moved` };
 
-    const refused = await checkDestination(dest, key, { statFn, accessFn, onLog });
+    const spec = rcloneSpecOf(dest);
+    const rc = spec ? rcloneDestination(spec, key, { rclone: target.rclone, execFn, onLog }) : null;
+    const refused = await (rc ? rc.check() : checkDestination(dest, key, { statFn, accessFn, onLog }));
     if (refused) return { key, to: dest, moved: [], skipped: [], refused };
 
     const moved = [];
@@ -222,7 +280,7 @@ export async function drainOutbox({ room, target, io = {}, onLog = () => {} } = 
       if (st.isDirectory())    { skipped.push({ name, why: 'a folder — the outbox is files only, one level deep' }); continue; }
       if (!st.isFile())        { skipped.push({ name, why: 'not a regular file' }); continue; }
       try {
-        await copyFn(src, join(dest, name), constants.COPYFILE_EXCL);
+        await (rc ? rc.put(src, name) : copyFn(src, join(dest, name), constants.COPYFILE_EXCL));
       } catch (e) {
         // The PATH and the whole error to the log; the chat gets the filename (which the being
         // chose and everyone in the room can already see) and the errno code.

@@ -2838,6 +2838,33 @@ export const CONFIG_SCHEMA = {
     Files are moved (not copied) one level, files only - a directory, symlink
     or junction in an outbox is skipped, never followed - and a name already
     present at the destination is never overwritten.
+
+    A VALUE MAY ALSO BE rclone:<remote>:<path>, for a node with no mount of
+    the folder (a Linux node reaching Google Drive through the web):
+
+      outbox_targets:
+        acim-drive: rclone:anrodz42:jose-lorenzo/ACIM-ES.v2
+
+    The same drain, the same rules: the folder is checked with \`rclone lsf
+    --max-depth 1 <remote>:<path>\` (failing = the whole drain is refused, the
+    folder is never created), a name listed there is never overwritten, and a
+    file leaves the outbox only after \`rclone copyto\` exits 0. The binary and
+    the rclone config file are the \`rclone\` block below. Any other value is a
+    local folder, as before.
+  `,
+
+  rclone: `
+    How the spine runs rclone, for an outbox_targets value written
+    rclone:<remote>:<path>. Both keys are optional:
+
+      rclone:
+        bin: /usr/local/bin/rclone        # DEFAULT: unset - \`rclone\` on PATH
+        config: /home/egpt/rclone.conf    # DEFAULT: unset - rclone's own default
+                                          # config file; else passed as --config <path>
+
+    The remote named in the target (anrodz42 above) must exist in that config
+    file; set it up once with \`rclone config\` as the user the spine runs as.
+    Read only by src/room-outbox.mjs, and only for an rclone: target.
   `,
 
   sandbox_oauth_token: `

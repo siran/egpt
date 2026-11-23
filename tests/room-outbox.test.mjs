@@ -726,3 +726,220 @@ describe('outbox/ is part of the Room tree, for every room and every conversatio
     }
   });
 });
+
+// ── AN RCLONE TARGET: the SAME drain, a second kind of destination (operator 2026-11) ─────────
+// Node kg has the Drive folder as a mounted drive letter; node nu (Linux) has no mount and
+// reaches the same folder through the web with rclone. An `outbox_targets` value of
+// `rclone:<remote>:<path>` swaps ONLY the three destination operations of the one drain —
+// exists-and-is-a-folder (`rclone lsf`), name-already-there (the listing), move (`rclone copyto`
+// then unlink on exit 0). Every invariant above must hold for it, so these read like the local
+// ones. NO TEST HERE RUNS A REAL RCLONE: every drain gets a fake `io.exec`, which resolves like
+// execFile on exit 0 and REJECTS (e.code = the exit code) on any other exit.
+describe('an rclone: target — the same drain, a second kind of destination', () => {
+  const SPEC = 'anrodz42:jose-lorenzo/ACIM-ES.v2';
+  const RC = `rclone:${SPEC}`;
+  const rcTarget = () => ({ key: 'acim-drive', to: RC, unknown: null });
+
+  // A remote that is a listing and a log of the calls made against it.
+  const fakeRclone = ({ listing = [], failList = null, failCopy = () => null } = {}) => {
+    const calls = [];
+    const exec = async (bin, args) => {
+      calls.push({ bin, args, present: args[0] === 'copyto' ? existsSync(args[1]) : null });
+      if (args[0] === 'lsf') {
+        if (failList) throw Object.assign(new Error(`Command failed: ${bin} ${args.join(' ')}\n${failList.stderr ?? ''}`), { code: failList.code });
+        return { stdout: listing.map((n) => `${n}\n`).join(''), stderr: '' };
+      }
+      const code = failCopy(args);
+      if (code != null) throw Object.assign(new Error(`Command failed: ${bin} ${args.join(' ')}`), { code });
+      return { stdout: '', stderr: '' };
+    };
+    return { exec, calls };
+  };
+  // A local-fs seam that fails the test if the drain treats the rclone target as a folder.
+  const noLocalDest = (exec) => ({
+    exec,
+    stat: async () => { throw new Error('the rclone target was stat-ed as a local folder'); },
+    access: async () => { throw new Error('the rclone target was access-ed as a local folder'); },
+    copyFile: async () => { throw new Error('the rclone target was copyFile-d as a local folder'); },
+  });
+
+  it('lists the folder ONCE, copyto-s each file to <remote>:<path>/<name>, and the outbox ends up empty', async () => {
+    put(OUT, 'acim-01.md', 'one');
+    put(OUT, 'acim-02.md', 'two');
+    const { exec, calls } = fakeRclone();
+
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) });
+
+    expect(r.refused).toBe(null);
+    expect(r.moved).toEqual(['acim-01.md', 'acim-02.md']);
+    expect(r.skipped).toEqual([]);
+    expect(calls.map(({ bin, args }) => [bin, args])).toEqual([
+      ['rclone', ['lsf', '--max-depth', '1', SPEC]],
+      ['rclone', ['copyto', join(OUT, 'acim-01.md'), `${SPEC}/acim-01.md`]],
+      ['rclone', ['copyto', join(OUT, 'acim-02.md'), `${SPEC}/acim-02.md`]],
+    ]);
+    expect(readdirSync(OUT)).toEqual([]);                  // MOVED, not copied
+    expect(describeDrain(r)).toBe('📤 outbox → `acim-drive`: delivered 2 files — acim-01.md, acim-02.md');
+  });
+
+  it('the local file is removed only AFTER rclone exits 0 — still there while copyto runs, kept when it fails', async () => {
+    put(OUT, 'good.md', 'g');
+    put(OUT, 'bad.md', 'b');
+    const { exec, calls } = fakeRclone({ failCopy: (args) => (args[1].endsWith('bad.md') ? 7 : null) });
+
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) });
+
+    const copies = calls.filter((c) => c.args[0] === 'copyto');
+    expect(copies.map((c) => c.present)).toEqual([true, true]);   // never unlinked ahead of the copy
+    expect(r.moved).toEqual(['good.md']);
+    expect(r.skipped.map((s) => s.name)).toEqual(['bad.md']);
+    expect(r.skipped[0].why).toMatch(/could not be copied to the destination/);
+    expect(r.skipped[0].why).toContain('7');                      // the exit code is actionable and discloses nothing
+    expect(readdirSync(OUT)).toEqual(['bad.md']);                 // kept, still pending
+    expect(read(OUT, 'bad.md')).toBe('b');
+  });
+
+  it('a copyto that cannot even start (rclone not installed) leaves the file and says so', async () => {
+    put(OUT, 'a.md', 'a');
+    const exec = async (_bin, args) => {
+      if (args[0] === 'lsf') return { stdout: '', stderr: '' };
+      throw Object.assign(new Error('spawn rclone ENOENT'), { code: 'ENOENT' });
+    };
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) });
+    expect(r.moved).toEqual([]);
+    expect(r.skipped[0].why).toContain('ENOENT');
+    expect(readdirSync(OUT)).toEqual(['a.md']);
+  });
+
+  it('NEVER OVERWRITE: a name already in the remote listing is left in the outbox, reported by name, and never sent', async () => {
+    put(OUT, 'shared.md', 'the being’s version');
+    put(OUT, 'fresh.md', 'no twin');
+    const { exec, calls } = fakeRclone({ listing: ['shared.md', 'other.md'] });
+
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) });
+
+    expect(r.moved).toEqual(['fresh.md']);
+    expect(r.skipped).toHaveLength(1);
+    expect(r.skipped[0].name).toBe('shared.md');
+    expect(r.skipped[0].why).toContain('already at the destination');
+    expect(calls.filter((c) => c.args[0] === 'copyto').map((c) => c.args[1])).toEqual([join(OUT, 'fresh.md')]);
+    expect(readdirSync(OUT)).toEqual(['shared.md']);
+    expect(read(OUT, 'shared.md')).toBe('the being’s version');
+    expect(describeDrain(r)).toMatch(/shared\.md is still in the outbox/);
+  });
+
+  it('a listing that fails REFUSES THE WHOLE DRAIN, names the target (not the place) in the chat, and moves nothing', async () => {
+    put(OUT, 'a.md', 'a');
+    put(OUT, 'b.md', 'b');
+    const { exec, calls } = fakeRclone({ failList: { code: 3, stderr: `directory not found: ${SPEC}` } });
+    const logs = [];
+
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec), onLog: (m) => logs.push(m) });
+
+    expect(calls.map((c) => c.args)).toEqual([['lsf', '--max-depth', '1', SPEC]]);   // listed, then NOTHING else was tried
+    expect(r.moved).toEqual([]);
+    expect(r.skipped).toEqual([]);
+    expect(r.refused).toContain('acim-drive');
+    expect(r.refused).toContain('3');
+    expect(r.refused).toMatch(/nothing was moved/);
+    for (const leak of [SPEC, 'anrodz42', 'jose-lorenzo']) expect(describeDrain(r)).not.toContain(leak);
+    expect(logs.join('\n')).toContain(SPEC);                       // the OPERATOR's log names the place
+    expect(readdirSync(OUT).sort()).toEqual(['a.md', 'b.md']);
+  });
+
+  it('an empty outbox never lists the remote — no network call per turn', async () => {
+    const { exec, calls } = fakeRclone();
+    expect(await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) })).toBe(null);
+    expect(calls).toEqual([]);
+  });
+
+  it('files only, one level: a directory and a link in the outbox are skipped and never handed to rclone', async () => {
+    mkdirSync(join(OUT, 'a-folder'), { recursive: true });
+    symlinkSync(DEST, join(OUT, 'a-link'), 'junction');
+    put(OUT, 'real.md', 'r');
+    const { exec, calls } = fakeRclone();
+
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec) });
+
+    expect(r.moved).toEqual(['real.md']);
+    expect(r.skipped.map((s) => s.name).sort()).toEqual(['a-folder', 'a-link']);
+    expect(calls.filter((c) => c.args[0] === 'copyto').map((c) => c.args[1])).toEqual([join(OUT, 'real.md')]);
+  });
+
+  it('the binary and the config file come from config `rclone.bin` / `rclone.config`; unset is plain `rclone` and rclone’s own default config', async () => {
+    const resolved = (config) => resolveOutboxTarget({ outboxTo: 'acim-drive' }, 'egpt', { outbox_targets: { 'acim-drive': RC }, ...config });
+
+    put(OUT, 'a.md', 'a');
+    const set = fakeRclone();
+    await drainOutbox({ room, target: resolved({ rclone: { bin: '/opt/rclone/rclone', config: '/etc/egpt/rclone.conf' } }), io: noLocalDest(set.exec) });
+    expect(set.calls.map(({ bin, args }) => [bin, args])).toEqual([
+      ['/opt/rclone/rclone', ['lsf', '--max-depth', '1', SPEC, '--config', '/etc/egpt/rclone.conf']],
+      ['/opt/rclone/rclone', ['copyto', join(OUT, 'a.md'), `${SPEC}/a.md`, '--config', '/etc/egpt/rclone.conf']],
+    ]);
+
+    put(OUT, 'b.md', 'b');
+    const bare = fakeRclone();
+    await drainOutbox({ room, target: resolved({}), io: noLocalDest(bare.exec) });
+    expect(bare.calls.map(({ bin, args }) => [bin, args])).toEqual([
+      ['rclone', ['lsf', '--max-depth', '1', SPEC]],
+      ['rclone', ['copyto', join(OUT, 'b.md'), `${SPEC}/b.md`]],
+    ]);
+  });
+
+  it('what a room reads never carries the remote or the path — and the operator’s log carries them', async () => {
+    put(OUT, 'a.md', 'a');
+    put(OUT, 'shared.md', 's');
+    const logs = [];
+    const { exec, calls } = fakeRclone({ listing: ['shared.md'], failCopy: () => 1 });
+    const r = await drainOutbox({ room, target: rcTarget(), io: noLocalDest(exec), onLog: (m) => logs.push(m) });
+    const line = describeDrain(r);
+    expect(calls).toHaveLength(2);                                 // the listing, and the one copyto that failed
+    expect(r.skipped.map((s) => s.name)).toEqual(['a.md', 'shared.md']);
+    for (const leak of [SPEC, 'anrodz42', 'jose-lorenzo']) expect(line).not.toContain(leak);
+    expect(logs.join('\n')).toContain(SPEC);
+    expect(r.to).toBe(RC);                                         // the result still carries it for the caller that logs
+  });
+});
+
+describe('REGRESSION: every value that is not `rclone:<remote>:<path>` is the local-folder drain it always was', () => {
+  const noExec = async () => { throw new Error('rclone was run for a local-folder target'); };
+  const rcConfig = { rclone: { bin: '/opt/rclone', config: '/etc/rclone.conf' } };
+
+  it('a local folder drains by copyFile+unlink and never runs rclone, even with rclone configured', async () => {
+    put(OUT, 'acim-01.md', 'chapter one');
+    put(OUT, 'acim-02.md', 'chapter two');
+    const target = resolveOutboxTarget({ outboxTo: 'acim-drive' }, 'egpt', { outbox_targets: { 'acim-drive': DEST }, ...rcConfig });
+
+    const r = await drainOutbox({ room, target, io: { exec: noExec } });
+
+    expect(r.refused).toBe(null);
+    expect(r.moved).toEqual(['acim-01.md', 'acim-02.md']);
+    expect(readdirSync(OUT)).toEqual([]);
+    expect(read(DEST, 'acim-02.md')).toBe('chapter two');
+  });
+
+  it('a local collision still leaves the file and a missing local folder still refuses — through the local path, not rclone', async () => {
+    put(DEST, 'shared.md', 'mine');
+    put(OUT, 'shared.md', 'theirs');
+    const r1 = await drainOutbox({ room, target: tgt(DEST), io: { exec: noExec } });
+    expect(r1.skipped[0].why).toContain('already at the destination');
+    expect(read(DEST, 'shared.md')).toBe('mine');
+
+    const r2 = await drainOutbox({ room, target: tgt(join(TMP, 'no-such-folder')), io: { exec: noExec } });
+    expect(r2.refused).toMatch(/not there/);
+  });
+
+  it('resolveOutboxTarget hands a local value back EXACTLY as before — no rclone field, even when rclone is configured', () => {
+    const r = resolveOutboxTarget({ outboxTo: 'k' }, 'egpt', { outbox_targets: { k: 'G:/My Drive/x' }, ...rcConfig });
+    expect(r).toEqual({ key: 'k', to: 'G:/My Drive/x', unknown: null });
+  });
+
+  it('`rclone:` must be the START and carry a remote AND a path-colon: `rclone:nocolon` and `/data/rclone:a:b` are local paths, which do not exist, so they refuse', async () => {
+    put(OUT, 'a.md', 'a');
+    for (const odd of ['rclone:nocolon', '/data/rclone:a:b', 'xrclone:a:b']) {
+      const r = await drainOutbox({ room, target: tgt(odd), io: { exec: noExec } });
+      expect(r.refused, odd).toMatch(/not there/);
+      expect(readdirSync(OUT), odd).toEqual(['a.md']);
+    }
+  });
+});

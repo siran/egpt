@@ -320,6 +320,10 @@ agents:
 #   - repos: C:/Users/you/src     # mounted as ~/repos
 # outbox_targets:                 # where a room's outbox/ may drain; the room picks one by name (outbox_to:)
 #   my-drive: G:/My Drive/shared
+#   web-drive: rclone:myremote:shared   # a folder reached through rclone, for a node with no mount of it
+# rclone:                         # how the spine runs rclone for an rclone: outbox target; both keys optional
+#   bin: /usr/local/bin/rclone    # unset = rclone on PATH
+#   config: /home/you/rclone.conf # unset = rclone's own default config file
 # sandbox_oauth_token: ""         # Claude token for sandboxed turns; unset = secrets/claude-oauth.token
 
 # --- Owners (who may command this node, and whom its beings answer) ---------
