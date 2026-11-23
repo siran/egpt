@@ -3329,7 +3329,7 @@ export async function boot({
   // neither copies the resolver or the poster. The log text names the KEY, so each caller's fail-closed
   // line reads about its own config key.
   const noticeToChannel = async ({ configKey, text, being = null, what, tag = 'notice' }) => {
-    log.line?.(`[${tag}] ${text}`);
+    if (getConfig()?.log_group_attempts !== false) log.line?.(`[${tag}] ${text}`);   // log_group_attempts (default true): the per-attempt line; the failure reasons below are always logged
     const r = await resolveConfiguredChat(declaredChannel(configKey));
     if (r.reason === 'unset') { log.line?.(`[${tag}] ${configKey} is not set in config.yaml - the notice stays in this log`); return false; }
     if (r.reason === 'no-chat') { log.line?.(`[${tag}] ${configKey} ${JSON.stringify(r.to)} names no chat on this node - notice not sent`); return false; }

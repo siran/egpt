@@ -3862,8 +3862,9 @@ export const CONFIG_SCHEMA = {
     The pre-compaction notice and alert BODIES stay the top-level
     compaction_warn_notice / compaction_alert_notice; their frame is compaction_frame.
 
-    Lifecycle lines (going_down, started, back_up, pending_updates) go to the announce
-    chat AND to log_to_group: one template shapes both, and a blank one posts to neither.
+    Lifecycle lines (going_down, started, back_up, pending_updates) go to the FIRST of
+    log_to_group, admin_channel, the announce chat that posts (see log_to_group); a blank
+    template posts nowhere.
     The daemon (src/daemon-runtime.mjs) posts nothing itself: it writes the outcome and
     note that the spine puts into {details} of back_up.
 
@@ -4015,10 +4016,14 @@ export const CONFIG_SCHEMA = {
     <outcome> is appended only where a silent/side-effecting handler returns one
     (today: /end); every other command is just its invocation line.
 
-    The lifecycle lines go here too (2026-11-03): "↻ /restart|/upgrade|/rewind…"
-    before the exit, "✅ egpt back up! (sha → sha) pids — /upgrade: <what it did>"
-    and "✅ egpt started", besides the first admin chat (networks.<surface>.
-    admin_chat_ids); said once when that is this same chat.
+    The lifecycle lines go here: "↻ /restart|/upgrade|/rewind…" before the exit,
+    "✅ egpt back up! (sha → sha) pids — /upgrade: <what it did>", "✅ egpt started"
+    and "⬆ pending: …". They walk a chain and stop at the FIRST hop that posts:
+    log_to_group, then admin_channel, then the first admin chat (networks.<surface>.
+    admin_chat_ids: Self, else the first of telegram/others); the log file always
+    gets them, and says when no chat did (operator 2026-11-22, #947: "these messages
+    need to always go somewhere. they can't be lost. so Logs, then Admin, then Self,
+    then at least to log file").
 
     The node's other LOG-type notices go here too (operator An, 2026-11-20:
     "please put eGPT Logs in its channel, so eGPT Admin stays clean" ... "configure
@@ -4036,6 +4041,22 @@ export const CONFIG_SCHEMA = {
     admin_channel or a different one. Unset (or empty): auditing is OFF — nothing is
     posted and no command's behavior changes (src/spine/commands.mjs run() chokepoint,
     boot.mjs logToGroup).
+  `,
+
+  log_group_attempts: `
+    Does the log file record each ATTEMPT to post to a log group (log_to_group,
+    admin_channel)? Operator 2026-11-23, #956 + #960: "we can have an option,
+    default yes, log attempts to log to groups".
+
+      DEFAULT: true — noticeToChannel (src/spine/boot.mjs) writes "[<tag>] <text>" to
+      the log file for every notice it is asked to post, before it posts.
+      false — that per-attempt line is not written. The notice is still posted and the
+      failure reasons ("log_to_group ... names no chat", "could not be resolved", "is
+      not set") are still logged.
+
+    The lifecycle lines' own log-file line ("[announce] <text>") and the "not delivered
+    to any chat" line are NOT governed by this key: they are always written (#947, "at
+    least to log file"). Read live: an edit needs no restart.
   `,
 
   login: `

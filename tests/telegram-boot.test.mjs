@@ -302,6 +302,35 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     });
   }
 
+  // log_group_attempts (operator 2026-11-23, #956/#960: "we can have an option, default yes, log attempts to log
+  // to groups"): the per-attempt "[announce] <text>" line noticeToChannel writes. sayLifecycle's own line stays.
+  it('log_group_attempts: default true, a line delivered to log_to_group is in the log twice (sayLifecycle\'s and the attempt\'s)', async () => {
+    const { app, tg, lines } = await backUp({ log_to_group: LOGS });
+    expect(said(tg, /egpt back up!/)).toEqual([LOGS]);
+    expect(logged(lines)).toHaveLength(2);
+    await app.stop();
+  });
+
+  it('log_group_attempts: false, the same line is in the log ONCE and is still posted', async () => {
+    const { app, tg, lines } = await backUp({ log_to_group: LOGS, log_group_attempts: false });
+    expect(said(tg, /egpt back up!/)).toEqual([LOGS]);
+    expect(logged(lines)).toHaveLength(1);
+    await app.stop();
+  });
+
+  it('log_group_attempts: false, the failure reasons are still logged, and so is "not delivered"', async () => {
+    const r1 = await backUp({ log_to_group: 'nowhere', admin_channel: ADMIN, log_group_attempts: false }, [ADMIN]);
+    expect(r1.lines.some((l) => /^\[announce\] log_to_group "nowhere" names no chat on this node - notice not sent/.test(l))).toBe(true);
+    expect(said(r1.tg, /egpt back up!/)).toEqual([TOPIC]);
+    expect(logged(r1.lines)).toHaveLength(1);
+    await r1.app.stop();
+    const r2 = await backUp({ log_to_group: LOGS, log_group_attempts: false }, [LOGS, TOPIC]);
+    expect(said(r2.tg, /egpt back up!/)).toEqual([]);
+    expect(logged(r2.lines)).toHaveLength(1);
+    expect(r2.lines.some((l) => /^\[announce\] not delivered to any chat/.test(l))).toBe(true);
+    await r2.app.stop();
+  });
+
   it('"egpt back up!": every chat fails: only the log file, which says it was not delivered', async () => {
     const { app, tg, lines } = await backUp({ log_to_group: LOGS, admin_channel: ADMIN }, [LOGS, ADMIN, TOPIC]);
     expect(said(tg, /egpt back up!/)).toEqual([]);
