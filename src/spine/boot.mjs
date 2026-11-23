@@ -3025,20 +3025,24 @@ export async function boot({
   const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind', 45: '/standdown', 46: '/upgrade full' };
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
-  // A lifecycle line goes to the announce chat (announceChatId, above) AND to log_to_group when that is
-  // set (operator 2026-11-03: "can you fix so that it shows in the log channel?"), once when they are the
-  // same chat. Either may be absent. The log copy rides noticeToChannel, the audit's own resolve + post.
-  // With NO Self (selfChatId null: the announce chat is the non-whatsapp fallback, e.g. nu's Telegram An
-  // topic) and a log_to_group that resolves, the line goes ONLY to log_to_group (operator 2026-11-22, #925:
-  // "please put these in eGPT Logs"); a node with a Self keeps Self + the log copy.
+  // A lifecycle line must never be lost (operator 2026-11-22, #947, verbatim: "these messages need to
+  // always go somewhere. they can't be lost. so Logs, then Admin, then Self, then at least to log file").
+  // So it walks a chain and stops at the FIRST hop that is set, resolves AND posts: log_to_group, then
+  // admin_channel (both through noticeToChannel, which returns whether it posted), then the chat the caller
+  // passes (announceChatId: Self when there is one, else the first admin chat; or the sidecar's), through
+  // sayOnce. One post, not copies. The log file always gets the line, FIRST (before any await, so goDown's 3s race can never cut it), and says so when no
+  // chat took it. (#925 "please put these in eGPT Logs" is the first hop.)
   const sayLifecycle = async (chatId, text) => {
-    if (!text) return;   // blanked in system_messages: the line is not posted, to either place
-    const group = declaredChannel('log_to_group') ? await resolveConfiguredChat(declaredChannel('log_to_group')) : null;
-    if (group?.chatId && !selfChatId()) chatId = null;
-    await Promise.all([
-      chatId ? sayOnce({ chatId, text, what: 'announce' }) : null,
-      group && !(chatId && group.chatId === chatId) ? noticeToChannel({ configKey: 'log_to_group', text, what: 'announce', tag: 'announce' }) : null,
-    ]);
+    if (!text) return;   // blanked in system_messages: the line is not posted, anywhere
+    log.line?.(`[announce] ${text}`);
+    const hops = [
+      ...['log_to_group', 'admin_channel'].filter(declaredChannel).map((configKey) => () => noticeToChannel({ configKey, text, what: 'announce', tag: 'announce' })),
+      ...(chatId ? [() => sayOnce({ chatId, text, what: 'announce' })] : []),
+    ];
+    for (const hop of hops) {
+      try { if (await hop()) return; } catch (e) { log.line?.(`[announce] a hop threw: ${e?.message ?? e}`); }
+    }
+    log.line?.('[announce] not delivered to any chat — the line above is in this log only');
   };
   // The going-down half, unchanged: the sidecar the NEXT boot reads back, the capped "↻ …" line,
   // then the exit itself.

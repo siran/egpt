@@ -63,12 +63,13 @@ function fakeSession(opts) {
 // One spy per start call; the same fake "real bridge" shape serves both transports.
 function fakeTransport(declared = {}) {
   const built = [];
+  const failChats = new Set(declared.failChats ?? []);   // chats whose send the bridge refuses: { blocked: true }
   const start = async (opts) => {
     const spy = { opts, onIncoming: opts.onIncoming, sent: [], streams: [], reactions: [] };
     built.push(spy);
     return {
       ...declared,
-      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async send(text, o) { if (failChats.has(o?.chatId)) return { blocked: true }; spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
       async sendReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, emoji }); return true; },
       async removeReaction(chatId, msgId, emoji) { spy.reactions.push({ chatId, msgId, off: emoji }); return true; },
       startStreamMessage(init, o) {
@@ -259,7 +260,7 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await app.stop();
   });
 
-  it('"↻" goes to the log topic ONLY when there is no Self (operator 2026-11-22: "please put these in eGPT Logs")', async () => {
+  it('"↻" goes to the log topic only (operator 2026-11-22: "please put these in eGPT Logs")', async () => {
     await writeToken();
     const { app, tg, exits } = await bootWith({ ...NU(), log_to_group: LOGS }, { tgExtra: { resolveChatId } });
     await tg[0].onIncoming('/e restart', inTopic);
@@ -268,27 +269,57 @@ describe('admin_chat_ids: the lifecycle lines reach the Telegram admin chat', ()
     await app.stop();
   });
 
-  it('"egpt back up!" goes to log_to_group ONLY when there is no Self; once when log_to_group IS the admin chat', async () => {
-    for (const [logTo, want] of [[LOGS, [LOGS]], [TOPIC, [TOPIC]]]) {
-      await writeToken();
-      await fs.mkdir(join(_HOME, 'state'), { recursive: true });
-      await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
-      const { app, tg } = await bootWith({ ...NU(), log_to_group: logTo }, { ingest: true, tgExtra: { resolveChatId } });
-      await vi.waitFor(() => expect(said(tg, /egpt back up!/)).toHaveLength(want.length), { timeout: 10000 });
-      expect(said(tg, /egpt back up!/)).toEqual(want);
-      await app.stop();
-    }
-  });
-
-  it('a blanked system_messages line posts nothing, not even to log_to_group', async () => {
+  // THE DELIVERY CHAIN (operator 2026-11-22, #947: "these messages need to always go somewhere. they can't be
+  // lost. so Logs, then Admin, then Self, then at least to log file"): log_to_group, admin_channel, Self (here
+  // no Self, so the announce fallback chat = TOPIC); the first that posts wins, the log file always has the line.
+  const ADMIN = 'tg:-1000000000104/124';
+  const backUp = async (extra, failChats = []) => {
     await writeToken();
     await fs.mkdir(join(_HOME, 'state'), { recursive: true });
     await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
-    const { app, tg } = await bootWith({ ...NU(), log_to_group: LOGS, system_messages: { back_up: '' } }, { ingest: true, tgExtra: { resolveChatId } });
-    await vi.waitFor(() => fs.access(SIDECAR).then(() => { throw new Error("sidecar still there"); }, () => {}), { timeout: 10000 });   // the announce ran (it consumes the sidecar)
-    await new Promise((r) => setTimeout(r, 300));
+    const r = await bootWith({ ...NU(), ...extra }, { ingest: true, tgExtra: { resolveChatId, failChats } });
+    await vi.waitFor(() => expect(r.lines.some((l) => /^\[announce\] ✅ egpt back up!/.test(l))).toBe(true), { timeout: 10000 });
+    await vi.waitFor(() => expect(r.lines.filter((l) => /^\[announce\]/.test(l)).length).toBeGreaterThan(0));
+    await new Promise((res) => setTimeout(res, 400));   // let the rest of the chain finish (it stops at the first success)
+    return r;
+  };
+  const logged = (lines) => lines.filter((l) => /^\[announce\] ✅ egpt back up!/.test(l));
+  const CASES = [
+    ['log_to_group posts: only log_to_group', { log_to_group: LOGS, admin_channel: ADMIN }, [], [LOGS]],
+    ['log_to_group fails: admin_channel', { log_to_group: LOGS, admin_channel: ADMIN }, [LOGS], [ADMIN]],
+    ['log_to_group unset: admin_channel', { admin_channel: ADMIN }, [], [ADMIN]],
+    ['both fail: Self (here the announce fallback chat)', { log_to_group: LOGS, admin_channel: ADMIN }, [LOGS, ADMIN], [TOPIC]],
+    ['both unset: the announce fallback chat', {}, [], [TOPIC]],
+    ['log_to_group IS the admin chat: once', { log_to_group: TOPIC }, [], [TOPIC]],
+  ];
+  for (const [name, cfg, failChats, want] of CASES) {
+    it(`"egpt back up!": ${name}; the log file has the line`, async () => {
+      const { app, tg, lines } = await backUp(cfg, failChats);
+      expect(said(tg, /egpt back up!/)).toEqual(want);
+      expect(logged(lines).length).toBeGreaterThan(0);
+      expect(lines.some((l) => /not delivered to any chat/.test(l))).toBe(false);
+      await app.stop();
+    });
+  }
+
+  it('"egpt back up!": every chat fails: only the log file, which says it was not delivered', async () => {
+    const { app, tg, lines } = await backUp({ log_to_group: LOGS, admin_channel: ADMIN }, [LOGS, ADMIN, TOPIC]);
     expect(said(tg, /egpt back up!/)).toEqual([]);
+    expect(logged(lines).length).toBeGreaterThan(0);
+    expect(lines.some((l) => /^\[announce\] not delivered to any chat/.test(l))).toBe(true);
     await app.stop();
+  });
+
+  it('a blanked system_messages line posts nothing, not even to the log file', async () => {
+    await writeToken();
+    await fs.mkdir(join(_HOME, 'state'), { recursive: true });
+    await fs.writeFile(SIDECAR, JSON.stringify({ chatId: TOPIC, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
+    const r = await bootWith({ ...NU(), log_to_group: LOGS, admin_channel: ADMIN, system_messages: { back_up: '' } }, { ingest: true, tgExtra: { resolveChatId } });
+    await vi.waitFor(() => fs.access(SIDECAR).then(() => { throw new Error('sidecar still there'); }, () => {}), { timeout: 10000 });
+    await new Promise((res) => setTimeout(res, 400));
+    expect(said(r.tg, /egpt back up!/)).toEqual([]);
+    expect(r.lines.some((l) => /egpt back up!/.test(l))).toBe(false);
+    await r.app.stop();
   });
 
   it('"egpt started" reaches log_to_group even with no admin chat at all', async () => {

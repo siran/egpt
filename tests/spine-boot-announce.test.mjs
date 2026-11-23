@@ -10,7 +10,7 @@
 // combined with the lighter fakeStart/memIo/config shape (tests/stop-file.test.mjs). The
 // sidecar itself is real fs (boot.mjs reads/writes it via node:fs/promises directly, not the
 // injected `io` seam) at the real path under the isolated tmp EGPT_HOME.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
@@ -48,13 +48,14 @@ async function waitFor(check, { timeoutMs = 2000, stepMs = 10 } = {}) {
 }
 
 // --- boot harness (stop-file.test.mjs's fakeStart/memIo shape) ---------------------------
+const failChats = new Set();   // chats whose send the bridge refuses ({ blocked: true }); cleared per test
 function fakeStart() {
   const spy = { started: false, onIncoming: null, sent: [] };
   const start = async (opts) => {
     spy.started = true;
     spy.onIncoming = opts.onIncoming;
     return {
-      async send(text, o) { spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
+      async send(text, o) { if (failChats.has(o?.chatId)) return { blocked: true }; spy.sent.push({ text, chatId: o?.chatId }); return { ok: true }; },
       startStreamMessage(init, o) {
         const h = { finals: [], chatId: o?.chatId, update() {}, async finish(t) { this.finals.push(t); } };
         return h;
@@ -95,7 +96,7 @@ const CONFIG = {
 };
 const AT = Date.UTC(2026, 7, 13, 12, 0);
 
-async function bootNode(config = CONFIG) {
+async function bootNode(config = CONFIG, lines = []) {
   const { start, spy } = fakeStart();
   let state = emptyState();
   const app = await boot({
@@ -111,10 +112,12 @@ async function bootNode(config = CONFIG) {
     exit: () => {},                // a lifecycle ingest command must never kill the test process
     now: () => AT,
     tickMs: 0,
-    log: { line: () => {} },
+    log: { line: (l) => lines.push(l) },
   });
   return { app, spy };
 }
+
+afterEach(() => failChats.clear());
 
 describe('boot.mjs — restart-announce read-back', () => {
   it('a MISSING sidecar (cold boot) still announces — "egpt started", not silence', async () => {
@@ -146,15 +149,45 @@ describe('boot.mjs — restart-announce read-back', () => {
     app.stop();
   });
 
-  // kg/do: a whatsapp Self AND log_to_group — the line goes to both (Self + the log copy). Unchanged by the
-  // no-Self rule (operator 2026-11-22 #925), which moves a line to the log only when there is no Self.
-  it('a Self AND log_to_group: "egpt back up!" goes to both', async () => {
+  // kg/do: a whatsapp Self AND log_to_group "eGPT Admin" — since operator 2026-11-22 #947 ("these messages need
+  // to always go somewhere. they can't be lost. so Logs, then Admin, then Self, then at least to log file") the
+  // line goes to the FIRST hop that posts, not to Self + a log copy.
+  const LOGS = '!logs:beeper.com';
+  const ADMIN = '!admin:beeper.com';
+  const backUpTo = async (extra, fail = []) => {
     await clearSidecar();
+    failChats.clear(); fail.forEach((c) => failChats.add(c));
     await fs.writeFile(SIDECAR, JSON.stringify({ chatId: SELF_CHAT, kind: '/restart', preSha: 'abc123', pid: 999 }), 'utf8');
-    const LOGS = '!logs:beeper.com';
-    const { app, spy } = await bootNode({ ...CONFIG, log_to_group: LOGS });
-    await waitFor(() => spy.sent.filter((s) => /egpt back up!/.test(s.text)).length >= 2, { timeoutMs: 10000 });
-    expect(spy.sent.filter((s) => /egpt back up!/.test(s.text)).map((s) => s.chatId).sort()).toEqual([LOGS, SELF_CHAT].sort());
+    const lines = [];
+    const { app, spy } = await bootNode({ ...CONFIG, ...extra }, lines);
+    await waitFor(() => lines.some((l) => /^\[announce\] ✅ egpt back up!/.test(l)) && !existsSync(SIDECAR), { timeoutMs: 10000 });
+    await new Promise((r) => setTimeout(r, 400));
     app.stop();
+    return { sent: spy.sent.filter((s) => /egpt back up!/.test(s.text)).map((s) => s.chatId), lines };
+  };
+  const hasLogLine = (lines) => lines.some((l) => /^\[announce\] ✅ egpt back up!/.test(l));
+
+  it('a Self AND log_to_group: only log_to_group (no Self copy); the log file has the line', async () => {
+    const { sent, lines } = await backUpTo({ log_to_group: LOGS });
+    expect(sent).toEqual([LOGS]);
+    expect(hasLogLine(lines)).toBe(true);
+  });
+  it('log_to_group fails: admin_channel', async () => {
+    const { sent, lines } = await backUpTo({ log_to_group: LOGS, admin_channel: ADMIN }, [LOGS]);
+    expect(sent).toEqual([ADMIN]);
+    expect(hasLogLine(lines)).toBe(true);
+  });
+  it('log_to_group and admin_channel both fail, or neither is set: Self', async () => {
+    for (const [extra, fail] of [[{ log_to_group: LOGS, admin_channel: ADMIN }, [LOGS, ADMIN]], [{}, []]]) {
+      const { sent, lines } = await backUpTo(extra, fail);
+      expect(sent).toEqual([SELF_CHAT]);
+      expect(hasLogLine(lines)).toBe(true);
+    }
+  });
+  it('everything fails, Self too: only the log file, which says not delivered', async () => {
+    const { sent, lines } = await backUpTo({ log_to_group: LOGS, admin_channel: ADMIN }, [LOGS, ADMIN, SELF_CHAT]);
+    expect(sent).toEqual([]);
+    expect(hasLogLine(lines)).toBe(true);
+    expect(lines.some((l) => /^\[announce\] not delivered to any chat/.test(l))).toBe(true);
   });
 });
