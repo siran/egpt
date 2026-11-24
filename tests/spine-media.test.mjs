@@ -36,6 +36,15 @@ describe('media.save', () => {
     expect(appends[0].data).toContain('look');                                // caption
   });
 
+  it('makes the saved copy readable (0644): the Beeper cache is 0600 and copyFile keeps it, so a boxed being could not open it (NU 2026-11-24)', async () => {
+    let state = emptyState();
+    const modes = [];
+    const io = { copyFile: async () => {}, mkdir: async () => {}, appendFile: async () => {}, chmod: async (p, m) => modes.push({ p, m }) };
+    const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+    const dest = await createMedia({ contacts, io }).save(META);
+    expect(modes).toEqual([{ p: dest, m: 0o644 }]);
+  });
+
   it("routes the save to the surface of meta.network — a telegram photo lands under telegram, not whatsapp", async () => {
     // Bug: media hardcoded the 'whatsapp' surface, so a non-WhatsApp attachment
     // registered a duplicate contact in the whatsapp bucket and saved under

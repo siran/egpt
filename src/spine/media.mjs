@@ -15,7 +15,7 @@ import { mediaFileName, mediaIndexLine } from '../media-save.mjs';
 import { extractKeyframes } from '../video-frames.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { DEFAULT_SERVICE } from '../transcription-service.mjs';
-import { copyFile as fsCopyFile, mkdir as fsMkdir, appendFile as fsAppendFile } from 'node:fs/promises';
+import { copyFile as fsCopyFile, mkdir as fsMkdir, appendFile as fsAppendFile, chmod as fsChmod } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export function createMedia({
@@ -33,6 +33,7 @@ export function createMedia({
   const copyFile = io.copyFile ?? fsCopyFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const appendFile = io.appendFile ?? fsAppendFile;
+  const chmod = io.chmod ?? fsChmod;
 
   return {
     // The bridge's onMedia(meta): meta = { chatID, chatName, msgId, senderName,
@@ -53,6 +54,7 @@ export function createMedia({
         const name = mediaFileName(meta);
         const dest = join(dir, name);
         await copyFile(meta.localPath, dest);
+        await chmod(dest, 0o644).catch(() => {});   // Beeper's cache is 0600 and copyFile keeps it; a boxed being must read it
         await appendFile(join(dir, 'index.md'), mediaIndexLine({ ...meta, savedName: name }), 'utf8');
 
         // ROUTE A — a video gets keyframes + an audio transcript so E can SEE it
