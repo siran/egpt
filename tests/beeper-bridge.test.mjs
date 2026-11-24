@@ -61,6 +61,7 @@ async function startFakeBeeper() {
   // the ack (it still records the attempt). A box where the react — or the un-react — 4xxs must
   // still transcribe the note; that is the whole 'best-effort, never fatal' clause.
   const reactOpts = { postStatus: 0, deleteStatus: 0 };
+  const downloads = [], assets = new Map();   // POSTs to /v1/assets/download; mxc url -> reply (default: Beeper's checksum error)
   const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
   const createChats = []; // POSTs to /v1/chats (group create — operator's /join & /split)
   // Group create is ASYNCHRONOUS live: the POST 404s {code:"NOT_FOUND", message:"Chat not found:
@@ -112,6 +113,12 @@ async function startFakeBeeper() {
         unreactions.push({ chatID: decodeURIComponent(unreact[1]), messageID: decodeURIComponent(unreact[2]), reactionKey: decodeURIComponent(unreact[3]) });
         if (reactOpts.deleteStatus) { res.writeHead(reactOpts.deleteStatus); res.end('un-react refused'); return; }
         res.end(JSON.stringify({ success: true }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/v1/assets/download') {
+        const url = JSON.parse(body).url;
+        downloads.push(url);
+        res.end(JSON.stringify(assets.get(url) ?? { error: 'Failed to download asset: Invalid checksum in media ID part' }));
         return;
       }
       if (req.method === 'POST' && req.url === '/v1/assets/upload') {
@@ -236,7 +243,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, deletes, reactions, unreactions, reactOpts, uploads, createChats, createChatOpts, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
+    port, posts, edits, deletes, reactions, unreactions, reactOpts, uploads, downloads, assets, createChats, createChatOpts, chats, messages, accounts, chatsOpts, serverOpts, telegram, chatGets,
     msgListGets: () => msgListGets,
     accountsGets: () => accountsGets,
     chatListGets: () => chatListGets,
@@ -842,6 +849,63 @@ describe('beeper bridge', () => {
     await waitFor(() => incoming.length === 1);
     expect(media[0]).toMatchObject({ chatID: 'chat-1', kind: 'image', network: 'whatsapp' });   // SHORT (host-facing); meta carries the origin network (default chat = whatsapp)
     expect(incoming[0].text).toMatch(/\(image[^)]*\) \[saved: /);   // path announced to E
+  });
+
+  // Live 2026-11-23: the arrival carries a provisional mxc that assets/download refuses; the same
+  // message re-read later carries the final one.
+  describe('a refused mxc download is re-read and retried', () => {
+    const IMG = (id, srcURL) => ({ id, srcURL, mimeType: 'image/jpeg', fileName: 'foto.jpg' });
+    const arrive = (msg) => fake.emit({ type: 'message.upserted', entries: [msg] });
+    const run = async (extra = {}) => {
+      const logs = [];
+      const r = await startBridge({ mediaRetryDelaysMs: [0, 0], onLog: (m) => logs.push(m), ...extra });
+      return { ...r, logs };
+    };
+
+    it('REPRODUCE: refused at arrival, final mxc on the re-read → the file is saved', async () => {
+      const { media, logs } = await run();
+      const file = join(stateDir, 'final.jpg'); writeFileSync(file, 'x');
+      fake.assets.set('mxc://final', { srcURL: pathToFileURL(file).href });
+      const m = liveMsg({ type: 'IMAGE', text: null, attachments: [IMG('a1', 'mxc://provisional')] });
+      fake.messages.set(CHAT('chat-1'), [{ ...m, attachments: [IMG('a1', 'mxc://final')] }]);
+      arrive(m);
+      await waitFor(() => media.length === 1);
+      expect(media[0].localPath).toBe(file);
+      expect(fake.downloads).toEqual(['mxc://provisional', 'mxc://final']);
+      expect(logs.some((l) => /refused.*Invalid checksum/.test(l))).toBe(true);
+    });
+
+    it('both attempts refused → error text logged once per attempt, nothing saved', async () => {
+      const { media, logs } = await run({ mediaRetryDelaysMs: [0] });
+      const m = liveMsg({ type: 'IMAGE', text: null, attachments: [IMG('a1', 'mxc://bad')] });
+      fake.messages.set(CHAT('chat-1'), [m]);
+      arrive(m);
+      await waitFor(() => logs.some((l) => /media download failed/.test(l)));
+      expect(logs.filter((l) => /refused.*Invalid checksum/.test(l))).toHaveLength(2);
+      expect(fake.downloads).toEqual(['mxc://bad', 'mxc://bad']);
+      expect(media).toHaveLength(0);
+    });
+
+    it('the background retry saves late when the second wait succeeds', async () => {
+      const { media, logs } = await run();
+      const file = join(stateDir, 'late.jpg'); writeFileSync(file, 'x');
+      fake.assets.set('mxc://late', { srcURL: pathToFileURL(file).href });
+      const m = liveMsg({ type: 'IMAGE', text: null, attachments: [IMG('a1', 'mxc://bad')] });
+      let reads = 0;
+      fake.messages.set(CHAT('chat-1'), () => [{ ...m, attachments: [IMG('a1', ++reads >= 2 ? 'mxc://late' : 'mxc://bad')] }]);
+      arrive(m);
+      await waitFor(() => media.length === 1);
+      expect(media[0].localPath).toBe(file);
+      expect(logs.some((l) => /saved late/.test(l))).toBe(true);
+    });
+
+    it('a voice note keeps its downloaded path: no assets/download, no re-read', async () => {
+      const { media } = await run();
+      const att = fakeAttachment({ name: 'v.ogg', mimeType: 'audio/ogg', isVoiceNote: true });
+      arrive(liveMsg({ type: 'VOICE', text: null, attachments: [att] }));
+      await waitFor(() => media.length === 1);
+      expect(fake.downloads).toEqual([]);
+    });
   });
 
   // The onMedia meta must carry the message's ORIGIN network so the media service

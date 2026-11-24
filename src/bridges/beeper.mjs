@@ -552,6 +552,7 @@ export async function startBeeperBridge(opts = {}) {
     // Timer seam for the 👂 debounce + promotion (forwarded to incoming-media). undefined → real
     // setTimeout; tests inject a fake clock so no real wait is needed.
     scheduler = undefined,
+    mediaRetryDelaysMs = [3000, 15000],   // re-read + retry a refused mxc download: [awaited, background]
     // Poll-delay seam for createGroup's async-create recovery (see CREATE_GROUP_POLL_* above):
     // the wait between single-chat GETs while the just-created group syncs. Defaults to a real
     // timer; tests inject a no-op so the poll runs instantly.
@@ -1308,10 +1309,34 @@ export async function startBeeperBridge(opts = {}) {
         const r = await api('POST', '/v1/assets/download', { url: src });
         if (r?.srcURL?.startsWith('file://')) return fileUrlToPath(r.srcURL);
         if (r?.srcURL) return r.srcURL;
+        if (r?.error) onLog(`beeper: assets/download refused (${att.id}) — ${String(r.error).replace(/\s+/g, ' ').slice(0, 160)}`);
       } catch (e) { onLog(`beeper: assets/download failed (${att.id}) — ${e?.message ?? e}`); }
       return null;
     }
     return src || null;
+  }
+
+  // The arrival event can carry a provisional media id that assets/download rejects; the same message
+  // re-read a moment later carries the final one. Re-read it and return the matching attachment.
+  async function refreshAttachment(msg, att, idx) {
+    try {
+      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(msg.chatID))}/messages?limit=25`);
+      const m = (Array.isArray(r?.items) ? r.items : []).find((x) => String(x?.id) === String(msg.id));
+      const atts = Array.isArray(m?.attachments) ? m.attachments : [];
+      return atts.find((a) => att?.id != null && a?.id === att.id) ?? atts[idx] ?? null;
+    } catch (e) { onLog(`beeper: media re-read failed (${att?.id}) — ${e?.message ?? e}`); return null; }
+  }
+
+  // Failed download of an mxc attachment: re-read the message and retry after each delay of
+  // mediaRetryDelaysMs. The first retry is awaited (the turn waits); later ones are returned as `later`.
+  async function downloadWithRefresh(msg, att, idx, delays) {
+    for (let i = 0; i < delays.length; i++) {
+      await sleep(delays[i]);
+      const fresh = await refreshAttachment(msg, att, idx);
+      const p = fresh ? await attachmentToLocalPath(fresh) : null;
+      if (p) return p;
+    }
+    return null;
   }
 
   // What onMedia is handed for one attachment; null when the download policy skips its kind. A pending
@@ -1357,11 +1382,24 @@ export async function startBeeperBridge(opts = {}) {
     if (mediaDownloadPolicy === 'off') return saved;
     const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
     if (!atts.length) return saved;
-    for (const att of atts) {
+    for (const [idx, att] of atts.entries()) {
       const meta = mediaMeta(msg, info, att, null, (att === voiceAtt) ? voiceCaption : (htmlToMarkdown(att?.caption) || htmlToMarkdown(msg.text) || null), backlog);
       if (!meta) continue;
-      const localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
-      if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
+      let localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
+      const isMxc = /^(local)?mxc:\/\//.test(att?.srcURL || '');
+      const [soon, ...rest] = mediaRetryDelaysMs;
+      if (!localPath && isMxc && soon != null) localPath = await downloadWithRefresh(msg, att, idx, [soon]);
+      if (!localPath) {
+        onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`);
+        if (isMxc && rest.length) {   // not awaited: saved to media/ when it lands, never announced to the turn
+          downloadWithRefresh(msg, att, idx, rest).then(async (p) => {
+            if (!p) { onLog(`beeper: media download gave up [${info.title}] att=${att?.id ?? '?'}`); return; }
+            try { await onMedia({ ...meta, localPath: p }); onLog(`beeper: media saved late [${info.title}] att=${att?.id ?? '?'}`); }
+            catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
+          }).catch(() => {});
+        }
+        continue;
+      }
       const { kind } = meta;
       try {
         // inText: this attachment is the one the voice branch already transcribed
