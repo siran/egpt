@@ -125,7 +125,7 @@ function tunnelWorld({ viewers = () => 0 } = {}) {
     passwords: (g, { fresh: f = false } = {}) => { if (f) fresh.push(g); return { control: `c${fresh.length}`, view: `v${fresh.length}` }; },
   };
   const tunnel = createScreenTunnel({
-    egptHome: home, screens, graceMs: 120_000, idleMs: 600_000, pollMs: 5_000,
+    egptHome: home, screens, platform: 'linux', arch: 'x64', graceMs: 120_000, idleMs: 600_000, pollMs: 5_000,
     spawn: (bin, args, opts) => {
       const p = ++pid;
       procs.set(p, [bin, ...args]);

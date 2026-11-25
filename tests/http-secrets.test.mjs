@@ -16,13 +16,13 @@ const live = [];
 beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'egpt-http-secrets-')); clock = 1_000_000; });
 afterEach(async () => { while (live.length) await live.pop()(); await rm(home, { recursive: true, force: true }); });
 
-async function limb({ claim = true, ...opts } = {}) {
+async function limb({ claim = true, confirm = claim, ...opts } = {}) {
   const port = await freeSafeHttpPort();
-  const sessions = createSecretSessions({ now: () => clock });
   const audits = [];
+  const sessions = createSecretSessions({ now: () => clock, onOpened: (s) => audits.push({ action: 'opened', who: s.who }) });
   const b = await startHttpBridge({ port, clients: { acme: { being: 'ed' } }, home, secretSessions: sessions, onSecret: (a) => audits.push(a), now: () => clock, ...opts });
   live.push(() => b.stop());
-  const { token } = sessions.open('ana');
+  const { token } = sessions.open({ who: 'ana', operator: '@op', chatId: '!c' });
   const at = (t, sub = '') => `http://127.0.0.1:${port}/ayde/secret/${t}${sub}`;
   let cookie = {};   // fetch keeps no cookies: the owner's is sent by hand
   const get = (sub, t = token) => fetch(at(t, sub), { headers: cookie });
@@ -33,8 +33,11 @@ async function limb({ claim = true, ...opts } = {}) {
     if (set) cookie = { Cookie: set.split(';')[0] };
     return r;
   };
-  if (claim) { await claimIt(); audits.length = 0; }
-  return { port, token, sessions, audits, at, get, post, claimIt, as: (c) => { cookie = c; }, cookieOf: () => cookie };
+  const confirmIt = (code) => sessions.confirm({ chatId: '!c', operator: '@op', code });
+  const codeOf = () => sessions.check(token).code;
+  if (claim) await claimIt();
+  if (confirm) { confirmIt(codeOf()); audits.length = 0; }
+  return { port, token, sessions, audits, at, get, post, claimIt, confirmIt, codeOf, as: (c) => { cookie = c; }, cookieOf: () => cookie };
 }
 
 describe('the secrets page route', () => {
@@ -90,24 +93,25 @@ describe('the secrets page route', () => {
     const l = await limb();
     const enc = await encryptValue('pw', 'the value');
     expect((await l.post({ name: 'team', value: enc })).status).toBe(200);
-    expect(await readFile(join(home, 'secrets', 'team'), 'utf8')).toBe(`${enc}\n`);
+    expect(await readFile(join(home, 'secrets', 'managed', 'team'), 'utf8')).toBe(`${enc}\n`);
     expect(readSecret(home, 'team')).toMatchObject({ token: null, problem: 'encrypted' });
     const got = (await (await l.get('/api/secret?name=team')).json()).secret;
     expect(got).toMatchObject({ value: enc, locked: true });
     expect(await decryptValue('pw', got.value)).toBe('the value');
   });
 
-  it('history keeps the previous value as stored; a rename moves value, history and meta', async () => {
+  it('history is metadata: a locked old value stays as ciphertext, a plain one is never kept; a rename moves value, history and meta', async () => {
     const l = await limb();
     const enc = await encryptValue('pw', 'one');
     await l.post({ name: 'a', value: enc });
     await l.post({ name: 'a', value: 'two' });
     let j = await (await l.get('/api/secret?name=a')).json();
     expect(j.history).toHaveLength(1);
-    expect(j.history[0]).toMatchObject({ value: enc, changed_by: 'ana', replaced_by: 'ana' });
+    expect(j.history[0]).toMatchObject({ kind: 'encrypted', value: enc, changed_by: 'ana', replaced_by: 'ana' });
     const r = await (await l.post({ name: 'b', from: 'a', value: 'three' })).json();
     expect(r).toMatchObject({ action: 'renamed', secret: { name: 'b', value: 'three' } });
-    expect(r.history.map((h) => h.value)).toEqual(['two', enc]);
+    expect(r.history.map((h) => [h.kind, h.value])).toEqual([['plain', undefined], ['encrypted', enc]]);
+    expect(JSON.stringify(r.history)).not.toContain('two');
     expect((await l.get('/api/secret?name=a')).status).toBe(404);
     expect((await (await l.get('/api/list')).json()).secrets.map((s) => s.name)).toEqual(['b']);
   });
@@ -153,7 +157,7 @@ describe('the secrets page route', () => {
 
   it('sessions: unique, 15 minutes fixed from opening (several saves within), constant-time compare on a live set', () => {
     const s = createSecretSessions({ now: () => clock });
-    const a = s.open('ana'), b = s.open('bo');
+    const a = s.open({ who: 'ana', operator: '@a', chatId: '!c' }), b = s.open({ who: 'bo', operator: '@b', chatId: '!c' });
     expect(a.token).not.toBe(b.token);
     expect(a.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(a.expires - clock).toBe(15 * 60_000);
@@ -181,13 +185,17 @@ describe('the claim: the first browser to open the link owns it', () => {
     expect(l.audits).toEqual([]);   // a GET (a link-preview bot) claims nothing
   });
 
-  it('the claim sets the owner cookie, audits the opening, and opens the page for that cookie', async () => {
+  it('the claim sets the owner cookie and shows the code, and the page opens only once the chat confirms it', async () => {
     const l = await limb({ claim: false });
     const r = await l.claimIt();
     expect(r.status).toBe(303);
     expect(r.headers.get('location')).toBe(`/ayde/secret/${l.token}`);
     const set = r.headers.get('set-cookie');
     expect(set).toMatch(/^secret_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Strict; Path=\/ayde\/secret\/[A-Za-z0-9_-]{43}; Max-Age=900$/);
+    expect(l.audits).toEqual([]);   // claimed, not confirmed: nothing is opened yet
+    expect((await l.get('/api/list')).status).toBe(403);
+    expect(await (await l.get('')).text()).toContain(l.codeOf());
+    l.confirmIt(l.codeOf());
     expect(l.audits).toEqual([{ action: 'opened', who: 'ana' }]);
     expect(logLine({}, 'secret_opened', { node: 'HQ', ...l.audits[0] })).toBe("🔐 HQ · secrets page opened by ana's link");
     const page = await l.get('');

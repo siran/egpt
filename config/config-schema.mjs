@@ -884,9 +884,12 @@ export const CONFIG_SCHEMA = {
         trust_proxy       default false. true: a visitor's address is the last
                           X-Forwarded-For entry (what the proxy saw); false: the
                           socket's address
-        public_url        the site's public address (https://example.org), no default.
-                          /<handle> secret answers with <public_url><ayde path>/secret/<session>,
-                          the operator's secrets page (below); unset: it says what to set
+        public_url        optional, no default: the site's public address (https://example.org).
+                          Set: /<handle> secret answers with <public_url><ayde path>/secret/<session>
+                          (this limb serves the page, behind the site's proxy). Unset: it answers with
+                          a temporary cloudflared tunnel to a listener serving only that page, closed
+                          with the session; no limb needed. Either way the page waits for
+                          /<handle> secret confirm <code> typed in that chat
         ayde              { on: false (default) | true, path: /ayde,
                           public_max_level: team (default) | devs | admin | root,
                           scope: [] (default) }:
@@ -3991,13 +3994,13 @@ export const CONFIG_SCHEMA = {
         "🔐 {node} · secret {name} {action} by {who} ({kind})"
         {node}  this node's name (node_name)
         {name}  the secret (old → new for a rename); never its value
-        {action}  created | changed | renamed
+        {action}  created | changed | renamed | forgot history
         {who}  who saved it
-        {kind}  plain | encrypted
+        {kind}  plain | encrypted | history
       secret_opened
         "🔐 {node} · secrets page opened by {who}'s link"
         {node}  this node's name (node_name)
-        {who}  whose link a browser claimed
+        {who}  whose link was confirmed in the chat
       public_error
         "{being} in {chat}: {text}"
         {being}  the public being

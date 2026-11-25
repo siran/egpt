@@ -29,7 +29,9 @@ function show(stored, historic = false) {
 function showHistory(items) {
   const ul = $('history'); ul.replaceChildren();
   if (!items.length) { ul.textContent = 'none'; return; }
-  for (const h of items) row(ul, when(h.replaced_at), `${isEncrypted(h.value) ? 'locked' : 'plain'} · written by ${h.changed_by ?? '?'} ${when(h.changed_at)} · replaced by ${h.replaced_by}`, () => show(h.value, true));
+  // Metadata only: an old plain value is not kept (just its fingerprint); an old locked one is, as its ciphertext.
+  for (const h of items) row(ul, when(h.replaced_at), `${h.kind} · #${h.fingerprint} · written by ${h.changed_by ?? '?'} ${when(h.changed_at)} · replaced by ${h.replaced_by}`,
+    () => (h.value ? show(h.value, true) : say('an old plain value is not kept: only who, when and a fingerprint')));
 }
 async function open(name) {
   try {
@@ -45,6 +47,13 @@ async function refresh() {
   if (!secrets.length) ul.textContent = 'none yet';
   for (const s of secrets) row(ul, s.name, `${s.locked ? 'locked' : 'plain'} · ${s.changed_by ?? '?'} ${when(s.changed_at)}`, () => open(s.name));
 }
+$('forget').onclick = async () => {
+  if (!loaded) return say('open a secret first', true);
+  try { const r = await api('purge', { name: loaded }); showHistory(r.history); say(`forgot ${r.forgotten} old entries of ${loaded}`); } catch (err) { say(err.message, true); }
+};
+$('end').onclick = async () => {
+  try { await api('end', {}); say('session ended: the link is closed'); } catch (err) { say(err.message, true); }
+};
 $('fresh').onclick = () => { loaded = null; pending = null; nameIn.value = secret.value = valueIn.value = ''; go.textContent = 'Save'; $('history').replaceChildren(); say(''); };
 $('form').onsubmit = async (e) => {
   e.preventDefault();

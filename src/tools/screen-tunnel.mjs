@@ -12,8 +12,15 @@
 //
 // cloudflared runs detached with its pid in state/browser-screens/<group>/tunnel.pid, so a spine restart leaves the
 // link up; the next spine adopts it and watches it again (IDLE starts over). The binary lives in ~/.egpt/bin
-// (the data volume), fetched on first use.
-import { spawn as nodeSpawn } from 'node:child_process';
+// (the data volume), fetched on first use: a PINNED release (CLOUDFLARED_VERSION), linux-amd64 or windows-amd64,
+// whose SHA-256 is checked before anything is written (a mismatch installs nothing).
+//
+// Not only screens: the group is just a key; `screens` says which local port it tunnels (portsOf(key).webPort) and when
+// it is watched (viewers(key)); passwords are optional. The secrets page (http-secrets.mjs) is the second user: its
+// key is 'secrets', its port a listener that serves nothing but /secret/…, its viewers the live sessions, and
+// `stateDir` keeps its pid and log apart from the screens'.
+import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, openSync, closeSync, rmSync, readdirSync, chmodSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
@@ -21,7 +28,12 @@ export const GRACE_MS = 120_000;
 export const IDLE_MS = 600_000;
 const POLL_MS = 5_000;
 const URL_WAIT_MS = 30_000;
-const CLOUDFLARED_URL = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64';
+// Pinned (was releases/latest, unchecked). Bump the version and both hashes together, from the release notes' SHA256 list.
+export const CLOUDFLARED_VERSION = '2026.11.2';
+export const CLOUDFLARED_ASSETS = {
+  'linux-x64': { file: 'cloudflared-linux-amd64', sha256: '56f13335143ec0e22772963290683a84a04114a35ec64cbc794a4d39ff9bb8cf', exe: 'cloudflared' },
+  'win32-x64': { file: 'cloudflared-windows-amd64.exe', sha256: '555b46c85582461d189cac30d14ad05480d612613801be9f110b8ce08c5b2113', exe: 'cloudflared.exe' },
+};
 const TUNNEL_URL = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 const REGISTERED = /Registered tunnel connection/;
 
@@ -29,22 +41,28 @@ const REGISTERED = /Registered tunnel connection/;
 export const linkOf = (url, password, viewOnly) => `${url}/vnc.html?autoconnect=1&resize=scale&view_only=${viewOnly ? 1 : 0}&password=${encodeURIComponent(password)}`;
 
 const readOr = (p, fallback) => { try { return readFileSync(p, 'utf8'); } catch { return fallback; } };
-const procArgv = (pid) => readOr(`/proc/${pid}/cmdline`, '').split('\0').filter(Boolean);
+// Linux: /proc. Windows has none: the image name tasklist reports for that pid ([] when there is no such process).
+const procArgv = (pid) => {
+  if (process.platform !== 'win32') return readOr(`/proc/${pid}/cmdline`, '').split('\0').filter(Boolean);
+  try { return [/^"([^"]*)"/.exec(execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }))?.[1]].filter(Boolean); } catch { return []; }
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * @param {object} o
  * @param {string} o.egptHome
- * @param {object} o.screens   browser-screens.mjs: portsOf(group), viewers(group), passwords(group, { fresh })
- * Seams (tests): spawn, fetch, argvOf(pid), kill(pid), setInterval/clearInterval, graceMs/idleMs/pollMs, urlWaitMs.
+ * @param {object} o.screens   browser-screens.mjs: portsOf(group), viewers(group), passwords(group, { fresh }) (optional)
+ * @param {string} [o.stateDir] under state/: where each key's tunnel.pid and tunnel.log live (default browser-screens)
+ * Seams (tests): spawn, fetch, argvOf(pid), kill(pid), setInterval/clearInterval, graceMs/idleMs/pollMs, urlWaitMs, platform, arch.
  */
 export function createScreenTunnel({
-  egptHome, screens, spawn = nodeSpawn, fetch = globalThis.fetch, argvOf = procArgv, kill = (pid) => process.kill(pid),
+  egptHome, screens, stateDir = 'browser-screens', platform = process.platform, arch = process.arch, spawn = nodeSpawn, fetch = globalThis.fetch, argvOf = procArgv, kill = (pid) => process.kill(pid),
   setInterval: every = setInterval, clearInterval: stopEvery = clearInterval,
   graceMs = GRACE_MS, idleMs = IDLE_MS, pollMs = POLL_MS, urlWaitMs = URL_WAIT_MS, log = () => {},
 }) {
-  const bin = join(egptHome, 'bin', 'cloudflared');
-  const root = join(egptHome, 'state', 'browser-screens');
+  const asset = CLOUDFLARED_ASSETS[`${platform}-${arch}`] ?? null;
+  const bin = join(egptHome, 'bin', asset?.exe ?? 'cloudflared');
+  const root = join(egptHome, 'state', stateDir);
   const fileOf = (group, f) => join(root, group, f);
   const pidOf = (group) => Number(readOr(fileOf(group, 'tunnel.pid'), '')) || null;
   const alive = (group) => { const pid = pidOf(group); return !!pid && argvOf(pid).some((a) => basename(a).startsWith('cloudflared')); };
@@ -80,11 +98,15 @@ export function createScreenTunnel({
 
   async function cloudflared() {
     if (existsSync(bin)) return bin;
-    log(`screen link: fetching cloudflared into ${bin}`);
-    const r = await fetch(CLOUDFLARED_URL);
+    if (!asset) throw new Error(`no cloudflared build for ${platform}-${arch} (linux-x64 and win32-x64 only): put one at ${bin}`);
+    log(`screen link: fetching cloudflared ${CLOUDFLARED_VERSION} into ${bin}`);
+    const r = await fetch(`https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${asset.file}`);
     if (!r.ok) throw new Error(`could not fetch cloudflared (${r.status})`);
+    const bytes = Buffer.from(await r.arrayBuffer());
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    if (sha !== asset.sha256) throw new Error(`cloudflared ${CLOUDFLARED_VERSION} ${asset.file}: SHA-256 ${sha} is not the pinned ${asset.sha256}; not installed`);
     mkdirSync(join(egptHome, 'bin'), { recursive: true });
-    writeFileSync(bin, Buffer.from(await r.arrayBuffer()));
+    writeFileSync(bin, bytes);
     chmodSync(bin, 0o755);
     return bin;
   }
@@ -93,13 +115,13 @@ export function createScreenTunnel({
     const ports = screens.portsOf(group);
     if (!ports) throw new Error(`the "${group}" browser has no screen`);
     const exe = await cloudflared();
-    const pw = screens.passwords(group, { fresh: true });
+    const pw = screens.passwords?.(group, { fresh: true }) ?? {};
     mkdirSync(join(root, group), { recursive: true, mode: 0o700 });
     writeFileSync(fileOf(group, 'tunnel.log'), '', { mode: 0o600 });
     const fd = openSync(fileOf(group, 'tunnel.log'), 'a');
     let child;
     try {
-      child = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://localhost:${ports.webPort}`], { detached: true, stdio: ['ignore', fd, fd] });
+      child = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://localhost:${ports.webPort}`], { detached: true, stdio: ['ignore', fd, fd], windowsHide: true });
       child.on?.('error', (e) => log(`screen link ${group}: cloudflared — ${e?.message ?? e}`));
       child.unref?.();
     } finally { closeSync(fd); }
@@ -124,7 +146,7 @@ export function createScreenTunnel({
   return {
     // The group's link → { url, control, view, reused }: the open one, else a new tunnel with fresh passwords.
     open(group) {
-      if (alive(group) && urlOf(group)) return Promise.resolve({ url: urlOf(group), ...screens.passwords(group), reused: true });
+      if (alive(group) && urlOf(group)) return Promise.resolve({ url: urlOf(group), ...screens.passwords?.(group), reused: true });
       if (!opening.has(group)) opening.set(group, start(group).finally(() => opening.delete(group)));
       return opening.get(group);
     },

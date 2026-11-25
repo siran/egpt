@@ -246,6 +246,19 @@ export function chatboxesOf(cfg, log = () => {}) {
   return out;
 }
 
+// The JSON reply and the capped body read, shared with the secrets door (http-secrets.mjs createSecretsDoor, wired in boot).
+export const json = (res, status, body, headers = {}) => {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  res.end(JSON.stringify(body));
+};
+export const readBody = (req, limit) => new Promise((resolve, reject) => {
+  let size = 0, over = false;
+  const parts = [];
+  req.on('data', (b) => { size += b.length; if (size > limit) over = true; else parts.push(b); });
+  req.on('end', () => resolve(over ? null : Buffer.concat(parts).toString('utf8')));
+  req.on('error', reject);
+});
+
 export async function startHttpBridge({
   bind = '127.0.0.1',
   port,
@@ -416,10 +429,6 @@ export async function startHttpBridge({
     return hit && (c.identity === 'off' || hit.s.who === whoOf(c, idn.identity)) ? hit : null;
   };
 
-  const json = (res, status, body, headers = {}) => {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
-    res.end(JSON.stringify(body));
-  };
   const browser = aydeBase ? createBrowser({
     root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir, timeZone, say: (o) => supportLine(o),
     clients: [...clients.values()].map(({ name, label, idleMs }) => ({ name, label, idleMs })),
@@ -447,13 +456,6 @@ export async function startHttpBridge({
     });
     return view(m);
   };
-  const readBody = (req, limit) => new Promise((resolve, reject) => {
-    let size = 0, over = false;
-    const parts = [];
-    req.on('data', (b) => { size += b.length; if (size > limit) over = true; else parts.push(b); });
-    req.on('end', () => resolve(over ? null : Buffer.concat(parts).toString('utf8')));
-    req.on('error', reject);
-  });
   const secretsPage = secretBase ? createSecretsPage({ home, sessions: secretSessions, base: secretBase, json, readBody, audit: onSecret, now, log }) : null;
   const failures = new Map();
   const deliver = (body, from) => {
