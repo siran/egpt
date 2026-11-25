@@ -47,6 +47,7 @@ import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/r
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf, findSessionFile } from '../tools/compact-being.mjs';
 import { fill, logLine } from '../tools/template.mjs';
+import { SECRET_NAME_RE } from '../secrets.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config-io.mjs';
@@ -500,6 +501,7 @@ export function createCommands({
   floodBan = null,                       // the media-flood auto-ban (src/flood-ban.mjs) — /unban clears, /bans lists; the SAME instance the bridges observe into. Null (standalone) → both commands say it isn't wired.
   background = null,                     // the node's background-work registry (src/spine/background.mjs) — the operator's bare /agents lists it
   beeperUpdate = null,                   // /update beeper (src/tools/beeper-update.mjs createBeeperUpdate); null → not wired here
+  secretLink = null,                     // /secret: the secrets page's link and confirm (http-secrets.mjs createSecretLink); null → not wired here
   migrate = null,                        // /migrate: (args) => { exitCode, out, … } — boot wires daemon-runtime's runMigrationsChild (THE child-process helper the upgrade runs the runner through); null → not wired here
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
@@ -1124,6 +1126,11 @@ export function createCommands({
     // pending, approved and declined on THIS node. Operator-only, in the command gate (isCommand) and here.
     const migrateMatch = /^\/migrate\b[ \t]*(.*)$/i.exec(line);
     if (migrateMatch) return await migrateCmd(ev, migrateMatch[1].trim());
+
+    // /secret [name | confirm <code>] — the operator's secrets page: a link to a 15-minute session bound to this chat and
+    // to who asked (http-secrets.mjs); the page's one-time code, typed back here, activates it. Operator-only, in the command gate (isCommand) and here.
+    const secretMatch = /^\/secret\b[ \t]*(.*)$/i.exec(line);
+    if (secretMatch) return await secretCmd(ev, secretMatch[1].trim());
 
     // /split — /<handle> split [<name>] spins a side-group backed by a NEW, DIVERGING conversation (its
     // beings' threads are copied); /send — reply /send to a message in a side group to relay it back to
@@ -4314,6 +4321,28 @@ export function createCommands({
     try { newId = await client.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
     await room.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
     await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
+  }
+
+  // /secret [name] — the link to the secrets page (a session of 15 minutes: several saves), nothing secret in the reply.
+  // /secret confirm <code> — the page's one-time code, typed in THIS chat by the operator who asked for the link.
+  async function secretCmd(ev, rest) {
+    if (!isOperator(ev)) { await send?.(ev.chatId, '/secret is operator-only'); return 'not operator'; }
+    if (!secretLink) { await send?.(ev.chatId, 'the secrets page is not wired on this node'); return 'not configured'; }
+    const operator = ev.senderId ?? '';
+    const confirm = /^confirm\b[ \t]*(.*)$/i.exec(rest);
+    if (confirm) {
+      const r = secretLink.confirm({ chatId: ev.chatId, operator, code: confirm[1].trim() });
+      await send?.(ev.chatId, r.ok ? 'secrets page confirmed: it is open in your browser now' : `secrets: ${r.error}`);
+      return r.ok ? 'confirmed' : 'refused';
+    }
+    if (rest && !SECRET_NAME_RE.test(rest)) { await send?.(ev.chatId, `usage: ${hintOf('secret [name]', ev)} · ${hintOf('secret confirm <code>', ev)} (a name: letters, digits, . _ -)`); return; }
+    const http = cfg().limbs?.http;
+    let r;
+    try {
+      r = await secretLink.open({ who: ev.senderName || ev.senderId || 'operator', operator, chatId: ev.chatId, name: rest, publicUrl: http?.public_url, path: String(http?.ayde?.path ?? '/ayde').replace(/^\/+|\/+$/g, '') });
+    } catch (e) { await send?.(ev.chatId, `secrets: no link: ${e?.message ?? e}`); return 'failed'; }
+    await send?.(ev.chatId, `secrets: ${r.url}\nvalid until ${new Date(r.expires).toISOString().slice(11, 16)} UTC (15 minutes, as many saves as you like). Open it, then type ${hintOf('secret confirm <the code on the page>', ev)} here; until then it accepts nothing. If the page says not found, someone else opened it first: ask again.`);
+    return 'link';
   }
 
   // /migrate — shells out to the node's own runner with --dry-run (the list), --approve or --decline

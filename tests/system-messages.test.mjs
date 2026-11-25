@@ -29,6 +29,8 @@ const LOCKED = {
   send_rate_guard: [{ node: N, chat: 'Team', why: 'too fast' }, 'HQ · send-rate guard paused Team — too fast'],
   lag_probe: [{ node: N, details: 'lag 12s' }, 'HQ · lag 12s'],
   undelivered: [{ node: N, what: 'opener', being: ' (e)', title: '"Team" ', chat: '!r:x', reason: 'blocked' }, 'HQ · ⚠ opener (e) not delivered to "Team" !r:x — blocked'],
+  secret_changed: [{ node: N, name: 'bot.token', action: 'changed', who: 'ana', kind: 'encrypted' }, '🔐 HQ · secret bot.token changed by ana (encrypted)'],
+  secret_opened: [{ node: N, who: 'ana' }, "🔐 HQ · secrets page opened by ana's link"],
   public_error: [{ being: 'e', chat: 'c1', text: 'boom' }, 'e in c1: boom'],
   drain_waiting: [{ node: N, elapsed: '2m', details: '1 turn(s): e' }, 'HQ · restart waiting 2m for 1 turn(s): e. Send /restart force to proceed.'],
   config_refused: [{ node: N, error: 'bad yaml' }, 'HQ · config.yaml change refused, the running config stays: bad yaml'],

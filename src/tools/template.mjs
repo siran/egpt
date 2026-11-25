@@ -47,6 +47,8 @@ export const SYSTEM_MESSAGES = {
   send_rate_guard: { vars: { node: NODE, chat: 'the chat that was paused', why: 'what tripped the guard' } },
   lag_probe: { vars: { node: NODE, details: 'the lag / recovered / sleep report' } },
   undelivered: { vars: { node: NODE, what: 'opener, reply, limb …', being: "' (handle)' of the being sending, or empty", title: "'\"name\" ' of the chat when it has one, or empty", chat: "the chat's id", reason: 'why it was not delivered' } },
+  secret_changed: { vars: { node: NODE, name: 'the secret (old → new for a rename); never its value', action: 'created | changed | renamed | forgot history', who: 'who saved it', kind: 'plain | encrypted | history' } },
+  secret_opened: { vars: { node: NODE, who: 'whose link was confirmed in the chat (the page is open)' } },
   public_error: { vars: { being: 'the public being', chat: 'the chat', text: 'the error line that would have gone to the chat' } },
   drain_waiting: { vars: { node: NODE, elapsed: 'how long the restart has waited', details: 'the turns and background work it waits for' } },
   config_refused: { vars: { node: NODE, error: 'why the new config.yaml was refused' } },

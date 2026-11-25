@@ -156,6 +156,11 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                config; bare lists pending,
                                                approved, declined (see
                                                "Migrations that ask" below)
+/<handle> secret [name | confirm <code>]       operator only: a temporary link to
+                                               the secrets page (see "Secrets
+                                               page" below); with a name it opens
+                                               on that secret; confirm <code>
+                                               activates it from the page's code
 /<handle> browser [<profile> [new]] [keep]     this chat's browser, opened on its
                                                own screen (its profile: the one
                                                it was put on, else shared; a
@@ -423,6 +428,70 @@ An independent node that keeps its own config does not decline the ones that
 rewrite it: it leaves them unapproved, and once newer migrations are applied they
 go quiet (runner exit 0, not in the back-up message, listed by `/<handle> migrate`).
 
+### Secrets page — `/<handle> secret [name]`
+
+Manage the node's secrets (bot token, GitHub token, …) and your team's from a
+browser, without a shell. Operator only. Nothing to configure: like a browser
+screen's link, it is a temporary public address (a random
+`*.trycloudflare.com`, through cloudflared) that exists only while the session
+does. The command answers in the chat where you typed it, and only there, with
+`https://<random>.trycloudflare.com/secret/<token>` (with a name: it opens on
+that secret).
+
+- **The link serves only the secrets page.** cloudflared is pointed at a
+  dedicated listener on 127.0.0.1 that answers `/secret/<token>/…` and 404 to
+  everything else: not ayde, not the chatbox, nothing else of the http limb.
+- **It lives as long as the session:** 15 minutes, as many saves as you like.
+  The tunnel opens with the first session and closes when the last one expires
+  or is ended (**End session** on the page); no session, no tunnel. cloudflared
+  is fetched once into `~/.egpt/bin` (a pinned release, linux-amd64 or
+  windows-amd64, its SHA-256 checked before it is written).
+- **Opening the link is not enough:** the first browser to press Open owns the
+  session (cookie HttpOnly, Secure, SameSite=Strict) and the page then shows a
+  one-time 8-digit code, "waiting for confirmation in chat". The page accepts
+  nothing until you type `/<handle> secret confirm <code>` in the same chat,
+  as the same person who ran `secret`. Five wrong codes end the session. If
+  someone else opened your link first, you cannot see the code: ask for a new
+  link. The log channel gets a `secret_opened` line when it is confirmed.
+  Wrong-token requests are logged and rate-limited (20 a minute).
+- **`limbs.http.public_url` (optional):** your own site instead of the tunnel.
+  With it (`public_url: https://example.org`, and the http limb on) the link is
+  `<public_url>/ayde/secret/<token>`, served by the http limb behind your proxy
+  (`<ayde.path>`, default `/ayde`); the claim and confirmation are the same. Unset
+  (the default): the tunnel.
+
+The page has `secret` (a password), `name` and `value`, the list of names (plain
+or locked, last change) and the history of the selected one.
+
+- **Save without a password:** the value is stored as is, and the node can use it
+  (`readSecret` finds it, e.g. `telegram-main.token`).
+- **Save with a password:** your browser locks the value (PBKDF2-SHA256 600000
+  rounds, AES-256-GCM) before sending; the node stores only
+  `enc:v1:<salt>:<iv>:<ciphertext>` and never sees the password. The node cannot
+  use a locked secret (a limb that reads it refuses it as `encrypted`); only
+  people with the password can read it. Lose the password and the value is gone.
+- **Open a locked one:** the page shows the garbled value and asks for the
+  password; type it and submit to decrypt (a wrong one says "wrong password").
+  Edit it, change the name or the password, and save again.
+- **History is metadata, not values:** each save records who wrote the replaced
+  value and who replaced it, when, plain or locked, and a short fingerprint (8
+  hex of its SHA-256). An old plain value is never kept; an old locked one is,
+  as its ciphertext (only its password opens it). **Forget history** deletes a
+  secret's entries.
+- **Rename:** change the name and save; the value, its history and its meta move.
+
+Each save, rename or forget posts one `secret_changed` line to the log channel
+(name, action, who, plain, encrypted or history; never the value). Names: letters,
+digits, `.`, `_`, `-` (up to 100); values up to 64 KB.
+
+Where it lives: `secrets/managed/` (values, `.meta.json`, `.history/<name>/<stamp>`),
+apart from the node's own token files (`shell.token`, `telegram-*.token`, …): the
+page does not list, read or overwrite them, and refuses a name that is a file in
+`secrets/`. On Windows the folder and its files are locked to your user and SYSTEM
+(inheritance off), so a sandboxed being's account cannot read them. A node that
+ran an early build of this page: delete `secrets/.history` and `secrets/.meta.json`
+(they held plaintext history) and save the values again.
+
 ### `/<handle> browser refresh [group] [url]` — sign in yourself
 
 Some sites refuse eGPT's browser because it is automated: Google says "This
@@ -652,6 +721,8 @@ system_messages:
 | `send_rate_guard` | `{node} · send-rate guard paused {chat} — {why}` | `{node}` this node's name (node_name), `{chat}` the chat that was paused, `{why}` what tripped the guard |
 | `lag_probe` | `{node} · {details}` | `{node}` this node's name (node_name), `{details}` the lag / recovered / sleep report |
 | `undelivered` | `{node} · ⚠ {what}{being} not delivered to {title}{chat} — {reason}` | `{node}` this node's name (node_name), `{what}` opener, reply, limb …, `{being}` ' (handle)' of the being sending, or empty, `{title}` '"name" ' of the chat when it has one, or empty, `{chat}` the chat's id, `{reason}` why it was not delivered |
+| `secret_changed` | `🔐 {node} · secret {name} {action} by {who} ({kind})` | `{node}`, `{name}` the secret (old → new for a rename; never its value), `{action}` created, changed, renamed or forgot history, `{who}`, `{kind}` plain, encrypted or history |
+| `secret_opened` | `🔐 {node} · secrets page opened by {who}'s link` | `{node}`, `{who}` whose link was confirmed in chat |
 | `public_error` | `{being} in {chat}: {text}` | `{being}` the public being, `{chat}` the chat, `{text}` the error line that would have gone to the chat |
 | `drain_waiting` | `{node} · restart waiting {elapsed} for {details}. Send /restart force to proceed.` | `{node}` this node's name (node_name), `{elapsed}` how long the restart has waited, `{details}` the turns and background work it waits for |
 | `config_refused` | `{node} · config.yaml change refused, the running config stays: {error}` | `{node}` this node's name (node_name), `{error}` why the new config.yaml was refused |
