@@ -47,6 +47,7 @@ import { loadAdapters as defaultLoadAdapters, matchAdapter } from '../adapters/r
 import { agentPaths } from '../mesh/relay.mjs';
 import { compactionTargets, dueForCompaction, windowForModel, compactionPolicy, compactionOverrideOf, findSessionFile } from '../tools/compact-being.mjs';
 import { fill, logLine } from '../tools/template.mjs';
+import { SECRET_NAME_RE } from '../secrets.mjs';
 import { compactionRatio } from './compaction.mjs';
 import { NODE_FILE, REGISTRY_FILE, parseEntityConfig } from './config-resolver.mjs';
 import { CONFIG_YAML_PATH, writeConfigKey, beeperBlockOf } from '../tools/config-io.mjs';
@@ -500,6 +501,7 @@ export function createCommands({
   floodBan = null,                       // the media-flood auto-ban (src/flood-ban.mjs) — /unban clears, /bans lists; the SAME instance the bridges observe into. Null (standalone) → both commands say it isn't wired.
   background = null,                     // the node's background-work registry (src/spine/background.mjs) — the operator's bare /agents lists it
   beeperUpdate = null,                   // /update beeper (src/tools/beeper-update.mjs createBeeperUpdate); null → not wired here
+  secretSessions = null,                 // /secret: the http limb's secrets-page sessions (http-secrets.mjs createSecretSessions); null → no http limb here
   migrate = null,                        // /migrate: (args) => { exitCode, out, … } — boot wires daemon-runtime's runMigrationsChild (THE child-process helper the upgrade runs the runner through); null → not wired here
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
@@ -1124,6 +1126,11 @@ export function createCommands({
     // pending, approved and declined on THIS node. Operator-only, in the command gate (isCommand) and here.
     const migrateMatch = /^\/migrate\b[ \t]*(.*)$/i.exec(line);
     if (migrateMatch) return await migrateCmd(ev, migrateMatch[1].trim());
+
+    // /secret [name] — the operator's secrets page: a link to a 15-minute session on this node's http limb
+    // (http-secrets.mjs), bound to who asked. Operator-only, in the command gate (isCommand) and here.
+    const secretMatch = /^\/secret\b[ \t]*(.*)$/i.exec(line);
+    if (secretMatch) return await secretCmd(ev, secretMatch[1].trim());
 
     // /split — /<handle> split [<name>] spins a side-group backed by a NEW, DIVERGING conversation (its
     // beings' threads are copied); /send — reply /send to a message in a side group to relay it back to
@@ -4314,6 +4321,19 @@ export function createCommands({
     try { newId = await client.openTab(m.url); } catch (e) { await send?.(ev.chatId, `/activate: failed — ${e?.message ?? e}`); return; }
     await room.setMember({ ...m, targetId: newId });   // spread keeps state/adapter/url; targetId refreshed
     await send?.(ev.chatId, `reopened ${m.url} · tab ${newId ?? '?'} · active`);
+  }
+
+  // /secret [name] — the link to the secrets page (a session of 15 minutes: several saves), nothing secret in the reply.
+  async function secretCmd(ev, name) {
+    if (!isOperator(ev)) { await send?.(ev.chatId, '/secret is operator-only'); return 'not operator'; }
+    if (name && !SECRET_NAME_RE.test(name)) { await send?.(ev.chatId, `usage: ${hintOf('secret [name]', ev)} (a name: letters, digits, . _ -)`); return; }
+    const http = cfg().limbs?.http;
+    const publicUrl = String(http?.public_url ?? '').trim().replace(/\/+$/, '');
+    if (!secretSessions || !publicUrl) { await send?.(ev.chatId, `the secrets page needs the http limb and its public address: set limbs.http.port and limbs.http.public_url (e.g. https://example.org) in config.yaml`); return 'not configured'; }
+    const { token, expires } = secretSessions.open(ev.senderName || ev.senderId || 'operator');
+    const path = String(http.ayde?.path ?? '/ayde').replace(/^\/+|\/+$/g, '');
+    await send?.(ev.chatId, `secrets: ${publicUrl}/${path}/secret/${token}${name ? `?name=${encodeURIComponent(name)}` : ''}\nvalid until ${new Date(expires).toISOString().slice(11, 16)} UTC (15 minutes, as many saves as you like); the first browser to open it owns it`);
+    return 'link';
   }
 
   // /migrate — shells out to the node's own runner with --dry-run (the list), --approve or --decline

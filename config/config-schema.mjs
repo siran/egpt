@@ -884,6 +884,9 @@ export const CONFIG_SCHEMA = {
         trust_proxy       default false. true: a visitor's address is the last
                           X-Forwarded-For entry (what the proxy saw); false: the
                           socket's address
+        public_url        the site's public address (https://example.org), no default.
+                          /<handle> secret answers with <public_url><ayde path>/secret/<session>,
+                          the operator's secrets page (below); unset: it says what to set
         ayde              { on: false (default) | true, path: /ayde,
                           public_max_level: team (default) | devs | admin | root,
                           scope: [] (default) }:
@@ -3984,6 +3987,17 @@ export const CONFIG_SCHEMA = {
         {title}  '"name" ' of the chat when it has one, or empty
         {chat}  the chat's id
         {reason}  why it was not delivered
+      secret_changed
+        "🔐 {node} · secret {name} {action} by {who} ({kind})"
+        {node}  this node's name (node_name)
+        {name}  the secret (old → new for a rename); never its value
+        {action}  created | changed | renamed
+        {who}  who saved it
+        {kind}  plain | encrypted
+      secret_opened
+        "🔐 {node} · secrets page opened by {who}'s link"
+        {node}  this node's name (node_name)
+        {who}  whose link a browser claimed
       public_error
         "{being} in {chat}: {text}"
         {being}  the public being

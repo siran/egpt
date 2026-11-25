@@ -18,6 +18,8 @@ system_messages:
   send_rate_guard: "{node} · el límite de envío pausó {chat} — {why}"
   lag_probe: "{node} · {details}"
   undelivered: "{node} · ⚠ {what}{being} no entregado a {title}{chat} — {reason}"
+  secret_changed: "🔐 {node} · secreto {name} {action} por {who} ({kind})"
+  secret_opened: "🔐 {node} · página de secretos abierta con el enlace de {who}"
   public_error: "{being} en {chat}: {text}"
   drain_waiting: "{node} · el reinicio lleva {elapsed} esperando {details}. Envía /restart force para continuar."
   config_refused: "{node} · cambio de config.yaml rechazado, la configuración en ejecución se mantiene: {error}"

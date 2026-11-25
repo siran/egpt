@@ -83,6 +83,7 @@ limbs:
   #   port: 23480                   # REQUIRED; bind defaults to 127.0.0.1 (the website's server proxies the path)
   #   # path: /chat                 # endpoints and widget.js under <path>/<client>/
   #   # trust_proxy: false          # true: the visitor's address is the last X-Forwarded-For entry
+  #   # public_url: https://example.org   # the site's public address: /<handle> secret links to <public_url><ayde path>/secret/<session>
   #   # ayde: { on: false, path: /ayde, public_max_level: team, scope: [] }   # true: the team's read-only EGPT_HOME browser (node setup/ayde-user.mjs add <user> <level>)
   #   #                               # public_max_level: the highest level a login opens through the proxy (X-Forwarded-For): team | devs | admin | root
   #   #                               # scope: the conversations below root reads, by chat id; none: nothing. Each entry:
@@ -561,6 +562,8 @@ networks:
 #   send_rate_guard: "{node} · send-rate guard paused {chat} — {why}"   # {node} {chat} {why}
 #   lag_probe: "{node} · {details}"   # {node} {details}
 #   undelivered: "{node} · ⚠ {what}{being} not delivered to {title}{chat} — {reason}"   # {node} {what} {being} {title} {chat} {reason}
+#   secret_changed: "🔐 {node} · secret {name} {action} by {who} ({kind})"   # {node} {name} {action} {who} {kind}
+#   secret_opened: "🔐 {node} · secrets page opened by {who}'s link"   # {node} {who}
 #   public_error: "{being} in {chat}: {text}"   # {being} {chat} {text}
 #   drain_waiting: "{node} · restart waiting {elapsed} for {details}. Send /restart force to proceed."   # {node} {elapsed} {details}
 #   config_refused: "{node} · config.yaml change refused, the running config stays: {error}"   # {node} {error}

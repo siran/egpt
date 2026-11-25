@@ -21,6 +21,7 @@ import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
 import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf, identityModeOf } from '../bridges/http.mjs';
 import { AYDE_USERS_FILE } from '../bridges/http-ayde.mjs';
+import { createSecretSessions } from '../bridges/http-secrets.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
@@ -2307,6 +2308,8 @@ export async function boot({
   // THE CHATBOX LIMB (limbs.http: bind, port, path, its chatboxes by chatboxesOf): a website's visitors,
   // one conversation per session, or per signed identity (conversation_by: identity) (src/bridges/http.mjs).
   // Same port adapter and send guard. Absent ⇒ null.
+  // The secrets page's sessions (/<handle> secret opens one, the limb serves it): one store, the http limb's and the command's.
+  const secretSessions = createSecretSessions({ now });
   const httpPort = await (async () => {
     const block = cfg.limbs?.http;
     if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
@@ -2424,6 +2427,8 @@ export async function boot({
       ayde: block.ayde, aydeRoot: EGPT_HOME, timeZone: transcriptTimeZone,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
       aydeRegistry: _loadState,
+      secretSessions,
+      onSecret: (a) => { const line = logMsg(a.action === 'opened' ? 'secret_opened' : 'secret_changed', a); if (line) Promise.resolve(logToGroup(line)).catch(() => {}); },   // the name, never the value
       beforeLine,
       onEnd,
       onLog: hlog,
@@ -3542,6 +3547,7 @@ export async function boot({
     seedOf: strangerSeedOf,                           // a new chat's public_commands, before its entry exists
     beeperUpdate,                                     // /update beeper
     migrate: (args) => runMigrationsChild({ egptHome: EGPT_HOME, args, log: (m) => log.line?.(`[migrate] ${m}`) }),   // /migrate: the runner, through the daemon's own child helper
+    secretSessions: httpPort ? secretSessions : null,   // /<handle> secret: a page session on the http limb, when this node has one
     floodBan,                                         // /unban + /bans — the SAME in-memory instance the bridges observe into
     background,                                       // the operator's bare /agents lists it
     send: commandTranscript.send,
