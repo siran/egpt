@@ -942,6 +942,15 @@ room's own `config.yaml`.
   until 2026-08-22; an entry still carrying it is invalid, skipped + logged.)
   With `agent: <handle>`, a `script_path:` or a one-line `prompt:` runs as that
   being's turn, and its reply is posted into the chat (empty or "…" posts nothing).
+- **`to: <chat>`** (on a `post:` or `agent:` beat, e.g. `to: "App Movil"` or
+  `to: General`) — everything the beat posts goes to that chat instead of its own.
+  The name is resolved like `/msg`'s, when the beat fires. An `agent:` beat may post
+  only where that being already answers; a `command:` beat only in its own
+  conversation's topics/forks; never a chatbox. Ambiguous, unknown or not allowed →
+  FAILED, nothing posted.
+- **`/media <path> [caption]`** as an own line of a beat's output sends the file as
+  media (to the beat's chat, or its `to:`); the file must be in the beat's own
+  folder, else the run is FAILED. `/reply`, `/react`, `/edit` lines are stripped, not run.
 
 The spine materializes the resolved set to `~/.egpt/heartbeats.readonly.yaml` —
 at the profile root, beside `config.readonly.yaml` and

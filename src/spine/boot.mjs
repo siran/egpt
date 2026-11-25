@@ -52,7 +52,7 @@ import { probe as probeBeeperEndpoint } from '../tools/beeper-whoami.mjs';
 import { Room, CONVERSATIONS_ROOT, ROOMS_ROOT, AGENTS_ROOT, HEARTBEATS_DIR, CHAT_MEMBER_KINDS } from '../room-core.mjs';
 import { loadAdapterModule } from '../adapters/registry.mjs';
 import {
-  CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, LOBBY_SLUG, fixedSlugFor,
+  CONV_YAML_PATH, readState as readConvState, writeState as writeConvState, slugDir, getContact, residentsOf, answersIn, resolveTarget, MSG_SKIP_SURFACES, conversationPathOf, LOBBY_SLUG, fixedSlugFor,
   aliasMouthInfo, setAliasMouthChat, mutateState, moveChatId, isForkEntry,
 } from '../conversations-state.mjs';
 import { createStopGuard, STOP_FILE, stopFilePresent, writeStopFile, anyChannel, pauseNotice, normalizeLine } from '../stop-guard.mjs';
@@ -3787,15 +3787,16 @@ export async function boot({
   // uses. Fail-closed like the compaction notice: admin unset/unresolvable → the reply is not posted,
   // never falling back to the own chat (silentBeatAdminChat logs the warning). There is no placeholder
   // to redirect (this path posts the final reply, not a live stream), so swapping the chat is enough.
-  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent }) => {
+  const dispatchHeartbeatTurn = async ({ being, ns, prompt, beingWritten, silent, to }) => {
     const target = chatIdForEntity(await _loadState(), ns);
     if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
     const ev = await services.identity.spineEvent(target.surface, target.chatId);
+    const dest = silent ? null : await heartbeatDest({ ns, being, to });   // a `to:` that cannot be said into fails BEFORE the turn is spent
     // beingWritten: the beat came from <entity>/heartbeats/ — brainpool.turn refuses it for an 'all' being or one that would run unboxed
     const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
     // The reply's one delivery, for the final and for text written before a tool use (operator 2026-11-11).
     const say = async (text) => {
-      if (!silent) return heartbeatSay({ being, ns, ev, text, tag, recordAs: being, what: 'turn' });
+      if (!silent) return heartbeatOut({ being, ns, dest, text, tag, recordAs: being, what: 'turn' });
       const chatId = await silentBeatAdminChat(ns);
       if (!chatId) return;   // fail-closed: not posted, never the own chat
       if (!(await sayOnce({ being, chatId, text, opts: tag, tag, what: 'turn' }))) throw new Error('not delivered to eGPT Admin');
@@ -3829,15 +3830,51 @@ export async function boot({
   // chat — the SAME sayOnce send, destination swapped, no transcript record in the entity (the message
   // never went there; the compaction notice logs none either). Fail-closed: admin unset/unresolvable →
   // nothing posted, never the own chat (silentBeatAdminChat logs the warning).
-  const dispatchHeartbeatPost = async ({ ns, text, silent }) => {
+  const dispatchHeartbeatPost = async ({ ns, text, silent, to }) => {
     if (silent) {
       const chatId = await silentBeatAdminChat(ns);
       if (!chatId) return false;   // fail-closed: nothing posted, never the own chat
       return sayOnce({ being: null, chatId, text, opts: {}, tag: {}, what: 'post' });
     }
-    const target = chatIdForEntity(await _loadState(), ns);
-    if (!target) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
-    await heartbeatSay({ being: null, ns, ev: await services.identity.spineEvent(target.surface, target.chatId), text, tag: {}, recordAs: 'system', what: 'post' });
+    await heartbeatOut({ being: null, ns, dest: await heartbeatDest({ ns, being: null, to }), text, tag: {}, recordAs: 'system', what: 'post' });
+  };
+
+  // WHERE A BEAT SAYS ITS OUTPUT. Its own chat — or, with `to:`, the chat the SAME resolver /msg uses
+  // (resolveTarget, never a chatbox or a being's own conversation) finds NOW: ambiguous / unknown / refused → throws, the
+  // outcome line says FAILED, nothing is posted. The gate: a beat run AS a being only where that being answers (answersIn,
+  // /msg's own check); a structural beat only into its own conversation's folder (same conversation_path: its topics and forks).
+  // `ownEv` stays the beat's own chat: whose folder a /media file must sit in.
+  const heartbeatDest = async ({ ns, being, to }) => {
+    const state = await _loadState();
+    const own = chatIdForEntity(state, ns);
+    if (!own) throw new Error(`no conversation for ${ns} — not registered in conversations.yaml`);
+    const ownEv = await services.identity.spineEvent(own.surface, own.chatId);
+    if (!to) return { ev: ownEv, ownEv, name: ns };
+    const hit = resolveTarget(state, to, own.surface, { skip: MSG_SKIP_SURFACES });
+    if (hit.error) throw new Error(`to: ${hit.error}`);
+    const entry = getContact(state, hit.surface, hit.jid)?.entry;
+    const allowed = being
+      ? answersIn(entry, being)
+      : !!entry?.slug && conversationPathOf(hit.surface, entry.slug) === conversationPathOf(own.surface, String(ns).slice(own.surface.length + 1));
+    if (!allowed) throw new Error(`to: ${being ? `${being} does not answer in ${hit.name}` : `${hit.name} is not in this conversation's own folder`}`);
+    return { ev: await services.identity.spineEvent(hit.surface, hit.jid), ownEv, name: hit.name };
+  };
+
+  // A BEAT'S OUTPUT, said as text — and its own-line /media through THE action executor (actions: parse, then execute →
+  // runMedia, confinedFile), to the beat's destination, the file confined to the BEAT's own folder (confineEv). Text goes out as
+  // before. Any other limb (/reply /react /edit /ask …) has no message to act on: its line is stripped from the post, logged,
+  // never run. A /media that did not land makes the beat FAILED (its prose, if any, was already said).
+  const heartbeatOut = async ({ being, ns, dest, text, tag, recordAs, what }) => {
+    const { prose, run, stripped } = actions.parse(text, dest.ev);
+    const acted = run.length > 0 || stripped.length > 0;
+    const say = acted ? prose : text;
+    if (say) await heartbeatSay({ being, ns: dest.name, ev: dest.ev, text: say, tag, recordAs, what });
+    for (const a of run) if (a.type !== 'media') log.line?.(`[heartbeat] ${ns}: /${a.type} dropped — a beat has no message to act on`);
+    const media = run.filter((a) => a.type === 'media');
+    const refused = stripped.filter((x) => /^\/media\b/i.test(x.raw)).map((x) => `${x.raw.slice(0, 80)} (${x.reason})`);
+    const { ran } = media.length ? await actions.execute(media, stripped, dest.ev, { being, confineEv: dest.ownEv }) : { ran: [] };
+    const lost = [...refused, ...media.filter((a) => !ran.includes(a)).map((a) => a.path)];
+    if (lost.length) throw new Error(`/media not sent: ${lost.join(', ')}`);
   };
 
   // WHAT BOTH SAY THROUGH: ONE send via THE outbound resolver's `say` (sayOnce, above — every line

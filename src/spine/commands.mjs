@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit, lifecycleForce } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, patchContact, deleteBeing, getContact, getBeing, recordThread, forkContact, forkKeyOf, stampThreadId, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, recordThread, forkContact, forkKeyOf, stampThreadId, aliasContact, dropContact, aliasTargetOf, residentsOf, answersIn, resolveTarget, MSG_SKIP_SURFACES, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -194,69 +194,6 @@ function humanizeUptime(sec) {
   if (h > 0) return `${h}h${m}m`;
   if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`;
   return `${s}s`;
-}
-
-// Resolve a target chat for `/agents=<slug> …`/`/status <fragment>` (so the operator can name
-// a remote chat from the Self DM — was /e auto <mode> <target>'s resolver before /e's whole
-// family retired 2026-08-15; /agents' `=<slug>` binding reuses this SAME function verbatim).
-// A verbatim @jid / room-id is used as-is;
-// otherwise a fuzzy slug/name fragment is matched against contacts. The command's
-// OWN surface is searched first (unchanged behavior on a hit there — same-surface
-// always wins, even when other surfaces also match); only when the own surface has
-// ZERO hits does this fall through to every OTHER known surface (operator 2026-07-05:
-// naming a telegram chat from the whatsapp Self DM used to report "no chat matches" —
-// resolveTarget never looked past its own surface). The returned object always
-// carries the MATCHED `surface`, which may differ from the `surface` param, so
-// callers act on the right conversation instead of assuming their own ev.surface.
-// Conv-state only: the chat you'd set a mode for is one E has already seen, so it
-// is a contact.
-// Case- and accent-blind ("jose" finds "José"). A topic (`<chat>/<thread>`) is also reachable as "Group/topic",
-// only when the term has a "/", so a bare group name never also matches every topic in it.
-const plain = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-// `skip`: surfaces never searched (/msg skips the chatbox visitors' and the beings' own).
-function fuzzyHits(state, surface, term, { skip = [] } = {}) {
-  if (skip.includes(surface)) return [];
-  const bucket = state?.contacts?.[surface] ?? {};
-  const needle = plain(term);
-  const hits = [];
-  for (const [jid, entry] of Object.entries(bucket)) {
-    if (!entry || entry.aliasOf || !entry.slug) continue;
-    const name = String(entry.pushedName ?? entry.slug);
-    const parent = needle.includes('/') ? bucket[jid.replace(/\/[^/]+$/, '')] : null;
-    const full = parent && parent !== entry && parent.slug ? `${parent.pushedName ?? parent.slug}/${name}` : '';
-    if ([name, entry.slug, full].some((s) => plain(s).includes(needle))) hits.push({ jid, name });
-  }
-  return hits;
-}
-
-function resolveTarget(state, term, surface, { skip = [] } = {}) {
-  if (/[@!]|:beeper/.test(term)) {
-    // A verbatim jid must still be a chat E has seen — else patchContact silently
-    // no-ops (returns state unchanged) and we'd report a false "✅" for a typo'd or
-    // never-seen id. Resolve it through getContact so a bad id fails loudly here.
-    // Own surface first, then every other known surface in turn — first found wins
-    // (jids are surface-namespaced, so a cross-surface collision isn't a practical
-    // concern; no ambiguity handling needed here).
-    const c = skip.includes(surface) ? null : getContact(state, surface, term);
-    if (c) return { jid: c.jid, name: c.slug, surface };
-    for (const s of Object.keys(state?.contacts ?? {})) {
-      if (s === surface || skip.includes(s)) continue;
-      const oc = getContact(state, s, term);
-      if (oc) return { jid: oc.jid, name: oc.slug, surface: s };
-    }
-    return { error: `no chat matches "${term}" — E hasn't seen that chat id` };
-  }
-  const ownHits = fuzzyHits(state, surface, term, { skip });
-  if (ownHits.length === 1) return { ...ownHits[0], surface };
-  if (ownHits.length > 1) return { error: `"${term}" matches ${ownHits.length}: ${ownHits.slice(0, 6).map((h) => h.name).join(', ')} — be more specific` };
-  const crossHits = [];
-  for (const s of Object.keys(state?.contacts ?? {})) {
-    if (s === surface) continue;
-    for (const h of fuzzyHits(state, s, term, { skip })) crossHits.push({ ...h, surface: s });
-  }
-  if (!crossHits.length) return { error: `no chat matches "${term}" — try the exact name or its @jid` };
-  if (crossHits.length > 1) return { error: `"${term}" matches ${crossHits.length}: ${crossHits.slice(0, 6).map((h) => `${h.name} (${h.surface})`).join(', ')} — be more specific` };
-  return crossHits[0];
 }
 
 // A command reply must NEVER itself parse as a command (live incident 2026-07-25). isCommand
@@ -4044,14 +3981,12 @@ export function createCommands({
     if (hit.error) return refuse(hit.error);
     if (hit.jid === ev.chatId) return refuse('that is this chat');
     const being = ev.commandBeing;
-    const here = residentsOf(getContact(state, hit.surface, hit.jid)?.entry).map((b) => b.toLowerCase());
-    if (!being || !here.includes(String(being).toLowerCase())) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
+    if (!being || !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being)) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
     const posted = await deliverTo(hit.jid, text, { being, surface: hit.surface });
     if (!posted) return refuse(`could not post to ${hit.name}`);
     await send?.(ev.chatId, `sent to ${hit.name}`);
     return `sent to ${hit.name}`;
   }
-  const MSG_SKIP_SURFACES = ['http', 'agent'];   // chatbox visitors; a being's own conversation
 
   // /end (anyone in a join/split group REPLIES /end there): archive the group and drop its mapping so
   // it is closed. For /join that is the alias; for /split it is the group's OWN conversation entry (its
