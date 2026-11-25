@@ -504,6 +504,96 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
   });
 
+  // A DELETION (operator An, 2026-11-25; live: Irene deleted several messages in "Un grupo yen"
+  // and nothing in nu's transcript said which). "Delete for everyone" does NOT reach the bridge
+  // as `message.deleted`: Beeper Desktop's redaction handler RE-UPSERTS the same message id with
+  // isDeleted:true, text '' and attachments [] (the installed bundle's handleRedactionEvent), so
+  // today the bridge saw "text changed to nothing" and dropped it on the floor (`!cur`). It is one
+  // more append-only stage-direction, in the reaction's words — the original line stays where it is.
+  const gone = (id, over = {}) => liveMsg({ id, text: '', attachments: [], isDeleted: true, isSender: false, senderPushName: 'Irene', ...over });
+  it('surfaces a message DELETION as a stage-direction: deleted #<id> "<what it said>"', async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text: '¿Qué les parece <strong>Jason</strong> silva?', isSender: false, senderPushName: 'Irene' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === id));
+    const before = incoming.length;
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    await waitFor(() => incoming.length > before);
+    const del = incoming[incoming.length - 1];
+    expect(del.text).toBe(`deleted #${id} "¿Qué les parece **Jason** silva?"`);   // the excerpt a reaction would carry
+    expect(del.from.isStageDirection).toBe(true);
+    expect(del.from.isReaction).toBe(false);
+    expect(del.from.msgKey).toBe(id);
+    expect(del.from.senderName).toBe('Irene');   // the author, named exactly as an edit names its editor
+    expect(incoming).toHaveLength(before + 1);   // appended: the recorded original is still the one it was
+    expect(incoming[before - 1].text).toBe('¿Qué les parece **Jason** silva?');
+  });
+
+  it('a deletion re-upserted (receipt/seen) surfaces ONCE, and is never mistaken for an edit', async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text: 'oops', isSender: false, senderPushName: 'Irene' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === id));
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    fake.emit({ type: 'message.upserted', entries: [gone(id, { seen: { x: new Date().toISOString() } })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.filter((i) => i.from.isStageDirection).map((i) => i.text)).toEqual([`deleted #${id} "oops"`]);
+  });
+
+  it('a message edited and THEN deleted: the edit still surfaces as an edit, the deletion quotes the text it had last', async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    const post = (text) => fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text, isSender: false, senderPushName: 'Irene' })] });
+    post('imbécil');
+    await waitFor(() => incoming.some((i) => i.from.msgKey === id));
+    post('pobrecito');
+    await waitFor(() => incoming.some((i) => i.from.isStageDirection));
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    await waitFor(() => incoming.filter((i) => i.from.isStageDirection).length === 2);
+    expect(incoming.filter((i) => i.from.isStageDirection).map((i) => i.text))
+      .toEqual([`edited #${id}\n    - imbécil\n    + pobrecito`, `deleted #${id} "pobrecito"`]);
+  });
+
+  it('a deletion of a message this node never recorded surfaces nothing — and its receipts later stay silent', async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });   // first sight IS the deleted state (baseline, I10)
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
+  });
+
+  it('a bare REACTION event that is deleted (an un-react) is not a message deletion', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [{ id: '999002', chatID: CHAT('chat-1'), type: 'REACTION', text: '', isDeleted: true, linkedMessageID: '12', timestamp: Date.now() }] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.some((i) => i.from.isStageDirection || i.from.isReaction)).toBe(false);
+  });
+
+  it('a deletion after a RESTART still surfaces (the text is gone with the baseline: no quote) — once, across restarts', async () => {
+    const first = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text: 'dicho antes del reinicio', isSender: false, senderPushName: 'Irene' })] });
+    await waitFor(() => first.incoming.some((i) => i.from.msgKey === id));
+    first.bridge.stop();
+
+    const second = await startBridge();   // same stateDir: beeper-seen.jsonl remembers the message, _seenText does not
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    await waitFor(() => second.incoming.some((i) => i.from.isStageDirection));
+    expect(second.incoming.filter((i) => i.from.isStageDirection).map((i) => i.text)).toEqual([`deleted #${id}`]);
+    second.bridge.stop();
+
+    const third = await startBridge();    // …and a receipt after the NEXT restart does not say it again
+    fake.emit({ type: 'message.upserted', entries: [gone(id)] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => third.incoming.some((i) => i.text === 'sentinel'));
+    expect(third.incoming.some((i) => i.from.isStageDirection)).toBe(false);
+  });
+
   // OWN OUTPUT is recognised by wasSentByUs (the ids we sent), NOT a leading-emoji check. Since
   // 2026-10-13 it is no longer DROPPED at the bridge (that blocked a same-node sibling's @mention):
   // it reaches onIncoming marked `from.fromNode` (this node) so the SPINE's per-being echo gate

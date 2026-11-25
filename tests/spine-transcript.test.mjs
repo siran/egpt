@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
-import { editAction } from '../src/dispatch-line.mjs';
+import { editAction, reactionAction, deletionAction } from '../src/dispatch-line.mjs';
 import { bodyForMessageId, contextSinceLastTurn } from '../src/transcript-log.mjs';
 import { Room } from '../src/room-core.mjs';
 
@@ -309,6 +309,65 @@ describe('transcript.log — living-mirror stream frames are not recorded', () =
     expect(await t.log(editEv('176209', '🤝 don ⏳ Thinking…', '🤝 don Buen lugar ⏳'))).toBe(false);
     await settle();
     expect([...files.keys()].some((p) => p.endsWith('.yaml'))).toBe(false);
+  });
+});
+
+// A DELETION IS APPENDED, NOTHING IS REMOVED (operator An, 2026-11-25). Irene deleted several
+// messages in "Un grupo yen"; nu's transcript still had them (right) but nothing marked WHICH
+// were deleted, so "what did she delete?" had no answer. The deletion is one more stage-direction
+// through the same writer as an edit and a reaction — the recorded original stays byte-for-byte
+// where it is, and the edit/reaction lines beside it render exactly as they always did.
+describe('transcript.log — a deletion is appended; the original line is never touched', () => {
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+  const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
+  const identity = createIdentity();
+  const at = (h, m) => Date.UTC(2026, 10, 25, h, m);
+  const chat = { chatId: '!room:beeper.com', chatName: 'Un grupo yen', network: 'whatsapp' };
+  const original = (from) => identity.build({ body: '¿Qué les parece Jason silva?', from: { ...chat, userId: 'u-irene', senderName: 'Irene', msgKey: '41899', ts: at(6, 0), ...from } });
+  const stage = (body, who, ts, msgKey) => identity.build({ body, from: { ...chat, userId: `u-${who}`, senderName: who, isStageDirection: true, msgKey, ts } });
+
+  it('REPRODUCE: the deletion lands as `[ sender@[chat].wa (HH:MM): deleted #<id> "<excerpt>" ]` and the original line is untouched', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    await t.log(original());
+    const before = transcriptText(files);
+    expect(before).toContain('Irene@[Un grupo yen].wa (06:00) #41899: ¿Qué les parece Jason silva?\n');
+
+    const del = stage(deletionAction({ targetId: '41899', snippet: '¿Qué les parece Jason silva?' }), 'Irene', at(6, 41), '41899');
+    expect(await t.log(del)).toBe(true);
+
+    const after = transcriptText(files);
+    expect(after.startsWith(before)).toBe(true);   // append-only: every byte already there is still there, in place
+    expect(after.slice(before.length)).toBe('[ Irene@[Un grupo yen].wa (06:41): deleted #41899 "¿Qué les parece Jason silva?" ]\n\n');
+  });
+
+  // The neighbours this must not change: green before the deletion existed, green after.
+  it('regression lock: edit and reaction lines render exactly as before', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    await t.log(original());
+    await t.log(stage(editAction({ targetId: '39189', oldText: 'old', newText: 'new' }), 'Rodz', at(14, 5), '39189'));
+    await t.log(stage(reactionAction({ emoji: '🤔', targetId: '39182', snippet: 'excerpt' }), 'An', at(14, 5), '39182'));
+
+    const text = transcriptText(files);
+    expect(text).toContain('[ Rodz@[Un grupo yen].wa (14:05): edited #39189\n    - old\n    + new ]\n');
+    expect(text).toContain('[ An@[Un grupo yen].wa (14:05): reacted 🤔 to #39182 "excerpt" ]\n');
+    expect(text).toContain('Irene@[Un grupo yen].wa (06:00) #41899: ¿Qué les parece Jason silva?\n');   // the original, untouched
+  });
+
+  it('what a being reads back: the recorded body of the deleted message is still found by its id', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });
+    await t.log(original());
+    await t.log(stage(deletionAction({ targetId: '41899', snippet: '¿Qué les parece Jason silva?' }), 'Irene', at(6, 41), '41899'));
+    expect(bodyForMessageId(transcriptText(files), '41899')).toBe('¿Qué les parece Jason silva?');
   });
 });
 

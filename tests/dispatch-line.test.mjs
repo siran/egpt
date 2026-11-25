@@ -4,7 +4,7 @@
 // identity, NEVER hardcoded. This test is what keeps the shape from drifting
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
-import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, limbAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
+import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction, deletionAction, limbAction, isLiveStreamFrame } from '../src/dispatch-line.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
@@ -160,6 +160,30 @@ describe('editAction — edit stage-direction body', () => {
     expect(rendered).toBe(`edited #9\n    - ${oldText}\n    + ${newText}`);
     expect(rendered).toContain('old tail');
     expect(rendered).toContain('new tail');
+  });
+});
+
+// A DELETION (operator An, 2026-11-25): Irene deleted several messages in "Un grupo yen" and
+// nothing in the transcript said which — a being asked "what did she delete?" could not tell.
+// It is one more stage-direction, in the reaction's words: `deleted #<id> "<excerpt>"`, the
+// excerpt being the SAME quote a reaction line carries (whitespace collapsed, 60 chars).
+describe('deletionAction — deletion stage-direction body', () => {
+  it('renders "deleted #<id> \"<snippet>\"" — the quote a reaction line would carry', () => {
+    expect(deletionAction({ targetId: '41899', snippet: '¿Qué les parece Jason silva?' }))
+      .toBe('deleted #41899 "¿Qué les parece Jason silva?"');
+    // collapsed and cut exactly as reactionAction cuts its own (see 'reactionAction' above)
+    expect(deletionAction({ targetId: '7', snippet: '  a\n b   c ' })).toBe('deleted #7 "a b c"');
+    expect(deletionAction({ targetId: '7', snippet: 'x'.repeat(80) })).toBe('deleted #7 "' + 'x'.repeat(60) + '"');
+  });
+  it('omits the quote when the original text is unknown (a restart lost it, or it was media)', () => {
+    expect(deletionAction({ targetId: '7' })).toBe('deleted #7');
+    expect(deletionAction({ targetId: '7', snippet: '   ' })).toBe('deleted #7');
+  });
+  it('wraps as the stage-direction every other event takes, with no #<id> tag of its own', () => {
+    expect(formatDispatchLine({
+      senderName: 'Irene', chatName: 'Un grupo yen', node: 'wa', ts: TS, msgId: '41950',
+      stageDirection: true, body: deletionAction({ targetId: '41899', snippet: '¿Qué les parece Jason silva?' }),
+    })).toBe('[ Irene@[Un grupo yen].wa (17:21): deleted #41899 "¿Qué les parece Jason silva?" ]');
   });
 });
 

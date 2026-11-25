@@ -58,7 +58,7 @@ import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { normalizeTokens, similarity } from '../text-similarity.mjs';
 import { makeWrapPersona } from './persona-wrap.mjs';
 import { stripNodeSignature, decodeNodeSignature, decodeBeingSignature } from '../node-signature.mjs';
-import { reactionAction, editAction, isLiveStreamFrame } from '../dispatch-line.mjs';
+import { reactionAction, editAction, deletionAction, isLiveStreamFrame } from '../dispatch-line.mjs';
 import { mentionStatus, mentionHits } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { sha256Hex } from '../tools/decode-once.mjs';
@@ -1950,7 +1950,7 @@ export async function startBeeperBridge(opts = {}) {
   // stage-direction; the original line stays in the transcript. Shape-agnostic —
   // works off the re-upsert's text, no edit-marker field required.
   async function _maybeEmitEdits(msg) {
-    if (!msg?.id || msg.type === 'REACTION') return;
+    if (!msg?.id || msg.type === 'REACTION' || msg.isDeleted === true) return;   // a deletion is not an edit: _maybeEmitDeletion, below
     const key = msgKeyOf(msg.chatID, msg.id);   // chat-qualified: Beeper ids are per-chat
     const cur = htmlToMarkdown(msg.text) || '';
     // OUR OWN streaming edit (a meta-engineer's 🤔→reply in-place edit): keep the
@@ -2003,6 +2003,44 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: edit onIncoming threw — ${e?.message ?? e}`); }
   }
 
+  // DELETIONS (operator An, 2026-11-25: Irene deleted several messages in "Un grupo yen"; the
+  // transcript still held them, with nothing to say which). "Delete for everyone" is NOT a
+  // `message.deleted` event (that is a removal from Beeper's local store): its redaction handler
+  // re-upserts the SAME message id with isDeleted:true, text '' and no attachments. So it rides
+  // the message's re-upsert like an edit and surfaces like one — an append-only stage-direction
+  // through the same onIncoming; the recorded original is never touched.
+  //
+  // ONCE PER MESSAGE, EVER: the deleted state is marked in the persisted dedup set (`<id>|deleted`)
+  // the moment it is first SEEN, before any await — receipts re-upsert it, and a restart must not
+  // say it twice. A message this node never recorded (neither _seenText nor _processedIds knows
+  // it) has no line to mark: baseline only, as for edits and reactions. The quote is the last text
+  // _seenText holds; after a restart it is gone and the line names the id alone.
+  async function _maybeEmitDeletion(msg) {
+    if (!msg?.id || msg.type === 'REACTION' || msg.isDeleted !== true) return;
+    const key = msgKeyOf(msg.chatID, msg.id);
+    const deleted = `${msg.id}|deleted`;
+    if (_processedIds.has(msgKeyOf(msg.chatID, deleted))) return;
+    markProcessed(msg.chatID, deleted);
+    if (!_seenText.has(key) && !_processedIds.has(key)) return;
+    const info = await chatInfo(msg.chatID);
+    const network = msg.accountID || info.accountID || 'whatsapp';   // origin network (Beeper accountID); default 'whatsapp'
+    const author = senderDisplay(msg) || _idToName.get(msg.senderID) || 'someone';
+    onLog(`beeper: deletion #${msg.id} by ${author} [${info.title}]`);
+    const from = {
+      chatId: msg.chatID, chatName: info.title,
+      chatType: info.type === 'group' ? 'group' : 'private',
+      network,   // per-surface authorization namespace
+      userId: msg.senderID || msg.chatID, username: author,   // never the saved contact label (privacy)
+      firstName: author, senderName: author,
+      isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID, network),
+      atEStart: false, atEAnywhere: false, replyToBot: false,
+      isReaction: false, isStageDirection: true, isTranscriptFromVoice: false,
+      msgKey: msg.id || null,
+    };
+    try { await onIncoming?.(deletionAction({ targetId: msg.id, snippet: stripNodeSignature(_seenText.get(key) ?? '') }), from); }
+    catch (e) { onLog(`beeper: deletion onIncoming threw — ${e?.message ?? e}`); }
+  }
+
   // TRANSCRIPTION IS OFF THE DISPATCH PATH (operator 2026-09-10: "a transcription in other
   // channel shouldn't have any bearing on whether a model is prompted" / "a model can be
   // prompted even though a transcription is running"). Dispatch used to be ONE global promise
@@ -2039,6 +2077,7 @@ export async function startBeeperBridge(opts = {}) {
     // already-processed message (deduped); both must still surface the reaction.
     await _maybeEmitReactions(msg);
     await _maybeEmitEdits(msg);   // a re-upsert with changed text → an edit stage-direction (before dedup)
+    await _maybeEmitDeletion(msg);   // a re-upsert with isDeleted → a deletion stage-direction (before dedup)
     if (msg.type === 'REACTION') return;   // bare reaction event: no body to route
     // First let any send still in flight in this chat finish resolving its CONFIRMED id — a send's
     // echo routinely arrives before its POST returns, so the id check below is EXACT, not a guess.

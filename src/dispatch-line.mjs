@@ -161,6 +161,18 @@ export function editAction({ targetId, oldText, newText } = {}) {
   return `edited #${id}\n    - ${o}\n    + ${n}`;
 }
 
+// The body of a DELETION stage-direction (operator An, 2026-11-25): a message was deleted for
+// everyone after it was recorded →
+//   deleted #<targetId> "<snippet>"
+// Append-only, like the edit above: the original line stays exactly where it is and this marks
+// it. `snippet` is what the message said, cut as a reaction's quote is (reactionAction);
+// omitted when unknown. Pure + test-locked.
+export function deletionAction({ targetId, snippet } = {}) {
+  const id = String(targetId ?? '').trim();
+  const snip = String(snippet ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return `deleted #${id}${snip ? ` "${snip}"` : ''}`;
+}
+
 // The body of a LIMB stage-direction (operator 2026-09-01): the being drove an action from
 // INSIDE its own reply (`/react #563 🤝`, src/spine/reply-actions.mjs) and the transcript said
 // nothing about it. Live that day, twice, in the SPOILER chat: the 🤝 landed on the right
