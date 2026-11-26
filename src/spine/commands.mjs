@@ -214,7 +214,7 @@ const quoteLeadingCommand = (text) => String(text ?? '').replace(/^\/([a-z0-9_-]
 
 // The commands anyone in a chat may run (operator 2026-10-19): config.yaml public_commands, or the
 // chat's own conversations.yaml list, which replaces it. Everything else is the node's allowed users'.
-const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end', 'side'];
+const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end', 'side', 'secret'];
 // Bare /agents: a non-operator gets agentsPublic where public_commands lists agents.
 const AGENTS_BARE_CMD = /^\/agents\s*$/i;
 // /<handle> super <message> (operator 2026-11-04): a turn of the chat's superintendent, agents.super.
@@ -1076,7 +1076,7 @@ export function createCommands({
     if (migrateMatch) return await migrateCmd(ev, migrateMatch[1].trim());
 
     // /secret [name | confirm <code>] — the operator's secrets page: a link to a 15-minute session bound to this chat and
-    // to who asked (http-secrets.mjs); the page's one-time code, typed back here, activates it. Operator-only, in the command gate (isCommand) and here.
+    // to who asked (http-secrets.mjs); the page's one-time code, typed back here, activates it. Public by default (PUBLIC_COMMANDS_DEFAULT): the command gate (isCommand) decides; a public_commands without `secret` makes it operator-only.
     const secretMatch = /^\/secret\b[ \t]*(.*)$/i.exec(line);
     if (secretMatch) return await secretCmd(ev, secretMatch[1].trim());
 
@@ -4305,9 +4305,9 @@ export function createCommands({
   }
 
   // /secret [name] — the link to the secrets page (a session of 15 minutes: several saves), nothing secret in the reply.
-  // /secret confirm <code> — the page's one-time code, typed in THIS chat by the operator who asked for the link.
+  // /secret confirm <code> — the page's one-time code, typed in THIS chat by whoever asked for the link.
   async function secretCmd(ev, rest) {
-    if (!isOperator(ev)) { await send?.(ev.chatId, '/secret is operator-only'); return 'not operator'; }
+    if (surfaceOf(ev) === 'http' && !isOperator(ev)) { await send?.(ev.chatId, '/secret is not available here'); return 'refused'; }   // never from a website chatbox, whatever public_commands says
     if (!secretLink) { await send?.(ev.chatId, 'the secrets page is not wired on this node'); return 'not configured'; }
     const operator = ev.senderId ?? '';
     const confirm = /^confirm\b[ \t]*(.*)$/i.exec(rest);

@@ -3747,7 +3747,7 @@ export const CONFIG_SCHEMA = {
     the node's allowed users' only (Self DM, networks.<surface>.allowed_users, the owner).
     Command words, with or without the '/'. A node-signed line is never admitted (it runs
     /super only, agents.super).
-      config.yaml, root key:           DEFAULT [split, send, end, side] (join retired 2026-10-25)
+      config.yaml, root key:           DEFAULT [split, send, end, side, secret] (join retired 2026-10-25)
       conversations.yaml, a chat's own entry: REPLACES the root list there; [] = none.
     A listed agents opens only the bare /agents list (agents_list); its verbs stay
     allowed-users only. Each command's own rules still apply (/end only in a side group).

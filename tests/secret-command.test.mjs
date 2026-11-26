@@ -82,23 +82,44 @@ describe('/<handle> secret', () => {
     expect(h.sessions.count()).toBe(0);
   });
 
-  it('is operator-only: a stranger is not admitted, a direct run opens no session', async () => {
+  it('public by default: a non-operator gets a link for /secret and /secret <name>, bound to them', async () => {
     const h = harness();
-    expect(await h.cmds.isCommand(h.cmds.commandOf(msg('/edu secret')))).toBe(false);
-    await h.cmds.run(h.cmds.commandOf(msg('/edu secret')));
-    expect(h.sent.at(-1).text).toMatch(/secret. is operator-only/);
-    expect(h.sent.at(-1).text).not.toMatch(/https:/);
-    expect(h.sessions.count()).toBe(0);
+    expect((await h.run(msg('/edu secret'))).gate).toBe(true);
+    expect(h.sessions.check(h.tokenOf())).toMatchObject({ who: 'X', operator: '@x:beeper.com' });
+    await h.run(msg('/edu secret team.key'));
+    expect(linkOf(h)).toMatch(/\?name=team\.key$/);
   });
 
-  it('even where public_commands lists it, a stranger gets no link and cannot confirm', async () => {
+  it('public_commands without secret: a non-operator is refused (not a command, no session), the operator still works', async () => {
+    const h = harness();
+    const c = createCommands({ getConfig: () => ({ ...cfg(), public_commands: ['split'] }), send: async (chatId, text) => h.sent.push({ chatId, text }), exit: () => {}, logTranscript: async () => true, secretLink: createSecretLink({ sessions: h.sessions, door: { start: async () => 1 }, tunnel: { open: async () => ({ url: 'https://t.trycloudflare.com' }), close() {} } }) });
+    expect(await c.isCommand(c.commandOf(msg('/edu secret')))).toBe(false);
+    expect(h.sessions.count()).toBe(0);
+    expect(await c.isCommand(c.commandOf(op('/edu secret')))).toBe(true);
+    await c.run(c.commandOf(op('/edu secret')));
+    expect(h.sessions.count()).toBe(1);
+  });
+
+  it('never from a website chatbox: an http-surface non-operator is refused, no session; the operator and other public senders are not', async () => {
+    const h = harness();
+    for (const body of ['/edu secret', '/edu secret team']) {
+      await h.run(msg(body, { surface: 'http' }));
+      expect(h.sent.at(-1).text).toMatch(/not available here/);
+    }
+    expect(h.sessions.count()).toBe(0);
+    await h.run(op('/edu secret', { surface: 'http' }));
+    await h.run(msg('/edu secret'));
+    expect(h.sessions.count()).toBe(2);
+  });
+
+  it('a stranger cannot confirm someone else\'s session', async () => {
     const h = harness();
     const c = createCommands({ getConfig: () => ({ ...cfg(), public_commands: ['secret'] }), send: async (chatId, text) => h.sent.push({ chatId, text }), exit: () => {}, logTranscript: async () => true, secretLink: createSecretLink({ sessions: h.sessions, door: { start: async () => 1 }, tunnel: { open: async () => ({ url: 'https://t.trycloudflare.com' }), close() {} } }) });
     h.sent.length = 0;
-    await c.run(c.commandOf(msg('/edu secret')));
-    await c.run(c.commandOf(msg('/edu secret confirm 12345678')));
-    expect(h.sent.map((s) => s.text).join()).not.toMatch(/https:/);
-    expect(h.sessions.count()).toBe(0);
+    await h.run(op('/edu secret'));
+    const tok = h.tokenOf(), code = h.claimed(tok);
+    await c.run(c.commandOf(msg(`/edu secret confirm ${code}`)));
+    expect(h.sessions.check(tok).confirmed).toBe(false);
   });
 
   it('a bad name is a usage line, no session; the command is in the help menu', async () => {

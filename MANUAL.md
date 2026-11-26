@@ -56,7 +56,7 @@ that being (`/e agents compact`). A chat whose conversations.yaml entry sets
 commands included (`[]` = by none).
 
 Anyone else in a chat runs only the commands `public_commands` names: the root
-key in config.yaml (default `[split, send, end, side]`), or the chat's own
+key in config.yaml (default `[split, send, end, side, secret]`), or the chat's own
 conversations.yaml entry, which replaces it (`[]` = none). A listed `agents`
 opens only the bare list; its verbs stay authorized-only.
 
@@ -443,7 +443,11 @@ go quiet (runner exit 0, not in the back-up message, listed by `/<handle> migrat
 ### Secrets page — `/<handle> secret [name]`
 
 Manage the node's secrets (bot token, GitHub token, …) and your team's from a
-browser, without a shell. Operator only. Nothing to configure: like a browser
+browser, without a shell. Anyone the chat's `public_commands` admit may run it
+(`secret` is in the default list), and gets the same page. To make it
+operator-only, set `public_commands:` without `secret`, in config.yaml or per
+chat in conversations.yaml. Never from a website chatbox (surface `http`),
+whatever `public_commands` says. Nothing to configure: like a browser
 screen's link, it is a temporary public address (a random
 `*.trycloudflare.com`, through cloudflared) that exists only while the session
 does. The command answers in the chat where you typed it, and only there, with
