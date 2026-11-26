@@ -45,6 +45,62 @@ Handles must be disjoint across every node, or one mention wakes two. The
 identity of an account is its phone number, not its login, so renaming a login
 costs a WhatsApp re-link and buys nothing.
 
+### Telegram (with or without a number)
+
+A Telegram bot is **both ear and mouth** for every group and topic it is in. It
+needs no phone number and no Beeper: one token, one HTTPS long-poll
+(`getUpdates`), nothing inbound. Beeper and WhatsApp are optional.
+
+```yaml
+limbs:
+  telegram:
+    main:                         # one bot per node for now (the first block is used)
+      account: "my_egpt_bot"      # the bot's username (a label)
+```
+
+The token is not in `config.yaml`: it is `secrets/telegram-<name>.token`
+(`node setup/telegram-token.mjs main`). Who may command it is
+`networks.telegram.allowed_users` (Telegram numeric ids). Its chats are
+`tg:<chat id>`, and a forum topic is a chat of its own, `tg:<chat id>/<thread id>`.
+
+How it combines with the numbers above:
+
+- **Zero numbers + a Telegram bot** is a valid node: no Beeper, the bot hears and
+  answers (comment out `limbs.beeper`).
+- **One or two numbers**: Telegram is just another network. The `tg:` chats belong
+  to the bot, the Beeper chats to `primary` / `secondary`; the ear/mouth rule inside
+  each is unchanged. The bot never receives its own posts, so a being's line that
+  names a handle is fed back to the spine as the echo Beeper would deliver.
+
+
+## Linux: one system user per person
+
+A shape for public surfaces (a website chatbox) on a Linux node: each person who
+writes gets their own Linux user, and their home is their conversation. (Target
+shape; the pieces marked (planned) are not in the code yet.)
+
+- **Name:** `<org>.<user>`, lowercase, Linux-valid (`acme.jdoe`). The display title
+  of the conversation (`acme-W-jdoe-<Name>`) is separate; it never names the folder.
+- **Home = conversation:** `/home/<user>` IS that person's conversation folder.
+- **Persistent `/home`:** mounted from a data volume, so homes survive restarts and
+  image changes. `passwd` / `group` entries are recreated at container start from
+  a persistent map (planned); the image holds no users.
+- **Where egpt looks:** `conversations/<chatbox>` is a symlink to `/home`, so the
+  conversations are found where egpt expects them.
+- **Writing:** the egpt daemon writes into those homes through a shared group or
+  ACLs (each home keeps its owner; the daemon is not root).
+- **Hook (planned):** before dispatching a line, run a configured command for that
+  conversation, e.g. to refresh that person's credentials. The core runs the command
+  and nothing else; no domain logic lives in it.
+
+**Today's sandbox** (`setup/SANDBOX.md`, "Linux") is a different shape: one
+numbered uid per conversation folder (`egpt-box-N`, from 200000, in
+`state/box-users.tsv`), no `/etc/passwd` entry, a scratch home
+`/home/egpt-box-N`, the folder mounted in. This section is the target for the
+public surfaces: a named, persistent user whose real home is the conversation.
+It needs the persistent map and the hook above, and the box launcher's rule
+("target is `conversations/<surface>/<slug>`") to accept the symlinked layout.
+
 
 ## What runs on a node
 
