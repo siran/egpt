@@ -4313,6 +4313,18 @@ export const CONFIG_SCHEMA = {
     reply_in_side_group group: there it does nothing.
   `,
 
+  msg: `
+    /msg — "/<handle> msg <chat> <text>" posts <text> as that being into another chat it already answers in
+    (operator 2026-11-21; "Group/topic", name or slug, case- and accent-blind; a "quoted name" if it has
+    spaces). Never a chatbox visitor or the being's own chat. The same <chat> naming is used by a heartbeat's
+    to:.
+
+    DEFAULT true (on). false → /msg is refused ("off on this node"). Any other value leaves it on.
+
+    EXAMPLE
+      msg: false
+  `,
+
   reply_in_side_group: `
     The automatic side group (operator 2026-10-18). Set it on ONE conversation's OWN entry in
     config/conversations.yaml, or in config/config.yaml as the node's default (2026-11-02). On a side
