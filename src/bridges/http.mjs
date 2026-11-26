@@ -19,6 +19,7 @@
 //   GET  <ayde.path>/                    the Contoso team's read-only browser of EGPT_HOME (ayde.on; http-ayde.mjs), HTTP Basic;
 //                                        through the proxy (X-Forwarded-For or Forwarded) only up to ayde.public_max_level (default team)
 //   POST <ayde.path>/say                 {client, key, text}: a support line into a live chatbox conversation (ayde users, team and up); the widget shows it as "Soporte · <user>"
+//   <ayde.path>/secret/<session token>/…   the operator's secrets page (http-secrets.mjs; /<handle> secret opens the session), the token its auth, not ayde's
 //   GET  <ayde.path>/logout              401 + a signed-out page whose script overwrites each cached login so the next visit is challenged
 // A signed visitor's chat gets a title and a subtitle from its identity's claims (chat_title, chat_subtitle: templates
 // like topic_title, {school} · {short_name}; default {abrin} · {short_name} · {username}, and {user_type}), handed to
@@ -37,6 +38,7 @@ import { parse as parseYaml } from 'yaml';
 import { mentionStatus } from '../auto-mode.mjs';
 import { stripInvisible } from '../invisible.mjs';
 import { createBrowser, checkUser, LEVELS, RESERVED_USER, SUPPORT } from './http-ayde.mjs';
+import { createSecretsPage } from './http-secrets.mjs';
 
 export const HTTP_PREFIX = 'http:';
 export const SUPPORT_MODE = 'accum';   // the mode a support line is gated by (owner 2026-11-09); the visitor's lines keep the conversation's
@@ -244,6 +246,19 @@ export function chatboxesOf(cfg, log = () => {}) {
   return out;
 }
 
+// The JSON reply and the capped body read, shared with the secrets door (http-secrets.mjs createSecretsDoor, wired in boot).
+export const json = (res, status, body, headers = {}) => {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  res.end(JSON.stringify(body));
+};
+export const readBody = (req, limit) => new Promise((resolve, reject) => {
+  let size = 0, over = false;
+  const parts = [];
+  req.on('data', (b) => { size += b.length; if (size > limit) over = true; else parts.push(b); });
+  req.on('end', () => resolve(over ? null : Buffer.concat(parts).toString('utf8')));
+  req.on('error', reject);
+});
+
 export async function startHttpBridge({
   bind = '127.0.0.1',
   port,
@@ -261,6 +276,8 @@ export async function startHttpBridge({
   aydeRoot = null,            // EGPT_HOME
   aydeUsers = () => null,     // () → secrets/ayde.users' text, or null; asked on each request
   aydeRegistry = async () => null,   // () → the conversations registry (conversations.yaml): ayde.scope's chat ids → folders; asked on each request
+  secretSessions = null,      // createSecretSessions (http-secrets.mjs), the one /<handle> secret opens sessions in: the secrets page under <ayde.path>/secret/<token>/; null: no page
+  onSecret = () => {},        // ({ name, action, who, kind }) after each save or rename of a secret (the audit line; never the value)
   onIncoming,
   onLog: log = () => {},   // boot tags each line [http]
   now = () => Date.now(),
@@ -282,6 +299,10 @@ export async function startHttpBridge({
   if (aydeBase && (aydeBase === '//' || aydeBase.startsWith(base) || base.startsWith(aydeBase))) { log(`ayde off — its path ${aydeBase} overlaps the chatbox's ${base}`); aydeBase = null; }
   let aydeCap = ayde?.public_max_level ?? 'team';   // the highest level a public request opens
   if (aydeBase && !LEVELS.includes(aydeCap)) { log(`ayde: public_max_level '${aydeCap}' is not ${LEVELS.join(' | ')} — treated as team`); aydeCap = 'team'; }
+
+  // The secrets page lives under the same prefix as /ayde (<ayde.path>/secret/), which a public proxy already routes; its own auth is the session token.
+  let secretBase = secretSessions && home ? `/${String(ayde?.path ?? '/ayde').replace(/^\/+|\/+$/g, '')}/` : null;
+  if (secretBase && (secretBase === '//' || secretBase.startsWith(base) || base.startsWith(secretBase))) { log(`secrets page off — its path ${secretBase} overlaps the chatbox's ${base}`); secretBase = null; }
 
   // sid → { sid, client, lastAt, who, posts, chat }; client + lastAt + who persist across restarts.
   // who: whoOf the identity the session started with, null when unsigned.
@@ -408,10 +429,6 @@ export async function startHttpBridge({
     return hit && (c.identity === 'off' || hit.s.who === whoOf(c, idn.identity)) ? hit : null;
   };
 
-  const json = (res, status, body, headers = {}) => {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
-    res.end(JSON.stringify(body));
-  };
   const browser = aydeBase ? createBrowser({
     root: aydeRoot, json, log, now, scope: ayde.scope, registry: aydeRegistry, messagesDir, timeZone, say: (o) => supportLine(o),
     clients: [...clients.values()].map(({ name, label, idleMs }) => ({ name, label, idleMs })),
@@ -439,13 +456,7 @@ export async function startHttpBridge({
     });
     return view(m);
   };
-  const readBody = (req, limit) => new Promise((resolve, reject) => {
-    let size = 0, over = false;
-    const parts = [];
-    req.on('data', (b) => { size += b.length; if (size > limit) over = true; else parts.push(b); });
-    req.on('end', () => resolve(over ? null : Buffer.concat(parts).toString('utf8')));
-    req.on('error', reject);
-  });
+  const secretsPage = secretBase ? createSecretsPage({ home, sessions: secretSessions, base: secretBase, json, readBody, audit: onSecret, now, log }) : null;
   const failures = new Map();
   const deliver = (body, from) => {
     try { Promise.resolve(onIncoming?.(body, from)).catch((e) => log(`onIncoming threw — ${e?.message ?? e}`)); }
@@ -711,6 +722,7 @@ export async function startHttpBridge({
   // only — the website's server proxies the path) and refuses every preflight.
   async function serve(req, res) {
     const url = new URL(req.url, 'http://chatbox');
+    if (secretsPage && url.pathname.startsWith(`${secretBase}secret/`)) return secretsPage(req, res, url, url.pathname.slice(secretBase.length + 7).split('/'));
     if (aydeBase && `${url.pathname}/` === aydeBase) return aydeServe(req, res, url, []);
     if (aydeBase && url.pathname.startsWith(aydeBase)) return aydeServe(req, res, url, url.pathname.slice(aydeBase.length).split('/'));
     if (!url.pathname.startsWith(base)) return json(res, 404, { error: 'not found' });

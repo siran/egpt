@@ -19,8 +19,9 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createShellPort, shellPortFrom } from '../bridges/shell-port.mjs';
 import { startTelegramBridge, readTelegramToken, isTelegramChatId, topicGroupOf } from '../bridges/telegram.mjs';
-import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf, identityModeOf } from '../bridges/http.mjs';
+import { startHttpBridge, isHttpChatId, httpClientOf, renderTopicTitle, chatboxesOf, identityModeOf, json as httpJson, readBody as httpReadBody } from '../bridges/http.mjs';
 import { AYDE_USERS_FILE } from '../bridges/http-ayde.mjs';
+import { createSecretSessions, createSecretsPage, createSecretsDoor, createSecretLink, secretScreens } from '../bridges/http-secrets.mjs';
 import { shellTokenFrom } from '../shell/auth.mjs';
 import { readSecret, SHELL_TOKEN_FILE } from '../secrets.mjs';
 // THE MOUTH LINK (operator 2026-09-05): the peer spine holding the OTHER Beeper account, the
@@ -2307,6 +2308,11 @@ export async function boot({
   // THE CHATBOX LIMB (limbs.http: bind, port, path, its chatboxes by chatboxesOf): a website's visitors,
   // one conversation per session, or per signed identity (conversation_by: identity) (src/bridges/http.mjs).
   // Same port adapter and send guard. Absent ⇒ null.
+  // The secrets page's sessions (/<handle> secret opens one): one store for the http limb's mount, the tunnel's door and the command.
+  // A confirmed session and every save post a line to log_to_group: the name, never the value.
+  const onSecret = (a) => { const line = logMsg(a.action === 'opened' ? 'secret_opened' : 'secret_changed', a); if (line) Promise.resolve(logToGroup(line)).catch(() => {}); };
+  const secretLinkEnds = (s, n) => secretLink.ended(s, n);   // secretLink is made below, once the limb is
+  const secretSessions = createSecretSessions({ now, onOpened: (s) => onSecret({ action: 'opened', who: s.who }), onEnd: secretLinkEnds });
   const httpPort = await (async () => {
     const block = cfg.limbs?.http;
     if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
@@ -2424,12 +2430,22 @@ export async function boot({
       ayde: block.ayde, aydeRoot: EGPT_HOME, timeZone: transcriptTimeZone,
       aydeUsers: () => readSecret(EGPT_HOME, AYDE_USERS_FILE).token,
       aydeRegistry: _loadState,
+      secretSessions,
+      onSecret,
       beforeLine,
       onEnd,
       onLog: hlog,
     }, { start: startHttpBridge });
     return sendGuard.wrap({ ...port, owns: isHttpChatId });
   })();
+  // /<handle> secret: with limbs.http.public_url the http limb serves the page; else a cloudflared quick tunnel (the browser
+  // screens' tools/screen-tunnel.mjs, its own state dir) to THE DOOR, a loopback listener that serves nothing but /secret/…
+  const secretLog = (m) => log.line?.(`[secrets] ${m}`);
+  const secretDoor = createSecretsDoor({ page: createSecretsPage({ home: EGPT_HOME, sessions: secretSessions, base: '/', json: httpJson, readBody: httpReadBody, audit: onSecret, now, log: secretLog }), json: httpJson });
+  const secretLink = createSecretLink({
+    sessions: secretSessions, door: secretDoor, httpLimb: () => !!httpPort,
+    tunnel: createScreenTunnel({ egptHome: EGPT_HOME, stateDir: 'secret-link', screens: secretScreens({ door: secretDoor, sessions: secretSessions }), graceMs: 10_000, idleMs: 60_000, log: secretLog }),
+  });
   const limbPorts = [telegramPort, httpPort].filter(Boolean);
   // Bridge instances, keyed by ENDPOINT — the (base_url, token) pair, not the token alone
   // (operator 2026-09-02). The token was a sufficient key only while every connection reached
@@ -3542,6 +3558,7 @@ export async function boot({
     seedOf: strangerSeedOf,                           // a new chat's public_commands, before its entry exists
     beeperUpdate,                                     // /update beeper
     migrate: (args) => runMigrationsChild({ egptHome: EGPT_HOME, args, log: (m) => log.line?.(`[migrate] ${m}`) }),   // /migrate: the runner, through the daemon's own child helper
+    secretLink,                                       // /<handle> secret [name | confirm <code>]: the secrets page's link (public_url or a tunnel) and its chat confirmation
     floodBan,                                         // /unban + /bans — the SAME in-memory instance the bridges observe into
     background,                                       // the operator's bare /agents lists it
     send: commandTranscript.send,
