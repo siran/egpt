@@ -509,8 +509,10 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     }
   }
 
-  async function runMedia(a, ev, being) {
-    const f = confinedFile(await resolveConvDir(ev), a.path);
+  // `confineEv`: the conversation whose FOLDER the file must sit in, when that is not the chat it is said to (a heartbeat
+  // posting into another chat sends ITS OWN files). Absent = ev's own, as ever.
+  async function runMedia(a, ev, being, confineEv = null) {
+    const f = confinedFile(await resolveConvDir(confineEv ?? ev), a.path);
     if (!f.ok) { onLog(`media: ${f.reason} (${ev.surface}/${ev.chatId})`); return false; }
     // No target, so nothing to key: whoever says this being's lines in this chat posts it (sender.mjs makeOutbound `say`).
     const out = outbound(being, ev.chatId);
@@ -553,7 +555,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
   // Returns whether the limb LANDED. The SAME truthiness every branch already logged on, promoted
   // to a return value (operator 2026-09-01) so the caller can record in the transcript what the
   // limb DID rather than what was merely attempted — see execute's `ran`.
-  async function runOne(a, ev, being) {
+  async function runOne(a, ev, being, confineEv = null) {
     switch (a.type) {
       case 'react': {
         // The target is named by the EAR's id, so the key is read off the ear's own copy — and only
@@ -592,7 +594,7 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         if (!ok) onLog(`ask: not delivered (no advice channel or post failed): ${JSON.stringify(String(a.question).slice(0, 120))}`);
         return !!ok;
       }
-      case 'media': return runMedia(a, ev, being);
+      case 'media': return runMedia(a, ev, being, confineEv);
       case 'book':
       case 'email':
       case 'group': return runGated(a, ev, being);
@@ -629,11 +631,11 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
      * someone else's message, a /media file that isn't there all log and stay OUT of `ran`.
      * Additive — every existing caller ignored the (previously undefined) return value.
      */
-    async execute(run = [], stripped = [], ev = {}, { being = null } = {}) {
+    async execute(run = [], stripped = [], ev = {}, { being = null, confineEv = null } = {}) {
       for (const s of stripped) onLog(`stripped malformed action (${s.reason}): ${JSON.stringify(String(s.raw).slice(0, 120))}`);
       const ran = [];
       for (const a of run) {
-        try { if (await runOne(a, ev, being)) ran.push(a); }
+        try { if (await runOne(a, ev, being, confineEv)) ran.push(a); }
         catch (e) { onLog(`action ${a?.type} failed: ${e?.message ?? e}`); }
       }
       return { ran };

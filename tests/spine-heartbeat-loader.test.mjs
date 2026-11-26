@@ -1431,6 +1431,35 @@ describe('createHeartbeatLoader — post: (a command beat that posts its stdout)
     expect(h.logs.at(-1)).toBe('whatsapp/primes:prime: FAILED in 0ms — empty stdout — nothing posted');
   });
 
+  it('to: <chat> reaches dispatchPost on the announcement and the output; without it the key is absent', async () => {
+    const h = build({ frequency: '24h', command: 'node prime.js', post: '{stdout}', to: 'General' });
+    await h.start();
+    h.beat()();
+    h.calls[0].child.stdout.emit('data', '1637\n');
+    h.calls[0].child.emit('close', 0);
+    await flush();
+    expect(h.posts.map((p) => p.to)).toEqual(['General', 'General']);
+    const plain = build({ frequency: '24h', command: 'node prime.js', post: '{stdout}' });
+    await plain.start();
+    plain.beat()();
+    plain.calls[0].child.stdout.emit('data', '1637\n');
+    plain.calls[0].child.emit('close', 0);
+    await flush();
+    expect(plain.posts.every((p) => !('to' in p) || p.to === undefined)).toBe(true);
+  });
+
+  it.each([[''], ['  '], [5], [true]])('to: %j is not a chat name — the beat is skipped and logged', async (bad) => {
+    const h = build({ frequency: '24h', command: 'node prime.js', post: '{stdout}', to: bad });
+    await h.start();
+    expect(h.beat()).toBeUndefined();
+  });
+
+  it('to: on a beat that sends nothing (a plain command) is skipped and logged', async () => {
+    const h = build({ frequency: '24h', command: 'node prime.js', to: 'General' });
+    await h.start();
+    expect(h.beat()).toBeUndefined();
+  });
+
   it('a spawn ERROR posts nothing (one outcome, even when close follows)', async () => {
     const h = build({ frequency: '24h', command: 'node prime.js', post: TEMPLATE });
     await h.start();

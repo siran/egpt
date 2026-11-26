@@ -82,6 +82,14 @@ chat itself. `/send` in a topic copies to General; `/end` closes the topic.
 Turning Topics on makes a basic group a supergroup with a new id; the
 conversation (folder, threads, settings, a `closed_chats` rule) follows it.
 
+`/<handle> msg <chat> <text>` (anyone, a being's own line too; never from a chatbox) posts `<text>` into another chat of
+this node, stamped as that being, and answers `sent to <chat>`. `<chat>` is the
+first word, or a "quoted name"; it matches names, slugs and `Group/topic`, ignoring
+case and accents, and sends only when exactly one chat matches (otherwise the
+matches are listed). The text is the rest of the message, line breaks kept. Only
+chats where the being already answers are allowed; chatbox visitors never are.
+`msg: false` in config.yaml turns it off.
+
 ```text
 /<handle> status                               compact node health (fenced yaml):
                                                git sha + subject, pid, uptime,
@@ -189,6 +197,10 @@ conversation (folder, threads, settings, a `closed_chats` rule) follows it.
                                                below)
 /<handle> super <message>                      a turn of this chat's superintendent
                                                S, answered here (see below)
+/<handle> msg <chat> <text>                    post <text> as this being into
+                                               another chat it answers in
+                                               (anyone but chatbox; see the paragraph
+                                               under /split; msg: false = off)
 /<handle> side <prompt>                        ONE turn of the chat's being, in the
                                                chat's own thread, answered in the
                                                chat's SI+ side group (made as
@@ -1001,6 +1013,15 @@ room's own `config.yaml`.
   until 2026-08-22; an entry still carrying it is invalid, skipped + logged.)
   With `agent: <handle>`, a `script_path:` or a one-line `prompt:` runs as that
   being's turn, and its reply is posted into the chat (empty or "…" posts nothing).
+- **`to: <chat>`** (on a `post:` or `agent:` beat, e.g. `to: "App Movil"` or
+  `to: General`) — everything the beat posts goes to that chat instead of its own.
+  The name is resolved like `/msg`'s, when the beat fires. An `agent:` beat may post
+  only where that being already answers; a `command:` beat only in its own
+  conversation's topics/forks; never a chatbox. Ambiguous, unknown or not allowed →
+  FAILED, nothing posted.
+- **`/media <path> [caption]`** as an own line of a beat's output sends the file as
+  media (to the beat's chat, or its `to:`); the file must be in the beat's own
+  folder, else the run is FAILED. `/reply`, `/react`, `/edit` lines are stripped, not run.
 
 The spine materializes the resolved set to `~/.egpt/heartbeats.readonly.yaml` —
 at the profile root, beside `config.readonly.yaml` and

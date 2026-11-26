@@ -235,6 +235,21 @@ export const CONFIG_SCHEMA = {
         own chat. Default false. admin_channel unset/unresolvable → nothing is
         posted (fail-closed) and a warning logs; it never falls back to the own
         chat. A non-boolean skips the entry.
+      to
+        "<chat>" on a post: or agent: beat — everything the beat posts (the
+        announcement, the post: text, a turn's reply, its /media lines) goes to
+        that chat instead of its own. Named like /msg's <chat> (name, slug or
+        "Group/topic", case- and accent-blind), resolved when the beat fires;
+        never a chatbox or a being's own chat. An agent: beat only where that
+        being already answers; a command: beat only in its own conversation's
+        topics/forks. Ambiguous, unknown or not allowed → FAILED, nothing posted.
+        Unset = the own chat. silent: true wins over it.
+      /media
+        An own line "/media <path> [caption]" in a beat's output sends the file
+        as media (the reply-action executor), to the beat's chat (or its to:);
+        the file must sit in the BEAT's own conversation folder. A path that is
+        outside it or missing makes the run FAILED. Other action lines (/reply,
+        /react, /edit …) have no message to act on: stripped, not run.
 
     FIRING ANNOUNCEMENT (operator 2026-09-30):
       Every beat that SENDS into a chat — a post: command, an agent: turn — posts
@@ -4296,6 +4311,18 @@ export const CONFIG_SCHEMA = {
     the group is archived on the
     account it was heard on. Posts nothing; silent outside a side group. Off in the
     reply_in_side_group group: there it does nothing.
+  `,
+
+  msg: `
+    /msg — "/<handle> msg <chat> <text>" posts <text> as that being into another chat it already answers in
+    (operator 2026-11-21; "Group/topic", name or slug, case- and accent-blind; a "quoted name" if it has
+    spaces). Never a chatbox visitor or the being's own chat. The same <chat> naming is used by a heartbeat's
+    to:.
+
+    DEFAULT true (on). false → /msg is refused ("off on this node"). Any other value leaves it on.
+
+    EXAMPLE
+      msg: false
   `,
 
   reply_in_side_group: `

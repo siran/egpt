@@ -79,6 +79,11 @@
 // run's outcome line. `post:` without `command:`, with `agent:`/`script_path:`, or on a
 // NODE-level beat (no chat to post to) is invalid, skipped + logged.
 //
+// `to: <chat>` (a `post:` or `agent:` beat) sends everything the beat posts — announcement, `post:` text, a turn's
+// reply, its /media lines — into that chat instead: resolved at fire time by boot (the /msg resolver). A beat that runs as a
+// being may post only where that being answers; a structural one only into its own conversation's topics/forks; never
+// a chatbox or a being's own chat. Unresolvable or not allowed → the outcome line says FAILED, nothing is posted.
+//
 // `prompt: "<one line>"` (operator 2026-09-16: "don't use a textecutable for this either. just
 // prompt the model with the one-liner instruction") is the third ACTION, for `agent:` beats only:
 // the line IS the turn's trigger text, through the same dispatchTurn a script beat uses, never
@@ -561,6 +566,13 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
   if (action && beingWritten) Object.assign(action, { beingWritten: true, ns });
   // Carried only when true, so a non-silent action's shape is unchanged (the loader's toEqual locks).
   if (action && raw?.silent === true) action.silent = true;
+  // `to: <chat>`: where a SENDING beat (a `post:` command or an `agent:` turn) says its output instead of its own chat.
+  // Only the shape is checked here; boot resolves it at fire time (resolveTarget, the /msg resolver).
+  if (raw?.to != null) {
+    if (typeof raw.to !== 'string' || !raw.to.trim()) { onLog(`${name}: to ${JSON.stringify(raw.to)} is not a chat name — skipped`); return null; }
+    if (!(action?.ns && (action.post != null || action.kind === 'turn'))) { onLog(`${name}: to without post: or agent: — skipped (to: says what a beat sends into another chat)`); return null; }
+    action.to = raw.to.trim();
+  }
 
   // ── daily: every day at a wall-clock time in a zone (see the header) ──
   if (hasDaily) {
@@ -608,8 +620,8 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => number} [deps.now]                     clock for the stale-`when` check at load time AND for each run's elapsed time
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
- * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean, silent?:boolean}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line. `silent` → boot posts the reply to eGPT Admin, not the entity's chat.
- * @param {(p:{ns:string, name:string, text:string, silent?:boolean}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message — AND every beat's firing announcement — into its entity's chat, injected by boot. `silent` → boot posts to eGPT Admin, not the entity's chat. Throws → the run logs FAILED (an announce failure only logs).
+ * @param {(t:{being:string, ns:string, prompt:string, name:string, beingWritten?:boolean, silent?:boolean, to?:string}) => Promise<{text?:string}>} [deps.dispatchTurn]   an `agent:` beat's TURN, injected by boot (ns → the conversation, then brainpool.turn). The loader never imports the brain: it hands over the being, the entity and the framed prompt and lets boot run it through the ONE turn path. It RETURNS the turn result; the loader puts a prefix of `text` in the run's outcome line. `silent` → boot posts the reply to eGPT Admin, not the entity's chat.
+ * @param {(p:{ns:string, name:string, text:string, silent?:boolean, to?:string}) => Promise<any>} [deps.dispatchPost]   a `post:` beat's message — AND every beat's firing announcement — into its entity's chat, injected by boot. `silent` → boot posts to eGPT Admin, not the entity's chat. Throws → the run logs FAILED (an announce failure only logs).
  * @param {(p:{ns:string, name:string}) => Promise<any>} [deps.placeChat]   boot's seeding of which connection holds an entity's chat, asked once per entity when a beat that SENDS into it (post:, agent:) is registered — so a scheduled send finds the holder a message arrival would have recorded
  * @param {(p:{ns:string, name:string, cwd:string, command:string, scriptPath?:string}) => Promise<any>} [deps.spawnBoxed]   a BEING-WRITTEN command beat's runner, injected by boot (createHeartbeatBoxRunner): refuses (rejects) unless the conversation runs boxed, else resolves the child of setup/sandbox-logon-launcher.ps1 running the command as the conversation's pool account. `scriptPath` marks a script_path: beat, refused when there is no sandbox credential for its textecute (every boxed beat is handed it when there is). The loader never spawns a being's command itself.
  * @param {(ns:string) => Promise<{ok:boolean, detail?:string}>} [deps.startBrowser]   a `browser: true` beat's browser start for its conversation's group Chrome, injected by boot: commands.startBrowser, /chrome's own launch path (idempotent)
@@ -762,7 +774,7 @@ export function createHeartbeatLoader({
   function _spawnAction(entry, stats, startedMs, onSettle) {
     const { queueDepth = 0, oldestMs = 0 } = stats?.() ?? {};
     const childEnv = { ...env, EGPT_HOME: egptHome, EGPT_QUEUE_DEPTH: String(queueDepth), EGPT_QUEUE_OLDEST_MS: String(oldestMs) };
-    const { command, cwd, post, ns, beingWritten, scriptPath, silent } = entry.action;
+    const { command, cwd, post, ns, beingWritten, scriptPath, silent, to } = entry.action;
     let settled = false;
     let stdout = '';
     const settle = async (failure) => {
@@ -775,7 +787,7 @@ export function createHeartbeatLoader({
         if (!out) failure = 'empty stdout — nothing posted';
         else if (typeof dispatchPost !== 'function') failure = 'no post dispatcher wired — boot injects dispatchPost';
         else {
-          try { await dispatchPost({ ns, name: entry.name, text, silent }); posted = ` — posted: ${_replyPrefix(text)}`; }
+          try { await dispatchPost({ ns, name: entry.name, text, silent, to }); posted = ` — posted: ${_replyPrefix(text)}`; }
           catch (e) { failure = `post failed: ${e?.message ?? e}`; }
         }
       }
@@ -812,7 +824,7 @@ export function createHeartbeatLoader({
   // logs the run's ONE outcome line; on success with a prefix of the dispatcher's reply,
   // which is the only trace a turn otherwise leaves (its output is the script's business).
   async function _dispatchTurn(entry, startedMs, onSettle) {
-    const { being, script, prompt: line, cwd, ns, beingWritten, browser, silent } = entry.action;
+    const { being, script, prompt: line, cwd, ns, beingWritten, browser, silent, to } = entry.action;
     try {
       if (typeof dispatchTurn !== 'function') throw new Error('no turn dispatcher wired — boot injects dispatchTurn');
       // A `prompt:` beat hands its one-liner over AS the trigger text — textecute's frame is for scripts.
@@ -822,7 +834,7 @@ export function createHeartbeatLoader({
         prompt = framePrompt(basename(path), await readFile(path, 'utf8'));
       }
       if (browser) prompt = `${await _browserPreface(entry.name, ns)}${prompt}`;
-      const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten, silent });
+      const res = await dispatchTurn({ being, ns, name: entry.name, prompt, beingWritten, silent, to });
       const reply = _replyPrefix(res?.text);
       onLog(`${entry.name}: ok in ${_elapsed(now() - startedMs)}${reply ? ` — ${reply}` : ''}`);
     } catch (e) {
@@ -856,7 +868,7 @@ export function createHeartbeatLoader({
   // failure only logs — an unreachable chat must never take down the beat it is announcing.
   async function _announce(entry) {
     const a = entry.action;
-    try { await dispatchPost({ ns: a.ns, name: entry.name, text: _ANNOUNCE(entry.shortName), silent: a.silent }); }
+    try { await dispatchPost({ ns: a.ns, name: entry.name, text: _ANNOUNCE(entry.shortName), silent: a.silent, to: a.to }); }
     catch (e) { onLog(`${entry.name}: announce failed — ${e?.message ?? e}`); }
   }
 

@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit, lifecycleForce } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchBeing, patchContact, deleteBeing, getContact, getBeing, recordThread, forkContact, forkKeyOf, stampThreadId, aliasContact, dropContact, aliasTargetOf, residentsOf, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
+import { patchBeing, patchContact, deleteBeing, getContact, getBeing, recordThread, forkContact, forkKeyOf, stampThreadId, aliasContact, dropContact, aliasTargetOf, residentsOf, answersIn, resolveTarget, MSG_SKIP_SURFACES, defaultBeingOf, setAliasMouthChat, slugDir, statsPath, conversationPathOf, seedIdentityLayers, skeletonIdentityFiles, slugSuffix, rollTranscript, fixedSlugFor, mutateState, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, LOBBY_SLUG } from '../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 // WHERE A SANDBOXED BEING'S CLI STORE LIVES — the ONE formula, taken from the module that
 // CREATES it (src/sandbox-cli-session.mjs) rather than rebuilt here, so the two verbs that retire
@@ -197,62 +197,6 @@ function humanizeUptime(sec) {
   return `${s}s`;
 }
 
-// Resolve a target chat for `/agents=<slug> …`/`/status <fragment>` (so the operator can name
-// a remote chat from the Self DM — was /e auto <mode> <target>'s resolver before /e's whole
-// family retired 2026-08-15; /agents' `=<slug>` binding reuses this SAME function verbatim).
-// A verbatim @jid / room-id is used as-is;
-// otherwise a fuzzy slug/name fragment is matched against contacts. The command's
-// OWN surface is searched first (unchanged behavior on a hit there — same-surface
-// always wins, even when other surfaces also match); only when the own surface has
-// ZERO hits does this fall through to every OTHER known surface (operator 2026-07-05:
-// naming a telegram chat from the whatsapp Self DM used to report "no chat matches" —
-// resolveTarget never looked past its own surface). The returned object always
-// carries the MATCHED `surface`, which may differ from the `surface` param, so
-// callers act on the right conversation instead of assuming their own ev.surface.
-// Conv-state only: the chat you'd set a mode for is one E has already seen, so it
-// is a contact.
-function fuzzyHits(state, surface, term) {
-  const bucket = state?.contacts?.[surface] ?? {};
-  const needle = term.toLowerCase();
-  const hits = [];
-  for (const [jid, entry] of Object.entries(bucket)) {
-    if (!entry || entry.aliasOf || !entry.slug) continue;
-    const name = String(entry.pushedName ?? entry.slug);
-    if (name.toLowerCase().includes(needle) || String(entry.slug).toLowerCase().includes(needle)) hits.push({ jid, name });
-  }
-  return hits;
-}
-
-function resolveTarget(state, term, surface) {
-  if (/[@!]|:beeper/.test(term)) {
-    // A verbatim jid must still be a chat E has seen — else patchContact silently
-    // no-ops (returns state unchanged) and we'd report a false "✅" for a typo'd or
-    // never-seen id. Resolve it through getContact so a bad id fails loudly here.
-    // Own surface first, then every other known surface in turn — first found wins
-    // (jids are surface-namespaced, so a cross-surface collision isn't a practical
-    // concern; no ambiguity handling needed here).
-    const c = getContact(state, surface, term);
-    if (c) return { jid: c.jid, name: c.slug, surface };
-    for (const s of Object.keys(state?.contacts ?? {})) {
-      if (s === surface) continue;
-      const oc = getContact(state, s, term);
-      if (oc) return { jid: oc.jid, name: oc.slug, surface: s };
-    }
-    return { error: `no chat matches "${term}" — E hasn't seen that chat id` };
-  }
-  const ownHits = fuzzyHits(state, surface, term);
-  if (ownHits.length === 1) return { ...ownHits[0], surface };
-  if (ownHits.length > 1) return { error: `"${term}" matches ${ownHits.length}: ${ownHits.slice(0, 6).map((h) => h.name).join(', ')} — be more specific` };
-  const crossHits = [];
-  for (const s of Object.keys(state?.contacts ?? {})) {
-    if (s === surface) continue;
-    for (const h of fuzzyHits(state, s, term)) crossHits.push({ ...h, surface: s });
-  }
-  if (!crossHits.length) return { error: `no chat matches "${term}" — try the exact name or its @jid` };
-  if (crossHits.length > 1) return { error: `"${term}" matches ${crossHits.length}: ${crossHits.slice(0, 6).map((h) => `${h.name} (${h.surface})`).join(', ')} — be more specific` };
-  return crossHits[0];
-}
-
 // A command reply must NEVER itself parse as a command (live incident 2026-07-25). isCommand
 // admits ANY operator line that starts with '/', and most replies here open with the command
 // they answer ("/status: no chat matches …"). On a shared Beeper account the sibling node sees
@@ -275,6 +219,8 @@ const PUBLIC_COMMANDS_DEFAULT = ['split', 'send', 'end', 'side'];
 const AGENTS_BARE_CMD = /^\/agents\s*$/i;
 // /<handle> super <message> (operator 2026-11-04): a turn of the chat's superintendent, agents.super.
 const SUPER_CMD = /^\/super\b/i;
+// The only commands a being's own signed line runs (commandOf reads them; isCommand holds each one's rule).
+const BEING_LINE_CMDS = new Set(['/super', '/msg']);
 const SUPER_BEING = 'super';
 // The public list's words for a reply mode; 'off' has none (that being is not listed).
 const PUBLIC_MODE_WORDS = {
@@ -807,7 +753,7 @@ export function createCommands({
     if (!body.startsWith('/')) {
       // A being's line (node-signed), read past its stamp and frame: /super is the only command found there.
       const view = ev?.fromNode != null ? addressingView(ev).trim() : null;
-      const hit = view && parseBeingCommand(view)?.cmd === '/super' ? { body: view, alias: null } : aliasOf(ev, body);
+      const hit = view && BEING_LINE_CMDS.has(parseBeingCommand(view)?.cmd) ? { body: view, alias: null } : aliasOf(ev, body);
       if (!hit) return null;
       ({ body, alias } = hit);
     }
@@ -854,6 +800,8 @@ export function createCommands({
     if (!body.startsWith('/')) return false;
     const onConsole = surfaceOf(ev) === SHELL_SURFACE && COMMAND_SET.has(body.split(/\s/)[0].toLowerCase());
     if (ev?.commandBeing == null && !onConsole) return false;
+    // /msg is anyone's, a person's or a being's line alike, except from a chatbox (http, chat-edu).
+    if (/^\/msg\b/i.test(body)) return surfaceOf(ev) !== 'http';
     // A being's line runs /super, but never this node's own S's line (author exclusion).
     if (ev?.fromNode != null && SUPER_CMD.test(body)) return !(String(ev.fromBeing ?? '').toLowerCase() === SUPER_BEING && !fromOtherNode(cfg(), ev));
     if (isOperator(ev)) return true;
@@ -1150,6 +1098,9 @@ export function createCommands({
     if (splitMatch) { await splitGroup(ev); return; }
     const sendMatch = /^\/send\b[\s\S]*$/i.exec(line);
     if (sendMatch) { await sendToOriginal(ev); return; }
+    // /msg <target> <text> — a finished message into ANOTHER chat this being answers in (msgTo).
+    const msgMatch = /^\/msg\b[\s\S]*$/i.exec(line);
+    if (msgMatch) { return await msgTo(ev); }
     const endMatch = /^\/end\b[\s\S]*$/i.exec(line);
     if (endMatch) { return await end(ev); }   // end() returns its outcome string (archived / no-op) for the audit line
 
@@ -3964,6 +3915,10 @@ export function createCommands({
   // transcript (as /radio say's quick-reply does), then strips the node/bridge/persona wrap. Posts via the
   // account named by config.send.post_back_from ('primary' = the operator's own account, the DEFAULT;
   // 'secondary' = the mouth) — boot routes { via } to that connection's bridge.
+  // THE DELIVERY into another chat, shared by /send (as the operator, or the mouth) and /msg (as a being:
+  // `being` stamps it like any reply of that being and records it in the target's transcript — boot).
+  const deliverTo = (chatId, text, { via = null, unsigned = false, being = null, surface = null } = {}) =>
+    forkBridge.postReply(chatId, text, null, { via, unsigned, ...(being ? { being, surface } : {}) });
   async function sendToOriginal(ev) {
     const surface = surfaceOf(ev);
     if (!loadState) return;                                // state not wired → silent
@@ -4009,9 +3964,35 @@ export function createCommands({
     // UNSIGNED (operator 2026-10-04): /send posts back AS THE OPERATOR — no node signature (no visible
     // 🏰 bridge close, no invisible node tag). Routed into the SAME .send via skipSignature, so the
     // relay's sent id is still tracked for echo-dedup (beeper.mjs _sentIds) and this node won't re-ingest it.
-    const posted = await forkBridge.postReply(originalChatId, prefix + cleaned, null, { via, unsigned: !member });
+    const posted = await deliverTo(originalChatId, prefix + cleaned, { via, unsigned: !member });
     if (!posted) { await send?.(ev.chatId, '/send: could not post to the original chat'); return; }
     onLog(`/send: ${ev.chatId} -> original ${originalChatId} via ${via} (message ${ev.replyToId}; origin ${prefix ? 'named' : 'omitted'})`);
+  }
+
+  // /msg <target> <text> (operator 2026-11-21): post <text> as this command's being into another chat of this node.
+  // <target> = the first word, or a "quoted name"; the text is the rest, line breaks kept. The target resolves as
+  // /agents=<slug> does (resolveTarget: name, slug or Group/topic, case- and accent-blind; ambiguity lists the
+  // matches, nothing is sent), never a chatbox visitor or a being's own chat, and only a chat the being already
+  // answers in (residentsOf — the conversation's own agents). config.msg: false turns it off.
+  async function msgTo(ev) {
+    const refuse = async (why) => { await send?.(ev.chatId, `/msg: ${why}`); return `refused — ${why}`; };
+    if (cfg().msg === false) return refuse('off on this node (msg: false)');
+    const m = /^\/msg\b[ \t]*(?:"([^"]+)"|\u201c([^\u201d]+)\u201d|(\S+))(?:[ \t]*\r?\n|[ \t]+)?([\s\S]*)$/i.exec(String(ev.body ?? '').trim());
+    const term = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+    const text = (m?.[4] ?? '').trim();
+    if (!term || !text) return refuse(`say where and what: ${hintOf('msg', ev)} <chat> <text> (a "quoted name" if it has spaces)`);
+    if (!loadState) return refuse('no state');
+    if (surfaceOf(ev) === 'http') return refuse('not from a chatbox');
+    const state = await loadState();
+    const hit = resolveTarget(state, term, surfaceOf(ev), { skip: MSG_SKIP_SURFACES });
+    if (hit.error) return refuse(hit.error);
+    if (hit.jid === ev.chatId) return refuse('that is this chat');
+    const being = ev.commandBeing;
+    if (!being || !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being)) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
+    const posted = await deliverTo(hit.jid, text, { being, surface: hit.surface });
+    if (!posted) return refuse(`could not post to ${hit.name}`);
+    await send?.(ev.chatId, `sent to ${hit.name}`);
+    return `sent to ${hit.name}`;
   }
 
   // /end (anyone in a join/split group REPLIES /end there): archive the group and drop its mapping so

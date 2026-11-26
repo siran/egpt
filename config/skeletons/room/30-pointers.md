@@ -16,6 +16,9 @@
                     browser     browser: true + agent: + prompt:
                     pure AI     agent: + prompt:
                     any beat may add silent: true — posts to eGPT Admin, not this chat
+                    post:/agent: beats may add to: "<chat>" — posts there instead (a
+                    topic of this chat; a chat where I already answer, if it is mine)
+                    a /media <path> line in a beat's output sends the file (from here)
   ./scripts/        *.x.md textecutables — when asked to DO something, look
                     here first and carry out the steps with my own tools
 
