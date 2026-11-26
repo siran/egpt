@@ -346,7 +346,7 @@ networks:
   telegram: { admin_chat_ids: [] } # limbs.telegram bot; its owners are Telegram numeric ids
   signal:   { admin_chat_ids: [] }
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
-# public_commands: [split, send, end, side]
+# public_commands: [split, send, end, side, secret]   # drop secret → /secret is operator-only
 
 # group chats reply in their "SI+<group>" side group unless their conversations.yaml entry says
 # otherwise; never a 1:1 or Telegram. Unset = off (config-schema reply_in_side_group)
