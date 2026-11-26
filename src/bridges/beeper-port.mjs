@@ -256,6 +256,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     unreact(chat, msgId, emoji) {
       return real.removeReaction?.(chat, msgId, emoji);
     },
+    // This account's own reactions on a message (keys), null when unknown: the thinking train's end reads it.
+    async ownReactions(chat, msgId) {
+      return real.ownReactions ? await real.ownReactions(chat, msgId) : null;
+    },
     // A caption and an edit are E speaking to a surface, so they carry the node signature like
     // every other outbound (C13, 2026-07-26 — both used to stamp without wrapping).
     sendMedia(chat, filePath, opts = {}) {

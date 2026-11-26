@@ -1572,6 +1572,23 @@ export async function startBeeperBridge(opts = {}) {
     try { await api('DELETE', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}/reactions/${encodeURIComponent(reactionKey)}`); return true; }
     catch (e) { onLog(`beeper: un-reaction failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
+  // THIS ACCOUNT'S REACTIONS ON A MESSAGE: GET /v1/chats/{c}/messages/{id} (Desktop API 5.0.0), reactions[]
+  // whose participant is one of this install's own identities (the isOneOf test _maybeEmitReactions uses).
+  // Their keys, or null when it cannot be told: no chat id, no identity of our own measured, the GET failed.
+  async function ownReactions(chatID, messageID) {
+    if (!isChatId(chatID) || !messageID) return null;
+    await _startupReady;
+    const ids = new Set(_selfIdentities.map(idKey).filter(Boolean));
+    if (!ids.size) return null;
+    try {
+      const m = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`);
+      const keys = [];
+      for (const r of Array.isArray(m?.reactions) ? m.reactions : []) {
+        if (r?.reactionKey && await isOneOf(chatID, idKey(r.participantID), ids)) keys.push(String(r.reactionKey));
+      }
+      return keys;
+    } catch (e) { onLog(`beeper: could not read the reactions on [${chatID}/${messageID}] — ${e?.message ?? e}`); return null; }
+  }
   // Beeper's attachment `type` enum hint, derived from the upload's mimeType.
   function attachmentType(mime) {
     const m = String(mime ?? '').toLowerCase();
@@ -2529,6 +2546,7 @@ export async function startBeeperBridge(opts = {}) {
     // rides send()'s replyToMessageID.
     sendReaction:  (chatId, messageId, key)  => sendReaction(chatId, messageId, key),
     removeReaction: (chatId, messageId, key) => removeReaction(chatId, messageId, key),   // the 🎧 mark's removal (port `unreact`)
+    ownReactions:  (chatId, messageId)       => ownReactions(chatId, messageId),
     sendMedia:     (chatId, filePath, opts)  => sendMedia(chatId, filePath, opts),
     sendFailure:   (chatId)                  => _sendFailures.get(shortChatId(chatId)) ?? null,   // why the last send there failed (null once one lands)
     wasSentByUs:   (chatId, messageId)       => wasSentByUs(chatId, messageId),

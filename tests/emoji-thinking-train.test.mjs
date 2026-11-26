@@ -99,7 +99,7 @@ const TRAIN = ['+👾', '+🤔', '-🤔'];
 const left = (seq) => seq.reduce((up, op) => (op[0] === '+' ? op.slice(1) : up === op.slice(1) ? null : up), null);
 
 describe('emoji train (the default): 👾 at arrival → 🤔 when the turn starts → off at the end; no ⏳', () => {
-  for (const [mode, body] of [['on', '@e hola'], ['on', 'qué calor hace hoy'], ['accum', '@e hola'], ['mention', '@e hola']]) {
+  for (const [mode, body] of [['on', '@e hola'], ['on', 'e qué calor hace hoy'], ['accum', '@e hola'], ['mention', '@e hola']]) {
     it(`REPRODUCE: ${mode}, "${body}"`, async () => {
       const g = gate();
       const b = build({ mode, work: async () => { await g.p; return { text: 'Hola, sí.' }; } });
@@ -241,7 +241,8 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
     expect(b.marks(m.msgId)).toEqual(TRAIN);
   });
 
-  it("REPRODUCE: an unaddressed 'on' reply streamed as nothing but '…' never opens and posts nothing; the mark comes off", async () => {
+  // No mark on an unaddressed 'on' line (2026-11-25, tests/train-two-nodes.test.mjs).
+  it("REPRODUCE: an unaddressed 'on' reply streamed as nothing but '…' never opens and posts nothing; no mark", async () => {
     const said = gate();
     const b = build({ mode: 'on', work: async (onPartial) => { await said.p; onPartial(''); onPartial('…'); return { text: '…' }; } });
     const m = msg('qué calor hace hoy');
@@ -253,7 +254,7 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
     await flush();
     expect(b.bridge.streams).toEqual([]);
     expect(b.posts()).toEqual([]);
-    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    expect(b.marks(m.msgId)).toEqual([]);
   });
 
   for (const silence of [['…'], ['.', '..', '...']]) {
@@ -268,7 +269,7 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
         await g.p;
         return { text: `${real}, hace calor.` };
       } });
-      const m = msg('qué calor hace hoy');
+      const m = msg('e qué calor hace hoy');
       const done = b.bridge.emit(m);
       await until(() => b.brain.calls.length);
       await flush();
@@ -312,13 +313,13 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
     expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
   });
 
-  it("REPRODUCE: an unaddressed 'on' line that uses a tool opens too, then a '…' settles it as bubble's does", async () => {
+  it("REPRODUCE: an unaddressed 'on' line that uses a tool opens too (it had no mark), then a '…' settles it as bubble's does", async () => {
     const b = build({ mode: 'on', work: async (onPartial) => { onPartial('', { tool: true }); return { text: '…' }; } });
     const m = msg('qué calor hace hoy');
     await b.bridge.emit(m);
     await flush();
     expect(b.bridge.streams.map((s) => [s.init, s.finals])).toEqual([[THINKING, ['✓']]]);
-    expect(b.marks(m.msgId)).toEqual(OFF_AT_ONCE);
+    expect(b.marks(m.msgId)).toEqual([]);
   });
 
   it('REPRODUCE: the thinking frames step until the bubble opens, then stop (2026-11-04)', async () => {
@@ -356,14 +357,14 @@ describe('emoji train: the first text or tool use opens the bubble and takes the
 });
 
 describe('emoji train: polite silence', () => {
-  it("REPRODUCE: an unaddressed 'on' line answered '…' posts nothing; the mark comes off", async () => {
+  it("REPRODUCE: an unaddressed 'on' line answered '…' posts nothing and gets no mark", async () => {
     const b = build({ mode: 'on', work: answers('…') });
     const m = msg('qué calor hace hoy');
     await b.bridge.emit(m);
     await flush();
     expect(b.posts()).toEqual([]);
     expect(b.bridge.streams).toEqual([]);
-    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    expect(b.marks(m.msgId)).toEqual([]);
   });
 
   for (const [mode, body, extra] of [['on', '@e hola'], ['on', 'e hola'], ['on', 'y eso?', { replyToBeing: 'egpt' }], ['mention', '@e hola'], ['accum', '@e hola']]) {
@@ -434,7 +435,7 @@ describe('emoji train: one per line, whichever beings answer it', () => {
   it('REPRODUCE: E and wren on one line — one train; it steps while either runs and comes off when the last ends', async () => {
     const eg = gate(), wg = gate();
     const b = build({ mode: 'on', wren: true, frames: ['🤔', '🤓'], work: async (_, ev, being) => { await (being === 'wren' ? wg.p : eg.p); return { text: being === 'wren' ? 'Sí.' : '…' }; } });
-    const m = msg('w hola');
+    const m = msg('w @e hola');
     const done = b.bridge.emit(m);
     await until(() => b.brain.calls.length === 2);
     await flush();
@@ -447,7 +448,7 @@ describe('emoji train: one per line, whichever beings answer it', () => {
     await done;
     await flush();
     expect(b.marks(m.msgId)).toEqual(['+👾', '+🤔', '+🤓', '-🤓']);
-    expect(b.posts()).toEqual([['!g', 'Sí.']]);
+    expect(b.posts()).toEqual([['!g', '…'], ['!g', 'Sí.']]);     // E addressed: its '…' is posted
   });
 
   it('REPRODUCE: one of them uses a tool — its bubble opens and the mark comes off once, for both', async () => {
@@ -456,7 +457,7 @@ describe('emoji train: one per line, whichever beings answer it', () => {
       if (being === 'wren') { await wg.p; return { text: 'Sí.' }; }
       await tool.p; onPartial('Mirando.', { tool: true }); return { text: 'Mirando. Listo.' };
     } });
-    const m = msg('w hola');
+    const m = msg('w @e hola');
     const done = b.bridge.emit(m);
     await until(() => b.brain.calls.length === 2);
     await flush();
@@ -503,7 +504,7 @@ describe('emoji train: none', () => {
     await b.bridge.emit(msg('[An reacted 👍 to #m0]', { kind: 'reaction', msgId: 'm0' }));
     expect(b.brain.calls).toHaveLength(1);
     expect(b.reactions()).toEqual([]);
-    const m = msg('qué calor hace hoy');
+    const m = msg('@e qué calor hace hoy');
     await b.bridge.emit(m);
     await flush();
     expect(b.marks(m.msgId)).toEqual(TRAIN);

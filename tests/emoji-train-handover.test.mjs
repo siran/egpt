@@ -211,7 +211,7 @@ describe('B. the started phase steps through the thinking frames', () => {
 
   it('random: the pick is over the set without the one showing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const [a, b] = TELEGRAM_REACTIONS;
+    const [a, b] = TELEGRAM_REACTIONS.filter((g) => g !== '👍' && g !== '👎');   // the first two a frame may draw
     const { turns, placed } = node({ frames: () => 'random', rng: () => 0 });
     const t = turns.train('egpt', EV);
     t.started();

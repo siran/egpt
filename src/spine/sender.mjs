@@ -307,6 +307,8 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
       // A chat a limb owns is the limb's to answer (boot makeLimbAwareBridge `reactsAsBeing`, 2026-11-03):
       // the chatbox and the console have no reactions, whatever else this node holds.
       reacts: () => out.bridge?.reactsAsBeing?.(chatId) ?? (!!peerMouth || out.bridge?.beingAccount === true),
+      // Is the account here the being's own (a bot)? No other node marks through it (the train, 2026-11-25).
+      ownAccount: () => (out.bridge?.reactsAsBeing?.(chatId) ?? out.bridge?.beingAccount) === true,
       // CAN A TEMPORARY MARK GO ON A MESSAGE HERE AND COME BACK OFF — react()'s own branches for
       // `temporary`, nothing placed (the emoji train, 2026-11-03): the mouth's own room, or the holder
       // when it is the mouth; never a peer link (no verb takes one back), never a chat the mouth is not in.
@@ -354,6 +356,16 @@ export function makeOutbound({ bridge, bridgeOf = null, peerMouth = null, onLog 
         else if (r?.ok) onLog(`${what} ${being}/${chatId}: ${who} is saying this reply and placed the ${emoji} on its own copy (its chat ${r.chatId})`);
         else onLog(`${what} ${being}/${chatId}: ${who} is saying this reply but could not place the ${emoji} (${r?.reason ?? 'no answer'}${r?.detail ? `: ${r.detail}` : ''}) — no reaction from this account either, it is not the one answering`);
         return r?.ok === true;
+      },
+      // The reactions the account react() would use shows on the message, its own only (the bridge's
+      // ownReactions, 2026-11-25): their keys, or null when they cannot be read (no such read, a peer link).
+      async ownReactions(msgId, keyOf, { here = false } = {}) {
+        if (here) return (await out.bridge.ownReactions?.(chatId, msgId)) ?? null;
+        const says = out.route();
+        const mouthChat = says ? await says : null;
+        if (!mouthChat) return peerMouth?.mouthIsElsewhere?.(chatId, being) ? null : ((await out.bridge.ownReactions?.(chatId, msgId)) ?? null);
+        if (!mouthChat.bridge) return null;
+        return (await peerMouth.ownReactions?.(mouthChat, await keyOf())) ?? null;
       },
       // Does a local mouth on another account hold its own copy of the message `keyOf` names, within
       // `wait` (the train's handover, 2026-11-04)? false: none, or no such mouth.

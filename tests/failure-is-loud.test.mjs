@@ -72,7 +72,7 @@ describe('a failed turn posts its one failure line, naming the failure', () => {
     const m = msg('w hi');
     await run(b, m);
     expect(b.posts()).toEqual([['!g', LINE('API error (safeguards)')]]);
-    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    expect(b.marks(m.msgId)).toEqual([]);                  // unaddressed 'on': no train (2026-11-25)
   });
 
   it('REPRODUCE: an emoji turn that fails posts it and takes the reaction off', async () => {
@@ -137,7 +137,7 @@ describe("a '…' is no failure (lock)", () => {
     await run(b, msg('qué calor', { chatId: '!l' }));
     expect(b.posts()).toEqual([]);
     expect(b.made).toEqual([]);
-    expect(b.marks(m.msgId)).toEqual(TRAIN);
+    expect(b.marks(m.msgId)).toEqual([]);
     await run(b, msg('@e hola'));
     expect(b.posts()).toEqual([['!g', '…']]);
   });

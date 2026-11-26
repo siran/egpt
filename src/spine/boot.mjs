@@ -263,7 +263,7 @@ export function redirectShellToRoom(msg, { currentRoomOf, claim } = {}) {
 // placeholder edit there is a no-op). A new port method must be listed here or in the facade
 // test's not-chat-keyed list.
 export const LIMB_ROUTED_METHODS = [
-  'send', 'startStream', 'postStatus', 'editStatus', 'react', 'unreact', 'sendMedia',
+  'send', 'startStream', 'postStatus', 'editStatus', 'react', 'unreact', 'ownReactions', 'sendMedia',
   'editOwn', 'editMessage', 'wasSentByUs', 'sendFailure', 'chatHasParticipant', 'getChatName',
   'postVerbatim', 'startStreamVerbatim', 'chatRaw', 'listMessagesRaw', 'recentMessages', 'awaitMessage',
   'archiveChat', 'resolveChatId', 'createGroup', 'setChatInfo',
@@ -618,6 +618,12 @@ export function makePeerMouth({ peer, bridge, bridgeOf = null, owns = () => fals
       if (!peer) return Promise.resolve({ ok: false, reason: 'no-peer', detail: 'no peer spine configured' });
       if (remove) return Promise.resolve({ ok: false, reason: 'no-verb', detail: 'the mouth link has no verb that takes a reaction back' });
       return reactor({ peer, chat, msgKey, timestamp, emoji, onLog });
+    },
+    // The mouth's own reactions on its own copy (the train's end, 2026-11-25); null when unknown. A LOCAL mouth only.
+    async ownReactions(chat, { msgKey, timestamp = 0 } = {}) {
+      if (typeof chat?.bridge?.ownReactions !== 'function') return null;
+      const hit = await ownCopy(chat, { msgKey, timestamp });
+      return hit.ok ? chat.bridge.ownReactions(chat.chatId, hit.msgId) : null;
     },
     // THE /reply LIMB'S QUOTE (2026-09-16): the mouth's OWN id for the message a key names, so the
     // reply it says in its own room quotes its own copy (sender.mjs makeOutbound `say`). A LOCAL

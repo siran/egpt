@@ -75,8 +75,9 @@ const TRAIN_COPY_WAIT_MS = 6000;
 // thinking_frame_ms override, read live). 'random' (operator 2026-11-04, the default: no one reads time off the
 // train): 🤔, then any of TELEGRAM_REACTIONS but the one showing. A list steps through it in order.
 export const THINKING_FRAMES = 'random';
-// Never drawn at random (wren 2026-11-04): rude, sad or alarming ones, and the train/steer glyphs themselves.
-const RANDOM_SKIP = new Set(['👎', '🤬', '😢', '🤮', '💩', '🤡', '🥴', '💔', '💋', '🖕', '😈', '😭', '😱', '😨', '😡', '🍌', '🌭', '💊', '✍️', '👾']);
+// Never drawn at random (wren 2026-11-04): rude, sad or alarming ones, and the train/steer glyphs themselves
+// (👍 2026-11-25: a train never places, so never clears, a steer's ✍️/👍).
+const RANDOM_SKIP = new Set(['👎', '🤬', '😢', '🤮', '💩', '🤡', '🥴', '💔', '💋', '🖕', '😈', '😭', '😱', '😨', '😡', '🍌', '🌭', '💊', '✍️', '👾', '👍']);
 export const THINKING_FRAME_MS = 2000;
 
 /**
@@ -234,6 +235,8 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   // accounts, and each took off or overwrote the other's): every turn on (chatId, msgId) holds the one mark.
   // `off()` lets go; the last to let go takes it off. `off(true)` takes it off for all (a bubble opens, limbs run).
   // The end takes off what it placed, on each account still holding it.
+  // …and only that (2026-11-25, two nodes on one account): where the account's reactions can be read, each of
+  // this mark's glyphs it shows comes off, a duplicate the network ignored included; another glyph stays.
   const lines = new Map();                     // `${chatId} ${msgId}` -> the mark on that line, while a turn holds it
   const lineOf = (ev) => (ev.msgId != null ? `${ev.chatId} ${ev.msgId}` : null);
   function receipt(to, ev, glyphs = [RECEIPT_EMOJI], opts = {}) {
@@ -252,18 +255,29 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
   }
   function mark(to, ev, glyphs, { what = 'arrival-ack', wait, handover = false, frames = null }) {
     const on = { here: null, mouth: null };    // what this mark placed and still holds, per account
+    const mine = { here: new Set(), mouth: new Set() };   // every glyph it placed, per account
     let at = handover ? 'here' : 'mouth', done = false, begun = false, busy = 0, timer = null, n = 0, ended;
     const gone = new Promise((r) => { ended = r; });
     const place = (emoji, acct, opts) => placeReaction(to, ev, emoji, { what, here: acct === 'here', ...opts });
-    const put = async (acct, g, opts) => { const ok = await place(g, acct, { temporary: true, ...opts }); if (ok) on[acct] = g; return ok; };
-    const take = async (acct) => {
-      const g = on[acct];
+    const put = async (acct, g, opts) => { const ok = await place(g, acct, { temporary: true, ...opts }); if (ok) { on[acct] = g; mine[acct].add(g); } return ok; };
+    const take = async (acct, g = on[acct]) => {
       if (!g) return;
       const ok = await place(g, acct, { remove: true });
-      if (ok) on[acct] = null;
+      if (ok && on[acct] === g) on[acct] = null;
       if (acct === 'here') note(`${what} ${to}/${ev.chatId}: ${ok ? 'took' : 'could NOT take'} the ${g} off #${ev.msgId}, on the account holding the line`);
     };
     const key = () => ({ msgKey: ev.msgHash, timestamp: ev.msgTs });
+    const bare = (g) => String(g).replace(/\uFE0F/g, '');
+    const clear = async (acct) => {
+      if (!mine[acct].size) return;
+      const shown = await outbound(to, ev.chatId).ownReactions(ev.msgId, key, { here: acct === 'here' }).catch(() => null);
+      if (!Array.isArray(shown)) return take(acct);
+      const showing = new Set(shown.map(bare)), ours = new Set([...mine[acct]].map(bare));
+      const foreign = [...showing].some((g) => !ours.has(g));
+      // The last glyph comes off as before unless another's shows: a read that misses ours leaves nothing.
+      for (const g of mine[acct]) if (showing.has(bare(g)) || (g === on[acct] && !foreign)) await take(acct, g);
+      on[acct] = null;
+    };
     let chain = put(at, glyphs[0], handover || !wait ? {} : { wait });
     const step = (fn) => { busy++; chain = chain.then(fn).finally(() => { busy--; }); return chain; };
     const show = (g) => step(async () => { if (!done && g !== on[at]) await put(at, g); });
@@ -295,7 +309,7 @@ export function createTurns({ brain, bridge = null, bridgeOf = null, peerMouth =
         return chain;
       },
       off() {
-        if (!done) { done = true; if (timer) clearTimeoutFn(timer); step(async () => { await take('here'); await take('mouth'); }).then(ended, ended); }
+        if (!done) { done = true; if (timer) clearTimeoutFn(timer); step(async () => { await clear('here'); await clear('mouth'); }).then(ended, ended); }
         return chain;
       },
     };

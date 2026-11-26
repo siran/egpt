@@ -1481,15 +1481,18 @@ export function createSpine({
   }
 
   // THE MARK ON THE LINE A TURN ANSWERS, placed at arrival (turns.receipt). The emoji train (2026-11-03):
-  // 👾 → 🤔 → off on a human's line. Else dd2c11b7's ✍️ on a human's unaddressed 'on' line. Not where the
-  // reply goes elsewhere (side group), nor on a reaction: its msgId is the message reacted to.
+  // 👾 → 🤔 → off on a human's line, but not an unaddressed 'on' one in a group (2026-11-25: it may be another
+  // node's being's, on the same account; the bubble opens if this being starts answering) — a 1:1's line is the
+  // being's, and a bot's account is its own. Else dd2c11b7's ✍️ on a human's unaddressed 'on' line. Not where
+  // the reply goes elsewhere (side group), nor on a reaction: its msgId is the message reacted to.
   // …and whether this chat can carry it at all (turns.canMark: the mouth's room, or the being's own
   // account), the fact gating.decide sets `emoji` on. Not: the turn runs as bubble does.
   const marksHere = (to, ev) => () => turns.canMark?.(to, ev) ?? false;
   function markOf(to, d, ev) {
     if (d.replyChatId != null || ev.kind === 'reaction') return [];
+    const shared = d.unaddressed && ev.raw?.chatType === 'group' && !outbound(to, ev.chatId).ownAccount();
     const m = !d.emoji ? (d.unaddressed ? turns.receipt?.(to, ev) : null)
-      : humanTurn(ev) && ev.msgId != null ? turns.train?.(to, ev) : null;
+      : humanTurn(ev) && ev.msgId != null && !shared ? turns.train?.(to, ev) : null;
     return m ? [m] : [];
   }
 

@@ -173,6 +173,14 @@ async function startFakeBeeper() {
         res.end('{}');
         return;
       }
+      // GET one message (ownReactions): served off the same recent-message list, 404 when absent.
+      if (req.method === 'GET' && put) {
+        const v = messages.get(decodeURIComponent(put[1]));
+        const m = ((typeof v === 'function' ? v() : v) ?? []).find((x) => String(x?.id) === decodeURIComponent(put[2]));
+        if (!m) { res.statusCode = 404; res.end('{}'); return; }
+        res.end(JSON.stringify(m));
+        return;
+      }
       // Recent-message list (resolveSentMessageId polls it to confirm a sent id).
       // A FUNCTION value serves dynamically — lets a test model the live upsert
       // race (the just-POSTed message appearing only on a later poll).
@@ -4135,6 +4143,39 @@ describe("beeper bridge — selfIdentities: every identifier this install answer
     const answers = [];
     for (const id of mine) answers.push(await bridge.chatHasParticipant('by-email', id));
     expect(answers).toContain(true);
+  });
+});
+
+// The thinking train's end (2026-11-25, two nodes on one account) reads what THIS account shows on its line.
+describe("beeper bridge — ownReactions: this account's reactions on a message", () => {
+  const RODZ = () => ([{ accountID: 'whatsapp', loginID: '15550100002', user: { id: '15550100002', phoneNumber: '+15550100002', isSelf: true } }]);
+  const ROSTER = { title: 'An', type: 'group', isMuted: false, accountID: 'whatsapp', participants: { items: [
+    { id: '@whatsapp_lid-1:beeper.local', phoneNumber: '+15550100002' },
+    { id: '@whatsapp_lid-2:beeper.local', phoneNumber: '+15550100001' },
+  ] } };
+
+  it("GET the message: our own participant's keys only, by its id or by the roster's phone", async () => {
+    fake.accounts.push(...RODZ());
+    fake.chats.set(CHAT('own'), ROSTER);
+    fake.messages.set(CHAT('own'), [{ id: '41174', reactions: [
+      { id: 'a', participantID: '@whatsapp_lid-1:beeper.local', reactionKey: '🤔' },
+      { id: 'b', participantID: '@whatsapp_lid-2:beeper.local', reactionKey: '👍' },
+      { id: 'c', participantID: '15550100002', reactionKey: '🤓' },
+    ] }]);
+    const { bridge } = await startBridge();
+    expect(await bridge.ownReactions(CHAT('own'), '41174')).toEqual(['🤔', '🤓']);
+  });
+
+  it('null when it cannot be told: no identity of ours, the GET fails, or not a chat id', async () => {
+    fake.chats.set(CHAT('own'), ROSTER);
+    fake.messages.set(CHAT('own'), [{ id: '41174', reactions: [{ id: 'a', participantID: '@whatsapp_lid-1:beeper.local', reactionKey: '🤔' }] }]);
+    const none = await startBridge();
+    expect(await none.bridge.ownReactions(CHAT('own'), '41174')).toBeNull();
+    fake.accounts.push(...RODZ());
+    const { bridge } = await startBridge();
+    expect(await bridge.ownReactions(CHAT('own'), 'gone')).toBeNull();
+    expect(await bridge.ownReactions('tg:42', '41174')).toBeNull();
+    expect(await bridge.ownReactions(CHAT('own'), '41174')).toEqual(['🤔']);
   });
 });
 
