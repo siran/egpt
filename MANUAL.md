@@ -832,6 +832,25 @@ by default; leaving it off disables opening messages entirely.
 a boot line (`prime_text — the chatbox UI's now …`). Move it to the plugin's
 `skin.yaml` (`prime_text: …`).
 
+`before_line` (off by default): a command the node runs, and waits for, before
+each visitor line reaches the being: a typed line and the `init: prime` opening
+(not a bare init).
+
+```yaml
+contoso_soporte:
+  before_line:
+    command: [/opt/acme/refresh.sh, --only, "{folder}"]   # argv list or one path, no shell; {folder}, {chat_id}, {client} filled
+    timeout_ms: 8000                                      # default 8000; then the command is killed
+    fail_text: "Sorry, I can't read right now. Try again in a moment."
+```
+
+stdin gets one JSON object, `{folder, chat_id, client, claims}` (`claims` is the
+verified identity's, null when unsigned). Exit 0: the line goes on as usual.
+Nonzero exit, a spawn error or the timeout: the being is not invoked, the line is
+recorded only, and the chatbox's being says `fail_text` in that conversation
+(transcript, widget, team topic). The log gets one line with the exit code or
+`timeout` and the first 200 characters of stderr. Restart-only.
+
 ### Places
 
 One chatbox, one conversation per signed user, in several kinds of page. The host

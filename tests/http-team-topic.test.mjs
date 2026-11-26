@@ -819,3 +819,132 @@ describe('a signed visitor (identity)', () => {
     n.app.stop();
   });
 });
+
+// before_line (per chatbox): a command run before each visitor line, awaited; nonzero, a spawn error or the timeout
+// blocks the line (recorded only), and the being says fail_text. A tiny node script stands in for the command.
+describe('a chatbox with before_line', () => {
+  const FAIL = 'Sorry, I cannot read right now.';
+  const dirs = [];
+  afterAll(async () => { for (const d of dirs) await fs.rm(d, { recursive: true, force: true }); });
+  // mode: the script's behaviour — ok | fail (stderr + exit 1) | sleep (never finishes by itself)
+  async function hooked(mode, over = {}) {
+    const dir = await fs.mkdtemp(join(process.env.TMPDIR || '/tmp', 'egpt-before-line-'));
+    dirs.push(dir);
+    const out = join(dir, 'seen.json');
+    const script = join(dir, 'hook.mjs');
+    await fs.writeFile(script, `import { writeFileSync, readFileSync } from 'node:fs';
+const [out, mode, folder] = process.argv.slice(2);
+const seen = (() => { try { return JSON.parse(readFileSync(out, 'utf8')); } catch { return []; } })();
+seen.push({ pid: process.pid, folder, stdin: readFileSync(0, 'utf8') });
+writeFileSync(out, JSON.stringify(seen));
+if (mode === 'fail') { console.error('no access: ' + 'x'.repeat(300)); process.exit(1); }
+if (mode === 'sleep') setInterval(() => {}, 1000);
+`);
+    const n = await bootTeam({ identity: 'required', init: 'prime', team_group: GROUP, team_name: 'Equipo Contoso', before_line: { command: [process.execPath, script, out, mode, '{folder}'], fail_text: FAIL, ...over } });
+    const seen = async () => { try { return JSON.parse(await fs.readFile(out, 'utf8')); } catch { return []; } };
+    return { n, seen };
+  }
+  const folderOf = (n) => n.turns[0]?.cwd;
+
+  it('exit 0: the line is dispatched as today; the command got {folder} filled and stdin with folder, chat_id, client and claims', async () => {
+    const { n, seen } = await hooked('ok');
+    const identity = signed(JP);
+    const a = await n.post({ text: 'hola', identity });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, identity))).toBe(true), { timeout: 5000 });
+    const [one] = await seen();
+    expect(one.folder).toBe(folderOf(n));
+    const stdin = JSON.parse(one.stdin);
+    expect(stdin).toMatchObject({ folder: folderOf(n), client: 'contoso', claims: expect.objectContaining(JP) });
+    expect(stdin.chat_id).toMatch(/^http:contoso-/);
+    expect(Object.keys(stdin).sort()).toEqual(['chat_id', 'claims', 'client', 'folder']);
+    expect(n.lines.join('\n')).not.toMatch(/before_line/);
+    n.app.stop();
+  });
+
+  it('an unsigned visitor: claims is null on stdin', async () => {
+    const n = await bootTeam({ identity: 'optional', before_line: { command: [process.execPath, '-e', "process.stdin.pipe(require('fs').createWriteStream(process.argv[1]))", join(_HOME, 'seen-unsigned.json')] } });
+    await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(JSON.parse(await fs.readFile(join(_HOME, 'seen-unsigned.json'), 'utf8'))).toMatchObject({ claims: null, client: 'contoso' }), { timeout: 5000 });
+    n.app.stop();
+  });
+
+  it('exit 1: no dispatch; the visitor line is recorded (transcript, panel, topic); then fail_text is said as the being; one log line, no claims', async () => {
+    const { n } = await hooked('fail');
+    const identity = signed(JP);
+    const a = await n.post({ text: 'abre mis notas', identity });
+    expect(a.message).toMatchObject({ from: 'visitor', text: 'abre mis notas' });
+    await vi.waitFor(async () => expect((await n.messages(a.session, identity)).filter((m) => m.from === 'being' && m.text.includes(FAIL))).toHaveLength(1), { timeout: 5000 });
+    await settle();
+    expect(n.turns).toEqual([]);
+    const all = await n.messages(a.session, identity);
+    expect(all.map((m) => m.from)).toEqual(['visitor', 'being']);
+    const slug = [...n.io.files.keys()].find((f) => /transcript\.md$/.test(f)).split(/[\\/]/).at(-2);
+    const t = n.transcript(slug);
+    expect(t.indexOf('abre mis notas')).toBeGreaterThan(-1);
+    expect(t.indexOf(FAIL)).toBeGreaterThan(t.indexOf('abre mis notas'));
+    await vi.waitFor(() => expect(n.inThread().map((m) => m.text).slice(-2)).toEqual([expect.stringMatching(/visitor: abre mis notas$/), expect.stringContaining(FAIL)]), { timeout: 5000 });
+    const mine = n.lines.filter((l) => /before the line — before_line: /.test(l));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toContain('before_line: exit 1: no access: ');
+    expect(mine[0].split('no access: ')[1].length).toBeLessThanOrEqual(200);
+    expect(n.lines.join('\n')).not.toContain('jperez');
+    n.app.stop();
+  });
+
+  it('timeout: the same as exit 1, and the process is killed', async () => {
+    const { n, seen } = await hooked('sleep', { timeout_ms: 400 });
+    const identity = signed(JP);
+    const a = await n.post({ text: 'hola', identity });
+    expect(a.message).toMatchObject({ from: 'visitor' });
+    await vi.waitFor(async () => expect((await n.messages(a.session, identity)).filter((m) => m.text?.includes(FAIL))).toHaveLength(1), { timeout: 5000 });
+    expect(n.turns).toEqual([]);
+    expect(n.lines.join('\n')).toMatch(/before the line — before_line: timeout/);
+    const [one] = await seen();
+    expect(() => process.kill(one.pid, 0)).toThrow();
+    n.app.stop();
+  });
+
+  it('a command that cannot start: the same as exit 1', async () => {
+    const n = await bootTeam({ identity: 'required', team_group: GROUP, before_line: { command: '/nonexistent/acme-refresh', fail_text: FAIL } });
+    const identity = signed(JP);
+    const a = await n.post({ text: 'hola', identity });
+    await vi.waitFor(async () => expect((await n.messages(a.session, identity)).filter((m) => m.text?.includes(FAIL))).toHaveLength(1), { timeout: 5000 });
+    expect(n.turns).toEqual([]);
+    n.app.stop();
+  });
+
+  it('init: prime: the opening phrase runs the command; a bare init (init: true, or no phrase) does not', async () => {
+    const { n, seen } = await hooked('ok');
+    const identity = signed(JP);
+    const bare = await n.post({ kind: 'init', identity });
+    await settle();
+    expect(await seen()).toEqual([]);
+    expect(n.turns).toEqual([]);
+    await n.post({ kind: 'init', session: bare.session, identity, prime_text: 'revisa mis notas' });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(1), { timeout: 5000 });
+    expect(await seen()).toHaveLength(1);
+    n.app.stop();
+    const t = await bootTeam({ identity: 'required', init: true, before_line: { command: '/nonexistent/acme-refresh' } });
+    await t.post({ kind: 'init', identity });
+    await settle();
+    expect(t.lines.join('\n')).not.toMatch(/before_line/);
+    t.app.stop();
+  });
+
+  it('the opening phrase blocked: recorded, not dispatched, fail_text said', async () => {
+    const { n } = await hooked('fail');
+    const identity = signed(JP);
+    const i = await n.post({ kind: 'init', identity, prime_text: 'revisa mis notas' });
+    await vi.waitFor(async () => expect((await n.messages(i.session, identity)).map((m) => m.text.replace(/^🦉 /, ''))).toEqual(['revisa mis notas', FAIL]), { timeout: 5000 });
+    expect(n.turns).toEqual([]);
+    n.app.stop();
+  });
+
+  it('unset: a line is dispatched as today and nothing about before_line is logged', async () => {
+    const n = await bootTeam();
+    const a = await n.post({ text: 'hola' });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session))).toBe(true), { timeout: 5000 });
+    expect(n.lines.join('\n')).not.toMatch(/before_line/);
+    n.app.stop();
+  });
+});

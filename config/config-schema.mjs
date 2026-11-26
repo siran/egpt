@@ -1058,6 +1058,18 @@ export const CONFIG_SCHEMA = {
                               [cuentas] for every account of the person, signed by the site.
                               The card is rewritten when a verified line or init brings
                               other values for them, not only for a new conversation.
+            before_line       {command, timeout_ms, fail_text} (default none): a command run, awaited,
+                              before each visitor line (a typed one, the init: prime opening;
+                              not a bare init), before the being is invoked. command: an argv
+                              list or one path, no shell; {folder}, {chat_id} and {client} in it
+                              are filled (tools/template.mjs). stdin: one JSON object {folder,
+                              chat_id, client, claims} (claims: the verified identity's, null
+                              unsigned). timeout_ms default 8000 (then killed). Exit 0: the line
+                              goes on. Nonzero, a spawn error or the timeout: the being is not
+                              invoked; the line is recorded only (transcript, panel, team topic)
+                              and the chatbox's being says fail_text in that conversation. One
+                              log line with the exit code (or timeout) and the first 200 chars of
+                              stderr. Restart-only, like the rest of the block.
             conversation_by   session (default) | identity: identity puts every session of
                               one signed identity (its key) in ONE conversation, chat id
                               http:<client>-<16 hex of client + key>: one folder, thread,
