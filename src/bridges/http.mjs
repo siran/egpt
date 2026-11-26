@@ -21,6 +21,8 @@
 //   POST <ayde.path>/say                 {client, key, text}: a support line into a live chatbox conversation (ayde users, team and up); the widget shows it as "Soporte · <user>"
 //   <ayde.path>/secret/<session token>/…   the operator's secrets page (http-secrets.mjs; /<handle> secret opens the session), the token its auth, not ayde's
 //   GET  <ayde.path>/logout              401 + a signed-out page whose script overwrites each cached login so the next visit is challenged
+// before_line (per client, handled by beforeLine): a command awaited before each visitor line; exit 0 lets it on, anything
+// else throws {blocked, say}: the line is recorded only (backlog) and say(text) has the being say its fail_text after it.
 // A signed visitor's chat gets a title and a subtitle from its identity's claims (chat_title, chat_subtitle: templates
 // like topic_title, {school} · {short_name}; default {abrin} · {short_name} · {username}, and {user_type}), handed to
 // beforeLine, which records them in the conversation's folder for /ayde's chat lists; unsigned: none (the list says "Visitor").
@@ -459,7 +461,7 @@ export async function startHttpBridge({
   const secretsPage = secretBase ? createSecretsPage({ home, sessions: secretSessions, base: secretBase, json, readBody, audit: onSecret, now, log }) : null;
   const failures = new Map();
   const deliver = (body, from) => {
-    try { Promise.resolve(onIncoming?.(body, from)).catch((e) => log(`onIncoming threw — ${e?.message ?? e}`)); }
+    try { return Promise.resolve(onIncoming?.(body, from)).catch((e) => log(`onIncoming threw — ${e?.message ?? e}`)); }
     catch (e) { log(`onIncoming threw — ${e?.message ?? e}`); }
   };
 
@@ -483,21 +485,21 @@ export async function startHttpBridge({
   const addressOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',').map((a) => a.trim()).filter(Boolean).at(-1)) || req.socket.remoteAddress;
 
   // A visitor's line: on the panel and recorded, delivered to the being. The one path of a typed line and of the opening phrase.
-  const visitorLine = (c, s, text, place, n) => {
+  const visitorLine = (c, s, text, place, n, backlog = false) => {
     const chatId = chatIdOf(s.chat), name = `${c.name}-${s.chat.key}`;
     const m = append(s.chat, 'visitor', text, true);
     const st = mentionStatus(text, wakeWords, { addressWithoutAt });
     log(`incoming [${name}] visitor: ${JSON.stringify(text.slice(0, 60))}`);
-    deliver(place ? `(in ${place}) ${text}` : text, {
+    const recorded = deliver(place ? `(in ${place}) ${text}` : text, {
       chatId, chatName: s.chat.name ?? name, chatType: 'private', network: 'http',
       userId: chatId, senderName: 'visitor', firstName: 'visitor',
       isSender: false, authorized: false,   // a visitor is a stranger by design; the conversation's allowed_users admits it
       atEStart: st.atEStart, atEAnywhere: st.atEAnywhere,
       // the widget is a reply thread with the client's being: every visitor line addresses it
-      backlog: false, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
+      backlog, replyToBot: !!c.being, replyToBeing: c.being, isReaction: false, isTranscriptFromVoice: false,
       msgKey: m.id, msgTs: n,
     });
-    return m;
+    return { m, recorded };
   };
 
   async function post(c, req, res, cors) {
@@ -582,8 +584,13 @@ export async function startHttpBridge({
           persist();
           throw e;
         }
+        if (e?.blocked) {   // before_line said no: the visitor's line on the record only, never dispatched; then the being says its fail_text
+          const { m, recorded } = visitorLine(c, s, text, place, n, true);
+          Promise.resolve(recorded).then(() => e.say?.(text)).catch((x) => log(`${c.name}-${sid}: before_line fail_text not said — ${x?.message ?? x}`));
+          return { session: token, message: view(m), cold };
+        }
       }
-      if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n)), cold };
+      if (!init) return { session: token, message: view(visitorLine(c, s, text, place, n).m), cold };
       log(`incoming [${name}] the visitor opened the chatbox`);
       deliver(`(opened the chatbox${place ? ` in ${place}` : ''}, signed in as ${signedAs(idn.identity)})`, {   // on the record only
         chatId, chatName: s.chat.name, chatType: 'private', network: 'http',

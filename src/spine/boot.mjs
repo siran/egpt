@@ -10,7 +10,7 @@
 // the transport + process boundary (tests/spine-boot.test.mjs).
 import { readFile, writeFile, mkdir, unlink, readdir, rename, stat } from 'node:fs/promises';
 import { join, basename, extname, isAbsolute } from 'node:path';
-import { spawnSync, spawn } from 'node:child_process';
+import { spawnSync, spawn, execFile } from 'node:child_process';
 
 import { createSpine } from './spine.mjs';
 import { LIVENESS_EVERY_MS, LIVENESS_BACKGROUND_EVERY_MS, LIVENESS_BACKGROUND_CHANGE_MS } from './liveness.mjs';
@@ -130,7 +130,7 @@ import { isSilenceReply, mentionStatus } from '../auto-mode.mjs';
 import { isBrainFailureResult } from '../brain-errors.mjs';
 import { createBrowserScreens } from '../tools/browser-screens.mjs';
 import { createScreenTunnel } from '../tools/screen-tunnel.mjs';
-import { logLine, languagePack } from '../tools/template.mjs';
+import { logLine, languagePack, fill } from '../tools/template.mjs';
 
 // STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
 // transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
@@ -2417,6 +2417,46 @@ export async function boot({
         hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
       }
       if (!init) seatTeamTopic(client, chatId, { isNew, recap, identity, chatName });
+      // before_line (per chatbox): a command run before each visitor line (a typed one, the opening phrase), awaited. Exit 0:
+      // the line goes on. Anything else (nonzero, a spawn error, the timeout: killed): the being is not invoked; the limb
+      // records the line only and calls say(), the chatbox's being saying fail_text in this conversation (heartbeatSay).
+      const hook = c.before_line;
+      const argv = typeof hook?.command === 'string' ? [hook.command] : hook?.command;
+      if (!init && Array.isArray(argv) && argv.length) {
+        const folder = slugDir('http', await httpSlug(chatId, chatName));
+        const vars = { folder, chat_id: chatId, client };
+        const timeout = Number(hook.timeout_ms) > 0 ? Number(hook.timeout_ms) : 8000;
+        const [cmd, ...args] = argv.map((a) => fill(String(a), vars));
+        const why = await new Promise((done) => {
+          const child = execFile(cmd, args, { timeout, killSignal: 'SIGKILL' }, (err, _out, stderr) => {
+            if (!err) return done(null);
+            const how = err.killed ? 'timeout' : typeof err.code === 'number' ? `exit ${err.code}` : String(err.code);
+            done(`${how}${stderr ? `: ${String(stderr).slice(0, 200)}` : ''}`);
+          });
+          child.stdin?.on('error', () => {});
+          child.stdin?.end(JSON.stringify({ folder, chat_id: chatId, client, claims: identity?.claims ?? null }));
+        });
+        if (why) {
+          const being = c.being;
+          const text = hook.fail_text;
+          throw Object.assign(new Error(`before_line: ${why}`), {
+            blocked: true,
+            // say(line): the visitor's line, then fail_text, as a line takes: to the team topic once seated (roomRelay fanOut,
+            // fanOutReply), and recorded + posted by heartbeatSay as the being (the transcript, the widget).
+            say: async (line) => {
+              await seating.get(chatId)?.catch(() => {});
+              const ev = { ...(await services.identity.spineEvent('http', chatId)), body: line, senderName: 'visitor' };
+              await roomRelay.fanOut(ev);
+              if (!being || !text) return;
+              await heartbeatSay({
+                being, ns: chatId, ev, text, recordAs: being, what: 'before_line',
+                tag: { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being },
+              });
+              await roomRelay.fanOutReply(ev, being, text);
+            },
+          });
+        }
+      }
     };
     // A visitor's "end conversation": a fresh thread in the same conversation (/agents rethread's
     // own path), and the `ended` line to its chat members seated for replies (the team topic).
