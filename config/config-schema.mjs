@@ -4340,6 +4340,20 @@ export const CONFIG_SCHEMA = {
       msg: false
   `,
 
+  msg_approval: `
+    msg_approval — whether a being's /msg waits for the operator's yes. A being's "/<handle> msg <chat> <text>", as an
+    action in its reply or as its own signed line, is model-generated; with this on (the default) the node first asks in
+    the chat the being wrote it in ("✋ <being> → <chat>: <text> — send it? reply yes / no", the same countdown as the
+    ingest box's questions, ingest.ttl_ms). A node owner answers: a reply to the question, or a reaction on it. Yes
+    sends the text as written (its own-line /media files from the being's own folder), no drops it, running out of time
+    expires it. The operator's own typed "/<handle> msg" is never asked.
+
+    DEFAULT true. false → a being's /msg is sent at once, no question. Any other value leaves the question on.
+
+    EXAMPLE
+      msg_approval: false
+  `,
+
   reply_in_side_group: `
     The automatic side group (operator 2026-10-18). Set it on ONE conversation's OWN entry in
     config/conversations.yaml, or in config/config.yaml as the node's default (2026-11-02). On a side

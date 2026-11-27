@@ -63,6 +63,9 @@
 //   /group photo <path>        set this chat's photo from a file in this conversation's folder
 //   /group title <text>        set this chat's title
 //   /group description <text>  set this chat's description (enabled agents only, all three)
+//   /<handle> msg <chat> <text>  (also a bare /msg) a message for ANOTHER chat the being answers in; the text runs on
+//                              like /reply's (its own /media lines stay part of it); executing it ASKS, it does not
+//                              send (boot's msg limb: the operator's yes first, unless msg_approval is false)
 import { resolve as resolvePath, relative as relPath, isAbsolute, basename, extname, join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -81,6 +84,23 @@ import { makeOutbound } from './sender.mjs';
 export const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'ask', 'book', 'email', 'group']);
 const PLACEHOLDER_ONLY = /^(?:<[^<>]*>\s*)+$/;
 const ACTION_LINE = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i;
+// "/<handle> msg <rest>": a being's own handle, then msg (the command form a being already knows from /<handle> msg).
+const HANDLE_MSG_LINE = /^\/([^\s\/]+)[ \t]+msg(?:[ \t]+([\s\S]*))?$/i;
+
+// WHICH ACTION A WHOLE LINE IS: { verb, args } or null. `opts.handles` (the being's own wake tokens, handed over by the
+// spine) switches /msg on: the bare "/msg <chat> <text>" and "/<own handle> msg <chat> <text>" both read as the msg
+// action. Without it (a heartbeat's post, a card test) msg is just prose, as before. Another being's handle never is.
+function lineAction(trimmed, opts = {}) {
+  const hs = Array.isArray(opts?.handles) ? opts.handles : null;
+  if (hs) {
+    const h = HANDLE_MSG_LINE.exec(trimmed);
+    if (h && hs.includes(h[1].toLowerCase())) return { verb: 'msg', args: h[2] ?? '' };
+  }
+  const m = ACTION_LINE.exec(trimmed);
+  const verb = m ? m[1].toLowerCase() : null;
+  if (verb === 'msg') return hs ? { verb, args: m[2] ?? '' } : null;
+  return verb && ACTION_VERBS.has(verb) ? { verb, args: m[2] ?? '' } : null;
+}
 
 // A tiny word→emoji alias table so `/react like` works as well as `/react 👍`.
 // Beeper's reactionKey also accepts shortcodes/custom keys; a literal emoji or any
@@ -234,6 +254,17 @@ function parseOne(verb, args, ev, opts = {}) {
       if (bad) return { ok: false, reason: `group: ${bad}` };
       return { ok: true, action: { type: 'group', chatId, what, value } };
     }
+    case 'msg': {
+      // <chat> <text> — <chat> is the first word or a "quoted name" (also curly quotes), exactly as commands.mjs msgTo reads
+      // it; the text is the rest, line breaks kept. No target, no text, or a placeholder ("<chat>") is malformed:
+      // stripped + logged, never asked, never sent.
+      const m = /^(?:"([^"]+)"|\u201c([^\u201d]+)\u201d|(\S+))(?:[ \t]*\r?\n|[ \t]+)?([\s\S]*)$/.exec(raw);
+      const target = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+      const text = (m?.[4] ?? '').trim();
+      if (!target || !text) return { ok: false, reason: 'msg: expected "<chat> <text>"' };
+      if (/[<>]/.test(target)) return { ok: false, reason: 'msg: placeholder, not a chat' };
+      return { ok: true, action: { type: 'msg', chatId, target, text } };
+    }
     case 'media': {
       // <path> [caption]. A leading "quoted path" tolerates a filename with spaces.
       let path, caption = null;
@@ -313,20 +344,22 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
   // message hides the continuation exactly as the delivered one does. /edit and the rest keep their
   // one-line form: the operator asked for quote-replies, and a multi-line /edit would swallow the
   // prose after it, changing what a being's edits have meant since 2026-07.
-  let open = null;   // the /reply still collecting: { raw: [lines], args: [its text, line by line] }
+  // /MSG RUNS ON THE SAME WAY (2026-11-27), with one difference: its own /media lines are part of its text (they leave
+  // with it, to the other chat, the file from the being's folder), so only another kind of action line ends it.
+  let open = null;   // the /reply or /msg still collecting: { verb, raw: [lines], args: [its text, line by line] }
   const close = () => {
     if (!open) return;
     const o = open; open = null;
-    settle(parseOne('reply', o.args.join('\n'), ev, opts), o.raw.join('\n').trim());
+    settle(parseOne(o.verb, o.args.join('\n'), ev, opts), o.raw.join('\n').trim());
   };
   for (const line of String(text ?? '').split('\n')) {
     // The historical rule first: the WHOLE line is the action.
-    const m = ACTION_LINE.exec(line.trim());
-    const verb = m ? m[1].toLowerCase() : null;
-    if (verb && ACTION_VERBS.has(verb)) {
+    const act = lineAction(line.trim(), opts);
+    if (act && open?.verb === 'msg' && act.verb === 'media') { open.raw.push(line); open.args.push(line); continue; }
+    if (act) {
       close();
-      if (verb === 'reply') { open = { raw: [line.trim()], args: [m[2] ?? ''] }; continue; }
-      settle(parseOne(verb, m[2] ?? '', ev, opts), line.trim());
+      if (act.verb === 'reply' || act.verb === 'msg') { open = { verb: act.verb, raw: [line.trim()], args: [act.args] }; continue; }
+      settle(parseOne(act.verb, act.args, ev, opts), line.trim());
       continue;
     }
     // ...then the LOST NEWLINE (weldStarts). RESTORING it is the whole treatment: the sentence
@@ -342,7 +375,7 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
     }
     // The sentence before the weld belongs to whatever it was part of: an open /reply's text, or prose.
     if (open) { open.raw.push(w.head); open.args.push(w.head); close(); } else proseLines.push(w.head);
-    if (w.verb === 'reply') { open = { raw: [line.slice(w.head.length).trim()], args: [w.args] }; continue; }
+    if (w.verb === 'reply') { open = { verb: 'reply', raw: [line.slice(w.head.length).trim()], args: [w.args] }; continue; }
     settle(w.r, line.slice(w.head.length).trim());
   }
   close();
@@ -358,9 +391,19 @@ export function parseReplyActions(text, ev = {}, opts = {}) {
 // it is complete (→ viable iff it IS one of ours). '/reactx', '/hello world' and '/123'
 // are all prose by this test, exactly as ACTION_LINE + ACTION_VERBS will judge them.
 const VERB_PREFIX = /^\/([a-z]*)$/i;
-function couldBecomeAction(fragment) {
+function couldBecomeAction(fragment, opts = {}) {
   const t = String(fragment ?? '').trim();
   if (!t || t[0] !== '/') return false;
+  // /msg (only where the spine handed over the being's handles): "/le", "/leo", "/leo ms", "/leo msg x" are all still
+  // a msg line in the making, like "/rep" is a /reply's; "/leo is great" can no longer be one and streams at once.
+  const hs = Array.isArray(opts?.handles) ? opts.handles : null;
+  if (hs) {
+    const word = /^\/([^\s\/]*)$/.exec(t);
+    if (word && ['msg', ...hs].some((h) => h.startsWith(word[1].toLowerCase()))) return true;
+    const typing = /^\/([^\s\/]+)[ \t]+(\S*)$/.exec(t);
+    if (typing && hs.includes(typing[1].toLowerCase()) && 'msg'.startsWith(typing[2].toLowerCase())) return true;
+    if (lineAction(t, opts)?.verb === 'msg') return true;
+  }
   const p = VERB_PREFIX.exec(t);
   if (p) return [...ACTION_VERBS].some((verb) => verb.startsWith(p[1].toLowerCase()));
   const m = ACTION_LINE.exec(t);
@@ -414,10 +457,10 @@ export function partialProse(partial, ev = {}, opts = {}) {
   // frame that once showed the command would keep showing it after finish() stripped it — which
   // is exactly the text the operator read in the chat.
   let hold = -1;
-  if (couldBecomeAction(tail) && !isDemotingReply(tail, opts)) hold = tail.length - tail.trimStart().length;
+  if (couldBecomeAction(tail, opts) && !isDemotingReply(tail, opts)) hold = tail.length - tail.trimStart().length;
   else for (const i of weldStarts(tail)) {
     const frag = tail.slice(i);
-    if (couldBecomeAction(frag) && !isDemotingReply(frag, opts)) { hold = i; break; }
+    if (couldBecomeAction(frag, opts) && !isDemotingReply(frag, opts)) { hold = i; break; }
   }
   let upTo = hold < 0 ? s.length : cut + 1 + hold;
   // A /REPLY THAT SO FAR NAMES ONLY ITS TARGET ('/reply #5', then nothing but blank lines) is still
@@ -463,12 +506,12 @@ export function confinedFile(convDir, path) {
 // wired to more than one Beeper connection runs a being's own limbs (react/reply/media/edit)
 // against ITS OWN bridge. Absent, or returning nullish for a given being, falls straight back
 // to the single `bridge` below — BYTE-IDENTICAL to before for every existing caller.
-// limbs / actionsOf / wake (2026-10-15, /book + /email; /group 2026-10-26): limbs = { book, email, group } — each
+// limbs / actionsOf / wake (2026-10-15, /book + /email; /group 2026-10-26): limbs = { book, email, group, msg } — each
 // (action, ev, being) -> { outcome, detail }; actionsOf(being) -> that agent's `actions` list;
 // wake = spine.wakeOnBackground, which carries the outcome back to the being as a turn.
 // onUndeliverable({ being, chatId, what, reason }) (2026-10-19): a limb that said nothing anywhere —
 // boot posts it to log_to_group, once (the sender's own hook, for the reply).
-export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, limbs = {}, actionsOf = () => null, wake = null, onUndeliverable = async () => {}, ffmpegCommand = null, transcode = transcodeToOpus, onLog = () => {} } = {}) {
+export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, limbs = {}, actionsOf = () => null, handlesOf = () => null, wake = null, onUndeliverable = async () => {}, ffmpegCommand = null, transcode = transcodeToOpus, onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
   const outbound = makeOutbound({ bridge, bridgeOf, peerMouth, onLog });
   const lost = async (out, ev, being, what, why = null) => {
@@ -595,6 +638,12 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
         return !!ok;
       }
       case 'media': return runMedia(a, ev, being, confineEv);
+      case 'msg': {
+        // Asked, not sent: boot's limb puts the text to the operator first (msg_approval), or sends it at once when
+        // that is false. Wired by boot, not behind agents.<being>.actions. It says its own refusals in the chat.
+        if (!limbs?.msg) { onLog(`msg: no msg limb wired — dropped (fail-closed)`); return false; }
+        return !!(await limbs.msg(a, ev, being));
+      }
       case 'book':
       case 'email':
       case 'group': return runGated(a, ev, being);
@@ -616,10 +665,17 @@ export function createReplyActions({ bridge, bridgeOf = null, peerMouth = null, 
     }
   }
 
+  // `opts.being` (the spine names the being whose reply it is) → that being's handles, which is what switches /msg on.
+  const withHandles = (opts) => {
+    if (opts?.handles || opts?.being == null) return opts;
+    const handles = handlesOf(opts.being);
+    return Array.isArray(handles) ? { ...opts, handles: handles.map((h) => String(h).toLowerCase()) } : opts;
+  };
+
   return {
-    parse: (text, ev, opts) => parseReplyActions(text, ev, opts),
+    parse: (text, ev, opts) => parseReplyActions(text, ev, withHandles(opts)),
     // The streaming half of the SAME split: what a partial may show (see partialProse).
-    partialProse: (partial, ev, opts) => partialProse(partial, ev, opts),
+    partialProse: (partial, ev, opts) => partialProse(partial, ev, withHandles(opts)),
     /**
      * Execute the parsed actions. `stripped` lines are logged (never run). Every
      * action targets ev.chatId (the emit syntax has no cross-chat target); errors are

@@ -1704,7 +1704,7 @@ export function createSpine({
       // `text` on item/completed), so before this the earlier output was simply gone.
       // Fire-and-forget — a token delta must not wait on fs; logStream serializes.
       let streamed = '', working = false;
-      const prose = (partial) => (actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo }) : partial);
+      const prose = (partial) => (actions?.partialProse ? actions.partialProse(partial, ev, { quotedId: replyTo, being: to }) : partial);
       const show = (partial) => out.update(prose(partial));
       // The emoji train's first tool use or first text: the bubble, with the text so far, replaces the mark.
       const open = (partial) => {
@@ -1742,7 +1742,7 @@ export function createSpine({
       // RAW reply (action lines included) is recorded, so nothing E emitted is ever lost.
       // `quotedId`: the message THIS reply is itself posted as a quote of — the honest premise
       // for the /reply redundancy guard (a /reply at what we already quote is the rogue twin).
-      const parsed = (actions?.parse && surfaced && !turnFailed) ? actions.parse(rawText, ev, { quotedId: replyTo }) : null;
+      const parsed = (actions?.parse && surfaced && !turnFailed) ? actions.parse(rawText, ev, { quotedId: replyTo, being: to }) : null;
       const proseText = parsed ? parsed.prose : rawText;
       const hadActions = !!parsed && (parsed.run.length + parsed.stripped.length) > 0;
       // Action-only: the reply is nothing but action lines AND at least one of them RUNS.

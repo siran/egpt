@@ -1,15 +1,21 @@
 // tests/migrations-0054-the-cards-name-msg-and-beat-to.test.mjs — migrations/0054-the-cards-name-msg-and-beat-to.mjs.
 //
-// The fixtures are the REPO's cards with 0054's lines taken out: what a node's card is before it.
+// The fixtures are the REPO's cards with 0054's lines taken out: what a node's card is before it. The repo's actions card
+// has since been reworded by 0055, so "the card 0054 leaves" is the repo card with that wording put back.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plan, EDITS } from '../migrations/0054-the-cards-name-msg-and-beat-to.mjs';
+import { EDITS as EDITS_0055 } from '../migrations/0055-the-actions-card-says-msg-asks.mjs';
 import { runMigrations, listMigrations, MIGRATIONS_DIR } from '../setup/migrate.mjs';
 
 const ROOM = ['config', 'skeletons', 'room'];
-const repo = (name) => readFileSync(join(import.meta.dirname, '..', ...ROOM, name), 'utf8');
+const repo = (name) => {
+  const text = readFileSync(join(import.meta.dirname, '..', ...ROOM, name), 'utf8');
+  const e = name === '10-actions.md' ? EDITS_0055[0] : null;
+  return e ? text.replace(e.lines.join('\n'), e.from.join('\n')) : text;
+};
 const ADDED = [...new Set(EDITS.flatMap((e) => e.lines))];
 const trimmed = new Set(ADDED.map((l) => l.trim()));
 // The repo card without 0054's lines (and the blank line that set its paragraph off).
