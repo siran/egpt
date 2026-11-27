@@ -2384,16 +2384,19 @@ export async function boot({
     const beforeLine = async ({ client, chatId, chatName, isNew, init, recap, identity, title, subtitle }) => {
       // A chat the registry cannot place (its chat_title is another chat's folder; contacts.resolve logged why) is refused:
       // the limb fails the line (500) rather than carry it on without a folder.
+      const known = !!getContact(await _loadState(), 'http', chatId);   // before httpSlug creates it
       if (!await httpSlug(chatId, chatName)) throw Object.assign(new Error('no conversation folder for this chat'), { refused: true });
+      // New for the desk is the CONVERSATION's folder, not the limb's memory of the visitor (a cleaned-up folder starts over).
+      const fresh = isNew || !known;
       const c = clients[client] ?? {};
       const extra = (Array.isArray(c.card_claims) ? c.card_claims.map(String) : []).filter((k) => k && k !== 'exp' && k !== 'iat');
-      if (identity && (isNew || extra.length)) {
+      if (identity && (fresh || extra.length)) {
         const picked = {};
         for (const k of extra) { const v = identity.claims?.[k] ?? identity.data?.[k]; if (v !== undefined) picked[k] = v; }
         const sig = JSON.stringify(picked);
         const dir = slugDir('http', await httpSlug(chatId, chatName));
         const file = join(dir, 'desktop', 'user.json');
-        let write = isNew;
+        let write = fresh;
         if (!write && cardSeen.get(chatId) !== sig) {
           let had = null;
           try { const old = JSON.parse(await readFile(file, 'utf8')); had = {}; for (const k of extra) if (old[k] !== undefined) had[k] = old[k]; } catch { had = null; }
@@ -2407,16 +2410,16 @@ export async function boot({
           const parts = [`${identity.short_name} (${identity.username})`.trim(), identity.user_type && `type ${identity.user_type}`, `school ${identity.abrin}`, identity.user_id && `id ${identity.user_id}`];
           const more = Object.entries(picked).map(([k, v]) => `${k}: ${JSON.stringify(v)}\n`).join('');
           await writeFile(join(dir, 'desktop', 'user.md'), `Verified by the site: ${parts.filter(Boolean).join(', ')}.\n${more}`, 'utf8');
-          hlog(`${chatId}: its user is on the desk (desktop/user.json)${isNew ? '' : ', card claims updated'}`);
+          hlog(`${chatId}: its user is on the desk (desktop/user.json)${fresh ? '' : ', card claims updated'}`);
         }
         cardSeen.set(chatId, sig);
       }
-      if (isNew && c.seed) {
+      if (fresh && c.seed) {
         const from = isAbsolute(String(c.seed)) ? String(c.seed) : join(EGPT_HOME, String(c.seed));
         const n = copyTreeIfMissing(from, slugDir('http', await httpSlug(chatId, chatName)));
         hlog(`${chatId}: its desk is seeded from ${from} (${n} files)`);
       }
-      if (!init) seatTeamTopic(client, chatId, { isNew, recap, identity, chatName });
+      if (!init) seatTeamTopic(client, chatId, { isNew: fresh, recap, identity, chatName });
       // before_line (per chatbox): a command run before each visitor line (a typed one, the opening phrase), awaited. Exit 0:
       // the line goes on. Anything else (nonzero, a spawn error, the timeout: killed): the being is not invoked; the limb
       // records the line only and calls say(), the chatbox's being saying fail_text in this conversation (heartbeatSay).

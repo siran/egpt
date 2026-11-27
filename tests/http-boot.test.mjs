@@ -256,6 +256,37 @@ describe('the seeded desk', () => {
       app.stop();
     } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
+
+  it('a visitor the limb knows but whose conversation is gone (entry and folder cleaned up) gets a seeded desk again; a live one is never re-seeded', async () => {
+    const seedDir = join(_HOME, 'seeds', 'contoso');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(join(seedDir, 'identidad.md'), 'v1');
+    await fs.writeFile(join(seedDir, 'notas.md'), 'n');
+    try {
+      const { app, post, turns, lines, state } = await bootChatbox({ client: { seed: 'seeds/contoso' } });
+      const a = await post({ text: 'hola' });
+      await vi.waitFor(() => expect(turns).toHaveLength(1), { timeout: 5000 });
+      const dir = turns[0].cwd;
+      const chatId = `http:${dir.split(/[\\/]/).at(-1)}`;
+
+      // a live conversation: a seed file the being deleted on purpose stays deleted
+      await fs.rm(join(dir, 'notas.md'));
+      await post({ session: a.session, text: 'sigo' });
+      await vi.waitFor(() => expect(turns).toHaveLength(2), { timeout: 5000 });
+      expect(existsSync(join(dir, 'notas.md'))).toBe(false);
+
+      // a cleanup removes the entry and the folder; the limb still has the visitor's session
+      delete state().contacts.http[chatId];
+      await fs.rm(dir, { recursive: true, force: true });
+      lines.length = 0;
+      await post({ session: a.session, text: 'sigo otra vez' });
+      await vi.waitFor(() => expect(turns).toHaveLength(3), { timeout: 5000 });
+      expect(turns[2].desk).toBe(true);
+      expect(existsSync(join(turns[2].cwd, 'notas.md'))).toBe(true);
+      expect(lines.some((l) => /its desk is seeded from .* \(2 files\)$/.test(l))).toBe(true);
+      app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
 });
 
 describe('no public commands in a chatbox conversation', () => {
