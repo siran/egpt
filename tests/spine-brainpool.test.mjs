@@ -7,6 +7,7 @@ import { createBrainPool, parseWarmBlock, resolveBeingDef, resolveDefaultBrainDe
 import { createWarmPool } from '../src/warm-sessions.mjs';
 import { createPiCliSession } from '../src/pi-cli-session.mjs';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { loadPermissionLevel, ACCESS_LEVELS, isAccessLevel } from '../src/spine/permission-levels.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { createBrains } from '../src/spine/brains.mjs';
@@ -3573,5 +3574,107 @@ describe('brainpool — the chatbox warm class', () => {
     expect(keys.map((k) => k.split(':')[2])).toEqual(['whatsapp', 'http']);
     expect(keys[1]).toMatch(/b2/);
     pool.close();
+  });
+});
+
+// THE RE-FEED IS KEYED ON THE HASH OF THE FEED (2026-11-27, supersedes the "a write arms it" flag). A
+// RESUMED thread is re-fed when the hash of the identity feed it last received (identityFeedHash,
+// stamped beside identityInjectedAt only after the turn that carried the feed succeeded) differs
+// from the hash of the feed as it is now. No in-memory flag, no side effect of writing files.
+describe('brainpool.turn - the re-feed is keyed on the injected feed hash', () => {
+  const H = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+  const STAMP0 = '2026-01-01T00:00:00.000Z';
+  const blockOf = (getState) => getContact(getState(), ev.surface, ev.chatId).entry.agents.e;
+  const resumed = (feed, hash, extra = {}) => ({ seedSession: 'sid', seedAgents: { e: { identityInjectedAt: STAMP0, ...(hash ? { identityFeedHash: hash } : {}) } }, loadFeed: async () => feed, ...extra });
+
+  it('hashes match: the prompt is the bare line, every turn, and nothing is written to the block', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid' }], resumed('I am eGPT.', H('I am eGPT.')));
+    const before = JSON.stringify(blockOf(getState));
+    await brain.turn('e', ev);
+    await brain.turn('e', ev);
+    await brain.turn('e', ev);
+    expect(pool.calls.map((c) => c.message)).toEqual([ev.line, ev.line, ev.line]);
+    expect(JSON.stringify(blockOf(getState))).toBe(before);
+  });
+
+  it('a restart changes nothing: a fresh pool over the persisted state sees the same hash and re-feeds nothing', async () => {
+    const first = harness([{ text: 'ok', sessionId: 'sid' }], resumed('v1', H('v0')));
+    await first.brain.turn('e', ev);                                        // v0 -> v1: re-fed, hash stamped
+    expect(first.pool.calls[0].message).toContain('v1');
+    const second = harness([{ text: 'ok', sessionId: 'sid' }], { loadFeed: async () => 'v1' });
+    second.setState(first.getState());                                      // "restart": new brainpool, same conversations.yaml
+    await second.brain.turn('e', ev);
+    expect(second.pool.calls[0].message).toBe(ev.line);
+  });
+
+  it('hashes differ: this turn re-feeds the RESUMED thread (same session), stamps the new hash, and the next turn is bare', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid' }], resumed('I am eGPT, v2.', H('I am eGPT, v1.')));
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.sessionId).toBe('sid');
+    expect(pool.calls[0].message).toContain('I am eGPT, v2.');
+    expect(pool.calls[0].message.endsWith(ev.line)).toBe(true);
+    const b = blockOf(getState);
+    expect(b.identityFeedHash).toBe(H('I am eGPT, v2.'));
+    expect(b.identityInjectedAt).not.toBe(STAMP0);
+    await brain.turn('e', ev);
+    expect(pool.calls[1].message).toBe(ev.line);
+  });
+
+  it('a turn that THROWS keeps the re-feed pending: nothing stamped, and the next turn re-feeds', async () => {
+    const { brain, pool, getState } = harness([() => Promise.reject(new Error('boom')), { text: 'ok', sessionId: 'sid' }], resumed('v2', H('v1')));
+    await expect(brain.turn('e', ev)).rejects.toThrow('boom');
+    expect(blockOf(getState).identityFeedHash).toBe(H('v1'));               // still the old one
+    expect(blockOf(getState).identityInjectedAt).toBe(STAMP0);
+    await brain.turn('e', ev);
+    expect(pool.calls[1].message).toContain('v2');                           // the feed was not lost
+    expect(blockOf(getState).identityFeedHash).toBe(H('v2'));
+  });
+
+  it('a thread with no recorded hash is unknown, not stale: bare line, state untouched', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid' }], resumed('I am eGPT.', null));
+    const before = JSON.stringify(blockOf(getState));
+    await brain.turn('e', ev);
+    expect(pool.calls[0].message).toBe(ev.line);
+    expect(JSON.stringify(blockOf(getState))).toBe(before);
+  });
+
+  it('a brand-new thread (a new fork) gets the feed ONCE from the kickoff, with the hash recorded: no second feed', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's1' }], { loadFeed: async () => 'I am eGPT.' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].message.split('I am eGPT.')).toHaveLength(2);
+    expect(blockOf(getState).identityFeedHash).toBe(H('I am eGPT.'));
+    await brain.turn('e', ev);
+    expect(pool.calls[1].message).toBe(ev.line);
+  });
+
+  it('desk vs non-desk cannot re-arm every turn: the hash is of the feed THIS kind of turn is given, stamped, then stable', async () => {
+    const loadFeed = async (_p, _c, o) => (o?.publicOnly ? 'public feed' : 'full feed');
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }], { seedSession: 'sid', seedAgents: { e: { access_level: 'reader', identityInjectedAt: STAMP0, identityFeedHash: H('full feed') } }, loadFeed, loadPermission: loadPermissionLevel });
+    await brain.turn('e', ev);                                              // the desk feed differs from the full one it was last given: one re-feed
+    await brain.turn('e', ev);
+    await brain.turn('e', ev);
+    expect(pool.calls.map((c) => c.message.includes('public feed'))).toEqual([true, false, false]);
+  });
+
+  it('/agents refresh (an armed null stamp) still re-feeds when the hashes match, and records the hash', async () => {
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'sid' }], { seedSession: 'sid', seedAgents: { e: { identityInjectedAt: null, identityFeedHash: H('I am eGPT.') } }, loadFeed: async () => 'I am eGPT.' });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].message).toContain('I am eGPT.');
+    expect(blockOf(getState).identityInjectedAt).toMatch(/^\d{4}-/);
+    expect(blockOf(getState).identityFeedHash).toBe(H('I am eGPT.'));
+  });
+
+  it('rewriting a stale room copy does NOT by itself re-feed: the hash decides', async () => {
+    const files = {};
+    const norm = (p) => String(p).replace(/\\/g, '/');
+    const io = {
+      mkdir: async () => {}, rename: async () => {},
+      readFile: async (p) => { const k = norm(p); if (k in files) return files[k]; if (k.endsWith('config.yaml')) return null; const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+      writeFile: async (p, d) => { files[norm(p)] = d; },
+    };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'sid' }], resumed('I am eGPT.', H('I am eGPT.'), { io }));
+    await brain.turn('e', ev);
+    expect(Object.keys(files).some((p) => p.endsWith('/directives/10-actions.md'))).toBe(true);   // the room copy was written
+    expect(pool.calls[0].message).toBe(ev.line);                                                  // and nothing was re-fed
   });
 });
