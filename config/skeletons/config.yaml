@@ -349,7 +349,8 @@ networks:
 # commands anyone in a chat may run; a chat's own conversations.yaml list replaces it
 # public_commands: [split, send, end, side]
 
-# /<handle> msg <chat> <text> posts as that being into another chat it already answers in; false = refused
+# /<handle> msg <chat> <text> posts <text> as written, as that being, into another chat (the operator's own line: any
+# chat; else one it already answers in); false = refused
 # msg: true
 
 # group chats reply in their "SI+<group>" side group unless their conversations.yaml entry says

@@ -25,6 +25,8 @@ const CHATS = {
   topic: ['telegram', 'tg:-300/7', 'Billing', ['leo']],
   visitor: ['http', 'http:acme-abc', 'Visitor Dani', ['leo']],
   quiet: ['telegram', 'tg:205', 'Quiet Room', ['other']],
+  guild: ['telegram', 'tg:-400', 'Guild', ['other']],
+  ops: ['telegram', 'tg:-400/9', 'Ops Notes', ['other']],
 };
 function build(keys, config = {}) {
   let st = { contacts: {} };
@@ -92,9 +94,23 @@ describe('/msg', () => {
     expect(posts).toHaveLength(0);
     expect(sent.at(-1).text).toMatch(/no chat matches/);
   });
-  it('refuses a chat where the being does not answer', async () => {
-    const { msg, sent, posts } = build(['quiet']);
+  it('refuses a chat where the being does not answer, to anyone but the operator', async () => {
+    const { via, sent, posts } = build(['quiet']);
+    expect(await via({ body: '/leo msg quiet hi', senderId: 'stranger', raw: { chatType: 'group' } })).toBe(true);
+    expect(posts).toHaveLength(0);
+    expect(sent.at(-1).text).toBe('`/msg`: leo does not answer in Quiet Room');
+  });
+  it("the operator's own line reaches any chat, a topic by Group/topic too", async () => {
+    const { msg, sent, posts } = build(['quiet', 'guild', 'ops']);
     await msg('/msg quiet hi');
+    await msg('/msg "guild/ops notes" there');
+    expect(posts.map((p) => [p.chatId, p.text])).toEqual([['tg:205', 'hi'], ['tg:-400/9', 'there']]);
+    expect(posts.every((p) => p.opts.being === 'leo')).toBe(true);
+    expect(sent.at(-1).text).toBe('sent to Ops Notes');
+  });
+  it("a being's own line is refused where it does not answer, though it arrives on the operator's own account", async () => {
+    const { via, sent, posts } = build(['quiet']);
+    expect(await via({ body: '🐶 leo: /leo msg Quiet Room hi', fromNode: 'n', fromBeing: 'leo', isSender: true, authorized: true })).toBe(true);
     expect(posts).toHaveLength(0);
     expect(sent.at(-1).text).toBe('`/msg`: leo does not answer in Quiet Room');
   });

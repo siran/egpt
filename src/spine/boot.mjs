@@ -3707,12 +3707,13 @@ ${more}`, 'utf8');
       // 'secondary' is said through the one placement (sayOnce): the mouth in its OWN room for the chat
       // (the stored mouth_chat, else routeLocally), else the connection holding it; not said → the
       // primary. Never found by title. `canary`: a side group's opener names the group (persona-wrap).
-      // `being` (/msg): said AS that being — its stamp and signature layers, recorded in the chat's transcript — through
-      // heartbeatSay, the placement a being's own post takes (the connection holding the chat, or the mouth).
+      // `being` (/msg): said by that being's account, recorded in the chat's transcript as its line — through
+      // heartbeatSay, the placement a being's own post takes (the connection holding the chat, or the mouth) — but the
+      // text exactly as written: the tag carries no stamp and no layers, only skipSignature (/send's, above), so a bot
+      // that answers lines starting with its own name reads it first. Still the same .send, so echo-dedup knows it.
       postReply:     async (chatId, text, replyToMessageID, { via = null, unsigned = false, canary = null, being = null, surface = null } = {}) => {
         if (being) {
-          const tag = { bodyEmoji: bodyEmojiOf(being), label: labelOf(being), agentSigOpen: agentSignatureOpenOf(being), agentSigClose: agentSignatureCloseOf(being), persona: being };
-          try { await heartbeatSay({ being, ns: chatId, ev: await services.identity.spineEvent(surface, chatId), text, tag, recordAs: being, what: 'msg' }); return true; }
+          try { await heartbeatSay({ being, ns: chatId, ev: await services.identity.spineEvent(surface, chatId), text, tag: { skipSignature: true }, recordAs: being, what: 'msg' }); return true; }
           catch (e) { log.line?.(`[command] /msg: not delivered to ${chatId} — ${e?.message ?? e}`); return false; }
         }
         const opts = { replyTo: replyToMessageID, skipSignature: unsigned, canary };

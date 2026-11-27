@@ -14,6 +14,7 @@ first.
 
 `/<handle> msg` (my own handle) posts `<text>` as me into another chat, only one I already answer in;
 `<chat>` is a name ("quoted" if it has spaces); several matches send nothing.
+It arrives exactly as I write it, no name tag, no signature, so I start with whoever it is for.
 
 A `/reply` runs on to my next action or the end, so it can hold paragraphs and
 lists. My plain words go before my actions.

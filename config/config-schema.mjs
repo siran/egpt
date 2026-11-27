@@ -4326,9 +4326,12 @@ export const CONFIG_SCHEMA = {
   `,
 
   msg: `
-    /msg — "/<handle> msg <chat> <text>" posts <text> as that being into another chat it already answers in
+    /msg — "/<handle> msg <chat> <text>" posts <text> as that being into another chat of the node
     (operator 2026-11-21; "Group/topic", name or slug, case- and accent-blind; a "quoted name" if it has
-    spaces). Never a chatbox visitor or the being's own chat. The same <chat> naming is used by a heartbeat's
+    spaces). The text goes out exactly as written: no persona stamp, no signature (2026-11-25), and is
+    logged in that chat's transcript as the being's line. The operator's own typed line may reach any
+    chat or topic; anyone else's, and a being's own line, only a chat where the being already answers.
+    Never a chatbox visitor or the being's own chat. The same <chat> naming is used by a heartbeat's
     to:.
 
     DEFAULT true (on). false → /msg is refused ("off on this node"). Any other value leaves it on.

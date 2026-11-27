@@ -30,6 +30,7 @@ export const EDITS = [
     lines: [
       '`/<handle> msg` (my own handle) posts `<text>` as me into another chat, only one I already answer in;',
       '`<chat>` is a name ("quoted" if it has spaces); several matches send nothing.',
+      'It arrives exactly as I write it, no name tag, no signature, so I start with whoever it is for.',
     ],
   },
   {

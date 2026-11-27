@@ -83,12 +83,17 @@ Turning Topics on makes a basic group a supergroup with a new id; the
 conversation (folder, threads, settings, a `closed_chats` rule) follows it.
 
 `/<handle> msg <chat> <text>` (anyone, a being's own line too; never from a chatbox) posts `<text>` into another chat of
-this node, stamped as that being, and answers `sent to <chat>`. `<chat>` is the
+this node as that being, exactly as written: no persona stamp, no signature (so a
+bot that answers only lines starting with its name, like "sol", sees the name first).
+It still goes out through the bridge and is logged in that chat's transcript as the
+being's line. It answers `sent to <chat>`. `<chat>` is the
 first word, or a "quoted name"; it matches names, slugs and `Group/topic`, ignoring
 case and accents, and sends only when exactly one chat matches (otherwise the
-matches are listed). The text is the rest of the message, line breaks kept. Only
-chats where the being already answers are allowed; chatbox visitors never are.
-`msg: false` in config.yaml turns it off.
+matches are listed). The text is the rest of the message, line breaks kept. The
+operator's own typed line may reach any chat or topic of the node; anyone else's, and
+a being's own line (it arrives on the node's account, so it cannot be told from the
+operator's), only a chat where the being already answers. Chatbox visitors, a
+being's own chat and the chat itself never are. `msg: false` in config.yaml turns it off.
 
 ```text
 /<handle> status                               compact node health (fenced yaml):
@@ -197,9 +202,10 @@ chats where the being already answers are allowed; chatbox visitors never are.
                                                below)
 /<handle> super <message>                      a turn of this chat's superintendent
                                                S, answered here (see below)
-/<handle> msg <chat> <text>                    post <text> as this being into
-                                               another chat it answers in
-                                               (anyone but chatbox; see the paragraph
+/<handle> msg <chat> <text>                    post <text> as written, as this being,
+                                               into another chat (any chat from the
+                                               operator's line; else one it answers
+                                               in; anyone but chatbox; see the paragraph
                                                under /split; msg: false = off)
 /<handle> side <prompt>                        ONE turn of the chat's being, in the
                                                chat's own thread, answered in the

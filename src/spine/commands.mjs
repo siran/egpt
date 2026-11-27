@@ -3916,7 +3916,7 @@ export function createCommands({
   // account named by config.send.post_back_from ('primary' = the operator's own account, the DEFAULT;
   // 'secondary' = the mouth) — boot routes { via } to that connection's bridge.
   // THE DELIVERY into another chat, shared by /send (as the operator, or the mouth) and /msg (as a being:
-  // `being` stamps it like any reply of that being and records it in the target's transcript — boot).
+  // `being` records it in the target's transcript as that being's line, the text exactly as given — boot).
   const deliverTo = (chatId, text, { via = null, unsigned = false, being = null, surface = null } = {}) =>
     forkBridge.postReply(chatId, text, null, { via, unsigned, ...(being ? { being, surface } : {}) });
   async function sendToOriginal(ev) {
@@ -3972,8 +3972,10 @@ export function createCommands({
   // /msg <target> <text> (operator 2026-11-21): post <text> as this command's being into another chat of this node.
   // <target> = the first word, or a "quoted name"; the text is the rest, line breaks kept. The target resolves as
   // /agents=<slug> does (resolveTarget: name, slug or Group/topic, case- and accent-blind; ambiguity lists the
-  // matches, nothing is sent), never a chatbox visitor or a being's own chat, and only a chat the being already
-  // answers in (residentsOf — the conversation's own agents). config.msg: false turns it off.
+  // matches, nothing is sent), never a chatbox visitor or a being's own chat. Any other chat only where the being
+  // already answers (residentsOf — the conversation's own agents); the operator's own typed line may reach any chat.
+  // A being's line is never his: it arrives on the node's own account, which isOperator reads as the operator's.
+  // The text goes out exactly as written (boot's postReply: no stamp, no signature). config.msg: false turns it off.
   async function msgTo(ev) {
     const refuse = async (why) => { await send?.(ev.chatId, `/msg: ${why}`); return `refused — ${why}`; };
     if (cfg().msg === false) return refuse('off on this node (msg: false)');
@@ -3988,7 +3990,8 @@ export function createCommands({
     if (hit.error) return refuse(hit.error);
     if (hit.jid === ev.chatId) return refuse('that is this chat');
     const being = ev.commandBeing;
-    if (!being || !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being)) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
+    const operatorsOwn = ev.fromNode == null && isOperator(ev);
+    if (!being || (!operatorsOwn && !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being))) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
     const posted = await deliverTo(hit.jid, text, { being, surface: hit.surface });
     if (!posted) return refuse(`could not post to ${hit.name}`);
     await send?.(ev.chatId, `sent to ${hit.name}`);
