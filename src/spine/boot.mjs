@@ -4402,11 +4402,13 @@ ${more}`, 'utf8');
   // through the heartbeat's own path (heartbeatDest + heartbeatOut: the text as written, its own-line /media files from
   // the being's OWN folder), a no drops it, the deadline expires it. config msg_approval: false sends at once. The same
   // ask serves a being's node-signed "/<handle> msg" line (commands msgTo); the operator's own typed line is not asked.
+  // An approval covers exactly what the owner saw: the question shows the whole text, so a text longer than MSG_ASK_SHOWN
+  // (the senders expose no per-surface limit to size it by) is refused, never cut. At most MSG_ASK_PENDING open per being per chat.
   const MSG_ASK_SHOWN = 600;
-  const msgCut = (text) => (text.length > MSG_ASK_SHOWN ? `${text.slice(0, MSG_ASK_SHOWN)}…` : text);
+  const MSG_ASK_PENDING = 3;
   // The glyph leads so the being's name never opens the line as an address.
-  const msgQuestion = (being, name, text) => `✋ ${labelOf(being)} → ${name}:\n${msgCut(text)}\n\nsend it? reply yes / no`;
-  const msgExpired = (being, name, text) => `⌛ ${labelOf(being)} → ${name}:\n${msgCut(text)}\n\nexpired, not sent`;
+  const msgQuestion = (being, name, text) => `✋ ${labelOf(being)} → ${name}:\n${text}\n\nsend it? reply yes / no`;
+  const msgExpired = (being, name, text) => `⌛ ${labelOf(being)} → ${name}:\n${text}\n\nexpired, not sent`;
   // A system line in the chat the being wrote it in; `ev` given = recorded in its transcript too.
   async function msgSay(chatId, text, ev = null) {
     try {
@@ -4449,6 +4451,8 @@ ${more}`, 'utf8');
     if (plan.error) return plan;
     const msg = { being, from: plan.from, to: { surface: plan.hit.surface, jid: plan.hit.jid, name: plan.hit.name }, name: plan.hit.name, text };
     if (getConfig()?.msg_approval === false) { await msgSend(ev.chatId, msg); return { sent: true, name: msg.name }; }
+    if (text.length > MSG_ASK_SHOWN) return { error: `too long to ask approval for (${text.length} characters, at most ${MSG_ASK_SHOWN}): an owner must see all of it to approve it. Shorten it and send it again` };
+    if (ingestAsks.list().filter((a) => a.msg?.being === being && a.chatId === ev.chatId).length >= MSG_ASK_PENDING) return { error: `${MSG_ASK_PENDING} /msg questions from ${being} are already waiting for an answer in this chat; wait for them` };
     const question = msgQuestion(being, msg.name, text);
     const expiresAt = ingestAsks.deadline();
     const shown = askShown(question, expiresAt, ev.chatId);

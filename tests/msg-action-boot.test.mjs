@@ -203,15 +203,33 @@ describe('a being\'s /msg action asks first', () => {
     expect(t.quiet(TARGET)).toBe(0);
   });
 
-  it('a long text is cut in the question, whole in the delivery', async () => {
+  it('a text longer than the question can show is refused, never cut (an approval covers what was seen)', async () => {
     const long = 'palabra '.repeat(200).trim();
-    const t = await bootWith(CONFIG(), { reply: `ok\n/e msg "Contoso HQ" ${long}` });
+    const t = await bootWith(CONFIG(), { reply: `ok
+/e msg "Contoso HQ" ${long}` });
     await t.human('hello'); await settle(t);
-    expect(t.question().text).toContain(`${'palabra '.repeat(75).slice(0, 600)}…`);
-    expect(t.question().text.length).toBeLessThan(700);
+    expect(t.question()).toBeUndefined();
+    await vi.waitFor(() => expect(t.sentTo(ORIGIN).some((s) => /^\/msg: too long to ask approval for/.test(s.text))).toBe(true));
+    expect(t.quiet(TARGET)).toBe(0);
+  });
+
+  it('a text at the limit is asked whole and delivered whole', async () => {
+    const full = 'x'.repeat(600);
+    const t = await bootWith(CONFIG(), { reply: `ok
+/e msg "Contoso HQ" ${full}` });
+    await t.human('hello'); await settle(t);
+    expect(t.question().text).toContain(full);
+    expect(t.question().text).not.toContain('…');
     await t.answer(t.question().id, 'yes');
     await vi.waitFor(() => expect(t.sentTo(TARGET)).toHaveLength(1));
-    expect(t.sentTo(TARGET)[0].text).toBe(long);
+    expect(t.sentTo(TARGET)[0].text).toBe(full);
+  });
+
+  it('a being has at most 3 /msg questions open in a chat; the next is refused', async () => {
+    const t = await bootWith(CONFIG(), { reply: ['ok', '/e msg "Contoso HQ" 1', '/e msg "Contoso HQ" 2', '/e msg "Contoso HQ" 3', '/e msg "Contoso HQ" 4'].join('\n') });
+    await t.human('hello');
+    await vi.waitFor(() => expect(t.sentTo(ORIGIN).some((s) => /^\/msg: 3 \/msg questions from .* already waiting/.test(s.text))).toBe(true));
+    expect(t.sentTo(ORIGIN).filter((s) => s.text.startsWith('✋'))).toHaveLength(3);
   });
 
   it('several msg lines are several questions, each its own', async () => {
