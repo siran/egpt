@@ -183,15 +183,6 @@ beforeAll(async () => {
     log: { line: () => {} },
   });
 
-  // The fixture room is a long-running one: its directives/ already hold the node card. A resumed
-  // thread whose room copy is missing or older than the card is (rightly) re-fed on its next turn
-  // (the room follows the card), and (a) below is about a resumed thread that is NOT.
-  {
-    const { Room } = await import('../src/room-core.mjs');
-    const { seedIdentityLayers } = await import('../src/conversations-state.mjs');
-    await seedIdentityLayers(Room.forChat('whatsapp', SLUG), 'egpt');
-  }
-
   // 4. Drive ONE inbound through the fake bridge (no @e — an unknown chat would be mute).
   await spy.onIncoming('contract probe hello', {
     chatId: CHAT_ID, network: 'whatsapp',

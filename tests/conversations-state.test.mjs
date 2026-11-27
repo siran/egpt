@@ -1457,6 +1457,50 @@ describe('seedIdentityLayers — a refresh re-copies the room template layers', 
     expect(actions).not.toBe('AN OLD COPY');
     expect(actions.trim()).not.toBe('');
   });
+
+  // The room follows the card, but the copy it replaces is kept, and a room can opt a card out.
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  const withFiles = (disk) => {
+    const wrote = {};
+    return { wrote, io: {
+      mkdir: async () => {},
+      stat: async (p) => { if (norm(p) in disk) return {}; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+      readFile: async (p) => { if (norm(p) in disk) return disk[norm(p)]; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+      writeFile: async (p, d) => { wrote[norm(p)] = d; },
+    } };
+  };
+  const dirOf = () => norm(Room.forChat(SURFACE, SLUG).directivesDir);
+
+  it('replacing a differing copy writes a backup of the old bytes to directives/.bak/<file>.<timestamp>', async () => {
+    const s = withFiles({ [`${dirOf()}/10-actions.md`]: 'MY EDIT' });
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io });
+    const bak = Object.entries(s.wrote).filter(([p]) => p.startsWith(`${dirOf()}/.bak/10-actions.md.`));
+    expect(bak).toHaveLength(1);
+    expect(bak[0][1]).toBe('MY EDIT');
+    expect(s.wrote[`${dirOf()}/10-actions.md`]).not.toBe('MY EDIT');
+  });
+
+  it('a missing copy and an identical copy write no backup; a refresh over a differing copy does', async () => {
+    const fresh = withFiles({});
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: fresh.io });
+    expect(Object.keys(fresh.wrote).filter((p) => p.includes('/.bak/'))).toEqual([]);
+    const same = withFiles({ ...fresh.wrote });
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: same.io, overwrite: true });
+    expect(Object.keys(same.wrote).filter((p) => p.includes('/.bak/'))).toEqual([]);
+    const differs = withFiles({ [`${dirOf()}/40-rules.md`]: 'OLD RULES' });
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: differs.io, overwrite: true });
+    expect(Object.keys(differs.wrote).filter((p) => p.includes('/.bak/40-rules.md.'))).toHaveLength(1);
+  });
+
+  it('a <file>.local beside a card opts it out: never overwritten, no backup, not even by overwrite; the others still follow', async () => {
+    for (const overwrite of [false, true]) {
+      const s = withFiles({ [`${dirOf()}/10-actions.md`]: 'MY ACTIONS', [`${dirOf()}/10-actions.md.local`]: '' });
+      const wrote = await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io, overwrite });
+      expect(wrote).not.toContain('10-actions.md');
+      expect(Object.keys(s.wrote).filter((p) => p.includes('10-actions.md'))).toEqual([]);
+      expect(wrote).toContain('40-rules.md');
+    }
+  });
 });
 
 // THE SPLIT (operator 2026-09-10, verbatim): "models get fed their identity in the beginning

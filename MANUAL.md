@@ -298,7 +298,12 @@ context. Two halves, and the reply tells you which is which:
   room template, overwriting what is there. That is how an edited card
   (`10-actions.md` learning a new limb) reaches a conversation seeded months
   ago. Your own hand-edits inside `directives/` are overwritten; the source is
-  the template, these are consult copies.
+  the template, these are consult copies. Two safety valves, on every turn and
+  not only on refresh: the replaced file is first kept as
+  `directives/.bak/<name>.<timestamp>`, and a `directives/<name>.local` (any
+  content, even empty) opts that card out for this room — `<name>` is then
+  never overwritten, backed up or refreshed (this is the on-disk copy only; the
+  feed the being receives in context is unchanged).
 - **In context, on the next turn** — the being's identity feed goes back into
   the thread it is already running, as the next message's preamble. It cannot
   land sooner: an idle CLI session has nothing to push a message into. The

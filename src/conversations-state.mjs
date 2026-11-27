@@ -1257,6 +1257,10 @@ export function getBeing(state, surface, jid, being) {
     // re-fed a fixture thread nobody had asked to refresh. Only an EXPLICIT null is a
     // deliberate arming, and only the refresh command writes one.
     identityRefreshArmed: !!b && Object.hasOwn(b, 'identityInjectedAt') && b.identityInjectedAt == null,
+    // The hash of the identity feed this being's RUNNING thread last received (brainpool.mjs: stamped
+    // beside identityInjectedAt after the turn that carried the feed succeeded; a resumed thread is
+    // re-fed when it differs from the hash of the feed now). null = unrecorded -> never re-fed on it.
+    identityFeedHash: b?.identityFeedHash ?? null,
     // THE WELCOME armed ALONGSIDE a COMPACTION re-feed (operator 2026-10-04): the resolved welcome
     // text the compaction service handed to brainpool's armIdentityRefresh, stored on this block
     // beside the null identityInjectedAt. A string → brainpool's wrapFresh appends it after the
@@ -1999,8 +2003,9 @@ export function deleteBeing(state, surface, jidOrSlug, being) {
 // block so its thread persists alongside the others — merged over the block's existing
 // fields (mode survives), and it then shows up as a resident (residentsOf), the intended
 // per-being conversation shape. `being` is REQUIRED (callers pass the resolved key).
-export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being) {
-  return patchBeing(state, surface, jidOrSlug, being, { threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso });
+// `extra`: more fields stamped with the thread (brainpool's identityFeedHash — the feed it carried).
+export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being, extra = {}) {
+  return patchBeing(state, surface, jidOrSlug, being, { threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso, ...extra });
 }
 
 // Resolve the primary entry for a jid OR slug within a surface (the same lookup
@@ -2181,8 +2186,8 @@ const _publicLayers = (layers) => layers.filter(({ file }) => file === IDENTITY_
 // "write only when it changed" rule of writeCard (being-config-card.mjs). An unchanged file is
 // not touched (no mtime churn). Before this the default was copy-if-missing, so a card edited
 // after a room was seeded (a migration adding an action) never reached that room's directives/
-// until a rethread; brainpool turn() now also re-feeds the running thread when this returns
-// filenames on a resumed thread (see the call there). `overwrite` re-copies every layer
+// until a rethread. (What the running thread has in CONTEXT is a separate question, decided in
+// brainpool turn() by the hash of the feed it last received.) `overwrite` re-copies every layer
 // unconditionally; with the default now converging on the same content it is nearly redundant
 // (it still rewrites byte-identical files and is kept, not removed, in this change).
 //
@@ -2194,8 +2199,11 @@ const _publicLayers = (layers) => layers.filter(({ file }) => file === IDENTITY_
 //                                               a dead session).
 //   commands.mjs agentsRefresh + agentsReset  — the operator asking for it outright.
 //
-// THE TRADE: a hand-edit to <room>/directives/ is discarded on the NEXT TURN (it used to be only
+// THE TRADE: a hand-edit to <room>/directives/ is replaced on the NEXT TURN (it used to be only
 // on the next overwrite). Intended — these are consult COPIES; the source is the room template.
+// Two safety valves: the replaced file is first kept as directives/.bak/<file>.<timestamp>, and a
+// `<file>.local` beside a card (any content) opts that card out — it is never overwritten, not
+// even by `overwrite`.
 // /rooms create passes no overwrite: a brand-new room's directives/ is empty, so everything is
 // "missing" and written.
 //
@@ -2207,6 +2215,9 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
   const mkdirFn = io.mkdir ?? mkdir;
   const unlinkFn = io.unlink ?? unlink;
   const wrote = [];
+  const statFn = io.stat ?? stat;
+  const existsFn = async (p) => { try { await statFn(p); return true; } catch { return false; } };
+  const readOrNull = async (p) => { try { return await readFileFn(p, 'utf8'); } catch { return null; } };   // missing → null
   try {
     const shared = _sharedLayers(await _identityLayers(name));
     const layers = publicOnly ? _publicLayers(shared) : shared;
@@ -2226,9 +2237,14 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
     for (const { file, text } of layers) {
       if (!text.trim()) continue;                                  // an empty layer is not a file worth writing
       const fp = join(dir, file);
-      if (!overwrite) {
-        try { if (await readFileFn(fp, 'utf8') === text) continue; }   // already there and the same — nothing to write
-        catch { /* missing → seed below */ }                          // (differs → falls through and is rewritten)
+      // OPT-OUT: a `<file>.local` beside the card means this room keeps its own copy — never touched.
+      if (await existsFn(`${fp}.local`)) continue;
+      const existing = await readOrNull(fp);
+      if (existing === text) { if (!overwrite) continue; }           // already there and the same — nothing to write
+      else if (typeof existing === 'string') {                        // replacing a different copy: keep it
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        await mkdirFn(join(dir, '.bak'), { recursive: true });
+        await writeFileFn(join(dir, '.bak', `${file}.${stamp}`), existing, 'utf8');
       }
       await writeFileFn(fp, text, 'utf8');
       wrote.push(file);

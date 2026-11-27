@@ -53,6 +53,7 @@ import { isSandboxPin, sandboxPinKeyOf } from './sandbox-pins.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 
 // MSYS2/Cygwin "/c/Users/.." → "C:/Users/.." (mirror of warm-cli's normalizeCwd) so an
@@ -914,6 +915,9 @@ export function createBrainPool({
       // refreshed once is refreshed on the one thread it answers under, which is the thread
       // the feed would go into anyway.
       identityRefreshArmed: b?.identityRefreshArmed === true,
+      // The hash of the identity feed this being's RUNNING thread last received (stamped beside
+      // identityInjectedAt, only after a turn that carried the feed succeeded). null = unrecorded.
+      identityFeedHash: b?.identityFeedHash ?? null,
       // THE WELCOME armed alongside a COMPACTION re-feed (operator 2026-10-04), read from the same
       // scope-addressed block the arming wrote (getBeing above). null for a plain `/agents refresh`
       // and every un-compacted thread, so wrapFresh appends nothing there.
@@ -1063,7 +1067,7 @@ export function createBrainPool({
       // derives from it and none from `ev`: thread, warm key, conv dir, run config, transcript
       // roll, thread stats. `ev` still owns what belongs to the MESSAGE — its line, its reply,
       // its own transcript (see resolveConv above).
-      const { scope, slug, fork, sessionId, identityRefreshArmed, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sandboxPin: pin, sources } = await resolveConv(ev, being);
+      const { scope, slug, fork, sessionId, identityRefreshArmed, identityFeedHash, compactionWelcome, mode, accessLevel, allowedUsers, sandboxed, sandboxedRung, verboseThinking, compaction: compactionOver, outboxTarget, configuration, allowedPaths, sandboxPin: pin, sources } = await resolveConv(ev, being);
       meter.scope = scope;
       if (!slug) throw new Error(`brainpool: no slug for ${scope.surface}/${scope.chatId}`);
 
@@ -1115,10 +1119,6 @@ export function createBrainPool({
       //
       // Never true while `fresh` is: a brand-new thread gets the feed from wrapFresh anyway, and
       // recordThread stamps threadId and identityInjectedAt together at the end of that turn.
-      //
-      // `let`: the layer seeding below can also arm it for this turn — a RESUMED thread whose room
-      // copy of a card was missing or differed from the node card (the room follows the card).
-      // Nothing reads it between here and that seeding.
       let identityRefresh = !fresh && identityRefreshArmed;
       // THE ONE resolution path (phase 2, operator 2026-08-14): every being's def — the
       // persona included — comes from resolveBeingDef (agents[<being>].configuration names a
@@ -1214,12 +1214,12 @@ export function createBrainPool({
       // if-missing, so it costs a stat per layer and self-heals a conversation that was
       // started before this existed — hence every turn, not only the fresh
       // kickoff (a live conversation resumes forever and would otherwise never get them).
-      // A layer is (re)written when it is missing OR differs from the node card (2026-11-27: the
-      // room follows the card). On a RETHREAD (`fresh`) every copy is overwritten (operator
-      // 2026-07-26: "all skeleton files are copied on refresh thread"). On a RESUMED thread a
-      // write means the running context holds an older card, so the SAME re-feed an armed
-      // `/agents refresh` rides is switched on below, and its stamp is written back at the end
-      // of the turn. An unchanged room copy writes nothing and re-feeds nothing.
+      // ON A REFRESH the copies are OVERWRITTEN (operator 2026-07-26: "all skeleton files are
+      // copied on refresh thread"). On any other turn a copy is (re)written when it is missing or
+      // differs from the node card (the room follows the card; the replaced file is kept in
+      // directives/.bak/, and a `<card>.local` opts that card out). These are consult COPIES: the
+      // running thread's context is re-fed by the HASH of the feed it holds (see identityRefresh
+      // below), not by what this writes.
       // Targets convDir, NOT cwd: a def that pins a workspace must not have directives/
       // written into it. EVERY agent gets the SHARED layers copied into its own conv folder,
       // for local file-tool consult. Its IDENTITY is not among them (operator 2026-09-10) —
@@ -1228,8 +1228,7 @@ export function createBrainPool({
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/directivesDir resolve off convDir too.
-      const seeded = await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh, publicOnly: desk });
-      if (!fresh && Array.isArray(seeded) && seeded.length) identityRefresh = true;
+      await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh, publicOnly: desk });
       // HOW THIS BEING IS CONFIGURED HERE, beside those layers (operator 2026-09-24): its block in
       // ./directives/config.readonly.yaml, rendered from the values THIS turn runs with and written
       // only when it changed — see being-config-card.mjs. Before the spawn, so a fresh thread's
@@ -1392,6 +1391,22 @@ export function createBrainPool({
       // A SCOPED turn's line is framed with where it came from (withOrigin, above); an unscoped
       // one is the bare dispatch line, byte-for-byte as it has always been.
       let line = scope.scoped ? withOrigin(ev) : (ev.line ?? ev.body);
+      // THE IDENTITY FEED, loaded once per turn, and its hash. A RESUMED thread is re-fed when the
+      // hash of the feed it last received (identityFeedHash, stamped only after a turn that carried
+      // it succeeded) differs from the hash of the feed as it is NOW — so a turn that threw leaves
+      // the stored hash old and the re-feed pending, and a matching hash re-feeds nothing. A thread
+      // with no recorded hash is unknown, not stale: it is left alone (nothing to compare), and gets
+      // its hash at its next feed (rethread, /agents refresh, compaction). `fedHash` is what this
+      // turn's wrapFresh sent; recordThread / the refresh stamp below write it.
+      let feedMemo = null, fedHash = null;
+      const identityFeed = async () => {
+        if (feedMemo != null) return feedMemo;
+        let feed = (await loadFeed(personality, feedConfig(being), { publicOnly: desk })) || '';
+        if (!feed.trim()) feed = (await _loadManifest()) || '';
+        return (feedMemo = feed);
+      };
+      const hashOf = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+      if (!fresh && !identityRefresh && identityFeedHash) identityRefresh = hashOf(await identityFeed()) !== identityFeedHash;
       const wrapFresh = async () => {
         // EVERY agent gets its own feed. There is no persona/sibling split any
         // more -- the concept was evicted (operator 2026-08-28: "there are no
@@ -1402,8 +1417,8 @@ export function createBrainPool({
         // config passed so the cards can quote it ({{chrome.bin}} etc.) — plus THIS being's own
         // name and handles (feedConfig above), so 00-identity can be one shipped template every
         // agent on every node renders correctly instead of a per-node hand-edit.
-        let feed = (await loadFeed(personality, feedConfig(being), { publicOnly: desk })) || '';
-        if (!feed.trim()) feed = (await _loadManifest()) || '';
+        let feed = await identityFeed();
+        fedHash = hashOf(feed);
         // 'mode: auto': append the operator-role instruction layer to the kickoff feed so
         // a fresh auto thread learns the stance up front. Best-effort (a missing layer just
         // means it gates like 'on'). The overflow/dead-session retry re-wraps, so it re-lands.
@@ -1493,7 +1508,7 @@ export function createBrainPool({
       if (newSession && newSession !== sessionId) {
         const nowIso = nowIsoString();
         await mutateState(writeState, async () => {
-          await writeState(recordThread(await loadState(), scope.surface, scope.chatId, newSession, nowIso, being));
+          await writeState(recordThread(await loadState(), scope.surface, scope.chatId, newSession, nowIso, being, fedHash ? { identityFeedHash: fedHash } : {}));
         });
         // THE STAMP: the transcript now names the thread it belongs to. Here because this is
         // the ONE place a new session is recorded — a transcript is born at ingestion, before
@@ -1525,6 +1540,7 @@ export function createBrainPool({
         await mutateState(writeState, async () => {
           await writeState(patchBeing(await loadState(), scope.surface, scope.chatId, being, {
             identityInjectedAt: nowIsoString(),
+            ...(fedHash ? { identityFeedHash: fedHash } : {}),
             ...(compactionWelcome != null ? { compactionWelcome: null } : {}),
           }));
         });
