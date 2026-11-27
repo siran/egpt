@@ -30,6 +30,7 @@ afterEach(async () => {
   stopHttp = null;
   await fs.rm(ROOMS_FILE, { force: true });
   await fs.rm(join(_HOME, 'state'), { recursive: true, force: true });
+  await fs.rm(join(_HOME, 'conversations'), { recursive: true, force: true });   // a surviving folder is never re-written: each test starts on none
 });
 afterAll(async () => { try { await fs.rm(_HOME, { recursive: true, force: true }); } catch {} });
 
@@ -538,6 +539,73 @@ describe('a signed visitor (identity)', () => {
     await expect(fs.access(n.turns[0].cwd)).rejects.toThrow();
     await fs.access(join(n.turns[1].cwd, 'desktop', 'user.json'));
     n.app.stop();
+  });
+
+  // The card's files belong to the folder: a fresh line writes them only where missing; a later claim change refreshes only card_claims keys.
+  const cardOf = (cwd) => ({ json: join(cwd, 'desktop', 'user.json'), md: join(cwd, 'desktop', 'user.md') });
+  const firstLine = async (n, claims = JD) => {
+    const a = await n.post({ text: 'uno', identity: signed(claims) });
+    await vi.waitFor(async () => expect(answered(await n.messages(a.session, signed(claims)))).toBe(true), { timeout: 5000 });
+    return a;
+  };
+  const chatIdOf = (n, cwd) => Object.keys(n.state().contacts.http).find((k) => n.state().contacts.http[k].slug === dirOf(cwd));
+
+  it('card: entry present, folder deleted: the user card is written again', async () => {
+    const n = await bootTeam({ ...client(), chat_title: TITLE }, { realFs: true });
+    const a = await firstLine(n);
+    const cwd = n.turns[0].cwd;
+    await fs.rm(cwd, { recursive: true, force: true });
+    await n.post({ session: a.session, text: 'dos', identity: signed(JD) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(JSON.parse(await fs.readFile(cardOf(cwd).json, 'utf8'))).toMatchObject({ username: 'jdoe' });
+    expect(await fs.readFile(cardOf(cwd).md, 'utf8')).toMatch(/^Verified by the site: Jane Doe/);
+    n.app.stop();
+  });
+
+  it('card: a surviving folder whose entry is gone keeps an operator-edited user.json and user.md', async () => {
+    const n = await bootTeam({ ...client(), chat_title: TITLE }, { realFs: true });
+    const a = await firstLine(n);
+    const cwd = n.turns[0].cwd, { json, md } = cardOf(cwd);
+    await fs.writeFile(json, '{"abrin":"abc","nota":"del operador"}\n');
+    await fs.writeFile(md, 'nota del operador\n');
+    delete n.state().contacts.http[chatIdOf(n, cwd)];
+    await n.post({ session: a.session, text: 'dos', identity: signed(JD) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(await fs.readFile(json, 'utf8')).toBe('{"abrin":"abc","nota":"del operador"}\n');
+    expect(await fs.readFile(md, 'utf8')).toBe('nota del operador\n');
+    n.app.stop();
+  });
+
+  it('card: a claim change refreshes only the card_claims keys; operator fields and user.md stay', async () => {
+    const n = await bootTeam({ ...client(), chat_title: TITLE, card_claims: ['cuentas'] }, { realFs: true });
+    const a = await firstLine(n, { ...JD, cuentas: [1] });
+    const { json, md } = cardOf(n.turns[0].cwd);
+    const card = JSON.parse(await fs.readFile(json, 'utf8'));
+    await fs.writeFile(json, JSON.stringify({ ...card, nota: 'del operador' }));
+    await fs.writeFile(md, 'nota del operador\n');
+    await n.post({ session: a.session, text: 'dos', identity: signed({ ...JD, cuentas: [1, 2] }) });
+    await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+    expect(JSON.parse(await fs.readFile(json, 'utf8'))).toMatchObject({ nota: 'del operador', cuentas: [1, 2], username: 'jdoe' });
+    expect(await fs.readFile(md, 'utf8')).toBe('nota del operador\n');
+    n.app.stop();
+  });
+
+  it('seed: a rename keeps the entry and the folder, so it is not seeded again', async () => {
+    const seed = join(_HOME, 'seeds', 'contoso');
+    await fs.mkdir(seed, { recursive: true });
+    await fs.writeFile(join(seed, 'notas.md'), 'n');
+    try {
+      const n = await bootTeam({ ...client(), chat_title: TITLE, seed: 'seeds/contoso' }, { realFs: true });
+      const a = await firstLine(n);
+      await fs.rm(join(n.turns[0].cwd, 'notas.md'));
+      n.lines.length = 0;
+      await n.post({ session: a.session, text: 'dos', identity: signed({ ...JD, short_name: 'Jane Roe' }) });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      expect(dirOf(n.turns[1].cwd)).toBe('abc-P-jdoe-Jane Roe');
+      expect(existsSync(join(n.turns[1].cwd, 'notas.md'))).toBe(false);
+      expect(n.lines.some((l) => /its desk is seeded/.test(l))).toBe(false);
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
 
   const who2 = { ...JD, username: 'jroe', short_name: 'Jim Roe' };

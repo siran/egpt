@@ -256,6 +256,94 @@ describe('the seeded desk', () => {
       app.stop();
     } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
   });
+
+  // The being's reply is the end of a line's work (its state write included): only then touch the folder or the entry.
+  const answeredBy = (n, session) => vi.waitFor(async () => expect(settled((await n.messages(session)).messages)).toBeTruthy(), { timeout: 5000 });
+  const seeded = async (files = { 'identidad.md': 'v1', 'notas.md': 'n' }) => {
+    const seedDir = join(_HOME, 'seeds', 'contoso');
+    await fs.mkdir(seedDir, { recursive: true });
+    for (const [k, v] of Object.entries(files)) await fs.writeFile(join(seedDir, k), v);
+  };
+  // A cleanup of the folder, on disk and in the fake's own view of it.
+  const wipe = async (n, dir) => {
+    await fs.rm(dir, { recursive: true, force: true });
+    for (const d of [...n.io.dirs]) if (d.startsWith(dir)) n.io.dirs.delete(d);
+    for (const k of [...n.io.files.keys()]) if (k.startsWith(dir)) n.io.files.delete(k);
+  };
+  const seedLines = (lines) => lines.filter((l) => /its desk is seeded from/.test(l));
+
+  it('a live conversation is never re-seeded: a seed file the being deleted on purpose stays deleted', async () => {
+    await seeded();
+    try {
+      const n = await bootChatbox({ client: { seed: 'seeds/contoso' } });
+      const a = await n.post({ text: 'hola' });
+      await answeredBy(n, a.session);
+      const dir = n.turns[0].cwd;
+      await fs.rm(join(dir, 'notas.md'));
+      const b = await n.post({ session: a.session, text: 'sigo' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      await vi.waitFor(async () => expect((await n.messages(b.session)).messages.filter((m) => m.from === 'being' && m.done)).toHaveLength(2), { timeout: 5000 });
+      expect(existsSync(join(dir, 'notas.md'))).toBe(false);
+      expect(seedLines(n.lines)).toHaveLength(1);
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
+
+  it('entry present, folder deleted: the folder is seeded again', async () => {
+    await seeded();
+    try {
+      const n = await bootChatbox({ client: { seed: 'seeds/contoso' } });
+      const a = await n.post({ text: 'hola' });
+      await answeredBy(n, a.session);
+      const dir = n.turns[0].cwd;
+      await wipe(n, dir);
+      n.lines.length = 0;
+      await n.post({ session: a.session, text: 'sigo otra vez' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      expect(n.turns[1].cwd).toBe(dir);
+      expect(n.turns[1].desk).toBe(true);
+      expect(existsSync(join(dir, 'notas.md'))).toBe(true);
+      expect(seedLines(n.lines)).toHaveLength(1);
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
+
+  it('entry and folder both deleted (a cleanup; the limb still has the session): seeded again', async () => {
+    await seeded();
+    try {
+      const n = await bootChatbox({ client: { seed: 'seeds/contoso' } });
+      const a = await n.post({ text: 'hola' });
+      await answeredBy(n, a.session);
+      const dir = n.turns[0].cwd;
+      delete n.state().contacts.http[`http:${dir.split(/[\\/]/).at(-1)}`];
+      await wipe(n, dir);
+      n.lines.length = 0;
+      await n.post({ session: a.session, text: 'sigo otra vez' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      expect(n.turns[1].desk).toBe(true);
+      expect(existsSync(join(n.turns[1].cwd, 'notas.md'))).toBe(true);
+      expect(seedLines(n.lines).some((l) => /\(2 files\)$/.test(l))).toBe(true);
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
+
+  it('folder survives, entry gone: the seed fills only what is missing, an operator-edited file stays', async () => {
+    await seeded();
+    try {
+      const n = await bootChatbox({ client: { seed: 'seeds/contoso' } });
+      const a = await n.post({ text: 'hola' });
+      await answeredBy(n, a.session);
+      const dir = n.turns[0].cwd;
+      await fs.writeFile(join(dir, 'identidad.md'), 'editado por el operador');
+      await fs.rm(join(dir, 'notas.md'));
+      delete n.state().contacts.http[`http:${dir.split(/[\\/]/).at(-1)}`];
+      await n.post({ session: a.session, text: 'sigo otra vez' });
+      await vi.waitFor(() => expect(n.turns).toHaveLength(2), { timeout: 5000 });
+      expect(await fs.readFile(join(dir, 'identidad.md'), 'utf8')).toBe('editado por el operador');
+      expect(await fs.readFile(join(dir, 'notas.md'), 'utf8')).toBe('n');
+      n.app.stop();
+    } finally { await fs.rm(join(_HOME, 'seeds'), { recursive: true, force: true }); }
+  });
 });
 
 describe('no public commands in a chatbox conversation', () => {
