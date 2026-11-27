@@ -3,7 +3,7 @@
 // A fixture profile shaped like reve's: being scripts in a chat's desktop/ and media/, a room, the
 // heartbeats that name the CDP chrome, and the pointers card.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { plan, withInsert, INSERT, TEXT, CARD_LINES } from '../migrations/0038-being-scripts-reach-chrome-through-the-spine.mjs';
@@ -121,6 +121,64 @@ describe('0038 on a profile whose being scripts dial localhost:9221', () => {
     await expect(p.apply()).rejects.toThrow(/0038 refuses: .*tab-peek\.mjs changed since it was planned - re-run/);
     expect(read(h, 'rooms/acim/desktop/send.mjs')).toBe(FILES['rooms/acim/desktop/send.mjs']);
     expect(existsSync(join(h, 'disposable'))).toBe(false);
+  });
+});
+
+// Live failure, nu 2026-11-22..27: beings keep git working copies in their folders (full checkouts of the
+// eGPT repo itself); the walker descended into them, inserted the line into the repo's own test files, and
+// one of them (another uid, ACL mask r--) was not writable, so every upgrade failed at 0038.
+describe('0038 does not walk git working copies, and skips what it cannot write', () => {
+  const COPY = `${CHAT}/desktop/egpt`;
+  const WORKTREE = `${CHAT}/desktop/egpt-branch`;
+  const REPO_FILES = {
+    [`${COPY}/.git/HEAD`]: 'ref: refs/heads/main\n',
+    [`${COPY}/tests/cdp.test.mjs`]: LITERAL,
+    [`${COPY}/tests/deep/more/remote-command.test.mjs`]: VIA_PORT,
+    [`${COPY}/scripts/probe.sh`]: 'curl -s http://localhost:9221/json/version\n',
+    [`${WORKTREE}/.git`]: `gitdir: ${COPY}/.git/worktrees/egpt-branch\n`,
+    [`${WORKTREE}/tests/cdp.test.mjs`]: LITERAL,
+  };
+  const BASE_TALLY = 'scripts: 5 to edit, 0 already carry the line, 4 skipped, 2 proposals (not .mjs, never edited)';
+
+  it('REPRODUCE: a directory holding .git (a directory, or the file a worktree has) is left alone, whole; the run succeeds', async () => {
+    const h = home({ ...FILES, ...REPO_FILES });
+    const p = await plan(ctxFor(h));
+    expect(p.changes[0]).toBe(BASE_TALLY);
+    expect(p.changes.join('\n')).not.toMatch(/egpt\/tests|egpt-branch|probe\.sh/);
+    await p.apply();
+    for (const f of Object.keys(REPO_FILES)) expect(read(h, f)).toBe(REPO_FILES[f]);
+    expect(existsSync(join(vaultOf(h), COPY))).toBe(false);
+    expect(existsSync(join(vaultOf(h), WORKTREE))).toBe(false);
+    expect(read(h, `${CHAT}/desktop/tab-peek.mjs`)).toBe(`${INSERT}\n// peek\n${LITERAL}`);
+  });
+
+  it('regression: ordinary being scripts are edited as before, also beside a working copy and in folders that merely look like one', async () => {
+    const files = {
+      ...REPO_FILES,
+      [`${CHAT}/desktop/mine/probe.mjs`]: LITERAL,
+      [`${CHAT}/desktop/notes/.gitignore`]: 'node_modules\n',
+      [`${CHAT}/desktop/notes/.github/x.txt`]: 'x\n',
+      [`${CHAT}/desktop/notes/peek.mjs`]: VIA_PORT,
+    };
+    const h = home(files);
+    await (await plan(ctxFor(h))).apply();
+    expect(read(h, `${CHAT}/desktop/mine/probe.mjs`)).toBe(`${INSERT}\n${LITERAL}`);
+    expect(read(h, `${CHAT}/desktop/notes/peek.mjs`)).toBe(`${INSERT}\n${VIA_PORT}`);
+    for (const f of Object.keys(REPO_FILES)) expect(read(h, f)).toBe(REPO_FILES[f]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('REPRODUCE: a candidate the user cannot write is skipped with its reason; the run succeeds and the others are edited', async () => {
+    const locked = `${CHAT}/desktop/locked.mjs`;
+    const h = home({ ...FILES, [locked]: LITERAL });
+    chmodSync(join(h, locked), 0o444);
+    const p = await plan(ctxFor(h));
+    expect(p.changes[0]).toBe('scripts: 5 to edit, 0 already carry the line, 5 skipped, 2 proposals (not .mjs, never edited)');
+    expect(p.changes).toContain(`skip      ${locked} - not writable by this user (EACCES)`);
+    expect(p.changes).not.toContain(`  + ${locked}`);
+    await p.apply();
+    expect(read(h, locked)).toBe(LITERAL);
+    for (const f of EDITED) expect(read(h, f)).toContain(INSERT);
+    expect(existsSync(join(vaultOf(h), locked))).toBe(false);
   });
 });
 

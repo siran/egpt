@@ -7,8 +7,10 @@
 // SCRIPTS: every .mjs under conversations/ and rooms/ that dials localhost|127.0.0.1:9221 (literally,
 // or as `localhost:${PORT}` beside a 9221 literal) gets INSERT after any shebang, in its own line
 // endings. Skipped, with the reason: declares its own fetch/WebSocket; reaches CDP another way; not
-// UTF-8; would not parse with the line (node --check). A script of any other kind is never edited, only
-// listed as a proposal. Not walked: node_modules, .git, transcripts, links.
+// UTF-8; would not parse with the line (node --check); not writable by the user running the migration.
+// A script of any other kind is never edited, only listed as a proposal. Not walked: node_modules, .git,
+// transcripts, links, and any git working copy (a directory holding a .git entry, directory or file: a
+// being's checkout of a repo is not a being script).
 //
 // PROMPTS (TEXT): exact-line replacements. No such file on this node: nothing to do. A file with
 // neither the line nor its replacement verbatim REFUSES, and nothing is changed.
@@ -16,7 +18,7 @@
 // Backups: <profile>/disposable/migration-0038-<timestamp>/<same relative path>. A file that changed
 // since it was planned refuses. A script that fails node --check after the write is restored, and the
 // run fails naming it.
-import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync, mkdirSync, accessSync, constants } from 'node:fs';
 import { join, relative, dirname, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -89,6 +91,7 @@ export function withInsert(text) {
 function* walk(dir, unreadable) {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { unreadable.push(`${dir} (${e.code ?? e.message})`); return; }
+  if (entries.some((e) => e.name === '.git')) return;
   for (const e of entries) {
     if (e.isSymbolicLink()) continue;
     const p = join(dir, e.name);
@@ -155,6 +158,7 @@ export async function plan(ctx) {
         skipped.push(`${rel(path)} - ${before.ok ? 'would not parse with the line' : 'does not parse as it is'} (node --check: ${parsed.error})`);
         continue;
       }
+      try { accessSync(path, constants.W_OK); } catch (e) { skipped.push(`${rel(path)} - not writable by this user (${e.code ?? e.message})`); continue; }
       scriptEdits.push({ path, bytes, next });
     }
   }
