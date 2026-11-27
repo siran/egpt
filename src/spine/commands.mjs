@@ -450,6 +450,7 @@ export function createCommands({
   secretLink = null,                     // /secret: the secrets page's link and confirm (http-secrets.mjs createSecretLink); null → not wired here
   migrate = null,                        // /migrate: (args) => { exitCode, out, … } — boot wires daemon-runtime's runMigrationsChild (THE child-process helper the upgrade runs the runner through); null → not wired here
   send: rawSend,                         // (chatId, text) -> deliver a plain system reply
+  msgAsk = null,                         // /msg in a BEING's line: ({ ev, being, term, text, replyTo }) → { error } | { asked | sent, name } — boot's ask (the operator's yes first, msg_approval); null → delivered at once
   exit = (code) => process.exit(code),
   writeRewindTarget,
   seedOf = () => null,                   // (ev) → what a chat with no entry yet will be created with (boot: the one seed)
@@ -3976,6 +3977,8 @@ export function createCommands({
   // already answers (residentsOf — the conversation's own agents); the operator's own typed line may reach any chat.
   // A being's line is never his: it arrives on the node's own account, which isOperator reads as the operator's.
   // The text goes out exactly as written (boot's postReply: no stamp, no signature). config.msg: false turns it off.
+  // The operator's own typed line sends at once. A being's node-signed line (the same /msg a being's reply carries as an
+  // action, reply-actions) only ASKS: the operator answers yes / no in the chat (msgAsk; config msg_approval: false skips it).
   async function msgTo(ev) {
     const refuse = async (why) => { await send?.(ev.chatId, `/msg: ${why}`); return `refused — ${why}`; };
     if (cfg().msg === false) return refuse('off on this node (msg: false)');
@@ -3992,6 +3995,12 @@ export function createCommands({
     const being = ev.commandBeing;
     const operatorsOwn = ev.fromNode == null && isOperator(ev);
     if (!being || (!operatorsOwn && !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being))) return refuse(`${being ?? 'it'} does not answer in ${hit.name}`);
+    // A being's line is model-generated: it asks the operator first (boot's msgAsk; config msg_approval false sends at once).
+    if (ev.fromNode != null && msgAsk) {
+      const r = await msgAsk({ ev, being, term, text, replyTo: ev.msgId ?? null });
+      if (r.error) return refuse(r.error);
+      return r.sent ? `sent to ${r.name}` : `asked the operator — ${being} → ${r.name}`;
+    }
     const posted = await deliverTo(hit.jid, text, { being, surface: hit.surface });
     if (!posted) return refuse(`could not post to ${hit.name}`);
     await send?.(ev.chatId, `sent to ${hit.name}`);

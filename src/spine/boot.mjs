@@ -3629,6 +3629,7 @@ ${more}`, 'utf8');
     floodBan,                                         // /unban + /bans — the SAME in-memory instance the bridges observe into
     background,                                       // the operator's bare /agents lists it
     send: commandTranscript.send,
+    msgAsk: (r) => msgRequest(r),                     // /<handle> msg in a BEING's line: the operator's yes first (msg_approval), below
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /agents … auto/reset/access_level persist into conversations.yaml
@@ -3818,7 +3819,7 @@ ${more}`, 'utf8');
     if (r == null) return { outcome: 'not-supported', detail: `this chat's bridge cannot change a group's ${a.what} (Telegram groups only)` };
     return r.ok ? { outcome: 'set' } : { outcome: 'failed', detail: r.reason };
   };
-  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, wake: async (r) => { if (spineLate) await placeChat(r.chatId, `[wake] ${r.being}`); return spineLate?.wakeOnBackground(r); }, onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), ffmpegCommand: tx.cliCfg.ffmpeg_command, onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bridgeOf: rawBridgeOf, peerMouth, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), limbs: { book: bookLimb.book, email: mail.email, group: groupLimb, msg: (a, ev, being) => msgLimb(a, ev, being) }, actionsOf: (being) => getConfig()?.agents?.[being]?.actions, handlesOf: (being) => { const agent = getConfig()?.agents?.[being]; return agent && typeof agent === 'object' ? [...wakeTokens(being, agent), String(being).toLowerCase()] : null; }, wake: async (r) => { if (spineLate) await placeChat(r.chatId, `[wake] ${r.being}`); return spineLate?.wakeOnBackground(r); }, onUndeliverable: ({ being, chatId, what, reason }) => reportUndelivered({ what, chatId, being, why: reason }), ffmpegCommand: tx.cliCfg.ffmpeg_command, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room entity's
@@ -4394,6 +4395,78 @@ ${more}`, 'utf8');
       log.line?.(`[ingest] @${being} ${ev.chatId}: asked (#${id}) — ${sender}'s line waits for a yes / no from whoever may wake it (the Operator or its allowed_users lists)${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
     }
   }
+  // ── /msg AS A REPLY ACTION, AND ITS ASK (operator 2026-11-27) ──────────────────────────────────────────────────
+  // A being's "/<handle> msg <chat> <text>" is model-generated, like an order to a being: the spine parses it out of the
+  // reply (reply-actions parseOne 'msg'), and executing it only ASKS. The question goes up in the chat the being wrote it
+  // in, in the same store as the ingest box's, with the same countdown; an owner's yes (a reply or a reaction) sends it
+  // through the heartbeat's own path (heartbeatDest + heartbeatOut: the text as written, its own-line /media files from
+  // the being's OWN folder), a no drops it, the deadline expires it. config msg_approval: false sends at once. The same
+  // ask serves a being's node-signed "/<handle> msg" line (commands msgTo); the operator's own typed line is not asked.
+  const MSG_ASK_SHOWN = 600;
+  const msgCut = (text) => (text.length > MSG_ASK_SHOWN ? `${text.slice(0, MSG_ASK_SHOWN)}…` : text);
+  // The glyph leads so the being's name never opens the line as an address.
+  const msgQuestion = (being, name, text) => `✋ ${labelOf(being)} → ${name}:\n${msgCut(text)}\n\nsend it? reply yes / no`;
+  const msgExpired = (being, name, text) => `⌛ ${labelOf(being)} → ${name}:\n${msgCut(text)}\n\nexpired, not sent`;
+  // A system line in the chat the being wrote it in; `ev` given = recorded in its transcript too.
+  async function msgSay(chatId, text, ev = null) {
+    try {
+      if (ev) await services.transcript.log(ev, { text, being: 'system' });
+      await sayOnce({ chatId, text, opts: { systemLine: true }, what: 'msg' });
+    } catch (e) { log.line?.(`[msg] ${chatId}: ${e?.message ?? e}`); }
+  }
+  // The target, the way /msg and a heartbeat's to: find it: resolveTarget (never a chatbox or a being's own conversation),
+  // a chat the being answers in, not this one. { hit } or { error }. The source is the chat itself (its ev, not a slug):
+  // a topic or a fork has no slug of its own, and its folder — where a /media file must sit — is what its ev resolves to.
+  async function msgPlan({ ev, being, term }) {
+    if (getConfig()?.msg === false) return { error: 'off on this node (msg: false)' };
+    const surface = ev.surface ?? surfaceOf(ev.network);
+    if (surface === 'http') return { error: 'not from a chatbox' };
+    const state = await _loadState();
+    const hit = resolveTarget(state, term, surface, { skip: MSG_SKIP_SURFACES });
+    if (hit.error) return { error: hit.error };
+    if (hit.jid === ev.chatId) return { error: 'that is this chat' };
+    if (!being || !answersIn(getContact(state, hit.surface, hit.jid)?.entry, being)) return { error: `${being ?? 'it'} does not answer in ${hit.name}` };
+    if (!getContact(state, surface, ev.chatId)) return { error: 'this chat has no conversation on this node to send from' };
+    return { hit, from: { surface, chatId: ev.chatId } };
+  }
+  // The delivery, once approved: to the chat the plan found (by id, never the name again), the being still answering
+  // there; the text through a beat's own output path (heartbeatOut), its /media files confined to the SOURCE chat's
+  // folder. The destination's name, or throws (the reason is what the chat is told).
+  async function msgDeliver({ being, from, to, text }) {
+    const state = await _loadState();
+    if (!answersIn(getContact(state, to.surface, to.jid)?.entry, being)) throw new Error(`${being} does not answer in ${to.name} any more`);
+    const dest = { ev: await services.identity.spineEvent(to.surface, to.jid), ownEv: await services.identity.spineEvent(from.surface, from.chatId), name: to.name };
+    await heartbeatOut({ being, ns: from.chatId, dest, text, tag: { skipSignature: true }, recordAs: being, what: 'msg' });
+    return dest.name;
+  }
+  async function msgSend(chatId, msg) {
+    try { const name = await msgDeliver(msg); await msgSay(chatId, `✅ sent to ${name}`); log.line?.(`[msg] ${msg.being} → ${name}: sent`); }
+    catch (e) { await msgSay(chatId, `⚠️ /msg not delivered to ${msg.name}: ${e?.message ?? e}`); log.line?.(`[msg] ${msg.being} → ${msg.name}: not delivered — ${e?.message ?? e}`); }
+  }
+  // { error } = refused (the caller says it); otherwise asked, or (msg_approval: false) already sent.
+  async function msgRequest({ ev, being, term, text, replyTo = null }) {
+    const plan = await msgPlan({ ev, being, term });
+    if (plan.error) return plan;
+    const msg = { being, from: plan.from, to: { surface: plan.hit.surface, jid: plan.hit.jid, name: plan.hit.name }, name: plan.hit.name, text };
+    if (getConfig()?.msg_approval === false) { await msgSend(ev.chatId, msg); return { sent: true, name: msg.name }; }
+    const question = msgQuestion(being, msg.name, text);
+    const expiresAt = ingestAsks.deadline();
+    const shown = askShown(question, expiresAt, ev.chatId);
+    const id = await ingestPost(ev.chatId, (on, room, own) => on.send?.(room, shown.text, { systemLine: true, ...(own && replyTo != null ? { replyTo: String(replyTo) } : {}) }));
+    if (id == null) return { error: 'could not post the question, so nothing was sent' };
+    await ingestAsks.add({ chatId: ev.chatId, ids: [String(id)], msg, ...askClock(expiresAt, shown.minutes, id, question, msgExpired(being, msg.name, text)) });
+    log.line?.(`[msg] ${being} → ${msg.name}: asked (#${id}) — waiting for an owner's yes / no${expiresAt != null ? `, ${minutesLeft(expiresAt - now())} min` : ''}`);
+    return { asked: true, name: msg.name };
+  }
+  // The reply action's limb (reply-actions runOne 'msg'): a refusal is said in the chat, recorded; true = asked or sent.
+  async function msgLimb(a, ev, being) {
+    const r = await msgRequest({ ev, being, term: a.target, text: a.text });
+    if (!r.error) return true;
+    log.line?.(`[msg] ${being} → ${a.target}: refused — ${r.error}`);
+    await msgSay(ev.chatId, `/msg: ${r.error}`, ev);
+    return false;
+  }
+
   // The yes / no to an open question: a reply to one of its posts, or a reaction on one. An owner answers the
   // ingest box's; a refused mention's is answered by whoever may wake its being (mayWake: the Operator, always, then
   // the being's allowed_users lists, which join), so an owner answers it whatever those lists say, even [].
@@ -4431,10 +4504,10 @@ ${more}`, 'utf8');
   // it ends in the log alone, no edit and no line in the chat. One with a post whose edit fails is said as a new line.
   async function expireAsk(ask) {
     await ingestAsks.take(ask);   // first: from here an answer is ordinary chat
-    const what = ask.being ? `@${ask.being}` : '/to';
+    const what = ask.msg ? '/msg' : ask.being ? `@${ask.being}` : '/to';
     const post = ask.post?.id != null ? ask.post : null;
     const edited = !!post && !askNoEdit.has(ask) && await editAskPost(ask.chatId, post.id, post.expired);
-    log.line?.(`[ingest] ${what} ${ask.chatId}: expired (#${ask.ids.join(' #')}) — ${ask.being ? `${ask.ev?.fromBeing ?? '?'}'s line` : 'the line'} not ${ask.being ? 'passed on' : 'dispatched'}${edited ? '' : post ? ' (said as a new line: the post could not be edited)' : ' (asked before expiry existed: nothing said in the chat)'}`);
+    log.line?.(`[ingest] ${what} ${ask.chatId}: expired (#${ask.ids.join(' #')}) — ${ask.msg ? `${ask.msg.being}'s message` : ask.being ? `${ask.ev?.fromBeing ?? '?'}'s line` : 'the line'} not ${ask.msg ? 'sent' : ask.being ? 'passed on' : 'dispatched'}${edited ? '' : post ? ' (said as a new line: the post could not be edited)' : ' (asked before expiry existed: nothing said in the chat)'}`);
     if (edited || !post) return;
     try { await sayOnce({ chatId: ask.chatId, text: post.expired, opts: { systemLine: true }, what: 'ingest' }); }
     catch (e) { log.line?.(`[ingest] ${what} ${ask.chatId}: ${e?.message ?? e}`); }
@@ -4446,7 +4519,7 @@ ${more}`, 'utf8');
     await ingestAsks.mark(ask, { shown: minutes });   // before the edit: a failed one is not tried again within the minute
     if (!(await editAskPost(ask.chatId, p.id, withCountdown(p.text, ask.expiresAt - at)))) {
       askNoEdit.add(ask);
-      log.line?.(`[ingest] ${ask.being ? `@${ask.being}` : '/to'} ${ask.chatId}: the post #${p.id} would not take an edit — its countdown stays as posted`);
+      log.line?.(`[ingest] ${ask.msg ? '/msg' : ask.being ? `@${ask.being}` : '/to'} ${ask.chatId}: the post #${p.id} would not take an edit — its countdown stays as posted`);
     }
   }
   function asksTick(at) {
@@ -4468,6 +4541,11 @@ ${more}`, 'utf8');
     if (!a) return;
     await ingestAsks.take(a.ask);
     const { chatId } = a.ask;
+    if (a.ask.msg) {
+      log.line?.(`[msg] ${a.ask.msg.being} → ${a.ask.msg.name}: ${a.yes ? 'approved' : 'dropped'} by ${ev.senderName ?? ev.senderId ?? '?'}`);
+      if (!a.yes) return void await msgSay(chatId, '🚫 dropped');
+      return void await msgSend(chatId, a.ask.msg);
+    }
     const what = a.ask.being ? `@${a.ask.being}` : '/to';
     log.line?.(`[ingest] ${what} ${chatId}: ${a.yes ? 'dispatched' : 'dropped'} by ${ev.senderName ?? ev.senderId ?? '?'}`);
     try { await sayOnce({ chatId, text: a.yes ? '✅ dispatched' : '🚫 dropped', opts: { systemLine: true }, what: 'ingest' }); }

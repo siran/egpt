@@ -352,6 +352,8 @@ networks:
 # /<handle> msg <chat> <text> posts <text> as written, as that being, into another chat (the operator's own line: any
 # chat; else one it already answers in); false = refused
 # msg: true
+# a being's /msg (its reply's action or its signed line) first asks in the chat; an owner's yes / no (a reply or a reaction) sends or drops it
+# msg_approval: true
 
 # group chats reply in their "SI+<group>" side group unless their conversations.yaml entry says
 # otherwise; never a 1:1 or Telegram. Unset = off (config-schema reply_in_side_group)
