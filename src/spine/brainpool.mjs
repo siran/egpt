@@ -1115,7 +1115,11 @@ export function createBrainPool({
       //
       // Never true while `fresh` is: a brand-new thread gets the feed from wrapFresh anyway, and
       // recordThread stamps threadId and identityInjectedAt together at the end of that turn.
-      const identityRefresh = !fresh && identityRefreshArmed;
+      //
+      // `let`: the layer seeding below can also arm it for this turn — a RESUMED thread whose room
+      // copy of a card was missing or differed from the node card (the room follows the card).
+      // Nothing reads it between here and that seeding.
+      let identityRefresh = !fresh && identityRefreshArmed;
       // THE ONE resolution path (phase 2, operator 2026-08-14): every being's def — the
       // persona included — comes from resolveBeingDef (agents[<being>].configuration names a
       // type file resolved through the brains registry). This is the SAME path a
@@ -1210,10 +1214,12 @@ export function createBrainPool({
       // if-missing, so it costs a stat per layer and self-heals a conversation that was
       // started before this existed — hence every turn, not only the fresh
       // kickoff (a live conversation resumes forever and would otherwise never get them).
-      // ON A REFRESH the copies are OVERWRITTEN (operator 2026-07-26: "all skeleton files are
-      // copied on refresh thread") — that is how an edited template (10-actions.md learning
-      // /ask) reaches a conversation seeded long ago; copy-if-missing alone never could. A
-      // mid-thread turn keeps copy-if-missing so nothing is rewritten under a running E.
+      // A layer is (re)written when it is missing OR differs from the node card (2026-11-27: the
+      // room follows the card). On a RETHREAD (`fresh`) every copy is overwritten (operator
+      // 2026-07-26: "all skeleton files are copied on refresh thread"). On a RESUMED thread a
+      // write means the running context holds an older card, so the SAME re-feed an armed
+      // `/agents refresh` rides is switched on below, and its stamp is written back at the end
+      // of the turn. An unchanged room copy writes nothing and re-feeds nothing.
       // Targets convDir, NOT cwd: a def that pins a workspace must not have directives/
       // written into it. EVERY agent gets the SHARED layers copied into its own conv folder,
       // for local file-tool consult. Its IDENTITY is not among them (operator 2026-09-10) —
@@ -1222,7 +1228,8 @@ export function createBrainPool({
       // Best-effort by contract (seedIdentityLayers never throws) — never breaks a turn.
       // Room.forChat, not slugDir: seedIdentityLayers is keyed on the Room instance now (a
       // conversation IS a Room), so its own ensureTree/directivesDir resolve off convDir too.
-      await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh, publicOnly: desk });
+      const seeded = await seedLayers(Room.forChat(scope.surface, slug), personality, { io, overwrite: fresh, publicOnly: desk });
+      if (!fresh && Array.isArray(seeded) && seeded.length) identityRefresh = true;
       // HOW THIS BEING IS CONFIGURED HERE, beside those layers (operator 2026-09-24): its block in
       // ./directives/config.readonly.yaml, rendered from the values THIS turn runs with and written
       // only when it changed — see being-config-card.mjs. Before the spawn, so a fresh thread's

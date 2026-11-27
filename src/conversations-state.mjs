@@ -2176,27 +2176,28 @@ const _publicLayers = (layers) => layers.filter(({ file }) => file === IDENTITY_
 // NO MIGRATION (operator 2026-09-10): a conversation seeded before today keeps its
 // identity.d/ on disk, untouched — no shim, no dual read. New and reset rooms get directives/.
 //
-// COPY-IF-MISSING by default, the house skeleton convention (seed.mjs). `overwrite` re-copies
-// every layer instead: operator 2026-07-26, "all skeleton files are copied on refresh thread".
-// That is the capabilities refresher — an edited template (10-actions.md learning /ask) could
-// otherwise never reach a conversation that was seeded once, months ago.
+// COPY-IF-MISSING-OR-DIFFERENT by default (2026-11-27, "the room follows the node card"). A layer
+// is written when it is missing OR when what is on disk differs from what would be written — the
+// "write only when it changed" rule of writeCard (being-config-card.mjs). An unchanged file is
+// not touched (no mtime churn). Before this the default was copy-if-missing, so a card edited
+// after a room was seeded (a migration adding an action) never reached that room's directives/
+// until a rethread; brainpool turn() now also re-feeds the running thread when this returns
+// filenames on a resumed thread (see the call there). `overwrite` re-copies every layer
+// unconditionally; with the default now converging on the same content it is nearly redundant
+// (it still rewrites byte-identical files and is kept, not removed, in this change).
 //
 // WHO PASSES overwrite:true, and A NOTE ON THE WORD "refresh". The 2026-07-26 ruling used
 // "refresh" to mean A THREAD INSTANCED ANEW; since 2026-09-10 that is called `rethread`, and
-// `refresh` is a DIFFERENT verb (re-feed into the RUNNING thread). Both re-copy this folder,
-// for the same capabilities-refresher reason, so the flag now has two callers:
+// `refresh` is a DIFFERENT verb (re-feed into the RUNNING thread). The flag has two callers:
 //
 //   brainpool.mjs turn(), `overwrite: fresh`  — a thread being instanced (a rethread, a reset,
-//                                               a dead session). A mid-thread turn passes
-//                                               false, so nothing is rewritten under a
-//                                               running brain.
+//                                               a dead session).
 //   commands.mjs agentsRefresh + agentsReset  — the operator asking for it outright.
 //
-// THE TRADE: a hand-edit to <room>/directives/ is discarded on the next overwrite. Intended —
-// these are consult COPIES; the source is the room template. /rooms create passes no overwrite
-// (copy-if-missing): a brand-new room's directives/ is already empty, so there is nothing to
-// re-copy — and copy-if-missing is the same never-clobber default every other seed path uses,
-// in case creation is ever retried against a room that already has layers.
+// THE TRADE: a hand-edit to <room>/directives/ is discarded on the NEXT TURN (it used to be only
+// on the next overwrite). Intended — these are consult COPIES; the source is the room template.
+// /rooms create passes no overwrite: a brand-new room's directives/ is empty, so everything is
+// "missing" and written.
 //
 // NEVER throws — a seeding hiccup must not break a turn (or a /rooms create). Returns the
 // filenames it wrote.
@@ -2226,8 +2227,8 @@ export async function seedIdentityLayers(room, name, { io = {}, overwrite = fals
       if (!text.trim()) continue;                                  // an empty layer is not a file worth writing
       const fp = join(dir, file);
       if (!overwrite) {
-        try { await readFileFn(fp, 'utf8'); continue; }            // already there — never clobber
-        catch { /* missing → seed below */ }
+        try { if (await readFileFn(fp, 'utf8') === text) continue; }   // already there and the same — nothing to write
+        catch { /* missing → seed below */ }                          // (differs → falls through and is rewritten)
       }
       await writeFileFn(fp, text, 'utf8');
       wrote.push(file);

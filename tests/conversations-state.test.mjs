@@ -1433,10 +1433,20 @@ describe('seedIdentityLayers — a refresh re-copies the room template layers', 
     } };
   };
 
-  it('an ordinary turn leaves the existing copies alone', async () => {
+  it('an ordinary turn rewrites a copy that differs from the card (the room follows the card)', async () => {
     const s = seeded();
-    expect(await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io })).toEqual([]);
-    expect(Object.keys(s.wrote)).toEqual([]);
+    const wrote = await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io });
+    expect(wrote).toContain('10-actions.md');
+    expect(Object.entries(s.wrote).find(([p]) => p.endsWith('10-actions.md'))[1]).not.toBe('AN OLD COPY');
+  });
+
+  it('an ordinary turn leaves an identical copy alone: nothing written, nothing returned', async () => {
+    const s = seeded();
+    await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io: s.io });   // learn the card bytes
+    const disk = { ...s.wrote };
+    const io = { mkdir: async () => {}, readFile: async (p) => disk[p], writeFile: async (p, d) => { s.wrote['AGAIN:' + p] = d; } };
+    expect(await seedIdentityLayers(Room.forChat(SURFACE, SLUG), 'egpt', { io })).toEqual([]);
+    expect(Object.keys(s.wrote).filter((k) => k.startsWith('AGAIN:'))).toEqual([]);
   });
 
   it('a refresh overwrites them with the template\'s current bytes', async () => {
